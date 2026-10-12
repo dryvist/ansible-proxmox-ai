@@ -26,6 +26,11 @@ services:
       - "{{ agentgateway_docker_metrics_port }}:{{ agentgateway_docker_metrics_port }}"
     volumes:
       - "{{ agentgateway_docker_data_dir }}/config.yaml:/config.yaml:ro"
+{% if agentgateway_docker_nautobot_openapi_enabled | bool
+      and agentgateway_docker_nautobot_read_token | length > 0 %}
+      - "{{ agentgateway_docker_nautobot_openapi_schema_file }}:{{ agentgateway_docker_nautobot_openapi_schema_path }}:ro"
+      - "{{ agentgateway_docker_nautobot_openapi_token_file }}:{{ agentgateway_docker_nautobot_openapi_token_path }}:ro"
+{% endif %}
 {% if (agentgateway_docker_qdrant_mcp_enabled | bool
        and agentgateway_docker_qdrant_memory_mcp_api_key | length > 0)
       or (agentgateway_docker_docs_mcp_enabled | bool
@@ -67,7 +72,8 @@ services:
       VIKUNJA_API_TOKEN: "{{ agentgateway_docker_vikunja_read_token }}"
 {% endif %}
 {% if agentgateway_docker_nautobot_mcp_enabled | bool
-      and agentgateway_docker_nautobot_read_token | length > 0 %}
+      and agentgateway_docker_nautobot_read_token | length > 0
+      and not (agentgateway_docker_nautobot_openapi_enabled | bool) %}
 
   # Nautobot IPAM/DCIM MCP sidecar (see defaults) — FastMCP GraphQL
   # passthrough over Nautobot's own /graphql/ endpoint. Reached only by the
@@ -78,6 +84,8 @@ services:
     container_name: mcp-nautobot
     restart: {{ agentgateway_docker_restart_policy }}
     logging: *agentgateway_docker_logging
+    env_file:
+      - "{{ agentgateway_docker_nautobot_legacy_env_file }}"
     entrypoint: ["uv"]
     command:
       - "run"
@@ -89,7 +97,6 @@ services:
       FASTMCP_SERVER_HOST: "0.0.0.0"
       FASTMCP_SERVER_PORT: "{{ agentgateway_docker_nautobot_mcp_port }}"
       NAUTOBOT_URL: "{{ agentgateway_docker_nautobot_url }}"
-      NAUTOBOT_READ_TOKEN: "{{ agentgateway_docker_nautobot_read_token }}"
     volumes:
       - "{{ agentgateway_docker_data_dir }}/mcp_nautobot_server.py:/app/mcp_nautobot_server.py:ro"
 {% endif %}
