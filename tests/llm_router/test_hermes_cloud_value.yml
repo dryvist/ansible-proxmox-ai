@@ -109,7 +109,7 @@
           {{ (lookup('template', playbook_dir ~ '/fixtures/live-auto-router-db-rows.yml.j2')
              | from_yaml).llm_router_live_role_model_info_fixture }}
 
-    - name: Provider chain, costs, and operational ceilings are exact
+    - name: Provider chain, route order, and operational ceilings are exact
       ansible.builtin.assert:
         quiet: true
         that:
@@ -207,7 +207,7 @@
           - _wrong_mode | length == 0
           - _wrong_retry | length == 0
           - _wrong_timeout | length == 0
-          - _missing_prices | length == 0
+          - _unexpected_cost_fields | length == 0
           - _monthly_total | round(2) == 6.66
           # REVIEWED EDIT 2026-09-02. This pair used to assert that a
           # routing_group declared cost-based-routing over the final-resort
@@ -288,19 +288,27 @@
              | map(attribute='value') | first }}
         _final_resort: >-
           {{ _config.model_list
-             | selectattr('litellm_params.input_cost_per_token', 'defined')
              | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter')
              | list }}
+        _cloud_model_groups: >-
+          {{ llm_router_hermes_cloud_models_credentialed
+             | map(attribute='route_group') | unique | list }}
+        _all_cloud_models: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _cloud_model_groups) | list }}
         _cloud_models: >-
           {{ _config.model_list
-             | selectattr('model_name', 'match', '^hermes-cloud-')
-             | selectattr('litellm_params.input_cost_per_token', 'defined')
-             | rejectattr('litellm_params.input_cost_per_token', 'in', [0, '0', '0.0']) | list }}
-        # Paid credentialed hermes-cloud registry entries, counted from the registry.
+             | selectattr('model_name', 'in', _registry_paid_cloud_groups) | list }}
+        # Paid provider entries, counted from the registry's explicit class.
         _registry_paid_cloud: >-
           {{ llm_router_hermes_cloud_models_credentialed
              | selectattr('price_class', 'equalto', 'paid')
              | map(attribute='client_model_id') | select('match', '^hermes-cloud-') | list }}
+        _registry_paid_cloud_groups: >-
+          {{ llm_router_hermes_cloud_models_credentialed
+             | selectattr('price_class', 'equalto', 'paid')
+             | selectattr('client_model_id', 'match', '^hermes-cloud-')
+             | map(attribute='route_group') | unique | list }}
         _registry_final_resort: >-
           {{ llm_router_hermes_cloud_models_credentialed
              | selectattr('route_group', 'defined')
@@ -343,12 +351,12 @@
           {{ _cloud_models
              | rejectattr('litellm_params.timeout', 'equalto', 2400)
              | map(attribute='model_name') | list }}
-        _missing_prices: >-
-          {{ (_cloud_models
-              | rejectattr('litellm_params.input_cost_per_token', 'defined')
+        _unexpected_cost_fields: >-
+          {{ (_all_cloud_models
+              | selectattr('litellm_params.input_cost_per_token', 'defined')
               | map(attribute='model_name') | list)
-             + (_cloud_models
-                | rejectattr('litellm_params.output_cost_per_token', 'defined')
+             + (_all_cloud_models
+                | selectattr('litellm_params.output_cost_per_token', 'defined')
                 | map(attribute='model_name') | list) }}
         _monthly_total: >-
           {{ _cloud_models | selectattr('litellm_params.max_budget', 'defined')

@@ -156,9 +156,9 @@ Optional:
   monthly_budget      Deployment-level monthly USD ceiling, backed by Redis.
   max_budget          Optional deployment-level USD ceiling, backed by Redis.
                       Pair with budget_duration for a non-monthly period.
-                      For a flat-rate subscription this can use a documented
-                      token-price estimate to cap shared quota; the estimate
-                      is not provider billing.
+                      A flat-rate subscription can retain this ceiling without
+                      token rates; usage-based enforcement depends on available
+                      accounting metadata and is not provider billing.
   budget_duration     LiteLLM period for max_budget (for example `1d`).
   rpm / tpm           Per-deployment request and token ceilings. Omitted
                       values use the tier default; subscription-specific

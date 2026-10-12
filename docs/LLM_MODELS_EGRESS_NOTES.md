@@ -15,8 +15,8 @@ consumers opt in by requesting the id explicitly.
 LiteLLM receives one `OPENROUTER_API_KEY` for the OpenRouter API provider. Model
 access is not represented by extra credentials: **the entry list is the egress
 allowlist**, the unrestricted `openrouter/*` passthrough is absent, and Hermes'
-fallback group additionally pins exact model ids plus endpoint price, parameter,
-data-collection, and ZDR policy.
+fallback group additionally pins exact model ids, routing class and rank,
+parameter, data-collection, and ZDR policy.
 
 The spend-cap mechanism exists and is live-wired — Redis-backed
 (`roles/redis`), enforced via `router_settings.provider_budget_config` in
@@ -45,16 +45,14 @@ classification performs no provider call. If local serving fails, the original
 Alibaba and Gemini routine and agentic deployments are separate provider
 groups in that chain; OpenRouter remains the final gateway-diverse group.
 
-The value claim is scoped: cost-based routing compares real token prices only
-among models declared equivalent in the final OpenRouter tier, and is not a
-quality proxy. Direct providers stay ordered by verified price/capability and
-failure-domain independence.
+The routing order is explicit in the registry: equivalent OpenRouter members
+use their route ranks, and separate provider groups follow their declared
+class and registry order. Direct providers stay ordered by route rank,
+capability, and failure-domain independence.
 
-LiteLLM v1.97.0 loads all three provider prefixes and these exact ids with
-explicit pricing/metadata even where its bundled catalog lags — that proves
-configuration compatibility, not upstream availability; activation still
-requires a real health request per id. Every route declares `mode: chat`,
-context/output metadata, per-attempt timeout, and zero deployment retries,
+Provider configuration compatibility is separate from upstream availability;
+activation still requires a real health request per id. Every route declares
+`mode: chat`, context/output metadata, per-attempt timeout, and zero deployment retries,
 and the model-group retry policy pins every cloud alias and physical group to
 zero 429 retries — so the global eight-retry policy stays a local-serving
 congestion control and cannot delay or multiply paid-provider fallbacks.
@@ -65,8 +63,10 @@ input / 8,192 generation token limits, 12 RPM, 500,000 TPM, two concurrent
 requests, a 2,400s attempt timeout, and zero retries of any kind. The six
 deployment-level monthly ceilings total $10.00 ($3.33 Alibaba, $3.33 Gemini,
 $3.34 OpenRouter); the account-wide OpenRouter budget stays separately owned
-by `llm_router_openrouter_budget_limit`. Re-verify OpenRouter live prices and
-Gemini promotional pricing before activation and before 2027-01-01.
+by `llm_router_openrouter_budget_limit`. Per-token rates are not registry
+facts; a separate projection will source accounting rates from LiteLLM's
+upstream `model_prices_and_context_window.json`. Review spend ceilings and
+provider account limits before activation and before 2027-01-01.
 
 ### Why MiniMax is two entries
 
@@ -76,10 +76,10 @@ a lookup. Since the delegation doctrine tells callers to take the cheapest tier
 that can actually do a subtask, one entry would force every MiniMax call to pay
 for whichever shape it did not need:
 
-| id | context | price per Mtok (in / out) | role |
-| --- | --- | --- | --- |
-| `minimax-m2.5` | 204,800 | $0.15 / $0.90 | the cheap default |
-| `minimax-m3` | 1,048,576 | $0.30 / $1.20 | the long-context one |
+| id | context | role |
+| --- | --- | --- |
+| `minimax-m2.5` | 204,800 | the short-context default |
+| `minimax-m3` | 1,048,576 | the long-context one |
 
 `context_window` is the catalog's real serving window in both cases, not a round
 number: an entry advertising more than the backend serves dies mid-stream
