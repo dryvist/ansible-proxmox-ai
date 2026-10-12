@@ -104,6 +104,20 @@ def test_chat_merge_preserves_cache_control_blocks(merge):
     ]
 
 
+def test_cache_merge_drops_empty_text(merge):
+    cached = {"type": "text", "text": "cached", "cache_control": {"type": "ephemeral"}}
+    msgs = [
+        {"role": "system", "content": [cached, {"type": "text", "text": ""}]},
+        {"role": "developer", "content": ""},
+        {"role": "user", "content": "hi"},
+    ]
+
+    assert merge(msgs) == [
+        {"role": "system", "content": [cached]},
+        {"role": "user", "content": "hi"},
+    ]
+
+
 BRIDGED = [
     {"role": "system", "content": "instructions"},
     {"role": "developer", "content": "developer"},

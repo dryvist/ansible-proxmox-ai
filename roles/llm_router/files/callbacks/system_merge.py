@@ -55,7 +55,8 @@ def _merge_contents(contents):
     merged = []
     for content in contents:
         if isinstance(content, list):
-            merged.extend(content)
+            # The Anthropic API rejects empty text blocks.
+            merged.extend(b for b in content if not (isinstance(b, dict) and b.get("type") == "text" and not b.get("text")))
         else:
             text = _as_text(content)
             if text:
