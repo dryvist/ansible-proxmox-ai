@@ -1,0 +1,121 @@
+---
+- name: Verify keys cannot reach an unnamed cloud fallback rung
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      opencode_llm_router_key: sk-fixture-opencode
+      OPENCODE_ROUTER_KEY: sk-fixture-opencode
+      litellm_local_llm_router_key: sk-fixture-local
+      litellm_local_workstation_llm_router_key: sk-fixture-workstation
+      github_actions_llm_router_key: sk-fixture-github-actions
+      github_actions_oss_llm_router_key: sk-fixture-github-actions-oss
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-fixture-openrouter
+      OPENROUTER_HERMES_KEY: sk-fixture-openrouter-hermes
+      OPENAI_API_KEY: sk-fixture-openai
+      GEMINI_API_KEY: sk-fixture-gemini
+      DASHSCOPE_API_KEY: sk-fixture-dashscope
+      OPENCODE_API_KEY: sk-fixture-opencode-provider
+    llm_router_chatgpt_auth_file_present: true
+    llm_router_oss_ci_key_enabled: true
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_router_subdomain: pve.example.test
+    llm_large_serving_host: llm-large
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+    hermes_goal_judge_model: "{{ llm_router_small_model }}"
+  tasks:
+    - name: Load router defaults and registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Render the credentialed fallback graph
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Capture cloud groups and fallback entries
+      ansible.builtin.set_fact:
+        _cloud_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
+        _fallback_map: >-
+          {{ dict(_config.router_settings.fallbacks | default([])
+             | map('dict2items') | flatten | map(attribute='key')
+             | zip(_config.router_settings.fallbacks | default([])
+               | map('dict2items') | flatten | map(attribute='value'))) }}
+
+    - name: Select keys whose allowlists name no cloud group
+      ansible.builtin.set_fact:
+        _local_scope_keys: >-
+          {%- set ns = namespace(keys=[]) -%}
+          {%- for key in llm_router_virtual_keys
+               if (key.models | default([]) | intersect(_cloud_groups) | length == 0) -%}
+          {%- set _ = ns.keys.append(key) -%}
+          {%- endfor -%}
+          {{ ns.keys }}
+
+    - name: Resolve every authorized fallback hop for each selected key
+      ansible.builtin.set_fact:
+        _reachable_by_key: >-
+          {%- set out = namespace(keys={}) -%}
+          {%- for key in _local_scope_keys -%}
+          {%- set starts = key.models | default([]) | unique | list -%}
+          {%- if starts | length == 0 or '*' in starts -%}
+          {%- set starts = (starts + _cloud_groups) | unique | list -%}
+          {%- endif -%}
+          {%- set ns = namespace(names=starts) -%}
+          {%- for _ in range(0, starts | length + 1) -%}
+          {%- set _next = namespace(names=ns.names) -%}
+          {%- for name in ns.names -%}
+          {%- set targets = _fallback_map.get(
+               name, _config.router_settings.default_fallbacks | default([])) -%}
+          {%- if targets is string -%}{%- set targets = [targets] -%}{%- endif -%}
+          {%- if name in llm_router_model_group_aliases -%}
+          {%- set targets = targets + [llm_router_model_group_aliases[name]] -%}
+          {%- endif -%}
+          {%- for target in targets
+               if target in key.models and target not in _next.names -%}
+          {%- set _ = _next.names.append(target) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {%- set ns.names = _next.names -%}
+          {%- endfor -%}
+          {%- set _ = out.keys.update({key.alias: ns.names}) -%}
+          {%- endfor -%}
+          {{ out.keys }}
+
+    - name: Every no-cloud allowlist resolves to no cloud group through fallbacks
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cloud_groups | length > 0
+          - llm_router_external_paid_rungs | length > 0
+          - _local_scope_keys | length > 0
+          - _reachable_by_key | length == _local_scope_keys | length
+          - >-
+            _reachable_by_key.values() | flatten
+            | intersect(_cloud_groups) | length == 0
+          - llm_router_enforce_fallback_model_access | bool
+        fail_msg: An allowlist resolved to an unnamed cloud fallback group.
