@@ -2,10 +2,10 @@
 # Dedicated ClickHouse server via Docker Compose in an LXC.
 # Rendered by ansible-proxmox-ai/roles/clickhouse_docker — do not edit by hand.
 #
-# Serves a Langfuse application database plus read-only access for downstream
-# consumers (Grafana, HyperDX, Splunk). Data is bind-mounted under
-# {{ clickhouse_docker_data_dir }} (durable, snapshotted). The `default` user
-# is disabled by a users.d/ config drop-in (templates/users.d/default-disabled.xml.j2);
+# Serves the Langfuse application database plus read-only access for downstream
+# consumers (Grafana, HyperDX, Splunk). Data is bind-mounted at configured
+# paths (durable, snapshotted). The `default` user is disabled by a users.d/
+# config drop-in (templates/users.d/default-disabled.xml.j2).
 # every real client authenticates as one of the users tasks/main.yml
 # provisions.
 #
@@ -29,7 +29,7 @@ services:
     logging: *clickhouse_docker_logging
     user: "{{ clickhouse_docker_uid }}:{{ clickhouse_docker_uid }}"
     environment:
-      TZ: UTC
+      TZ: "{{ clickhouse_docker_timezone }}"
       # Bootstraps the dedicated database and the app user on first init (the
       # image's own supported mechanism — writes users.d/default-user.xml,
       # which also removes the `default` user; the users.d/ drop-in this role
@@ -45,10 +45,12 @@ services:
     ports:
       - "{{ clickhouse_docker_http_port }}:{{ clickhouse_docker_http_internal_port }}"
       - "{{ clickhouse_docker_native_port }}:{{ clickhouse_docker_native_internal_port }}"
+      - "{{ clickhouse_docker_prometheus_port }}:{{ clickhouse_docker_prometheus_port }}"
     volumes:
       - {{ clickhouse_docker_ch_data_dir }}:/var/lib/clickhouse
       - {{ clickhouse_docker_ch_logs_dir }}:/var/log/clickhouse-server
       - {{ clickhouse_docker_users_d_dir }}:/etc/clickhouse-server/users.d:ro
+      - {{ clickhouse_docker_config_d_dir }}/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
     healthcheck:
       # Both loopback families (127.0.0.1 and ::1) have been found refused for
       # ClickHouse in this estate, so the probe dials the guest's own FQDN

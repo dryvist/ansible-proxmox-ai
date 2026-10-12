@@ -2,10 +2,11 @@
 # Langfuse v4 (LLM observability) via Docker Compose in an LXC.
 # Rendered by ansible-proxmox-ai/roles/langfuse_docker — do not edit by hand.
 #
-# Blob storage points at the homelab RustFS S3 (the upstream-bundled MinIO is
-# dropped); postgres + clickhouse + redis bind-mount their data under
-# {{ langfuse_docker_data_dir }} (durable, snapshotted). Only langfuse-web is
-# published — every other service stays on the internal compose network.
+# ClickHouse can run in this stack or at the dedicated guest selected by
+# langfuse_docker_clickhouse_endpoint. Postgres and Redis data are bind-mounted
+# under {{ langfuse_docker_data_dir }} (durable, snapshotted). Blob storage uses
+# the homelab RustFS S3. Only langfuse-web is published; other services stay on
+# the internal compose network.
 #
 # OTLP trace ingest is served by langfuse-web at :3000/api/public/otel/v1/traces; no
 # extra service or env is needed for OpenTelemetry clients.
@@ -18,6 +19,20 @@
 # stack's own port (tofu-proxmox constants), to this stack's own dedicated
 # Splunk index — one index per service, not a shared one. Shared by every
 # service in this stack — one tag, one index, for the whole stack.
+{% set _langfuse_clickhouse_embedded = (langfuse_docker_clickhouse_endpoint | default('embedded')) == 'embedded' %}
+{% set _langfuse_clickhouse_url = langfuse_docker_clickhouse_url %}
+{% set _langfuse_clickhouse_migration_url = langfuse_docker_clickhouse_migration_url %}
+{% set _langfuse_clickhouse_user = langfuse_docker_clickhouse_user %}
+{% set _langfuse_clickhouse_password = langfuse_docker_clickhouse_password %}
+{% if not _langfuse_clickhouse_embedded %}
+{% set _langfuse_clickhouse_host = hostvars['clickhouse'].container_ip %}
+{% set _langfuse_clickhouse_ports = hostvars['localhost']['tofu_data']['constants']['service_ports'] %}
+{% set _langfuse_clickhouse_url = 'http://' ~ _langfuse_clickhouse_host ~ ':' ~ _langfuse_clickhouse_ports['clickhouse_http'] %}
+{% set _langfuse_clickhouse_migration_url = 'clickhouse://' ~ _langfuse_clickhouse_host ~ ':' ~ _langfuse_clickhouse_ports['clickhouse_native'] %}
+{% set _langfuse_clickhouse_user = 'langfuse' %}
+{% set _langfuse_clickhouse_password = langfuse_docker_clickhouse_external_password %}
+{% endif %}
+
 x-logging: &langfuse_docker_logging
   driver: journald
   options:
@@ -42,6 +57,7 @@ services:
       timeout: 3s
       retries: 10
 
+{% if _langfuse_clickhouse_embedded %}
   {{ langfuse_docker_clickhouse_service }}:
     image: {{ langfuse_docker_clickhouse_image }}
     restart: {{ langfuse_docker_restart_policy }}
@@ -61,6 +77,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 1s
+{% endif %}
 
   {{ langfuse_docker_redis_service }}:
     image: {{ langfuse_docker_redis_image }}
@@ -88,8 +105,10 @@ services:
     depends_on:
       {{ langfuse_docker_postgres_service }}:
         condition: service_healthy
+{% if _langfuse_clickhouse_embedded %}
       {{ langfuse_docker_clickhouse_service }}:
         condition: service_healthy
+{% endif %}
       {{ langfuse_docker_redis_service }}:
         condition: service_healthy
     ports:
@@ -99,10 +118,13 @@ services:
       SALT: "{{ langfuse_docker_secrets.salt }}"
       ENCRYPTION_KEY: "{{ langfuse_docker_secrets.encryption_key }}"
       NEXTAUTH_URL: "{{ langfuse_docker_nextauth_url }}"
-      CLICKHOUSE_MIGRATION_URL: "{{ langfuse_docker_clickhouse_migration_url }}"
-      CLICKHOUSE_URL: "{{ langfuse_docker_clickhouse_url }}"
-      CLICKHOUSE_USER: "{{ langfuse_docker_clickhouse_user }}"
-      CLICKHOUSE_PASSWORD: "{{ langfuse_docker_clickhouse_password }}"
+      CLICKHOUSE_MIGRATION_URL: "{{ _langfuse_clickhouse_migration_url }}"
+      CLICKHOUSE_URL: "{{ _langfuse_clickhouse_url }}"
+      CLICKHOUSE_USER: "{{ _langfuse_clickhouse_user }}"
+      CLICKHOUSE_PASSWORD: "{{ _langfuse_clickhouse_password }}"
+{% if not _langfuse_clickhouse_embedded %}
+      CLICKHOUSE_DB: default
+{% endif %}
       CLICKHOUSE_CLUSTER_ENABLED: "false"
       LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST: "{{ langfuse_docker_llm_connection_whitelisted_host }}"
       LANGFUSE_MIGRATION_V4_WRITE_MODE: "{{ langfuse_docker_migration_v4_write_mode }}"
@@ -153,8 +175,10 @@ services:
     depends_on:
       {{ langfuse_docker_postgres_service }}:
         condition: service_healthy
+{% if _langfuse_clickhouse_embedded %}
       {{ langfuse_docker_clickhouse_service }}:
         condition: service_healthy
+{% endif %}
       {{ langfuse_docker_redis_service }}:
         condition: service_healthy
     environment: *langfuse_env
@@ -173,8 +197,10 @@ services:
     depends_on:
       {{ langfuse_docker_postgres_service }}:
         condition: service_healthy
+{% if _langfuse_clickhouse_embedded %}
       {{ langfuse_docker_clickhouse_service }}:
         condition: service_healthy
+{% endif %}
       {{ langfuse_docker_redis_service }}:
         condition: service_healthy
     ports:
