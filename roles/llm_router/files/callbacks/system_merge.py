@@ -17,9 +17,11 @@ every client and every rung rather than per harness. `async_pre_call_hook`
 handles calls that already carry `messages`; `async_pre_call_deployment_hook`
 handles the Responses bridge and the Anthropic adapter after deployment
 selection. Order is preserved:
-system/developer texts are joined in the order they arrived, with two newlines
-between them; every other message keeps its relative order. A list with zero
-or one system-like message and none out of place is returned untouched.
+system/developer contents are joined in the order they arrived, with two
+newlines between them unless a content block carries `cache_control`, in which
+case block lists are preserved. Every other message keeps its relative order.
+A list with zero or one system-like message and none out of place is returned
+untouched.
 """
 
 from litellm.integrations.custom_logger import CustomLogger
@@ -40,6 +42,28 @@ def _as_text(content):
     return "" if content is None else str(content)
 
 
+def _merge_contents(contents):
+    """Keep cache-control blocks intact; otherwise preserve the legacy text merge."""
+    has_cache_control = any(
+        isinstance(content, list)
+        and any(isinstance(block, dict) and "cache_control" in block for block in content)
+        for content in contents
+    )
+    if not has_cache_control:
+        return "\n\n".join(t for t in (_as_text(content) for content in contents) if t)
+
+    merged = []
+    for content in contents:
+        if isinstance(content, list):
+            # The Anthropic API rejects empty text blocks.
+            merged.extend(b for b in content if not (isinstance(b, dict) and b.get("type") == "text" and not b.get("text")))
+        else:
+            text = _as_text(content)
+            if text:
+                merged.append({"type": "text", "text": text})
+    return merged
+
+
 def merge_system_messages(messages):
     """Return a new message list with one leading system message, or the input as is."""
     if not isinstance(messages, list):
@@ -48,7 +72,7 @@ def merge_system_messages(messages):
     needs_merge = len(systemish) > 1 or (len(systemish) == 1 and messages[0] is not systemish[0])
     if not needs_merge:
         return messages
-    merged = "\n\n".join(t for t in (_as_text(m.get("content")) for m in systemish) if t)
+    merged = _merge_contents([m.get("content") for m in systemish])
     rest = [m for m in messages if not (isinstance(m, dict) and m.get("role") in _SYSTEMISH)]
     return [{"role": "system", "content": merged}] + rest
 
@@ -64,7 +88,7 @@ def merge_anthropic_system(kwargs):
     contents = ([kwargs["system"]] if kwargs.get("system") is not None else []) + [
         m.get("content") for m in systemish
     ]
-    merged = "\n\n".join(t for t in (_as_text(content) for content in contents) if t)
+    merged = _merge_contents(contents)
     if merged:
         kwargs["system"] = merged
     else:
