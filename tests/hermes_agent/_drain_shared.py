@@ -31,7 +31,9 @@ ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 TEMPLATE = ROLE / "templates" / "hermes-cron-drain-restart.py.j2"
 
 DEFAULTS = role_defaults(ROLE)
-HERMES_USER = DEFAULTS["hermes_agent_user"]
+HERMES_USER = Environment().from_string(
+    DEFAULTS["hermes_agent_user"]
+).render(hermes_agent_id="hermes", ai_agents={})
 CLAIM_TTL = int(DEFAULTS["hermes_agent_cron_fire_claim_ttl_seconds"])
 
 # Records the restart invocation and the sentinels standing at that moment, so

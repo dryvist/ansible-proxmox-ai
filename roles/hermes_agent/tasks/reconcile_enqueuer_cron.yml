@@ -20,11 +20,13 @@
 # A job this agent identity does not own is actively withdrawn below, because
 # "not mine" is a different condition from "my credential is missing": the
 # second should survive a converge untouched, the first must not survive at
-# all. Both collapse into item.enabled being false, which is why the removal
-# path reads hermes_agent_ops_workload_enabled directly instead.
+# all. Both collapse into item.enabled being false, so removal checks the
+# per-job identity selection separately.
 - name: "Enqueuer cron | Effective-active for {{ item.name }}"
   ansible.builtin.set_fact:
-    hermes_agent_enqueuer_active: "{{ item.enabled | default(true) | bool }}"
+    hermes_agent_enqueuer_active: >-
+      {{ item.enabled | default(true) | bool
+         and hermes_agent_id in hermes_agent_job_identities }}
 
 - name: "Enqueuer cron | Resolve fields for {{ item.name }}"
   ansible.builtin.set_fact:
@@ -51,9 +53,12 @@
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_enqueuer_cron_list
   changed_when: false
-  when: >-
-    (hermes_agent_enqueuer_active | bool)
-    or not (hermes_agent_ops_workload_enabled | bool)
+  check_mode: false
+  when:
+    - not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
+    - >-
+      (hermes_agent_enqueuer_active | bool)
+      or hermes_agent_id not in hermes_agent_job_identities
 
 # Withdraw a job this agent identity does not own. Without this, scoping a job
 # away from an identity only stops it being RE-created — an agent that already
@@ -76,8 +81,9 @@
     hermes_agent_enqueuer_withdraw.rc != 0
     and 'not found' not in hermes_agent_enqueuer_withdraw.stdout
   when:
-    - not (hermes_agent_ops_workload_enabled | bool)
+    - hermes_agent_id not in hermes_agent_job_identities
     - item.name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
+    - not ansible_check_mode
 
 # Drop the desired-state marker alongside the withdrawn job so a later
 # re-grant recreates from a clean slate rather than matching a stale checksum.
@@ -86,7 +92,7 @@
     path: "{{ hermes_agent_managed_cron_state_dir }}/{{ item.name }}.sha256"
     state: absent
   when:
-    - not (hermes_agent_ops_workload_enabled | bool)
+    - hermes_agent_id not in hermes_agent_job_identities
     - item.name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
 
 # 'workdir' is IN the checksum (see reconcile_direct_cron.yml's "Calculate
@@ -136,6 +142,7 @@
     - hermes_agent_enqueuer_active | bool
     - hermes_agent_enqueuer_name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
     - hermes_agent_enqueuer_marker_probe.changed | bool
+    - not ansible_check_mode
 
 # --workdir pinned for the same reason as the agentic "Direct cron | Create"
 # task in reconcile_direct_cron.yml — see its "Build create argv" comment.

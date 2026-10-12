@@ -10,7 +10,7 @@
 # notice — the render-parity guard compares model NAMES, so it passes whether
 # or not a single hint reached the config.
 #
-# It also pins the vocabulary. `speed: quick` instead of `fast` renders
+# It also pins the vocabulary. `speed: small` instead of `quick` renders
 # perfectly and silently fails every consumer filter, because the consumer
 # matches on the value.
 #
@@ -41,11 +41,11 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
     _hint_keys: [speed, quality, best_for, caveats, measured]
-    _hint_speeds: [fast, medium, slow]
+    _hint_speeds: [quick, moderate, slow]
     _hint_qualities: [routine, strong, frontier]
   tasks:
     - name: Load the role defaults and registry the way the converge does
@@ -115,9 +115,14 @@
         # Only entries that actually render here can be checked: the key-gated
         # cloud tiers render nothing without a seeded key, by design.
         _expected: >-
-          {{ llm_router_registry_enabled | selectattr('hints', 'defined')
-             | map(attribute='client_model_id') | unique
-             | intersect(_rendered_names) }}
+          {%- set ns = namespace(names=[]) -%}
+          {%- for entry in llm_router_registry_enabled | selectattr('hints', 'defined') -%}
+          {%- set name = entry.route_group | default(entry.client_model_id) -%}
+          {%- if name in _rendered_names -%}
+          {%- set ns.names = ns.names + [name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
         _missing: >-
           {{ _expected | difference(_rendered_hinted) }}
 
@@ -154,7 +159,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
     llm_router_llm_vllm_enabled: true
@@ -187,12 +192,18 @@
              | selectattr('model_info.hints', 'defined')
              | map(attribute='model_name') | unique | list }}
         _cloud_names: >-
-          {{ llm_router_registry_enabled
-             | selectattr('tier', 'in', ['openrouter', 'hermes-cloud'])
-             | map(attribute='client_model_id') | unique | list }}
+          {%- set ns = namespace(names=[]) -%}
+          {%- for entry in llm_router_registry_enabled
+                | selectattr('tier', 'in', ['openrouter', 'hermes-cloud']) -%}
+          {%- set ns.names = ns.names + [entry.route_group | default(entry.client_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
         _gpu_names: >-
-          {{ llm_router_registry_enabled
-             | selectattr('tier', 'in', ['vllm', 'hermes-local'])
-             | map(attribute='client_model_id') | unique | list }}
+          {%- set ns = namespace(names=[]) -%}
+          {%- for entry in llm_router_registry_enabled
+                | selectattr('tier', 'in', ['vllm', 'hermes-local']) -%}
+          {%- set ns.names = ns.names + [entry.route_group | default(entry.client_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
         _cloud_hinted: "{{ _cloud_names | intersect(_hinted_names) }}"
         _gpu_hinted: "{{ _gpu_names | intersect(_hinted_names) }}"

@@ -11,12 +11,9 @@
 # Slack env-var names, the memory bank id, the Kanban project and intake label,
 # the secret-store field prefix, and the telemetry service name.
 #
-# What deliberately does NOT derive from it: the OS user, home path, systemd unit
-# names, and listening ports. Those are guest-local, and the deployment model is
-# one agent per container — so two agents never share a namespace where they
-# could collide. Deriving them would be churn that buys no isolation. The
-# boundary is: reaches a shared service -> needs the identity; local to the
-# guest -> does not.
+# Roster agents get an OS user and data home derived from their identity. Legacy
+# agents retain the existing guest-local user and home. Systemd unit names and
+# listening ports remain unchanged because each agent has its own container.
 #
 # Every default below is written so that hermes_agent_id: hermes reproduces the
 # pre-existing literal EXACTLY. That is the review property — converging the
@@ -40,13 +37,21 @@ hermes_agent_env_prefix: "{{ hermes_agent_id | upper | regex_replace('[^A-Z0-9]'
 # boundary as a credential: an agent that signs the other agent's name in the
 # operator's own alert feed is misreporting, even though nothing is shared.
 # Resolves to "Hermes" for the pre-existing agent, so no message text changes.
-hermes_agent_display_name: "{{ hermes_agent_id | capitalize }}"
+hermes_agent_display_name: >-
+  {{ (ai_agents | default({})).get(hermes_agent_id, {}).get('display')
+     | default(hermes_agent_id | capitalize, true) }}
 
-hermes_agent_user: hermes
+hermes_agent_user: >-
+  {{ hermes_agent_id
+     if hermes_agent_id in (ai_agents | default({}))
+     else 'hermes' }}
 # Dedicated ZFS data volume mount (deployment.json mount_point). Holds the whole
 # agent home — memory, skills, profiles, Kanban DB, sessions, logs — so it is
 # snapshotted + replicated off-node.
-hermes_agent_home: /var/lib/hermes
+hermes_agent_home: >-
+  {{ '/var/lib/' ~ hermes_agent_id
+     if hermes_agent_id in (ai_agents | default({}))
+     else '/var/lib/hermes' }}
 hermes_agent_hermes_home: "{{ hermes_agent_home }}/.hermes" # $HERMES_HOME
 hermes_agent_managed_cron_state_dir: "{{ hermes_agent_hermes_home }}/managed-cron"
 hermes_agent_bin: /usr/local/bin/hermes                     # system-wide install

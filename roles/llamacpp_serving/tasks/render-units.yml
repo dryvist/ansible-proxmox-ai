@@ -21,6 +21,19 @@
   loop_control:
     label: "{{ item.key }}"
   when: item.value.enabled | default(true)
+  register: llamacpp_serving_unit_render
+
+# Only the active profile's unit needs a restart when its rendered unit changed.
+# Activation starts a newly selected profile whose unit did not change.
+- name: Restart the active profile when its rendered unit changed
+  ansible.builtin.debug:
+    msg: "The active GPU serving unit changed."
+  changed_when: true
+  when: >-
+    llamacpp_serving_unit_render.results
+    | selectattr('changed', 'defined')
+    | selectattr('item.key', 'equalto', llamacpp_serving_active_profile)
+    | selectattr('changed') | list | length > 0
   notify:
     - Stop every other GPU serving profile before switching
     - Start the active GPU serving profile

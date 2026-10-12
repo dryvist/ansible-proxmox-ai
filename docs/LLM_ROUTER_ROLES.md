@@ -10,9 +10,9 @@ Authority is split, and the split follows how often each half changes.
 | **Catalog** — which models exist, their cost, context, credentials | `llm-models.d/` → `config.yaml` | this role, per converge | rarely |
 | **Roles** — which model a caller-facing name resolves to, and its fallback order | the router database | the Admin UI | often |
 
-Callers name a role — `lead`, `subagent`, `judge`, `cheap`, `embed`, `ocr` —
-never a physical model, so a routing change reaches every client at once with no
-client edit and no release. The first seed is declared in
+Callers name a capability — `small`, `medium`, `large`, `embed`, `ocr` — or a
+seeded role such as `judge` or `recorder`, never a physical model, so a routing
+change reaches every client at once with no client edit and no release. The first seed is declared in
 `defaults/main/55-roles.yml`; `tasks/seed-roles.yml` writes a role only when the
 running proxy carries no deployment by that name, so **a converge never
 overwrites an edit made in the UI**. Change a role in the UI, not in git —
@@ -36,23 +36,15 @@ Where no catalogued model satisfies both, the role is seeded with no fallback
 record at all. It then fails honestly rather than silently, and whoever owns
 the UI adds a rung deliberately.
 
-**`fast`/`subagent` are a deliberate exception to both rules.** Their chain is
-local-first by design (the medium GPU deployment while its route is active,
-then the fast GPU rung, before anything wider; then a free rung, then one paid
-rung, `long` last) and does carry a paid rung — the truncation
-risk the first rule guards against is instead closed by
-`context_window_fallbacks` (`defaults/main/37-fallback-entry-points.yml`),
-which escapes a request too large for the role's own advertised window
-straight to `long` rather than walking the ordinary chain. See
-`defaults/main/55-roles.yml`'s note above `_llm_router_fast_subagent_chain`
-for the full reasoning, including what is still unverified.
-
-**`fast-gpu` is a third, narrower role — just the 4080, `fallbacks: []`.**
-For a caller that wants to address "just the 4080" directly without naming
-its physical model id, and build its own fallback sequence around that one
-call (e.g. try `fast-gpu`, then its own local model, then the full `fast`
-chain above as a catch-all). Contention fails outright, never redirects, so
-the caller's own sequencing runs.
+**`fast`, `cheap` and `subagent` are aliases, not roles.** They resolve through
+`llm_router_model_group_aliases` to the `small` or `medium` capability, whose
+members run in deployment order (local GPU first, then the local fallbacks, then
+the capability's own cloud tail). A request too large for the advertised window
+escapes through `context_window_fallbacks`
+(`defaults/main/37-fallback-entry-points.yml`) rather than walking the ordinary
+chain. Only `judge` and `recorder` are seeded as database roles
+(`defaults/main/55-roles.yml`), and they copy the first member of their
+capability.
 
 ## Swap a role
 

@@ -48,7 +48,7 @@ function brier(predicted: JsonObject, expected: JsonObject): number | undefined 
   ) {
     return undefined;
   }
-  let total = 0;
+  const pairs: Array<[number, number]> = [];
   let predictedTotal = 0;
   let expectedTotal = 0;
   for (const key of expectedKeys) {
@@ -57,16 +57,24 @@ function brier(predicted: JsonObject, expected: JsonObject): number | undefined 
     if (p === undefined || q === undefined || p < 0 || p > 1 || q < 0 || q > 1) {
       return undefined;
     }
-    total += (p - q) ** 2;
+    pairs.push([p, q]);
     predictedTotal += p;
     expectedTotal += q;
   }
   const probabilityTolerance = 0.00001;
+  const roundingTolerance = 0.05;
   if (
-    Math.abs(predictedTotal - 1) > probabilityTolerance ||
+    Math.abs(predictedTotal - 1) > roundingTolerance ||
     Math.abs(expectedTotal - 1) > probabilityTolerance
   ) {
     return undefined;
+  }
+  // Rounded predictions (0.33 three times) are scored as the distribution they
+  // round to, so the prediction is normalized before the squared error. A total
+  // further from 1 than rounding explains is not a distribution and is skipped.
+  let total = 0;
+  for (const [p, q] of pairs) {
+    total += (p / predictedTotal - q) ** 2;
   }
   return total;
 }
@@ -112,15 +120,17 @@ function evaluate(ctx: EvaluationContext): { scores: Score[] } {
     }
 
     if (reference.probabilities !== undefined) {
-      if (predicted?.probabilities === undefined) {
-        throw new Error(`Missing probabilities for typed decision ${question}`);
+      // A missing or malformed prediction costs this item its Brier term only.
+      let value: number | undefined;
+      try {
+        value = brier(asObject(predicted?.probabilities), asObject(reference.probabilities));
+      } catch {
+        value = undefined;
       }
-      const value = brier(asObject(predicted.probabilities), asObject(reference.probabilities));
-      if (value === undefined) {
-        throw new Error(`Invalid probabilities for typed decision ${question}`);
+      if (value !== undefined) {
+        brierTotal += value;
+        brierCount += 1;
       }
-      brierTotal += value;
-      brierCount += 1;
     }
   }
 

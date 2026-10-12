@@ -8,6 +8,20 @@
 # SKIPS CLEANLY when BAO_ADDR is unset, so pre-migration converges keep
 # working on env/SOPS secrets.
 
+# fetch_domain.yml derives OPENBAO_APPROLE_<NAME>_* from each domain name, so
+# every domain, static, roster or reader, needs a distinct normalized prefix.
+- name: Assert OpenBao domains map to distinct AppRole env prefixes
+  ansible.builtin.assert:
+    that:
+      - >-
+        (openbao_secrets_domains | map(attribute='name') | map('upper')
+        | map('regex_replace', '[^A-Z0-9]', '_') | unique | list | length)
+        == (openbao_secrets_domains | length)
+    fail_msg: >-
+      OpenBao domain names share an AppRole env prefix (roster names must not
+      normalize to a static or reader domain name):
+      {{ openbao_secrets_domains | map(attribute='name') | join(', ') }}
+
 - name: Decide whether OpenBao is configured at all
   ansible.builtin.set_fact:
     openbao_secrets_configured: "{{ openbao_secrets_bao_addr_candidates | length > 0 }}"

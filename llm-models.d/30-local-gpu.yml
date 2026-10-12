@@ -1,159 +1,23 @@
 ---
-# The NVIDIA guest, and the Hermes fallback rung over the same backend.
-# One slice of the model registry; see llm-models.d/README.md.
-
+# The dedicated small-capability endpoint. Its client name comes from
+# route_group; the backend model id and quant are registry/catalog inputs.
 _llm_registry_local_gpu:
-  # ── NVIDIA GPU tier ─────────────────────────────────────────────────────────
-  # Tier key stays `vllm` (names the ROUTER TIER/URL, not the engine) — this
-  # guest serves via llama.cpp on Vulkan, not vLLM; no vLLM role exists (see
-  # inventory/group_vars/llm_vllm_group.yml for why Vulkan serves it). Must
-  # match the --models-preset section name in
-  # inventory/group_vars/llm_vllm_group.yml (llama_cpp_models `name:`), which
-  # is what llama-server's router mode actually serves under — a
-  # --models-preset section name, not the GGUF filename.
-  # Window/timeout anchors; guest derives too. Why: llm_vllm_group.yml.
-  - client_model_id: qwen3.8-27b
-    upstream_model_id: qwen3.8-27b
+  - client_model_id: mimo-9b
+    upstream_model_id: mimo-9b
+    artifact_id: mimo-9b-q4-k-m
     provider: openai
     tier: vllm
-    catalog_profile: llama_cpp_vulkan
     enabled: true
-    # Tighter than the local-tier default (llm_router_local_stream_timeout_seconds,
-    # 90s): llama-server has no reject-when-busy mode in any mode. The
-    # router's own max_parallel_requests (hostvars-derived from this guest's
-    # llama_cpp_parallel, roles/llm_router templates) is what gives this rung
-    # its instant 429 now — llama-swap's concurrencyLimit moved to the
-    # router, it did not disappear. This stream_timeout only bounds the
-    # residual: max_parallel_requests is enforced per LiteLLM process, and
-    # the pool runs three, so a cross-process collision still queues in
-    # llama-server itself. llm_router_admission_budget_seconds (never a
-    # literal — one base value for the whole "never wait on a busy local
-    # model" rule) bounds that residual wait instead of the 90s every other
-    # local tier gets.
+    servable: true
+    route_group: small
+    order: 1
+    stable_aliases:
+      - fast
+      - cheap
+      - goal-judge
+    probe_before_render: true
+    first_byte_timeout: 10
     hints:
-      speed: slow
-      quality: strong
-      best_for: [review, reasoning]
-      # Serial lane on one card: no batching, one measured completion ~190 s.
-      caveats: [serial-lane]
-
-  # THE CODING RUNG on the same card, added BESIDE the general model rather
-  # than replacing it: the entry above is the Hermes chain's local rung and
-  # answers general work, and swapping a coder in there would have degraded
-  # every non-coding fallback to buy coding throughput. The card serves one
-  # model at a time; the guest's --models-preset already gives each model its
-  # own ctx-size entry, so re-enabling both needs no template change.
-  #
-  # 16384, not the 32768 above, and that is arithmetic rather than caution.
-  # This model bears KV on all 48 layers at 96 KiB/token against the dense
-  # entry's 64 KiB, so the same window would cost a gigabyte more KV on top of
-  # ~900 MiB more weights — against a card with 2307 MiB free at the measured
-  # 32768 cell. Half the window keeps it inside the envelope that was actually
-  # measured. RAISE IT ONLY BEHIND A FRESH MEASUREMENT on the card, and if it
-  # does not fit at all, step the quant to UD-Q2_K_XL and record the number
-  # that forced it — never cut the window to hide an OOM.
-  # DISABLED: the GGUF is not on the card's shared model store yet, so the
-  # backend answers 404 for it; re-enable in the same change that lands it.
-  - client_model_id: qwen3-coder-30b
-    upstream_model_id: qwen3-coder-30b
-    provider: openai
-    tier: vllm
-    catalog_profile: llama_cpp_vulkan
-    enabled: false
-    hints:
-      speed: medium
-      quality: strong
-      best_for: [code-edit, refactor, boilerplate]
-      # Serial lane on one card (no batching), and this model's tool calls
-      # degrade beyond a single stream. Both point the same way: one request
-      # at a time.
-      caveats: [serial-lane, tool-calls-degrade-above-one-stream]
-
-  # Embedder + reranker, same card and --models-preset router process as the
-  # dense models above. Their context, concurrency, and timeout limits come
-  # from the shared homelab-contracts catalog and are projected by registry.yml.
-  # The bge-m3 client id is shared with its CPU failover entry in
-  # llm-models.d/20-light.yml; both deployments use the same catalog limits.
-  # Deliberately NOT setting `embedding: true` on bge-m3: that field is the
-  # sole selector for the existing singular `embed` role
-  # (roles/llm_router/defaults/main/55-roles.yml llm_router_embedding_model,
-  # `selectattr('embedding') | ... | first` over the WHOLE enabled registry).
-  # A second `embedding: true` entry would make that selector's result
-  # order-dependent instead of the deterministic singleton it is today. No
-  # `rerank` role exists yet either. Both models are reachable only by their
-  # own client_model_id until a role/alias is added on purpose — same
-  # reasoning as the light-tier embeddings entry's own comment on
-  # stable_aliases (llm-models.d/20-light.yml).
-  - client_model_id: bge-m3
-    upstream_model_id: bge-m3
-    provider: openai
-    tier: vllm
-    catalog_profile: llama_cpp_vulkan
-    enabled: true
-    # BAAI/bge-m3's own 8192 max sequence length; the consuming service's own
-    # 8192 default input-truncation cap. Must match llm-models.d/20-light.yml's
-    # bge-m3 entry byte-for-byte (see the comment above).
-
-  - client_model_id: bge-reranker-v2-m3
-    upstream_model_id: bge-reranker-v2-m3
-    provider: openai
-    tier: vllm
-    catalog_profile: llama_cpp_vulkan
-    enabled: true
-    # BAAI/bge-reranker-v2-m3's own 8192 architectural max_length. Must match
-    # llm-models.d/20-light.yml's bge-reranker-v2-m3 entry byte-for-byte.
-
-  # Local backup rung in the Hermes chain, same backend as the vllm entry.
-  # tier: hermes-local, NOT vllm — load-bearing: the cloud projection drops
-  # entries with no credential, and a local leg has none. Details: docs/LLM_MODELS_REGISTRY_NOTES.md.
-  # NO fallback chain of its own, deliberately. This is a RUNG inside
-  # hermes-default's chain, not an entry point: when it fails, the chain that
-  # named it moves to the next rung, and giving it one here would nest a second
-  # chain inside the first, drawing on the same shared max_fallbacks budget.
-  #
-  # The router logs "No fallback model group found for original
-  # model_group=hermes-local-4080" on each failure. THAT LINE MEANS TWO
-  # DIFFERENT THINGS AND CANNOT TELL YOU WHICH. It is emitted at every fallback
-  # depth, and it records none:
-  #
-  #   * at depth > 0 (reached as a rung) the raise that follows is caught by
-  #     the enclosing walk, which advances — the design working, not a gap;
-  #   * at depth 0 (something called this id DIRECTLY) the same raise is
-  #     terminal and the caller gets the error.
-  #
-  # So the line's presence is not evidence either way, and "give it a chain only
-  # if something starts calling it directly" is a condition this log cannot
-  # reveal. To separate them, count the "Falling back to model_group =
-  # hermes-local-4080" line that precedes every rung attempt and never precedes
-  # a direct call, or read the x-litellm-attempted-fallbacks response header.
-  # Both are INFO-level, so confirm the proxy's log level admits INFO before
-  # reading a zero count as an answer.
-  #
-  # This rung is SLOW, not hung. One measured completion came back in ~190 s,
-  # and the request/stream timeouts below bound it at 300 s, after which the
-  # chain moves on. A caller that gives up sooner than that will see no answer
-  # from this rung and should not read that as a hang.
-  - client_model_id: hermes-local-4080
-    upstream_model_id: qwen3.8-27b
-    provider: openai
-    tier: hermes-local
-    catalog_profile: llama_cpp_vulkan
-    route_group: hermes-local-4080
-    fallback_group: hermes-local-4080
-    enabled: true
-    # Whole-call bound stays generation-sized; the first-byte bound is
-    # TIGHTENED below to the admission budget, not the role-wide local
-    # figure — same backend, same reason as the vllm-tier qwen3.8-27b entry
-    # above, and this is the leg the Hermes chain actually calls.
-    # A rung that has failed this many times inside cooldown_time is parked
-    # for cooldown_time and the ladder skips it — a 429 storm from a held
-    # slot no longer re-hits the card on every call. Sized to the admission
-    # budget (llm_router_admission_budget_seconds), not to a retry loop.
-    # 0 is the intent, not the observed behaviour: the proxy still parks this
-    # deployment 30s after repeated timeouts, self-clearing. Do not widen
-    # allowed_fails instead — it was never the binding constraint.
-    hints:
-      speed: slow
-      quality: strong
-      best_for: [review, reasoning]
-      caveats: [serial-lane]
+      speed: moderate
+      quality: routine
+      best_for: [classification, coding, tool-use]

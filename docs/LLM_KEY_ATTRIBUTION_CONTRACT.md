@@ -15,7 +15,7 @@ one's content.
    - `app` — the key's own alias (`56-virtual-keys.yml`). Never re-typed:
      the seed task reads `item.alias`, so a renamed key stays in sync with
      zero doc/dashboard edit.
-   - `tier` — `subscription` for a key carrying a weekly `monthly_budget` (a
+   - `tier` — `subscription` for a key carrying a daily `daily_budget` (a
      metered consumer against the shared subscription/paid ceiling), `local`
      otherwise (a budget-less key draws only on the free/local-only serving
      tier this router never meters). An entry may override either field with
@@ -60,10 +60,12 @@ value — with one caveat noted where checked:
 | `hindsight` | free only | local | `zdr: true` by construction — enforced structurally, not tagged |
 | `prometheus-scrape` | none (metrics only) | n/a | scrape auth, not a chat consumer |
 | `zammad` | cheap | local | AI provider integration |
-| `github-actions` | review-private, review-local | local | CI, private repos |
-| `github-actions-oss` | review-oss | local | CI, public repos |
-| `opencode` \| `raycast` \| `codex` \| `cursor` \| `claude-code` | full | subscription | one key per **app**, shared across every host that runs it |
-| `litellm-local` | fast, fast-gpu | local | one workstation's local proxy |
+| `github-actions` | small, medium, large, review-private, review-local, CI Luna | local | CI, private repos |
+| `github-actions-oss` | review-oss, medium, local and paid API-key rungs | local (unbudgeted) | CI, public repos |
+| `opencode` | small, medium, large, embed, ocr | local | one key per **app**, shared across every host that runs it |
+| `raycast` \| `codex` \| `cursor` \| `claude-code` | full | subscription | one key per **app**, shared across every host that runs it |
+| `litellm-local` | small, medium, large, embed, ocr | local | one workstation's local proxy |
+| `litellm-local-workstation` | small, medium, large, embed, ocr | local | the primary workstation's local proxy |
 | `hermes-<profile>` | per-profile | subscription (`default`) / local (named) | one key per Hermes operating profile |
 
 **Confirmed shared-across-device today:** `codex`, `cursor`, `raycast`,

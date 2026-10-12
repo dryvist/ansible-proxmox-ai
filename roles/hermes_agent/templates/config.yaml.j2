@@ -179,17 +179,25 @@ kanban:
   auto_decompose_per_tick: 3
   failure_limit: 2
 
-{% if hermes_agent_api_server_key | length > 0 %}
+{% set _api_server_on = hermes_agent_api_server_key | length > 0 %}
+{% set _a2a_inbound_on = hermes_agent_a2a_inbound_enabled | bool %}
+{% if _api_server_on or _a2a_inbound_on %}{% if _api_server_on %}
 # Inbound job-submission API queue hardening. The platform itself is enabled by
 # key presence via the .env bridge (API_SERVER_* in hermes-env.j2); this caps
 # in-flight agent runs across all its agent-serving endpoints. Over-cap
 # submissions are refused up front (429 + Retry-After) instead of stacking
 # prefills on the single shared serving deployment — see defaults/main.yml
 # for the measured-envelope rationale behind the value.
-gateway:
+{% endif %}gateway:
+{% if _api_server_on %}
   api_server:
     max_concurrent_runs: {{ hermes_agent_api_max_concurrent_runs }}
-{% endif %}
+{% endif %}{% if _a2a_inbound_on %}  platforms:
+    a2a:
+      enabled: true
+      extra:
+        port: {{ hermes_agent_a2a_inbound_port }}
+{% endif %}{% endif %}
 
 # H-17 per-platform tool policy, enforced by the runner's toolset resolution
 # (never the prompt). Each list is the NATIVE-toolset envelope for that
@@ -205,6 +213,16 @@ platform_toolsets:
   slack: {{ hermes_agent_slack_toolsets | to_json }}
 {% endif %}
 
+{% if hermes_agent_a2a_peers | length > 0 %}
+a2a_agents:
+{% for peer in hermes_agent_a2a_peers %}
+  {{ peer.name | to_json }}:
+    url: {{ peer.url | to_json }}
+    auth:
+      type: bearer
+      token: {{ ('${' ~ hermes_agent_env_prefix ~ '_A2A_PEER_' ~ loop.index0 ~ '_TOKEN}') | to_json }}
+{% endfor %}
+{% endif -%}
 {% set _slack_on = hermes_agent_slack_bot_token | length > 0 %}
 {% set _webhook_on = (hermes_agent_webhook_enabled | bool) and (hermes_agent_webhook_secret | length > 0) %}
 {% if _slack_on or _webhook_on %}
@@ -217,7 +235,9 @@ platforms:
   slack:
     reply_in_thread: {{ hermes_agent_slack_reply_in_thread | to_json }}
     cron_continuable_surface: {{ hermes_agent_slack_cron_continuable_surface }}
-{% endif %}
+{% if hermes_agent_slack_rich_blocks | bool %}    extra:
+      rich_blocks: true
+{% endif %}{% endif %}
 {% include 'config-webhook.yaml.j2' %}
 {% endif %}
 {% set _mcp_splunk = (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
@@ -243,6 +263,9 @@ mcp_servers:
     url: "${SPLUNK_MCP_URL}"
     headers:
       Authorization: "Bearer ${SPLUNK_MCP_TOKEN}"
+{% if 'splunk' in (hermes_agent_owned_mcp_slugs | default([])) %}
+      X-Agent-Key: "${HERMES_AGENT_GATEWAY_KEY}"
+{% endif %}
 {% endif %}
 {% if _mcp_context7 %}
   # Context7 — current, version-specific library/framework docs on demand,

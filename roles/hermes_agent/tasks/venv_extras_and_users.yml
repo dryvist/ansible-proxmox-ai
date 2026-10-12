@@ -44,8 +44,10 @@
       -e "{{ hermes_agent_install_dir }}[slack]"
   register: hermes_agent_slack_extra_install
   changed_when: >-
-    'Installed' in hermes_agent_slack_extra_install.stderr
-    or 'Uninstalled' in hermes_agent_slack_extra_install.stderr
+    not ansible_check_mode and (
+      'Installed' in hermes_agent_slack_extra_install.stderr
+      or 'Uninstalled' in hermes_agent_slack_extra_install.stderr
+    )
   when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
 
 # slack_sdk's ``SocketModeClient.connect()`` is a ``while True`` retry loop
@@ -71,7 +73,11 @@
       "import slack_sdk.socket_mode.aiohttp as m; print(m.__file__)"
   register: hermes_agent_slack_sdk_socket_mode
   changed_when: false
-  when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+  check_mode: false
+  when:
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
 
 - name: Patch slack_sdk Socket Mode connect retry to stop when the client is closed
   ansible.builtin.replace:
@@ -86,13 +92,19 @@
       \1        break
       \1    self.logger.exception(f"Failed to connect (error: {e}); Retrying...")
   notify: Restart hermes-gateway
-  when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+  when:
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
 
 - name: Read back the patched slack_sdk Socket Mode client
   ansible.builtin.slurp:
     src: "{{ hermes_agent_slack_sdk_socket_mode.stdout | trim }}"
   register: hermes_agent_slack_sdk_socket_mode_source
-  when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+  when:
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
 
 - name: Assert the slack_sdk closed-client reconnect guard is in place
   vars:
@@ -112,7 +124,10 @@
       slack-sdk version drifted from the 3.43.0 source the patch is anchored
       to. Re-anchor the patch (and tests/hermes_agent/_pinned_sources.py)
       against the installed version.
-  when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+  when:
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - not ansible_check_mode
 
 # The `web` toolset (web_search/web_extract) resolves its backend through a
 # key/package cascade and, with nothing installed, lands on its hardcoded
@@ -139,8 +154,10 @@
       ddgs
   register: hermes_agent_ddgs_install
   changed_when: >-
-    'Installed' in hermes_agent_ddgs_install.stderr
-    or 'Uninstalled' in hermes_agent_ddgs_install.stderr
+    not ansible_check_mode and (
+      'Installed' in hermes_agent_ddgs_install.stderr
+      or 'Uninstalled' in hermes_agent_ddgs_install.stderr
+    )
   notify: Restart hermes-gateway
 - name: Create the hermes runtime user (HERMES_HOME on the data volume)
   ansible.builtin.user:
@@ -150,16 +167,23 @@
     shell: /bin/bash # the agent's terminal tool needs a real shell
     create_home: true
 
-# The unit template (gateway_and_dashboard_units.yml, later in this play)
+# The gateway unit from dryvist.ai_agents.hermes_runtime (later in this play)
 # orders the gateway after user@<uid>.service — that needs the numeric uid,
 # not the name, since systemd's per-user manager unit is instanced by uid.
 - name: Look up the hermes user's uid (for the gateway unit's user@<uid>.service ordering)
   ansible.builtin.getent:
     database: passwd
     key: "{{ hermes_agent_user }}"
+  register: hermes_agent_user_getent
+  failed_when: >-
+    hermes_agent_user_getent.failed | default(false)
+    and not ansible_check_mode
+  changed_when: false
 - name: Set hermes_agent_uid fact
   ansible.builtin.set_fact:
-    hermes_agent_uid: "{{ getent_passwd[hermes_agent_user][1] }}"
+    hermes_agent_uid: >-
+      {{ (getent_passwd | default({})).get(
+        hermes_agent_user, ['', 0, ''])[1] }}
 
 # Upstream's restart-safe cron worker dispatch (v2026.9.11+) launches each due
 # job in a transient `systemd-run --user --scope` so the worker survives a

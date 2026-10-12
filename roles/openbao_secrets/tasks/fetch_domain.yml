@@ -4,10 +4,11 @@
 # run_once are set by the caller's enclosing block in main.yml, so every task
 # here inherits them). FAIL-LOUD: a domain whose role_id/secret_id envs are
 # unset, or whose KV reads error, aborts the play. The ONLY way a domain may
-# resolve empty is by naming it in `openbao_secrets_optional_domains` — an
-# explicit, reviewable opt-out for a domain whose AppRole is not provisioned
-# yet. A silently empty domain used to flow straight into consumer templates
-# and overwrite live credentials with blanks.
+# resolve empty is by naming a non-required domain in
+# `openbao_secrets_optional_domains` — an explicit, reviewable opt-out for a
+# domain whose AppRole is not provisioned yet. Required domains always fail
+# when credentials are missing. A silently empty domain used to flow straight
+# into consumer templates and overwrite live credentials with blanks.
 
 # The env-var shape is derived from the domain name, not stored per-domain:
 # it is the SAME OPENBAO_APPROLE_<NAME>_{ROLE,SECRET}_ID convention every
@@ -49,11 +50,13 @@
       _SECRET_ID are both set, so the {{ openbao_domain.name }} domain would
       resolve EMPTY. Refusing to continue: consumers render these values into
       live config, and an empty value overwrites a working credential.
-      Supply one pair, or add '{{ openbao_domain.name }}' to
-      openbao_secrets_optional_domains to declare this domain deliberately
+      Supply one pair. Only non-required domains may be added to
+      openbao_secrets_optional_domains to declare them deliberately
       unprovisioned.
   when:
-    - openbao_domain.name not in openbao_secrets_optional_domains
+    - >-
+      openbao_domain.name not in openbao_secrets_optional_domains
+      or (openbao_domain.required | default(false))
     - >-
       openbao_secrets_domain_role_id | length == 0
       or openbao_secrets_domain_secret_id | length == 0
@@ -68,6 +71,7 @@
       declaration. Its consumers must tolerate absent values.
   when:
     - openbao_domain.name in openbao_secrets_optional_domains
+    - not (openbao_domain.required | default(false))
     - >-
       openbao_secrets_domain_role_id | length == 0
       or openbao_secrets_domain_secret_id | length == 0

@@ -12,14 +12,9 @@
 _llm_router_hermes_profile_names: >-
   {{ ['default'] + (hermes_agent_profiles | default([]) | map(attribute='name') | list) }}
 
-# `default` gets the full human chat scope — it is the cross-domain/board-meta/
-# write-bearing catch-all profile. Every named profile is bounded to
-# cheap/embed the same way langgraph is below: none of splunk-admin/
-# homelab-admin/github-maint carry a lead-tier job. Every profile's own
-# config.yaml.j2 `model.default` still renders hermes_brain_model, so every
-# profile's key — named or default — must reach that one name directly,
-# regardless of scope. The ladder falls back to the router entry point by
-# name, so a brain model that is an alias still leaves that name in the list.
+# Hermes profile keys retain their configured class grants. Named profiles can
+# reach the default medium capability plus local small and large capabilities;
+# classes add only cloud names already granted to that key.
 _llm_router_consumer_classes_all: [sub, local, paid-zdr, free, retains]
 _llm_router_consumer_classes_standard: [sub, local, paid-zdr, free]
 _llm_router_consumer_classes_zdr: [sub, local, paid-zdr]
@@ -46,10 +41,6 @@ _llm_router_hermes_profile_object_permissions:
 
 _llm_router_hermes_profile_keys: >-
   {%- set _items = [] -%}
-  {%- set _gpu_ids = llm_router_gpu_models
-        | map(attribute='client_model_id') | list -%}
-  {%- set _gpu_aliases = llm_router_gpu_profile_aliases
-        if (llm_router_gpu_profiles_enabled | bool) else [] -%}
   {%- for _name in _llm_router_hermes_profile_names -%}
   {%- set _field = 'hermes_' ~ (_name | replace('-', '_'))
      ~ '_llm_router_key' -%}
@@ -59,16 +50,15 @@ _llm_router_hermes_profile_keys: >-
         'value': _value,
         'enabled': (_value | string | length > 0),
         'allowed_classes': _llm_router_consumer_classes_all,
-        'models': (['auto', hermes_brain_model]
-                   + llm_router_hermes_router_ids
-                   + (llm_router_d1_auto_router_tiers.values() | list)
-                   + [llm_router_d1_auto_initial_group]
-                   + _gpu_ids + _gpu_aliases) | unique | list,
+        'models': [llm_router_small_model, llm_router_primary_model,
+                   llm_router_large_model] + llm_router_d1_all_key_groups
+                   + [llm_router_review_aliases.local],
+        'models_authoritative': true,
         'object_permission': {'mcp_servers': (
           _llm_router_hermes_profile_object_permissions.get(
             _name, {'mcp_servers': []}).mcp_servers
           + llm_router_mcp_hermes_object_permission.mcp_servers) | unique | list},
-        'monthly_budget': _llm_router_key_monthly_budget,
+        'daily_budget': _llm_router_hermes_profile_daily_budget,
       } -%}
   {%- if hermes_agent_identity | default('hermes') == 'donna' -%}
   {%- set _profile = _profile | combine({'allowed_classes': _llm_router_consumer_classes_zdr,

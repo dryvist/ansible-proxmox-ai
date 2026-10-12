@@ -1,254 +1,35 @@
 ---
-# The RTX 4080 SUPER serving guest (16 GB Ada). Guests carry the `llm-vllm`
-# tofu tag -> llm_vllm_group.
-#
-# WHY THIS GROUP NOW RUNS llama.cpp AND NOT vLLM, despite the group's name.
-# The group name comes from the tofu tag and is deliberately NOT renamed —
-# renaming it would churn deployment.json, the inventory derivation, and the
-# ssh-path allowlist for no functional gain.
-#
-# vLLM cannot serve Qwen3.8-27B here, and the reason is not the one first
-# assumed. vLLM 0.27.1 does register the architecture, but reading these
-# weights needs the out-of-tree GGUF plugin, and that plugin has NO MERGED
-# adapter for the qwen3_5 hybrid architecture — every PR adding one is open or
-# closed-unmerged. The safetensors route does not fit either: nothing below
-# 4-bit is published and 4-bit builds measure 15.7-19.5 GB, which is the whole
-# card before any KV cache.
-#
-# llama.cpp implements the architecture and upstream ships a prebuilt Linux
-# Vulkan binary that runs on NVIDIA. That is a deployment of existing upstream
-# work, not a new inference stack.
-#
-# Do NOT re-derive "llama.cpp ships no Linux CUDA binary, therefore llama.cpp
-# cannot use this GPU". The first half is true and stays true; the second half
-# does not follow. Vulkan is the Linux GPU backend upstream publishes.
-
-# No vLLM role exists for this guest: llama.cpp on Vulkan (above) is the only
-# engine converged here. vLLM's unit stays stopped and disabled on the guest,
-# which is what leaves the full card free — measured: vLLM held 15610 MiB of
-# 16376 MiB while serving the 14B, leaving ~766 MiB free, so it cannot coexist
-# with llama.cpp on this card. vLLM's venv and HuggingFace cache (9.4 GB)
-# remain on the guest's root disk; reintroducing it here means adding the role
-# back, not flipping a variable.
-
-# --- llama.cpp on Vulkan ------------------------------------------------------
+# Dedicated small-capability endpoint. The group's historical inventory name
+# is retained; its router-facing identity and selected backend come from the
+# fabric registry.
 llama_cpp_gpu_backend: vulkan
-
-# Which llm-models.d/ tier this guest serves — read by roles/llama_cpp/tasks/
-# guards.yml to check llama_cpp_models against the registry in BOTH directions
-# without hardcoding a group-name-to-tier map there. A host declares its own
-# tier once, here, rather than the guard inferring it from group membership.
 llama_cpp_registry_tier: vllm
+llama_cpp_max_param_billions: 14
+# Must equal the shared catalog's max_parallel_requests for the served model;
+# the router renders this as the rung's admission cap and the parity contract
+# fails on any disagreement.
+llama_cpp_parallel: 2
+llama_cpp_models_max: 1
 
-# Per-guest ceiling, raised DELIBERATELY from the role default of 14 to cover
-# this model's 27.78B on a 16 GB card. This is the ceiling mechanism working as
-# designed, not a check being weakened: the absolute >=14B rule for llm-fast is
-# a separate, group-scoped guard on different silicon and is untouched by this.
-# 31 covers the 30.53B coding rung added below. The ceiling exists to stop a
-# model too large for the card being configured by accident; it is a parameter
-# count, so it is a proxy for VRAM rather than a measure of it, and the real
-# guard is the measured per-model arithmetic in each entry's comment.
-llama_cpp_max_param_billions: 31
-
-# Context. DERIVED, never typed here: what this backend serves and what the
-# router advertises (model_info.max_input_tokens) must be one number. When they
-# were two literals they drifted in the worse direction — the router advertised
-# a window, callers sized requests to it, and the backend refused them.
-#
-# The registry entry is the source; the play that runs this role loads it (see
-# playbooks/llm-serving.yml). Change the window in llm-models.d/, not here.
-#
-# VRAM, MEASURED on the card before and after rather than modelled. The card is
-# 16376 MiB and the weights account for 11362 MiB of it.
-#
-#   at 16384: 12674 MiB used, 3297 MiB free
-#   at 32768: 13665 MiB used, 2307 MiB free
-#
-# Doubling the window cost 991 MiB, which is the KV cache growing by one window
-# (16384 tokens x 64 KiB/token = 1024 MiB) and nothing else — compute and graph
-# buffers do not scale with context. That measurement is what licenses the
-# extrapolation below; it is not a model.
-#
-# 65536 is NOT affordable here and was rejected on these numbers: two more
-# doublings of the KV cache put it near 15.6 GiB against a 16376 MiB card,
-# leaving under 1 GiB for everything else. Raise the window past 32768 only
-# behind a fresh measurement, or behind KV-cache quantization (--cache-type-k /
-# --cache-type-v), which was deliberately NOT used here — it was not needed to
-# reach the target, and it costs quality on a rung whose weights are already
-# 3-bit.
-#
-# IF IT DOES NOT FIT: step the QUANT down to UD-Q2_K_XL (10.68 GB) and record
-# the measurement that forced it. Do NOT cut this context to hide an OOM — that
-# turns a capability loss into an invisible one.
-# The KV cache is shared across slots; this setting bounds local concurrency.
-# The same value caps each router process. Cross-process requests can still
-# queue in llama-server until this rung's stream timeout.
-llama_cpp_parallel: >-
-  {{ (llm_model_catalog_models
-      | selectattr('name', 'in', llama_cpp_catalog_lookup_names)
-      | map(attribute='max_parallel_requests') | map('int') | min) }}
-
-# PREFILL THROUGHPUT, for the router's admission pre-call check
-# (roles/llm_router templates/model-list.yaml.j2, the vLLM tier block) to skip
-# this rung — before ever calling it — for a prompt too large to prefill
-# inside llm_router_local_stream_timeout_seconds, the local-rung first-byte
-# budget (roles/llm_router/defaults/main/20-registry.yml). Read via hostvars
-# from THIS group so a card change only edits here, never the router role.
-#
-# Scoped to THIS tier only: the 4080 (llm_fast_group) and CPU-pool
-# (llm_cpu_pool_group) tiers keep the raw registry context_window as their
-# max_input_tokens until each has its own measured prefill rate here — no
-# fabricated fleet-wide number.
-#
-# # measured 2026-09-19 (opencode 27B bench, reference_opencode_bench_27b_
-# baseline): 160-275s time-to-first-token against a ~26,000-token prompt on
-# this exact card/quant, i.e. 26000/275=~95 .. 26000/160=~162 tokens/s
-# prefill. 120 sits inside that band rather than at either extreme; a
-# fresh, higher measurement RAISES the cap. RE-MEASURE by diffing
-# request-arrival vs first-generated-token timestamps for a real prompt
-# against THIS host (not extrapolated from a different quant or card) — the
-# source bench used a different harness, not this router's own access log.
-llama_cpp_prefill_tokens_per_second: 120
-
-# Resident-model cap for router mode, raised from the role default of 1.
-# A recall call needs the embedder and the reranker back to back, and a
-# retain call needs the chat model too — at the default of 1, each of those
-# calls evicts and reloads a different model from the read-only mount, which
-# costs a disk read plus re-init on every single request, not just extra
-# VRAM pressure. Set to the number of models actually declared below so all
-# of them stay resident together instead of trading places on every call.
-# `tasks/main.yml`'s residency-verification step (after each present model is
-# loaded once) fails the converge loudly if this guest cannot actually hold
-# all of them at once — see that task for what "loudly" means here.
-llama_cpp_models_max: 3
-
-# The three registry client_model_ids served here, named ONCE — the JOIN KEY
-# to the registry's context_window (derived below) and, by the same names,
-# to the shared catalog's hf_repo/gguf (00-core.yml has the full reasoning;
-# guards.yml asserts membership). Also this group's catalog lookup key
-# (below): served name == catalog identity here, unlike llm_fast_group.yml's
-# "embeddings" entry. param_billions stays a literal per entry: the catalog
-# has no such field.
-_llama_cpp_vllm_dense_model_id: qwen3.8-27b
-_llama_cpp_vllm_embedding_model_id: bge-m3
-_llama_cpp_vllm_reranker_model_id: bge-reranker-v2-m3
-
+_llama_cpp_vllm_dense_entry: >-
+  {{ llm_router_model_registry | selectattr('tier', 'equalto', 'vllm') | first }}
+_llama_cpp_vllm_dense_artifact: >-
+  {{ llm_router_model_artifacts_by_id[_llama_cpp_vllm_dense_entry.artifact_id] }}
 llama_cpp_catalog_lookup_names:
-  - "{{ _llama_cpp_vllm_dense_model_id }}"
-  - "{{ _llama_cpp_vllm_embedding_model_id }}"
-  - "{{ _llama_cpp_vllm_reranker_model_id }}"
+  - "{{ _llama_cpp_vllm_dense_entry.client_model_id }}"
 
-_llama_cpp_vllm_dense_catalog: >-
-  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_vllm_dense_model_id) | first }}
-_llama_cpp_vllm_embedding_catalog: >-
-  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_vllm_embedding_model_id) | first }}
-_llama_cpp_vllm_reranker_catalog: >-
-  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_vllm_reranker_model_id) | first }}
-
-llama_cpp_ctx_size: >-
-  {{ (llm_router_model_registry
-      | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_dense_model_id)
-      | first).context_window }}
-
-# Same derivation as llama_cpp_ctx_size above, one per model: the registry's
-# context_window is the one base var, never re-typed as a second literal here.
-# roles/hindsight_docker's own HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS reads
-# the SAME bge-m3 registry entry this way (llm-models.d/30-local-gpu.yml) — see
-# that role's defaults once it wires it — so the two can never drift apart.
-_llama_cpp_vllm_embedding_ctx_size: >-
-  {{ (llm_router_model_registry
-      | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_embedding_model_id)
-      | first).context_window }}
-_llama_cpp_vllm_reranker_ctx_size: >-
-  {{ (llm_router_model_registry
-      | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_reranker_model_id)
-      | first).context_window }}
-
+llama_cpp_ctx_size: "{{ _llama_cpp_vllm_dense_entry.context_window }}"
 llama_cpp_models:
-  # `name:` IS the served model id: it becomes the --models-preset section
-  # name (templates/llama-cpp-models.ini.j2), which is what llama-server's
-  # router mode actually serves under — independent of the GGUF filename,
-  # unlike a plain --models-dir scan (which derives the id from the filename
-  # itself; verified against common/preset.cpp at the pinned release). This
-  # is also the JOIN KEY to the registry entry (must match, or every request
-  # 404s) and, separately, to the shared catalog's hf_repo/gguf (above).
-  - name: "{{ _llama_cpp_vllm_dense_model_id }}"
+  - name: "{{ _llama_cpp_vllm_dense_entry.client_model_id }}"
     aliases: []
-    hf_repo: "{{ _llama_cpp_vllm_dense_catalog.hf_repo }}"
-    gguf: "{{ _llama_cpp_vllm_dense_catalog.gguf }}"
-    param_billions: 27.78
+    hf_repo: "{{ _llama_cpp_vllm_dense_artifact.hf_repo }}"
+    gguf: "{{ _llama_cpp_vllm_dense_artifact.include_globs | first }}"
+    param_billions: 9
     embeddings: false
 
-  # Embedder + reranker pair. The SAME GGUF pair is also declared on
-  # llm_cpu_9b_group as a failover rung, and it must stay that way: once a
-  # caller writes its first vector with this embedder, the stored embedding
-  # dimension is locked, so a failover rung serving a different embedder
-  # would silently return dimension-mismatched or wrong vectors instead of
-  # just answering slower. `llama_cpp_models_max` above is sized to keep
-  # these two resident alongside the dense chat model rather than evicting
-  # it on every call; `tasks/main.yml`'s residency check proves that holds
-  # on this card.
-  - name: "{{ _llama_cpp_vllm_embedding_model_id }}"
-    aliases: []
-    hf_repo: "{{ _llama_cpp_vllm_embedding_catalog.hf_repo }}"
-    gguf: "{{ _llama_cpp_vllm_embedding_catalog.gguf }}"
-    # 568M params (XLM-RoBERTa-large backbone) — confirmed via BAAI/bge-m3's
-    # own model card and the arXiv paper (M3-Embedding).
-    param_billions: 0.568
-    embeddings: true
-    # BAAI/bge-m3 ships CLS pooling as its own GGUF default
-    # (bert.pooling_type=2) — verified locally: llama-server logs "model
-    # default pooling_type is [2], but [1] was specified" and silently
-    # answers wrong-pooled vectors when this is left at the embeddings
-    # branch's `mean` default. Do not remove this override.
-    pooling: cls
-    # Registry-derived (_llama_cpp_vllm_embedding_ctx_size above), never a
-    # second literal here. The value is BAAI/bge-m3's own trained max
-    # sequence length (model card, https://huggingface.co/BAAI/bge-m3), also
-    # the default of the consuming service's own input-truncation cap
-    # (HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS, default 8192 — Hindsight
-    # docs, https://hindsight.vectorize.io/developer/configuration,
-    # "Embeddings Configuration"): the caller truncates to this many tokens
-    # of its OWN tokenizer before calling this backend, so anything this
-    # backend ever receives is already bounded at the same figure. llama-
-    # server 500s an input larger than ctx/batch rather than truncating it
-    # itself, so this must cover the real ceiling, not a typical case. Note
-    # the same source's own caveat: its truncation count uses an
-    # approximate tokenizer, not bge-m3's real one, so a pathological input
-    # could still exceed this by some margin — a residual risk in the
-    # caller, not something a bigger ctx_size here can close.
-    ctx_size: "{{ _llama_cpp_vllm_embedding_ctx_size }}"
-
-  - name: "{{ _llama_cpp_vllm_reranker_model_id }}"
-    aliases: []
-    hf_repo: "{{ _llama_cpp_vllm_reranker_catalog.hf_repo }}"
-    gguf: "{{ _llama_cpp_vllm_reranker_catalog.gguf }}"
-    # Same XLM-RoBERTa-large backbone as bge-m3 above, 568M params.
-    param_billions: 0.568
-    embeddings: false
-    rerank: true
-    # Registry-derived (_llama_cpp_vllm_reranker_ctx_size above), same reason
-    # as bge-m3: BAAI/bge-reranker-v2-m3's own model card
-    # (https://huggingface.co/BAAI/bge-reranker-v2-m3) gives its architectural
-    # max_length as 8192 (it recommends 1024 for best ranking quality, which
-    # is a quality tuning knob, not a serving limit — unrelated to what
-    # ctx_size must cover to avoid a 500). Whatever this reranks was already
-    # embedding-truncated to the bge-m3 ceiling above to have been stored and
-    # recalled at all.
-    ctx_size: "{{ _llama_cpp_vllm_reranker_ctx_size }}"
-
-  # The coding rung (registry qwen3-coder-30b, disabled) returns here in the
-  # same change that lands its GGUF on the shared model store: hf_repo
-  # unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF, UD-IQ3_XXS, 11.97 GiB, its
-  # ctx_size read from the registry entry like the dense one above. The
-  # --models-preset already gives it its own ctx-size entry independent of
-  # the dense model's — no extra work needed to re-enable it correctly.
-
-# Restart llama-server on failure (shared systemd restart policy role).
 systemd_restart_policy_services:
   - llama-server
 
-# Serving logs to the homelab_llm AI ingest listener, matching llm_fast_group.
 syslog_forwarder_program_routes:
   - program: llama-server
     port: "{{ tofu_data.constants.ai_log_routing.homelab_llm.port | default(10323) }}"

@@ -19,10 +19,14 @@ hermes_agent_session_reset_idle_minutes: 1440
 # hermes_agent_context_compression_threshold * this value). It matches the
 # router's served 65,536-token window so compaction begins at 49,152 tokens,
 # before LiteLLM's pre-call context check can reject the request.
+# hermes_brain_model names a router capability; its catalog entry is the one
+# for an enabled registry entry in that capability's route_group.
 hermes_agent_brain_catalog_entry: >-
   {{ llm_model_catalog_models
-     | selectattr('aliases', 'defined')
-     | selectattr('aliases', 'contains', hermes_brain_model)
+     | selectattr('name', 'in', llm_router_registry_enabled
+                  | selectattr('route_group', 'defined')
+                  | selectattr('route_group', 'equalto', hermes_brain_model)
+                  | map(attribute='client_model_id') | list)
      | first }}
 hermes_agent_model_context_length: "{{ hermes_agent_brain_catalog_entry.context_window }}"
 # Match the official MLX server's output cap and preserve input headroom.
@@ -175,8 +179,9 @@ hermes_agent_slack_allowed_users: >-
      | default(lookup('env', 'SLACK_MEMBER_ID') if hermes_agent_id == 'hermes' else '', true)
      | default('', true) }}
 hermes_agent_slack_home_channel: >-
-  {{ lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_HOME_CHANNEL')
-     | default(lookup('env', 'SLACK_HOME_CHANNEL') if hermes_agent_id == 'hermes' else '', true)
+  {{ (ai_agents | default({})).get(hermes_agent_id, {}).get('slack', {}).get('home_channel')
+     | default(lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_HOME_CHANNEL')
+       | default(lookup('env', 'SLACK_HOME_CHANNEL') if hermes_agent_id == 'hermes' else '', true), true)
      | default('', true) }}
 hermes_agent_slack_home_channel_name: >-
   {{ lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_HOME_CHANNEL_NAME')

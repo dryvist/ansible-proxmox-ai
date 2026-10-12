@@ -24,6 +24,37 @@
 # `no_log: true` keeps the bearer out of a verbose run's task arguments. It
 # suppresses display only — the registered results the judge reads are intact.
 
+# Same probe plan as the normal servable verification, with an explicit
+# registry opt-in for entries that must be reached before their routes render.
+- name: Pre-render probe entries that require endpoint reachability
+  ansible.builtin.uri:
+    url: "{{ item.endpoint }}"
+    timeout: "{{ item.first_byte_timeout }}"
+  loop: "{{ llm_router_probe_prechecks }}"
+  loop_control:
+    label: "{{ item.route_name }}"
+  register: _llm_router_precheck_responses
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Gate opted-in entries on a successful first-byte and model-list response
+  ansible.builtin.set_fact:
+    llm_router_vllm_precheck_passed: >-
+      {%- set checks = _llm_router_precheck_responses.results | default([])
+           | selectattr('item.tier', 'equalto', 'vllm') | list -%}
+      {%- set ns = namespace(matches=[]) -%}
+      {%- for result in checks -%}
+      {%- if (result.status | default(0) | int) == 200
+            and result.item.model in (result.json.data | default([])
+                                      | map(attribute='id') | list) -%}
+      {%- set ns.matches = ns.matches + [result.item.model] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ checks | length > 0 and ns.matches | unique | length == checks | length }}
+  no_log: true
+
 - name: Probe the large-tier serving gate's own model listing
   ansible.builtin.uri:
     url: "{{ llm_router_llm_large_base_url }}/models"

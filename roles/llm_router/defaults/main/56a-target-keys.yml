@@ -5,44 +5,57 @@ _llm_router_target_virtual_keys:
     value: "{{ bao_apps_secrets.claude_code_llm_router_key | default('', true) }}"
     enabled: "{{ (bao_apps_secrets | default({})).get('claude_code_llm_router_key', '') | string | length > 0 }}"
     allowed_classes: "{{ _llm_router_consumer_classes_standard }}"
-    models: ['auto', "{{ hermes_brain_model }}", fast, subagent]
+    models: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model]
+                 + llm_router_d1_standard_key_groups }}"
+    models_authoritative: true
     object_permission:
       mcp_servers: "{{ _llm_router_trusted_hub_servers }}"
       agents: [hermes-private, hermes-public]
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+    daily_budget: "{{ _llm_router_key_daily_budget }}"
   - alias: codex
     value: "{{ bao_apps_secrets.codex_llm_router_key | default('', true) }}"
     enabled: "{{ (bao_apps_secrets | default({})).get('codex_llm_router_key', '') | string | length > 0 }}"
     allowed_classes: "{{ _llm_router_consumer_classes_standard }}"
-    models: ['auto', "{{ hermes_brain_model }}", fast, subagent]
+    models: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model]
+                 + llm_router_d1_standard_key_groups }}"
+    models_authoritative: true
     object_permission:
       mcp_servers: "{{ _llm_router_trusted_hub_servers }}"
       agents: [hermes-private, hermes-public]
       mcp_tool_search_enabled: true
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+    daily_budget: "{{ _llm_router_key_daily_budget }}"
   - alias: agy
     value: "{{ (bao_apps_secrets | default({})).get('agy_llm_router_key', '') }}"
     enabled: "{{ (bao_apps_secrets | default({})).get('agy_llm_router_key', '') | string | length > 0 }}"
     allowed_classes: "{{ _llm_router_consumer_classes_standard }}"
-    models: ['auto', "{{ hermes_brain_model }}", fast, subagent]
+    models: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model]
+                 + llm_router_d1_standard_key_groups }}"
+    models_authoritative: true
     object_permission:
       mcp_servers: "{{ _llm_router_trusted_hub_servers }}"
       agents: [hermes-private, hermes-public]
       mcp_tool_search_enabled: true
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+    daily_budget: "{{ _llm_router_key_daily_budget }}"
   - alias: judge
     value: "{{ (bao_apps_secrets | default({})).get('judge_llm_router_key', '') }}"
     enabled: "{{ (bao_apps_secrets | default({})).get('judge_llm_router_key', '') | string | length > 0 }}"
     allowed_classes: [local]
-    models: ['judge']
+    models: "{{ [llm_router_small_model, 'judge'] }}"
+    models_authoritative: true
     tags: ['&zdr', '!free', '!retains', '&local']
     router_settings:
       enable_tag_filtering: true
-  - alias: recorder
+  - alias: "{{ (llm_router_role_deployments
+                | selectattr('litellm_params.turn_off_message_logging', 'defined')
+                | first).role }}"
     value: "{{ (bao_apps_secrets | default({})).get('recorder_llm_router_key', '') }}"
     enabled: "{{ (bao_apps_secrets | default({})).get('recorder_llm_router_key', '') | string | length > 0 }}"
     allowed_classes: [local]
-    models: ['recorder']
+    models: "{{ [llm_router_small_model,
+                 (llm_router_role_deployments
+                  | selectattr('litellm_params.turn_off_message_logging', 'defined')
+                  | first).role] }}"
+    models_authoritative: true
     tags: ['&zdr', '!free', '!retains', '&local']
     router_settings:
       enable_tag_filtering: true
@@ -50,10 +63,12 @@ _llm_router_target_virtual_keys:
     value: "{{ (bao_apps_secrets | default({})).get('hermes_private_llm_router_key', '') }}"
     enabled: "{{ (bao_apps_secrets | default({})).get('hermes_private_llm_router_key', '') | string | length > 0 }}"
     allowed_classes: "{{ _llm_router_consumer_classes_zdr }}"
-    models: ['auto', "{{ hermes_brain_model }}"]
-    zdr_only: true
+    models: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model]
+                 + llm_router_d1_zdr_key_groups
+                 + [llm_router_review_aliases.local] }}"
     models_authoritative: true
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+    zdr_only: true
+    daily_budget: "{{ _llm_router_hermes_profile_daily_budget }}"
     tags: ['&zdr', '!free', '!retains']
     object_permission:
       mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, vikunja, zammad]
@@ -64,10 +79,14 @@ _llm_router_target_virtual_keys:
     value: "{{ (bao_apps_secrets | default({})).get('donna_llm_router_key', '') }}"
     enabled: "{{ (bao_apps_secrets | default({})).get('donna_llm_router_key', '') | string | length > 0 }}"
     allowed_classes: "{{ _llm_router_consumer_classes_zdr }}"
-    models: ['auto', "{{ hermes_brain_model }}"]
+    models: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model]
+                 + llm_router_d1_zdr_key_groups
+                 + [llm_router_review_aliases.local] }}"
+    models_authoritative: true
     tags: ['&zdr', '!free', '!retains']
     object_permission:
       mcp_servers: [context7, grep, docs, splunk, vikunja_ro]
+    daily_budget: "{{ _llm_router_hermes_profile_daily_budget }}"
     router_settings:
       enable_tag_filtering: true
   - alias: zcode
@@ -77,18 +96,25 @@ _llm_router_target_virtual_keys:
          and (bao_apps_secrets | default({})).get('ZCODE_ROUTER_KEY', '')
              == (bao_apps_secrets | default({})).get('zcode_llm_router_key', '') }}
     allowed_classes: "{{ _llm_router_consumer_classes_all }}"
-    models: ['auto', "{{ hermes_brain_model }}"]
+    models: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model]
+                 + llm_router_d1_all_key_groups }}"
+    models_authoritative: true
     object_permission:
       mcp_access_groups: [hub-public]
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+    daily_budget: "{{ _llm_router_key_daily_budget }}"
   - alias: opencode
     value: "{{ bao_apps_secrets.opencode_llm_router_key | default('', true) }}"
     enabled: >-
       {{ (bao_apps_secrets | default({})).get('opencode_llm_router_key', '') | string | length > 0
          and (bao_apps_secrets | default({})).get('OPENCODE_ROUTER_KEY', '')
              == (bao_apps_secrets | default({})).get('opencode_llm_router_key', '') }}
-    allowed_classes: "{{ _llm_router_consumer_classes_all }}"
-    models: ['auto', "{{ hermes_brain_model }}", fast, subagent]
+    allowed_classes: [local]
+    models: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model,
+                 llm_router_embedding_model, llm_router_ocr_model] }}"
+    models_authoritative: true
+    tags: ['&zdr', '!free', '!retains', '&local']
     object_permission:
       mcp_access_groups: [hub-public]
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+    router_settings:
+      enable_tag_filtering: true
+    daily_budget: "{{ _llm_router_key_daily_budget }}"

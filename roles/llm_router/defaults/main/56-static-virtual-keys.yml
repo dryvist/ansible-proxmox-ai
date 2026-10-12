@@ -8,40 +8,45 @@ _llm_router_static_virtual_keys:
     models: "{{ _llm_router_key_scope_all }}"
     # Full model scope, so it needs the same budget every other full-scope key
     # carries — see assert-budget-backing.yml's full-scope-key assert.
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+    daily_budget: "{{ _llm_router_key_daily_budget }}"
   # Langfuse's own "litellm-router" LLM connection (llm-connections API):
   # its playground/eval/replay features let an operator pick any model, the
   # same human-facing shape open-webui's key has.
   - alias: langfuse
     value: "{{ bao_apps_secrets.langfuse_llm_router_key | default('', true) }}"
     models: "{{ _llm_router_key_scope_all }}"
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+    daily_budget: "{{ _llm_router_key_daily_budget }}"
   # GPU model benchmark runs use their own scoped key. Intentionally no
-  # monthly_budget: repeatable tests should not consume a caller budget.
+  # daily_budget: repeatable tests should not consume a caller budget.
   - alias: benchmark
     value: >-
       {{ (bao_apps_secrets | default({})).get(
            llm_router_key_catalog_facts.llm_router_key_catalog_source.benchmark_field, '')
          if llm_router_gpu_models | length > 0 else '' }}
-    models: "{{ llm_router_gpu_models | map(attribute='client_model_id') | list }}"
+    allowed_classes: [local]
+    models: "{{ [llm_router_small_model] }}"
+    models_authoritative: true
     tags: ['&zdr', '!free']
     router_settings:
       enable_tag_filtering: true
-  # Graph workers do trivial classification and embedding only — no lead tier.
+  # Graph workers use local chat and embedding capabilities only.
   - alias: langgraph
     value: "{{ bao_apps_secrets.langgraph_llm_router_key | default('', true) }}"
-    models: "{{ ['cheap', 'embed'] }}"
-  # n8n's LiteLLM Request node (roles/n8n_docker/templates/docker-compose.yml.j2
-  # LITELLM_ROUTER_*), scoped to the `cheap` role — n8n_docker_seed_model
-  # names this same role.
+    allowed_classes: [local]
+    models: "{{ [llm_router_small_model, llm_router_embedding_model] }}"
+    models_authoritative: true
+  # n8n's LiteLLM Request node, scoped to the local small capability.
   - alias: n8n
     value: "{{ bao_apps_secrets.n8n_llm_router_key | default('', true) }}"
-    models: "{{ ['cheap'] }}"
+    allowed_classes: [local]
+    models: "{{ [llm_router_small_model] }}"
+    models_authoritative: true
   # agentgateway's docs-search MCP tool (agentgateway_docker_docs_mcp_*):
   # embedding calls only, no chat/completion access.
   - alias: agentgateway
     value: "{{ bao_apps_secrets.agentgateway_llm_router_key | default('', true) }}"
-    models: "{{ ['embed'] }}"
+    models: "{{ [llm_router_embedding_model] }}"
+    models_authoritative: true
   # Dify's registered model providers (dify_docker_llm_models) name ids this
   # router does not advertise (a pre-existing mismatch, not fixed here), so a
   # scope built from those names would be unreachable under any key. Full
@@ -51,27 +56,27 @@ _llm_router_static_virtual_keys:
   - alias: dify
     value: "{{ bao_apps_secrets.dify_llm_router_key | default('', true) }}"
     models: "{{ _llm_router_key_scope_all }}"
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+    daily_budget: "{{ _llm_router_key_daily_budget }}"
   # llamaindex's RAG indexer (llamaindex_embed_model): embedding calls only.
   - alias: llamaindex
     value: "{{ bao_apps_secrets.llamaindex_llm_router_key | default('', true) }}"
-    models: "{{ ['embed'] }}"
-  # Hindsight's background retain (fact extraction) scope: exactly the alias
-  # the inventory selects as hindsight_retain_model. It resolves to a local
-  # GPU primary with a local Mac fallback. Memory content must never reach a
-  # prompt-retaining model. Its fallback entry is empty (config.yaml.j2) and
+    models: "{{ [llm_router_embedding_model] }}"
+    models_authoritative: true
+  # Hindsight's background retain (fact extraction) scope: exactly the small
+  # capability. Memory content must never reach a prompt-retaining model, so
+  # this key never follows llm_router_small_model's fallback to the primary
+  # capability: while the small capability is unrendered, the key fails closed.
   # general_settings.enforce_fallback_model_access re-checks the calling key's
-  # own allow-list on every fallback hop, so there is no hop to a wider model;
-  # tests/llm_router/test_hindsight_key_zdr_isolation.yml walks the rendered
-  # graph and proves it.
+  # own allow-list on every fallback hop, so there is no hop to a wider model.
   - alias: hindsight
     value: "{{ bao_apps_secrets.hindsight_llm_router_key | default('', true) }}"
-    models: "{{ [hindsight_retain_model] }}"
+    allowed_classes: [local]
+    models: "{{ [llm_router_small_capability_name] }}"
+    models_authoritative: true
     tags: ['&zdr', '!free', '!retains']
     router_settings:
       enable_tag_filtering: true
     rpm_limit: 60
-    models_authoritative: true
   # The metrics scraper. /metrics is authenticated by default and this proxy
   # keeps it that way (60-ops.yml), so the scrape needs a key that nothing else
   # would otherwise issue. Same contract as the two above: the value is
@@ -93,41 +98,51 @@ _llm_router_static_virtual_keys:
   - alias: prometheus-scrape
     value: "{{ bao_apps_secrets.prometheus_llm_router_key | default('', true) }}"
     models: "{{ ['no-default-models'] }}"
+    allowed_classes: [local]
+    models_authoritative: true
     allowed_routes: ["/metrics", "/metrics/"]
-  # The dashboard's deployment-profile tile (ansible-proxmox-apps roles/glance)
-  # reads /health and /v2/model/info. Same contract as the scraper above: the
-  # value is generated in the apps domain and merely read here, no-op until
-  # seeded. Its models are the rendered GPU client ids (the router projects only
-  # the active profile), so /v2/model/info lists that deployment for it; with no
-  # GPU entry rendered it falls back to the same non-matching sentinel (an empty
-  # list would mean ALL models). Only the two read routes are allowed, so the
-  # key cannot complete a request.
+  # The dashboard reads the active local capabilities through /v2/model/info.
   - alias: glance
     value: "{{ bao_apps_secrets.glance_llm_router_key | default('', true) }}"
-    models: >-
-      {{ (llm_router_gpu_models | map(attribute='client_model_id') | list)
-         or ['no-default-models'] }}
+    allowed_classes: [local]
+    models: "{{ [llm_router_primary_model, llm_router_small_model] }}"
+    models_authoritative: true
     allowed_routes: ["/health", "/health/", "/v2/model/info", "/v2/model/info/"]
-  # Zammad's AI provider (custom_open_ai), scoped to the `cheap` role —
-  # zammad_ai_model names this same role.
+  # The docs site's scheduled router snapshot reads /v2/model/info for every
+  # servable deployment and every seeded role, so its models are both lists. Same read-only routes and
+  # apps-domain contract as glance: no-op until seeded, cannot complete a request.
+  - alias: docs-router-snapshot
+    value: "{{ bao_apps_secrets.docs_router_snapshot_llm_router_key | default('', true) }}"
+    models: >-
+      {{ (llm_router_all_servable_models
+          + (llm_router_role_deployments | map(attribute='role') | list)) | unique | list }}
+    allowed_routes: ["/health", "/health/", "/v2/model/info", "/v2/model/info/"]
+  # Zammad's AI provider is scoped to the local small capability.
   - alias: zammad
     value: "{{ bao_apps_secrets.zammad_llm_router_key | default('', true) }}"
-    models: "{{ ['cheap'] }}"
-  # CI, PRIVATE repositories: `review-private` (55-roles.yml — local rungs
-  # then the Codex rungs, nothing else) plus `review-local` (local rungs
-  # only, no fallbacks at all). The value is generated in
-  # the apps domain and merely read here; revoking CI's access is one key.
-  # The live model list is replaced with these declared review roles on every
-  # converge; old role names retire from the key when the Git seed changes.
+    allowed_classes: [local]
+    models: "{{ [llm_router_small_model] }}"
+    models_authoritative: true
+  # Private CI: the local capabilities, the private and local review aliases,
+  # and the review-only CI Luna group, which only this key receives. No
+  # subscription, paid, free or retaining class is granted, so private source
+  # leaves the estate only for CI Luna (58-review-roles.yml).
+  # The live model list is replaced with these declared entry points on every
+  # converge; old names retire from the key when the Git seed changes.
   - alias: github-actions
     value: "{{ bao_apps_secrets.github_actions_llm_router_key | default('', true) }}"
-    models: "{{ ['review-private', 'review-local'] }}"
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
-  # Event-driven automation keys are isolated by flow, limited to the local
-  # review role (which has no fallback), and carry a stable trace identity.
+    allowed_classes: [local]
+    models: >-
+      {{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model,
+          llm_router_review_aliases.private, llm_router_review_aliases.local]
+         + llm_router_ci_luna_groups | unique }}
+    models_authoritative: true
+  # Event-driven automation keys are isolated by flow and the local medium
+  # capability, and carry a stable trace identity.
   - alias: github-actions-ci-fix
     value: "{{ bao_apps_secrets.github_actions_ci_fix_llm_router_key | default('', true) }}"
-    models: ['review-local']
+    allowed_classes: [local]
+    models: "{{ [llm_router_primary_model] }}"
     models_authoritative: true
     tags: ['&zdr', '!free', '!retains', '&local']
     metadata:
@@ -138,7 +153,8 @@ _llm_router_static_virtual_keys:
       enable_tag_filtering: true
   - alias: github-actions-pr-review
     value: "{{ bao_apps_secrets.github_actions_pr_review_llm_router_key | default('', true) }}"
-    models: ['review-local']
+    allowed_classes: [local]
+    models: "{{ [llm_router_primary_model] }}"
     models_authoritative: true
     tags: ['&zdr', '!free', '!retains', '&local']
     metadata:
@@ -147,28 +163,36 @@ _llm_router_static_virtual_keys:
         agent_trigger: review-event
     router_settings:
       enable_tag_filtering: true
-  # CI, open-source repositories: the `review-oss` role only — local rungs, the
-  # free external rungs, then the Z.ai pair. Its value is a separate apps-
-  # domain secret (github-actions-oss) behind the same switch that fetches
-  # it (openbao_secrets 10-domains.yml); off or unseeded, the key is not minted.
+  # CI, open-source repositories: the public review alias, the medium
+  # capability it resolves to, and the groups its chain walks, which are the
+  # local rungs and then the paid terminal rungs.
+  # Its value is an apps-domain secret (github-actions-oss) behind the same
+  # switch that fetches it (openbao_secrets 10-domains.yml); off or unseeded,
+  # the key is not minted.
   - alias: github-actions-oss
     value: >-
       {{ bao_apps_secrets.github_actions_oss_llm_router_key | default('', true)
          if llm_router_oss_ci_key_enabled | default(false) | bool else '' }}
-    models: "{{ ['review-oss'] }}"
+    models: >-
+      {{ ([llm_router_review_aliases.oss, llm_router_primary_model]
+          + llm_router_review_oss_chain) | unique | list }}
+    models_authoritative: true
     sensitivity_tag: '&sensitivity:public'
   - alias: raycast
     value: "{{ bao_apps_secrets.raycast_llm_router_key | default('', true) }}"
     models: "{{ _llm_router_key_scope_all }}"
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+    daily_budget: "{{ _llm_router_key_daily_budget }}"
   - alias: cursor
     value: "{{ bao_apps_secrets.cursor_llm_router_key | default('', true) }}"
     models: "{{ _llm_router_key_scope_all }}"
-    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
-  # Local proxy; 59-key-scopes.yml widens these roles to their fallback chains.
+    daily_budget: "{{ _llm_router_key_daily_budget }}"
+  # Local proxy for the three local chat capabilities.
   - alias: litellm-local
     value: "{{ bao_apps_secrets.litellm_local_llm_router_key | default('', true) }}"
-    models: "{{ ['fast', 'fast-gpu'] }}"
-    tags: ['&zdr', '!free', '!retains']
+    allowed_classes: [local]
+    models: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model,
+                 llm_router_embedding_model, llm_router_ocr_model] }}"
+    models_authoritative: true
+    tags: ['&zdr', '!free', '!retains', '&local']
     router_settings:
       enable_tag_filtering: true

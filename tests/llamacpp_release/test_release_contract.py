@@ -26,7 +26,7 @@ def test_one_renovate_pin_declares_every_backend_asset():
     )
 
     assert text.splitlines()[pin_line - 1].startswith("# renovate: datasource=github-releases")
-    assert "depName=ggml-org/llama.cpp versioning=loose" in text.splitlines()[pin_line - 1]
+    assert r"depName=ggml-org/llama.cpp versioning=regex:^b(?<major>\d+)$" in text.splitlines()[pin_line - 1]
     for key in (
         "llamacpp_release_cpu_asset",
         "llamacpp_release_vulkan_asset",
@@ -68,7 +68,7 @@ def test_all_three_installers_use_markers_and_never_query_release_api():
     cases = (
         ("roles/llm_gpu_serving/tasks/main.yml", "llm_gpu_serving_llamacpp_asset_marker"),
         ("roles/llamacpp_serving/tasks/install.yml", "llamacpp_serving_asset_marker"),
-        ("roles/llama_cpp/tasks/main.yml", "llama_cpp_llamacpp_asset_marker"),
+        ("roles/llama_cpp/tasks/install-release.yml", "llama_cpp_llamacpp_asset_marker"),
     )
     for relative_path, marker in cases:
         text = (ROOT / relative_path).read_text(encoding="utf-8")
@@ -91,7 +91,7 @@ def test_all_three_installers_use_markers_and_never_query_release_api():
             "llamacpp_release_cpu_sha256",
             "llama_cpp_llamacpp_asset_sha256",
         ),
-        "roles/llama_cpp/tasks/main.yml": ("llama_cpp_llamacpp_asset_sha256",),
+        "roles/llama_cpp/tasks/install-release.yml": ("llama_cpp_llamacpp_asset_sha256",),
     }
     for relative_path, checksums in installers.items():
         text = (ROOT / relative_path).read_text(encoding="utf-8")
@@ -102,7 +102,6 @@ def test_package_and_model_fetch_tasks_use_the_shared_proxy():
     paths = (
         "roles/llm_gpu_serving/tasks/main.yml",
         "roles/llm_gpu_serving/tasks/install-cuda-toolkit.yml",
-        "roles/llm_gpu_serving/tasks/install-nvidia-userspace.yml",
         "roles/llm_gpu_serving/tasks/cache-sync.yml",
         "roles/nvidia_gpu_guest/tasks/main.yml",
         "roles/nvidia_gpu_guest/tasks/install-cuda-toolkit.yml",
@@ -127,10 +126,7 @@ def test_standalone_model_sync_entrypoints_load_shared_cache_settings():
         assert "llamacpp_release/tasks/load.yml" in text, relative_path
         assert "llamacpp_release/tasks/require-proxy.yml" in text, relative_path
 
-    verify_paths = (
-        "roles/llm_gpu_serving/tasks/verify-model-store-origin-repo.yml",
-        "roles/nvidia_gpu_guest/tasks/verify-model-store-origin-repo.yml",
-    )
+    verify_paths = ("roles/nvidia_gpu_guest/tasks/verify-model-store-origin-repo.yml",)
     for relative_path in verify_paths:
         text = (ROOT / relative_path).read_text(encoding="utf-8")
         tasks = _load(ROOT / relative_path)

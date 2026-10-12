@@ -1,0 +1,179 @@
+---
+- name: Install the Python runtime and git
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+      - git
+      - nodejs
+      - npm
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the litellm service group
+  ansible.builtin.group:
+    name: "{{ llm_router_group }}"
+    system: true
+
+- name: Create the litellm service user
+  ansible.builtin.user:
+    name: "{{ llm_router_user }}"
+    group: "{{ llm_router_group }}"
+    home: "{{ llm_router_home }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: true
+
+- name: Ensure the litellm config directory exists
+  ansible.builtin.file:
+    path: "{{ llm_router_config_dir }}"
+    state: directory
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0750"
+
+# One idempotent task: virtualenv_command builds the venv with the stdlib `venv`
+# module (no `virtualenv` pip package on a minimal LXC), then pip populates it.
+# Re-runs are no-ops once the packages are present.
+- name: Create the venv and install LiteLLM (proxy extras)
+  ansible.builtin.pip:
+    name: "{{ llm_router_pip_packages }}"
+    state: present
+    virtualenv: "{{ llm_router_venv }}"
+    virtualenv_command: python3 -m venv
+
+# The interpreter minor is the venv's business, not this role's: ask the venv
+# where its site-packages is instead of spelling a version into every path.
+- name: Resolve the venv's site-packages directory
+  ansible.builtin.command:
+    argv:
+      - "{{ llm_router_venv }}/bin/python"
+      - -c
+      - import sysconfig; print(sysconfig.get_paths()['purelib'])
+  register: llm_router_venv_purelib
+  changed_when: false
+  # Read-only; a check run needs the live value to preview the runtime paths.
+  check_mode: false
+
+- name: Record the venv's site-packages directory
+  ansible.builtin.set_fact:
+    llm_router_site_packages: "{{ llm_router_venv_purelib.stdout | trim }}"
+
+# The generated client is not in the prisma wheel's RECORD, so a prisma version
+# change keeps the previous version's generated modules, and `import prisma`
+# then fails against the new runtime (even `prisma generate` cannot start).
+# Drop the package and reinstall it; the freshness test below regenerates.
+- name: Check that the prisma package imports
+  ansible.builtin.command:
+    argv:
+      - "{{ llm_router_venv }}/bin/python"
+      - -c
+      - import prisma
+  register: llm_router_prisma_import
+  changed_when: false
+  # A read with no side effect: it must run under --check too, or the two
+  # tasks below find no `rc` and abort every check run.
+  check_mode: false
+  failed_when: false
+  when: llm_router_store_model_in_db | bool
+
+- name: Remove a prisma package holding another version's generated client
+  ansible.builtin.file:
+    path: "{{ llm_router_site_packages }}/prisma"
+    state: absent
+  when:
+    - llm_router_store_model_in_db | bool
+    - llm_router_prisma_import.rc != 0
+
+- name: Reinstall prisma without its stale generated client
+  ansible.builtin.pip:
+    name: "{{ llm_router_pip_packages | select('match', 'prisma==') | list }}"
+    state: forcereinstall
+    extra_args: --no-deps
+    virtualenv: "{{ llm_router_venv }}"
+  when:
+    - llm_router_store_model_in_db | bool
+    - llm_router_prisma_import.rc != 0
+
+- name: Deploy the explicit data exfiltration matcher
+  ansible.builtin.copy:
+    src: guardrails/prompt_injection_data_exfiltration.yaml
+    dest: "{{ llm_router_site_packages }}/litellm/proxy/guardrails/guardrail_hooks/\
+      litellm_content_filter/categories/prompt_injection_data_exfiltration.yaml"
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0644"
+  notify: Restart litellm
+
+# prisma is a pip package plus a GENERATED client: with a database configured,
+# LiteLLM's startup asks prisma for its generated binaries and exits when they
+# are absent, so the service crash-loops after the first database-enabled
+# deploy. Generation is idempotent and writes into the venv's site-packages;
+# the freshness test below makes re-runs free.
+# Generation WRITES the resolved schema and the generated modules back into the
+# prisma package directory, which pip installed root-owned: without this the
+# service user's generate fails with PermissionError on prisma/schema.prisma.
+- name: Let the service user write its generated client into the prisma package
+  ansible.builtin.file:
+    path: "{{ llm_router_site_packages }}/prisma"
+    owner: "{{ llm_router_user }}"
+    group: "{{ llm_router_group }}"
+    recurse: true
+  when: llm_router_store_model_in_db | bool
+
+# The generated client embeds the schema it was generated from. A package
+# upgrade replaces litellm's schema.prisma but leaves the client in the prisma
+# package untouched, so a `creates:` guard on the generated file skips
+# regeneration forever after the first install and the proxy starts against a
+# client that does not know the new columns. Regenerate whenever the installed
+# schema is newer than the generated one, or the generated one is absent
+# (`test -nt` is false for a missing first operand).
+- name: Check whether the generated prisma client is at least as new as the installed schema
+  ansible.builtin.command:
+    argv:
+      - test
+      - "{{ llm_router_site_packages }}/prisma/schema.prisma"
+      - -nt
+      - "{{ llm_router_site_packages }}/litellm/proxy/schema.prisma"
+  register: llm_router_prisma_client_fresh
+  changed_when: false
+  # Read-only; a check run needs the live value to preview client generation.
+  check_mode: false
+  failed_when: false
+  when: llm_router_store_model_in_db | bool
+
+- name: Generate the prisma client the database-backed proxy starts against
+  # As the SERVICE USER, from a directory it can read: generation embeds the
+  # generating user's engine-cache path into the client, so a root-generated
+  # client points the service at binaries it cannot execute, and the proxy
+  # crash-loops with "Not connected to the query engine".
+  # runuser, not become_user: the guests carry no sudo, and the play already
+  # runs as root — runuser drops to the service user without any helper.
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - -u
+      - "{{ llm_router_user }}"
+      - --
+      - env
+      - "HOME={{ llm_router_home }}"
+      - "XDG_CACHE_HOME={{ llm_router_home }}/.cache"
+      - "PATH={{ llm_router_venv }}/bin:/usr/bin:/bin"
+      - "{{ llm_router_venv }}/bin/prisma"
+      - generate
+      - --schema
+      - "{{ llm_router_site_packages }}/litellm/proxy/schema.prisma"
+    chdir: /tmp
+  # Guarded by the freshness test above rather than `creates:` on the engine
+  # cache (populated before generation can fail) or on the generated schema
+  # (never refreshed by a package upgrade). It runs only when regeneration is
+  # due, so every run is a change.
+  changed_when: true
+  when: llm_router_store_model_in_db | bool and llm_router_prisma_client_fresh.rc != 0
+  notify: Restart litellm
+
+- name: Sync the proxy schema into the database
+  ansible.builtin.include_tasks: schema-push.yml
+  when: llm_router_store_model_in_db | bool

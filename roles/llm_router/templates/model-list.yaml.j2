@@ -33,42 +33,20 @@
    confirmed live 2026-09-19, a non-streaming rung with no bound of its
    own rode that ceiling before the caller saw litellm.Timeout. #}
 {% macro local_bounds(m) %}
+{% set first_byte_timeout = m.stream_timeout | default(
+     llm_router_vllm_first_byte_timeout_seconds
+     if m.tier == 'vllm' else llm_router_local_stream_timeout_seconds) | int %}
       num_retries: {{ [m.num_retries | default(llm_router_local_num_retries), llm_router_local_num_retries] | min }}
-      stream_timeout: {{ [m.stream_timeout | default(llm_router_local_stream_timeout_seconds), llm_router_local_stream_timeout_seconds] | min }}
+      stream_timeout: {{ [first_byte_timeout, llm_router_local_stream_timeout_seconds | int] | min }}
       timeout: {{ [m.request_timeout | default(llm_router_local_request_timeout_seconds), llm_router_local_request_timeout_seconds] | min }}
 {% endmacro %}
 model_list:
 {% include 'model-list-hermes-agents.yaml.j2' %}
-  # --- Hermes-only local complexity router ---
-{% for m in llm_router_hermes_virtual_models %}
-  - model_name: {{ m.client_model_id }}
-    litellm_params:
-      model: {{ litellm_model(m) }}
-      # Virtual selector: every class can enter the native auto-router; the
-      # selected physical deployment applies the class constraint below it.
-      tags: [sensitivity:public, sensitivity:sensitive, sensitivity:pii]
-{% if m.max_parallel_requests is defined %}
-      max_parallel_requests: {{ m.max_parallel_requests }}
-{% endif %}
-      complexity_router_config:
-        classifier_type: heuristic
-        tiers:
-          SIMPLE: {{ llm_router_d1_auto_simple_group | to_json }}
-          MEDIUM: {{ llm_router_d1_auto_medium_group | to_json }}
-          COMPLEX: {{ llm_router_d1_auto_complex_group | to_json }}
-          REASONING: {{ llm_router_d1_auto_reasoning_group | to_json }}
-        default_model: {{ llm_router_d1_auto_initial_group }}
-    model_info:
-      allow_fail_open: true
-      mode: chat
-      max_input_tokens: {{ m.context_window }}
-      max_tokens: {{ m.max_output_tokens }}{{ delegation_hints(m) }}
-{% endfor %}
 
   # --- large tier: one deployment each, bearer-authed to llm-large ---
   # Exact tuned model names take precedence over the optional wildcard.
 {% for m in llm_router_large_models %}
-  - model_name: {{ m.client_model_id }}
+  - model_name: {{ m.route_group | default(m.client_model_id) }}
     litellm_params:
       model: {{ litellm_model(m) }}
       tags: {{ deployment_tags(m) }}
@@ -85,6 +63,9 @@ model_list:
       # (10-large.yml max_parallel_requests) when the registry declares one,
       # else the tier-wide default.
       max_parallel_requests: {{ m.max_parallel_requests | default(llm_router_local_max_parallel_requests) }}
+{% if m.order is defined %}
+      order: {{ m.order }}
+{% endif %}
 {{ local_bounds(m) }}
 {% if m.extra_body is defined %}
       # Forwarded VERBATIM to the backend (drop_params would otherwise strip a
@@ -105,7 +86,7 @@ model_list:
 {{- delegation_hints(m) }}
 {% if m.standby | default(false) and llm_router_llm_large_standby_base_url %}
   # Same-model, same-context standby; emitted only when configured.
-  - model_name: {{ m.client_model_id }}
+  - model_name: {{ m.route_group | default(m.client_model_id) }}
     litellm_params:
       model: {{ litellm_model(m) }}
       tags: {{ deployment_tags(m) }}
@@ -120,6 +101,9 @@ model_list:
       # Preserve the primary deployment's OWN admission cap on failover —
       # same entry, same host, so the same per-model value.
       max_parallel_requests: {{ m.max_parallel_requests | default(llm_router_local_max_parallel_requests) }}
+{% if m.order is defined %}
+      order: {{ m.order }}
+{% endif %}
 {{ local_bounds(m) }}
 {% if m.extra_body is defined %}
       extra_body:
@@ -142,7 +126,7 @@ model_list:
   - model_name: "*"
     litellm_params:
       model: openai/*
-      tags: {{ llm_router_deployment_tags_by_entry['*|large'] | to_json }}
+      tags: {{ llm_router_deployment_tags_by_entry['*|local-large'] | to_json }}
       api_base: {{ llm_router_llm_large_base_url }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
 {% if llm_router_passthrough_max_parallel_requests | int > 0 %}
@@ -153,7 +137,6 @@ model_list:
       allow_fail_open: true
 {% endif %}
 {% include 'model-list-opencode.yaml.j2' %}
-{% include 'model-list-zai.yaml.j2' %}
 {% include 'model-list-openrouter.yaml.j2' %}
   # --- Hermes-only paid provider fallbacks ---
   # Emitted only when its exact credential resolves. No cloud group aliases a
@@ -191,15 +174,13 @@ model_list:
       reasoning_effort: {{ m.reasoning_effort }}
 {% endif %}
       order: 1
-{% if m.max_budget is defined and (m.api_base | default('')) not in llm_router_flat_rate_api_bases %}
+{% if m.max_budget is defined %}
       max_budget: {{ m.max_budget }}
       budget_duration: {{ m.budget_duration }}
-{% elif m.monthly_budget is defined and (m.api_base | default('')) not in llm_router_flat_rate_api_bases %}
+{% elif m.monthly_budget is defined %}
       # Absent on hermes-cloud-free: nothing to bound, and a rendered ceiling
       # with no spend behind it would be dishonest. See assert-budget-backing.yml.
-      # Also absent on a flat-rate api_base (33-zai.yml
-      # llm_router_flat_rate_api_bases) — a dollar ceiling on a subscription
-      # plan is a false cutoff on estimated, not real, spend.
+      # A dollar ceiling here bounds the registry-declared monthly spend.
       max_budget: {{ m.monthly_budget }}
       budget_duration: {{ llm_router_hermes_cloud_monthly_budget_period }}
 {% endif %}
@@ -225,30 +206,6 @@ model_list:
       max_output_tokens: {{ m.max_output_tokens }}
       max_tokens: {{ m.max_output_tokens }}{{ delegation_hints(m) }}
 {% endfor %}
-{% if llm_router_openrouter_wildcard_enabled | bool %}
-{% set _wc_key = bao_local_llm_secrets.OPENROUTER_API_KEY | default(lookup('env', 'OPENROUTER_API_KEY'), true) %}
-{% if _wc_key | trim | length > 0 %}
-  # --- OpenRouter wildcard: last resort, explicit name only ---
-  # See the README's "OpenRouter wildcard passthrough" section for this policy.
-  - model_name: "openrouter/*"
-    litellm_params:
-      model: openrouter/*
-      tags: [retains, sensitivity:public]
-      api_key: os.environ/OPENROUTER_API_KEY
-      order: {{ llm_router_openrouter_default_order }}
-      rpm: {{ llm_router_openrouter_rpm }}
-      tpm: {{ llm_router_openrouter_tpm }}
-      max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
-      # No max_budget/budget_duration — see README, "OpenRouter wildcard passthrough".
-      extra_body:
-        provider:
-          sort: price
-          data_collection: deny
-          zdr: false
-    model_info:
-      allow_fail_open: true
-{% endif %}
-{% endif %}
 {% include 'model-list-light.yaml.j2' %}
 {% include 'model-list-cpu-pool.yaml.j2' %}
 
@@ -256,7 +213,7 @@ model_list:
   # Hermes local GPU leg".
 {% for m in llm_router_vllm_models + llm_router_hermes_local_models %}
 {% if llm_router_llm_vllm_enabled %}
-  - model_name: {{ m.client_model_id }}
+  - model_name: {{ m.route_group | default(m.client_model_id) }}
     litellm_params:
       model: {{ litellm_model(m) }}
       tags: {{ deployment_tags(m) }}
@@ -270,10 +227,12 @@ model_list:
       use_chat_completions_api: true
       # Same base value the serving guest's llama_cpp role uses for -np
       # (inventory/group_vars/llm_vllm_group.yml).
-      max_parallel_requests: {{ m.max_parallel_requests
-                                 | default(hostvars[(groups['llm_vllm_group'] | default([]))[0]].llama_cpp_parallel
-                                           if (groups['llm_vllm_group'] | default([]) | length > 0)
-                                           else llm_router_local_max_parallel_requests) }}
+      max_parallel_requests: {{ hostvars[(groups['llm_vllm_group'] | default([]))[0]].llama_cpp_parallel
+                                 if (groups['llm_vllm_group'] | default([]) | length > 0)
+                                 else m.max_parallel_requests | default(llm_router_local_max_parallel_requests) }}
+{% if m.order is defined %}
+      order: {{ m.order }}
+{% endif %}
 {{ local_bounds(m) }}
 {% if m.embedding | default(false) or m.context_window is defined or m.allowed_fails is defined or m.cooldown_time is defined or m.hints is defined %}
     model_info:
@@ -304,5 +263,3 @@ model_list:
 {% endif %}
 {% endfor %}
 {% include 'model-list-gpu.yaml.j2' %}
-  # --- Standalone `free` / `free-zdrless` model groups ----------------
-{% include 'model-list-free.yaml.j2' %}

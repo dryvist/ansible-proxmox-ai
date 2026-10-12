@@ -46,7 +46,7 @@ def test_sensitivity_guard_output(tmp_path, sensitivity_tag, expected_failure):
         "value": KEY_MARKER,
         "models": ["fixture-model"],
         "models_authoritative": True,
-        "monthly_budget": 0,
+        "daily_budget": 0,
         "metadata": metadata,
         "object_permission": {"mcp_servers": ["no-mcp-servers"]},
     }

@@ -1,0 +1,71 @@
+---
+# Tier-on half of the vllm switch contract, split from test_vllm_tier_switch.yml
+# so each router shard stays under its time cap. With llm_router_llm_vllm_enabled
+# true, the registry-owned capability group must render its vLLM member.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_vllm_tier_switch_on.yml -i localhost, -c local
+
+- name: With the tier on, the same fixture renders everything the tier owns
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _vllm_tier_enabled: true
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: medium
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Produce the fully credentialed render with the tier on
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: The vLLM tier renders under its registry-owned capability group
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _tier_groups | length > 0
+          - _tier_groups | difference(_rendered_names) | length == 0
+          - llm_router_vllm_models | length > 0
+          - _rendered_vllm_members | length == llm_router_vllm_models | length
+          - llm_router_local_fallback_groups | length > 0
+        fail_msg: >-
+          With llm_router_llm_vllm_enabled true, capability groups
+          ({{ _tier_groups | join(', ') }}) must render with their vLLM members;
+          missing groups={{ _tier_groups | difference(_rendered_names) }},
+          missing members={{ llm_router_vllm_models | length - _rendered_vllm_members | length }}.
+        success_msg: "Tier on: all vLLM members render under their capability groups."
+      vars:
+        _tier_groups: >-
+          {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm')
+             | map(attribute='route_group') | unique | list }}
+        _rendered_names: "{{ _config.model_list | map(attribute='model_name') | unique | list }}"
+        _expected_vllm_models: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for m in llm_router_vllm_models -%}
+          {%- set ns.names = ns.names + [
+                m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names }}
+        _rendered_vllm_members: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _tier_groups)
+             | selectattr('litellm_params.model', 'in', _expected_vllm_models) | list }}

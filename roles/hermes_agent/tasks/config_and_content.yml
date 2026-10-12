@@ -66,6 +66,8 @@
   run_once: true
   register: hermes_agent_bundle_build
   changed_when: false
+  # Controller-local build; writes only the controller Nix store, never a target.
+  check_mode: false
 
 - name: Resolve the nix-hermes bundle store path
   ansible.builtin.set_fact:
@@ -132,8 +134,10 @@
       "hindsight-client{{ hermes_agent_hindsight_client_pin }}"
   register: hermes_agent_hindsight_install
   changed_when: >-
-    'Installed' in hermes_agent_hindsight_install.stderr
-    or 'Uninstalled' in hermes_agent_hindsight_install.stderr
+    not ansible_check_mode and (
+      'Installed' in hermes_agent_hindsight_install.stderr
+      or 'Uninstalled' in hermes_agent_hindsight_install.stderr
+    )
   when: hermes_agent_memory_provider == 'hindsight'
   notify: Restart hermes-gateway
 
@@ -145,6 +149,8 @@
       - "from importlib.metadata import version; print(version('hindsight-client'))"
   register: hermes_agent_hindsight_client_version_installed
   changed_when: false
+  # Read-only; a check run needs the live value to preview Hindsight packages.
+  check_mode: false
   when: hermes_agent_memory_provider == 'hindsight'
 
 - name: Assert the Hermes venv has the pinned Hindsight client
@@ -156,7 +162,9 @@
       Hermes venv Hindsight client version is {{ hermes_agent_hindsight_client_version_installed.stdout
       | default('<missing>') }}, expected {{ hermes_agent_hindsight_client_version }}.
       Do not repair site-packages manually; re-run the managed Hermes converge.
-  when: hermes_agent_memory_provider == 'hindsight'
+  when:
+    - hermes_agent_memory_provider == 'hindsight'
+    - not ansible_check_mode
 
 - name: Ensure the hindsight config dir exists
   ansible.builtin.file:

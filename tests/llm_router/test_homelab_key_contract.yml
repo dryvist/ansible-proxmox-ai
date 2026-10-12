@@ -1,0 +1,105 @@
+---
+- name: Verify local-only key classes and capability scopes
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    llm_router_key_catalog_facts:
+      llm_router_key_catalog_source:
+        benchmark_field: benchmark_llm_router_key
+    bao_apps_secrets:
+      litellm_local_workstation_llm_router_key: sk-fixture-workstation
+      litellm_local_llm_router_key: sk-fixture-local
+      langgraph_llm_router_key: sk-fixture-langgraph
+      n8n_llm_router_key: sk-fixture-n8n
+      zammad_llm_router_key: sk-fixture-zammad
+      agentgateway_llm_router_key: sk-fixture-agentgateway
+      llamaindex_llm_router_key: sk-fixture-llamaindex
+      hindsight_llm_router_key: sk-fixture-hindsight
+      judge_llm_router_key: sk-fixture-judge
+      recorder_llm_router_key: sk-fixture-recorder
+      github_actions_ci_fix_llm_router_key: sk-fixture-ci-fix
+      github_actions_pr_review_llm_router_key: sk-fixture-pr-review
+      benchmark_llm_router_key: sk-fixture-benchmark
+      glance_llm_router_key: sk-fixture-glance
+      prometheus_llm_router_key: sk-fixture-prometheus
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+    bao_local_llm_secrets: {}
+  tasks:
+    - name: Load the role defaults and model registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Resolve the declared and enabled caller keys
+      ansible.builtin.set_fact:
+        _specs: "{{ _llm_router_declared_virtual_keys }}"
+        _keys: "{{ llm_router_virtual_keys }}"
+
+    - name: Local proxy keys expose the exact local capability set
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _keys_by_alias['litellm-local-workstation'].allowed_classes == ['local']
+          - _keys_by_alias['litellm-local'].allowed_classes == ['local']
+          - _keys_by_alias['litellm-local-workstation'].models == _local_capabilities
+          - _keys_by_alias['litellm-local'].models == _local_capabilities
+          - _keys_by_alias.langgraph.allowed_classes == ['local']
+          - _keys_by_alias.langgraph.models == [llm_router_small_model, llm_router_embedding_model]
+          - _keys_by_alias.n8n.allowed_classes == ['local']
+          - _keys_by_alias.n8n.models == [llm_router_small_model]
+          - _keys_by_alias.zammad.allowed_classes == ['local']
+          - _keys_by_alias.zammad.models == [llm_router_small_model]
+        fail_msg: "local capability keys={{ _keys }}"
+      vars:
+        _keys_by_alias: "{{ dict(_keys | map(attribute='alias') | zip(_keys)) }}"
+        _local_capabilities: >-
+          {{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model,
+              llm_router_embedding_model, llm_router_ocr_model] | unique | list }}
+
+    - name: Embedding consumers remain scoped to the embedding capability
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _keys_by_alias.agentgateway.models == [llm_router_embedding_model]
+          - _keys_by_alias.llamaindex.models == [llm_router_embedding_model]
+        fail_msg: "embedding capability keys={{ _keys }}"
+      vars:
+        _keys_by_alias: "{{ dict(_keys | map(attribute='alias') | zip(_keys)) }}"
+
+    - name: Every local-only caller has an explicit local grant and no cloud rung
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _local_only_specs | length == 8
+          - _local_only_specs | rejectattr('allowed_classes', 'defined') | list | length == 0
+          - _local_only_specs | selectattr('allowed_classes', 'equalto', ['local']) | list | length == 8
+          - _local_only_keys | length == 7
+          - _local_only_keys | map(attribute='models') | flatten | intersect(_cloud_groups) | length == 0
+        fail_msg: "local-only specs={{ _local_only_specs }}, keys={{ _local_only_keys }}"
+      vars:
+        _local_aliases: [hindsight, judge, recorder, github-actions-ci-fix,
+                         github-actions-pr-review, benchmark, glance, prometheus-scrape]
+        _local_only_specs: "{{ _specs | selectattr('alias', 'in', _local_aliases) | list }}"
+        _local_only_keys: >-
+          {{ _keys | selectattr('alias', 'in', _local_aliases)
+             | rejectattr('alias', 'equalto', 'benchmark') | list }}
+        _cloud_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}

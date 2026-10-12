@@ -58,7 +58,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -103,7 +103,6 @@
           - llm_router_opencode_models | length > 0
           - _rendered_shape == _registry_shape
           - _rendered_limits == _registry_limits
-          - _free_limits == _registry_limits
           # The hints projection, which no other fixture reaches on this tier.
           # Counted against the registry rather than asserted per entry: every
           # entry here declares hints, so an exact count is the strongest form
@@ -122,12 +121,8 @@
           registry entry, each at order {{ llm_router_opencode_default_order }}
           and its registered window.
       vars:
-        # api_base alone is not selective enough any more: the standalone
-        # `free` group (model-list-free.yaml.j2) also renders an OpenCode
-        # Go deployment at this SAME api_base, under model_name `free`,
-        # not this tier's own client_model_id. Positively select the
-        # tier's own naming instead of excluding a magic string, so this
-        # stays correct regardless of what else ever shares the endpoint.
+        # Select the tier's own client names so another provider entry at the
+        # same api_base cannot affect the deployment count.
         _opencode_deployments: >-
           {{ _config.model_list
              | selectattr('litellm_params.api_base', 'defined')
@@ -159,14 +154,6 @@
                 m.context_window | int]] -%}
           {%- endfor -%}
           {{ ns.rows | sort }}
-        # Both model-list projections use the same per-model caps from the
-        # catalog; the second is the standalone free group alias.
-        _opencode_free_deployments: >-
-          {{ _config.model_list
-             | selectattr('model_name', 'equalto', 'free')
-             | selectattr('litellm_params.api_base', 'defined')
-             | selectattr('litellm_params.api_base', 'equalto', llm_router_opencode_base_url)
-             | list }}
         _registry_limits: >-
           {%- set ns = namespace(rows=[]) -%}
           {%- for m in llm_router_opencode_models -%}
@@ -177,14 +164,6 @@
         _rendered_limits: >-
           {%- set ns = namespace(rows=[]) -%}
           {%- for d in _opencode_deployments -%}
-          {%- set ns.rows = ns.rows + [[d.litellm_params.rpm | int,
-                d.litellm_params.tpm | int,
-                d.litellm_params.max_parallel_requests | int]] -%}
-          {%- endfor -%}
-          {{ ns.rows | sort }}
-        _free_limits: >-
-          {%- set ns = namespace(rows=[]) -%}
-          {%- for d in _opencode_free_deployments -%}
           {%- set ns.rows = ns.rows + [[d.litellm_params.rpm | int,
                 d.litellm_params.tpm | int,
                 d.litellm_params.max_parallel_requests | int]] -%}

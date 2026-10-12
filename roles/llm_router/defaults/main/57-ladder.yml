@@ -6,13 +6,13 @@
 #
 # Provider entries stay ordered as declared in llm-models.d/. The OpenRouter
 # slice puts its discounted/preview ZDR choices first; the provider-backed
-# Hermes entries follow it. Z.ai stays last in the retaining tail.
+# Hermes entries follow it.
 llm_router_d1_paid_groups_by_class: >-
   {%- set ns = namespace(paid_zdr=[], retains=[]) -%}
   {%- for m in llm_router_openrouter_models -%}
   {%- set key = llm_router_resolved_credentials.get(m.credential_env, '') -%}
   {%- set _class = llm_router_deployment_class_by_model[m.client_model_id] -%}
-  {%- if key | length > 0 and _class in ['paid-zdr', 'retains'] -%}
+  {%- if key | length > 0 and _class in ['paid-zdr', 'retains'] and (m.ladder | default(true) | bool) -%}
   {%- set target = ns.paid_zdr if _class == 'paid-zdr' else ns.retains -%}
   {%- set _discard = target.append(m.client_model_id) -%}
   {%- endif -%}
@@ -39,8 +39,7 @@ llm_router_d1_rungs_by_class: >-
        'paid-zdr': llm_router_d1_paid_groups_by_class['paid-zdr'],
        'free': (llm_router_hermes_cloud_free_groups
                 + llm_router_openrouter_free_groups) | unique | list,
-       'retains': (llm_router_d1_paid_groups_by_class['retains']
-                   + llm_router_zai_groups) | unique | list,
+       'retains': llm_router_d1_paid_groups_by_class['retains'],
      } }}
 
 llm_router_d1_group_class_by_name: >-
@@ -59,9 +58,15 @@ llm_router_d1_ladder_groups: >-
       + llm_router_d1_rungs_by_class['paid-zdr']
       + llm_router_d1_rungs_by_class['free']
       + llm_router_d1_rungs_by_class['retains']) | unique | list }}
+llm_router_d1_standard_key_groups: >-
+  {{ (['sub', 'local', 'paid-zdr', 'free']
+      | map('extract', llm_router_d1_rungs_by_class) | flatten | unique | list) }}
+llm_router_d1_all_key_groups: >-
+  {{ llm_router_d1_ladder_groups }}
+llm_router_d1_zdr_key_groups: >-
+  {{ llm_router_d1_zdr_ladder_groups }}
 llm_router_d1_auto_initial_group: >-
-  {{ llm_router_hermes_gpu_medium_target if llm_router_gpu_models | length > 0
-     else (llm_router_d1_ladder_groups | first | default(llm_router_primary_model)) }}
+  {{ llm_router_primary_model }}
 
 # LiteLLM's zero-call heuristic router maps prompt difficulty onto the early
 # D1 classes, except that rendered GPU profiles supply the fast and medium

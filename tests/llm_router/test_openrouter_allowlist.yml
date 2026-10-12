@@ -32,7 +32,7 @@
     # must be supplied here.
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
     # Both parity directions use this set. Missing or false ZDR is retaining;
@@ -42,12 +42,6 @@
       {%- for m in llm_router_registry_enabled
             | selectattr('provider', 'equalto', 'openrouter') -%}
       {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
-      {%- if m.in_free_route | default(false) -%}
-      {%- set _free_name = 'free' if (m.zero_data_retention | default(false)) else 'free-zdrless' -%}
-      {%- if _free_name not in ns.names -%}
-      {%- set ns.names = ns.names + [_free_name] -%}
-      {%- endif -%}
-      {%- endif -%}
       {%- endfor -%}
       {{ ns.names | unique }}
   tasks:
@@ -161,6 +155,22 @@
                 | rejectattr('litellm_params.max_parallel_requests', 'gt', 0)
                 | list) }}
 
+    - name: The rendered model list has no openrouter/* passthrough entry
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _or_passthrough | length == 0
+        fail_msg: >-
+          {{ _or_passthrough | map(attribute='model_name') | list }} is an
+          OpenRouter passthrough. Egress must be the registry allowlist only.
+        success_msg: "no openrouter/* passthrough is rendered"
+      vars:
+        _or_passthrough: >-
+          {{ (_config.model_list
+              | selectattr('model_name', 'match', '^openrouter/.*\*') | list)
+             + (_config.model_list
+                | selectattr('litellm_params.model', 'match', '^openrouter/.*\*') | list) }}
+
     - name: Every rendered OpenRouter model is an enabled registry entry
       ansible.builtin.assert:
         quiet: true
@@ -262,80 +272,5 @@
              | map(attribute='model_name') | list }}
 
     # Each registry entry supplies ZDR, including retaining free presets.
-    - name: Each egress deployment's zdr flag matches its registry declaration
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _zdr_missing | length == 0
-          - _zdr_mismatches | length == 0
-        fail_msg: >-
-          Rendered zdr is missing for {{ _zdr_missing }} or does not match the registry
-          for {{ _zdr_mismatches }}.
-          zero_data_retention must be explicit: a missing value and false both
-          render zdr: false.
-        success_msg: >-
-          all {{ _zdr_checked | length }} guarded egress deployment(s) render
-          the zdr flag their registry entry declares
-      vars:
-        # Registry entry keyed by the name the template renders as model_name,
-        # so the comparison needs no second spelling of either side.
-        _zdr_expected: >-
-          {%- set ns = namespace(d={}) -%}
-          {%- for m in llm_router_registry_enabled
-                | selectattr('provider', 'equalto', 'openrouter') -%}
-          {%- set ns.d = ns.d | combine({
-                (m.route_group | default(m.client_model_id)):
-                  (m.zero_data_retention | default(false) | bool)}) -%}
-          {%- endfor -%}
-          {{ ns.d }}
-        # Only rendered provider-guard deployments; wildcards covered above.
-        _zdr_checked: >-
-          {{ _config.model_list
-             | selectattr('litellm_params.extra_body.provider.zdr', 'defined')
-             | rejectattr('model_name', 'search', '\*')
-             | selectattr('model_name', 'in', _zdr_expected.keys() | list)
-             | list }}
-        _zdr_missing: >-
-          {{ (_zdr_expected.keys() | list)
-             | difference(_zdr_checked | map(attribute='model_name') | list) }}
-        _zdr_mismatches: >-
-          {%- set ns = namespace(bad=[]) -%}
-          {%- for d in _zdr_checked -%}
-          {%- if d.litellm_params.extra_body.provider.zdr
-                 | bool != _zdr_expected[d.model_name] -%}
-          {%- set ns.bad = ns.bad + [d.model_name ~ ' (rendered ' ~
-                d.litellm_params.extra_body.provider.zdr ~ ', registry says ' ~
-                _zdr_expected[d.model_name] ~ ')'] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.bad }}
-
-    - name: Every enabled OpenRouter role param carries the registry ZDR flag
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _role_zdr_mismatches | length == 0
-        fail_msg: >-
-          Role params are missing or misstate zero_data_retention for
-          {{ _role_zdr_mismatches }}.
-        success_msg: >-
-          all {{ _role_zdr_checked }} enabled OpenRouter role params carry the
-          ZDR flag declared by their registry entries
-      vars:
-        _role_zdr_checked: >-
-          {{ llm_router_registry_enabled
-             | selectattr('tier', 'equalto', 'openrouter') | list | length }}
-        _role_zdr_mismatches: >-
-          {%- set ns = namespace(bad=[]) -%}
-          {%- for m in llm_router_registry_enabled
-                | selectattr('tier', 'equalto', 'openrouter') -%}
-          {%- set _expected = m.zero_data_retention | default(false) | bool -%}
-          {%- set _actual = _llm_router_role_params.get(m.client_model_id, {})
-                .get('extra_body', {})
-                .get('provider', {})
-                .get('zdr', none) -%}
-          {%- if _actual is none or (_actual | bool) != _expected -%}
-          {%- set ns.bad = ns.bad + [m.client_model_id] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.bad }}
+    - name: Each rendered and role-param zdr flag matches its registry declaration
+      ansible.builtin.import_tasks: tasks/openrouter_allowlist_zdr.yml

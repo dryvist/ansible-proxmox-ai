@@ -40,8 +40,10 @@
     cache_valid_time: 3600
   environment: "{{ llamacpp_release_proxy_environment }}"
 
-- name: Install the NVIDIA userspace at the host driver version
-  ansible.builtin.include_tasks: install-nvidia-userspace.yml
+- name: Install NVIDIA userspace from the host module version
+  ansible.builtin.include_role:
+    name: nvidia_gpu_guest
+    tasks_from: install-nvidia-userspace.yml
 
 - name: Install the CUDA toolkit for runtime kernel compilation
   ansible.builtin.include_tasks: install-cuda-toolkit.yml
@@ -83,8 +85,8 @@
   changed_when: true
   environment: "{{ llamacpp_release_proxy_environment }}"
   when: >-
-    (llm_gpu_serving_uv_version_check.stdout | default(''))
-    != ('uv ' ~ llm_gpu_serving_uv_version)
+    (llm_gpu_serving_uv_version_check.stdout | default('')).split()[1:2]
+    != [llm_gpu_serving_uv_version]
 
 - name: Install the pinned Hugging Face CLI in the model cache
   ansible.builtin.command:
@@ -99,6 +101,7 @@
   become_user: "{{ llm_gpu_serving_user }}"
   environment: "{{ llm_gpu_serving_uv_environment }}"
   register: llm_gpu_serving_hf_cli_install
+  when: not ansible_check_mode
   changed_when: >-
     'Installed' in (llm_gpu_serving_hf_cli_install.stdout ~ llm_gpu_serving_hf_cli_install.stderr) or
     'Uninstalled' in (llm_gpu_serving_hf_cli_install.stdout ~ llm_gpu_serving_hf_cli_install.stderr) or
@@ -138,6 +141,7 @@
   become_user: "{{ llm_gpu_serving_user }}"
   environment: "{{ llm_gpu_serving_uv_environment }}"
   register: llm_gpu_serving_vllm_install
+  when: not ansible_check_mode
   changed_when: >-
     'Installed' in llm_gpu_serving_vllm_install.stderr or
     'Prepared' in llm_gpu_serving_vllm_install.stderr or
@@ -188,94 +192,106 @@
         suffix: llm-gpu-serving
       register: llm_gpu_serving_llamacpp_extract_tmp
 
-    - name: Download the pinned llama.cpp CUDA asset through the cache
-      ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
-      vars:
-        llamacpp_release_asset_name: "{{ llm_gpu_serving_llamacpp_asset_name }}"
-        llamacpp_release_asset_sha256: "{{ llamacpp_release_cuda_sha256 }}"
-        llamacpp_release_download_path: >-
-          {{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_asset_name }}
+    - name: Install the downloaded llama.cpp CUDA release
+      when: not ansible_check_mode
+      block:
+        - name: Download the pinned llama.cpp CUDA asset through the cache
+          ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
+          vars:
+            llamacpp_release_asset_name: "{{ llm_gpu_serving_llamacpp_asset_name }}"
+            llamacpp_release_asset_sha256: "{{ llamacpp_release_cuda_sha256 }}"
+            llamacpp_release_download_path: >-
+              {{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_asset_name }}
 
-    - name: Download the pinned llama.cpp CUDA runtime through the cache
-      ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
-      vars:
-        llamacpp_release_asset_name: "{{ llm_gpu_serving_llamacpp_cudart_asset_name }}"
-        llamacpp_release_asset_sha256: "{{ llamacpp_release_cuda_runtime_sha256 }}"
-        llamacpp_release_download_path: >-
-          {{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_cudart_asset_name }}
+        - name: Download the pinned llama.cpp CUDA runtime through the cache
+          ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
+          vars:
+            llamacpp_release_asset_name: "{{ llm_gpu_serving_llamacpp_cudart_asset_name }}"
+            llamacpp_release_asset_sha256: "{{ llamacpp_release_cuda_runtime_sha256 }}"
+            llamacpp_release_download_path: >-
+              {{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_cudart_asset_name }}
 
-    - name: Extract the pinned llama.cpp release tarball
-      ansible.builtin.unarchive:
-        src: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_asset_name }}"
-        dest: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
-        remote_src: true
+        - name: Extract the pinned llama.cpp release tarball
+          ansible.builtin.unarchive:
+            src: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_asset_name }}"
+            dest: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
+            remote_src: true
 
-    - name: Extract the matching CUDA runtime tarball
-      ansible.builtin.unarchive:
-        src: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_cudart_asset_name }}"
-        dest: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
-        remote_src: true
+        - name: Extract the matching CUDA runtime tarball
+          ansible.builtin.unarchive:
+            src: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_cudart_asset_name }}"
+            dest: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
+            remote_src: true
 
-    - name: Find the CUDA runtime library in its archive
-      ansible.builtin.find:
-        paths: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
-        patterns: "libcudart.so*"
-        recurse: true
-      register: llm_gpu_serving_llamacpp_cudart_find
+        - name: Find the CUDA runtime library in its archive
+          ansible.builtin.find:
+            paths: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
+            patterns: "libcudart.so*"
+            recurse: true
+          register: llm_gpu_serving_llamacpp_cudart_find
 
-    - name: Find llama-server in the CUDA release archive
-      ansible.builtin.find:
-        paths: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
-        patterns: llama-server
-        file_type: file
-        recurse: true
-      register: llm_gpu_serving_llamacpp_server_find
+        - name: Find llama-server in the CUDA release archive
+          ansible.builtin.find:
+            paths: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
+            patterns: llama-server
+            file_type: file
+            recurse: true
+          register: llm_gpu_serving_llamacpp_server_find
 
-    - name: Assert llama-server was included in the release archive
-      ansible.builtin.assert:
-        that:
-          - llm_gpu_serving_llamacpp_server_find.matched | int > 0
-          - llm_gpu_serving_llamacpp_cudart_find.matched | int > 0
-        fail_msg: "The CUDA release archives lack llama-server or libcudart."
+        - name: Assert llama-server was included in the release archive
+          ansible.builtin.assert:
+            that:
+              - llm_gpu_serving_llamacpp_server_find.matched | int > 0
+              - llm_gpu_serving_llamacpp_cudart_find.matched | int > 0
+            fail_msg: "The CUDA release archives lack llama-server or libcudart."
 
-    - name: Create the llama.cpp install directory
-      ansible.builtin.file:
-        path: "{{ llm_gpu_serving_llamacpp_install_dir }}"
-        state: directory
-        owner: "{{ llm_gpu_serving_user }}"
-        group: "{{ llm_gpu_serving_group }}"
-        mode: "0750"
+        - name: Create the llama.cpp install directory
+          ansible.builtin.file:
+            path: "{{ llm_gpu_serving_llamacpp_install_dir }}"
+            state: directory
+            owner: "{{ llm_gpu_serving_user }}"
+            group: "{{ llm_gpu_serving_group }}"
+            mode: "0750"
 
-    - name: Install llama.cpp binaries, shared libraries and the CUDA runtime
-      ansible.builtin.command:
-        argv:
-          - cp
-          - -a
-          # Unlink before writing: a running llama-server keeps the old
-          # inode until its restart, instead of failing "Text file busy".
-          - --remove-destination
-          - "{{ item }}/."
-          - "{{ llm_gpu_serving_llamacpp_install_dir }}/"
-      loop:
-        - "{{ llm_gpu_serving_llamacpp_server_find.files[0].path | dirname }}"
-        - "{{ llm_gpu_serving_llamacpp_cudart_find.files[0].path | dirname }}"
-      changed_when: true
-      notify:
-        - Stop every other GPU serving profile before switching
-        - Start the active GPU serving profile
+        - name: Install llama.cpp binaries, shared libraries and the CUDA runtime
+          ansible.builtin.command:
+            argv:
+              - cp
+              - -a
+              # Unlink before writing: a running llama-server keeps the old
+              # inode until its restart, instead of failing "Text file busy".
+              - --remove-destination
+              - "{{ item }}/."
+              - "{{ llm_gpu_serving_llamacpp_install_dir }}/"
+          loop:
+            - "{{ llm_gpu_serving_llamacpp_server_find.files[0].path | dirname }}"
+            - "{{ llm_gpu_serving_llamacpp_cudart_find.files[0].path | dirname }}"
+          changed_when: true
+          notify:
+            - Stop every other GPU serving profile before switching
+            - Start the active GPU serving profile
 
-    - name: Record the installed llama.cpp asset name
-      ansible.builtin.copy:
-        content: "{{ llm_gpu_serving_llamacpp_asset_name }}\n"
-        dest: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
-        owner: "{{ llm_gpu_serving_user }}"
-        group: "{{ llm_gpu_serving_group }}"
-        mode: "0640"
+        - name: Record the installed llama.cpp asset name
+          ansible.builtin.copy:
+            content: "{{ llm_gpu_serving_llamacpp_asset_name }}\n"
+            dest: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
+            owner: "{{ llm_gpu_serving_user }}"
+            group: "{{ llm_gpu_serving_group }}"
+            mode: "0640"
 
-    - name: Remove the temporary llama.cpp extraction directory
-      ansible.builtin.file:
-        path: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
-        state: absent
+        - name: Remove the temporary llama.cpp extraction directory
+          ansible.builtin.file:
+            path: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
+            state: absent
+    - name: Preview the llama.cpp CUDA release install in check mode
+      ansible.builtin.debug:
+        msg: >-
+          Would install {{ llm_gpu_serving_llamacpp_asset_name }}
+          (sha256 {{ llamacpp_release_cuda_sha256 }}) and
+          {{ llm_gpu_serving_llamacpp_cudart_asset_name }}
+          (sha256 {{ llamacpp_release_cuda_runtime_sha256 }}), tag
+          {{ llamacpp_release_tag }}, to {{ llm_gpu_serving_llamacpp_install_dir }}.
+      when: ansible_check_mode
 
 - name: Resolve the active profile's registry model
   ansible.builtin.set_fact:

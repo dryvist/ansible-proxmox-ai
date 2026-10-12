@@ -5,7 +5,9 @@
 Run as a `--no-agent --script` cron delivered to the issues channel: stdout is
 posted verbatim, empty stdout posts nothing. Reads the default cron store and
 every profile store, keeps the jobs whose last_status is "error", groups them
-by a cause class taken from last_error, and prints one message. It reposts
+by a cause class taken from last_error, and prints one message. A job whose
+last run is older than its own cadence plus STALE_MARGIN_SECONDS has stopped
+running on schedule: it is listed as stale, not as currently failing. It reposts
 only when the failing set changes or HEARTBEAT_HOURS (0 = never) has elapsed; an all-clear
 posts once when the set empties. Pure stdlib, no LLM, no network.
 """
@@ -13,16 +15,21 @@ import json
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERMES_HOME = Path("{{ hermes_agent_hermes_home }}")
 STATE_PATH = HERMES_HOME / "state" / "{{ hermes_agent_cron_failure_rollup_state_name }}"
 HEARTBEAT_HOURS = {{ hermes_agent_cron_failure_rollup_heartbeat_hours }}
 ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
+CAUSE_MAX_CHARS = 80
+STALE_MARGIN_SECONDS = 3600
 
-# First match wins; the fallback is the error's own first words.
+# First match wins; the fallback is the error's own first words. provider-cap
+# must precede budget: the router's per-provider cap also contains "budget".
 CAUSE_RULES = (
     ("wall-clock", re.compile(r"wall.?clock|TimeoutError|timed out", re.I)),
+    ("provider-cap", re.compile(r"crossed budget|Exceeded budget for provider", re.I)),
     ("budget", re.compile(r"budget|insufficient.?(credit|fund)|\b402\b", re.I)),
     ("rate-limit", re.compile(r"RateLimit|\b429\b", re.I)),
     ("auth", re.compile(r"\b40[13]\b|Unauthorized|Forbidden|authentication", re.I)),
@@ -55,12 +62,49 @@ def cause_of(error):
     for label, rx in CAUSE_RULES:
         if rx.search(text):
             return label
-    words = re.sub(r"\s+", " ", text)[:48]
-    return words or "unknown"
+    words = re.sub(r"\s+", " ", text)
+    if len(words) <= CAUSE_MAX_CHARS:
+        return words or "unknown"
+    # Cut at a word boundary so the label never ends mid-word.
+    return words[:CAUSE_MAX_CHARS].rsplit(" ", 1)[0] + "..."
 
 
-def failing_jobs(store_jobs):
-    """[(store, name, streak, cause)] for every enabled job whose last run failed."""
+def parse_iso(value):
+    """ISO-8601 to an epoch. Naive stamps are read as UTC, never local."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()
+
+
+def cadence_seconds(job):
+    """The job's own interval: a declared interval schedule, else next_run_at - last_run_at.
+    None for a one-shot or when neither is readable."""
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        if schedule.get("kind") == "once":
+            return None
+        minutes = schedule.get("minutes")
+        if isinstance(minutes, (int, float)) and minutes > 0:
+            return float(minutes) * 60
+    last = parse_iso(job.get("last_run_at"))
+    nxt = parse_iso(job.get("next_run_at"))
+    if last is not None and nxt is not None and nxt > last:
+        return nxt - last
+    return None
+
+
+def failing_jobs(store_jobs, now):
+    """[(store, name, streak, cause, age, stale)] for every enabled job whose last run failed.
+
+    age is seconds since last_run_at (None when unknown). stale is set when the last
+    run is older than the job's cadence plus STALE_MARGIN_SECONDS: the job has stopped
+    running on schedule, so its failure is not current."""
     out = []
     for store, jobs in store_jobs:
         for j in jobs:
@@ -70,8 +114,13 @@ def failing_jobs(store_jobs):
                 streak = int(j.get("failure_streak") or 0)
             except (TypeError, ValueError):
                 streak = 0
-            out.append((store, j.get("name") or j.get("id") or "?", streak, cause_of(j.get("last_error"))))
-    return sorted(out)
+            last = parse_iso(j.get("last_run_at"))
+            age = None if last is None else now - last
+            cadence = cadence_seconds(j)
+            stale = age is not None and cadence is not None and age > cadence + STALE_MARGIN_SECONDS
+            out.append((store, j.get("name") or j.get("id") or "?", streak,
+                        cause_of(j.get("last_error")), age, stale))
+    return sorted(out, key=lambda row: row[:2])
 
 
 MEMORY_BLOCKED_RE = re.compile(r"Memory is blocked after \d+ failures", re.I)
@@ -102,16 +151,31 @@ def memory_blocked_jobs(now):
     return hits
 
 
+def ago(seconds):
+    hours = int(max(seconds, 0) // 3600)
+    return f"{hours}h" if hours < 48 else f"{hours // 24}d"
+
+
 def build_message(failing, memory_blocked=()):
-    by_cause = {}
-    for store, name, streak, cause in failing:
+    by_cause, stale = {}, []
+    for store, name, streak, cause, age, is_stale in failing:
         label = name if store == "default" else f"{store}/{name}"
-        by_cause.setdefault(cause, []).append(f"{label} ×{streak}" if streak > 1 else label)
+        if streak > 1:
+            label += f" ×{streak}"
+        if age is not None:
+            label += f" (last {ago(age)} ago)"
+        if is_stale:
+            stale.append(label)
+        else:
+            by_cause.setdefault(cause, []).append(label)
+    current = sum(len(names) for names in by_cause.values())
     lines = []
-    if failing:
-        lines.append(f":rotating_light: {len(failing)} cron job(s) failing")
+    if current:
+        lines.append(f":rotating_light: {current} cron job(s) failing")
         for cause, names in sorted(by_cause.items(), key=lambda kv: (-len(kv[1]), kv[0])):
             lines.append(f"• {cause} ({len(names)}): " + ", ".join(names))
+    if stale:
+        lines.append(f"• stale, last run past cadence ({len(stale)}): " + ", ".join(stale))
     if memory_blocked:
         lines.append(f":brain: memory breaker tripped in the newest run of {len(memory_blocked)} "
                      f"job(s), their baselines may be stale: " + ", ".join(memory_blocked))
@@ -119,7 +183,8 @@ def build_message(failing, memory_blocked=()):
 
 
 def signature(failing, memory_blocked=()):
-    return [f"{s}/{n}:{c}" for s, n, _, c in failing] + [f"memory:{j}" for j in memory_blocked]
+    return ([f"{s}/{n}:{'stale' if st else c}" for s, n, _, c, _, st in failing]
+            + [f"memory:{j}" for j in memory_blocked])
 
 
 def load_state():
@@ -152,7 +217,7 @@ def decide(failing, state, now, memory_blocked=()):
 def main():
     try:
         now = time.time()
-        failing = failing_jobs((name, load_jobs(home)) for name, home in stores())
+        failing = failing_jobs(((name, load_jobs(home)) for name, home in stores()), now)
         text, state = decide(failing, load_state(), now, memory_blocked_jobs(now))
         save_state(state)
     except Exception as exc:  # noqa: BLE001 - a broken rollup is itself a finding

@@ -179,16 +179,20 @@ def test_kanban_caps_use_the_shared_agent_concurrency() -> None:
 
 def test_hermes_gateway_renders_agent_api_cap_as_eight() -> None:
     template = template_text(ROLE_ROOT, "config.yaml.j2")
-    expression = "max_concurrent_runs: {{ hermes_agent_api_max_concurrent_runs }}"
-    assert expression in template
+    # The template's own live line, not a copy of it: a commented-out or
+    # renamed line leaves nothing to render and fails here.
+    lines = [
+        candidate.strip()
+        for candidate in template.splitlines()
+        if candidate.strip().startswith("max_concurrent_runs:")
+    ]
+    assert len(lines) == 1, "config.yaml.j2 needs exactly one live max_concurrent_runs line"
 
     context = {**_group_vars_all(), **_defaults()}
     context["hermes_agent_api_max_concurrent_runs"] = _effective(
         "hermes_agent_api_max_concurrent_runs"
     )
-    rendered = _jinja_env().from_string(expression).render(
-        **context
-    )
+    rendered = _jinja_env().from_string(lines[0]).render(**context)
     assert yaml.safe_load(rendered) == {"max_concurrent_runs": 8}
 
 

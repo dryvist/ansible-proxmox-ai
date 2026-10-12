@@ -1,5 +1,5 @@
 ---
-# Covers review-role tails, provider order, admission budgets, and CI key scopes.
+# Covers review-role tails, provider order, and admission budgets.
 # Run from the repo root: ansible-playbook tests/llm_router/test_review_roles.yml -i localhost, -c local
 - name: Verify the review roles and their terminal rungs
   hosts: localhost
@@ -27,14 +27,13 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
-    hindsight_retain_model: qwen3-4b
-    hermes_goal_judge_model: judge
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+    hermes_goal_judge_model: "{{ llm_router_small_model }}"
     bao_local_llm_secrets:
       OPENROUTER_API_KEY: sk-or-fixture
       OPENROUTER_HERMES_KEY: sk-orh-fixture
       OPENAI_API_KEY: sk-oa-fixture
-      ZAI_API_KEY: sk-zai-fixture
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -61,94 +60,78 @@
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
         _environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
 
-    - name: Note the rendered deployment names and the review roles
+    - name: Capture the exact fallback chain for each caller name
       ansible.builtin.set_fact:
-        _rendered_names: "{{ _config.model_list | map(attribute='model_name') | list }}"
-        _public: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}"
-        _private: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}"
+        _fallbacks: >-
+          {{ dict(_config.router_settings.fallbacks | map('dict2items') | flatten
+             | map(attribute='key') | zip(_config.router_settings.fallbacks
+               | map('dict2items') | flatten | map(attribute='value'))) }}
 
-    - name: Public review ends in the Z.ai pair then the paid terminal, free before metered, no free external rung
+    - name: Public review uses its local head then paid terminal rungs
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_zai_groups == (llm_router_zai_models | map(attribute='client_model_id') | list)
-          - llm_router_zai_groups | length == 2
-          - (llm_router_zai_models | first).input_cost_per_token is not defined
-          - (llm_router_zai_models | last).input_cost_per_token is defined
-          - _public.model == llm_router_hermes_local_4080_id
-          - _public.fallbacks[0] == llm_router_primary_model
-          - _public.fallbacks[1:1 + (llm_router_zai_groups | length)] == llm_router_zai_groups
-          - llm_router_external_free_rungs | intersect(_public.fallbacks) | length == 0
-          - >-
-            _public.fallbacks == [llm_router_primary_model] + llm_router_zai_groups
-            + llm_router_external_paid_rungs
-          - llm_router_external_subscription_rungs | intersect(_public.fallbacks) | length == 0
-          - llm_router_zai_groups | difference(_rendered_names) | length == 0
-          # The Z.ai pair is not a terminal rung, so review-oss ends on one that is.
-          - _public.fallbacks[-1] in llm_router_external_terminal_rungs
-          # The credential-gated MODEL LIST rendering above only proves
-          # bao_local_llm_secrets.ZAI_API_KEY resolved; LiteLLM's
-          # `api_key: os.environ/ZAI_API_KEY` also needs the systemd
-          # EnvironmentFile to actually carry that variable, or every Z.ai
-          # call fails auth at runtime and review-oss falls through to
-          # default_fallbacks with a green contract test overhead.
-          - _environment | regex_findall('(?m)^ZAI_API_KEY=') | length == 1
-          # The GLM Coding Plan is served only at the /api/coding/paas/v4
-          # endpoint; the plain /api/paas/v4 path is pay-as-you-go and 429s
-          # for an operator with no balance there.
-          - llm_router_zai_base_url is search('/api/coding/paas/v4$')
-          - >-
-            _config.model_list | selectattr('model_name', 'in', llm_router_zai_groups)
-            | map(attribute='litellm_params.api_base') | unique | list == [llm_router_zai_base_url]
-        fail_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
-        success_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
+          - llm_router_model_group_aliases[llm_router_review_aliases.oss]
+            == llm_router_primary_model
+          - _public[:llm_router_review_local_fallback_groups | length] == llm_router_review_local_fallback_groups
+          - llm_router_external_free_rungs | intersect(_public) | length == 0
+          - _public == llm_router_review_local_fallback_groups + llm_router_external_paid_rungs
+          - llm_router_external_subscription_rungs | intersect(_public) | length == 0
+          - _public[-1] in llm_router_external_terminal_rungs
+        fail_msg: "review-oss: {{ _public | join(' -> ') }}"
+        success_msg: "review-oss: {{ _public | join(' -> ') }}"
+      vars:
+        _public: "{{ _fallbacks[llm_router_review_aliases.oss] }}"
 
-    # RULE CHANGE (2026-09-20): Z.ai is no longer review-oss-exclusive — it
-    # is now also a segment of llm_router_hermes_cloud_fallback_groups
-    # (35-hermes-cloud.yml), the primary group's own chain (ai #845's
-    # enforce_fallback_model_access prunes each key's own reach). Still true:
-    # no OTHER role_deployment carries it, and default_fallbacks /
-    # llm_router_external_terminal_rungs never do.
-    - name: Ordinary roles share D1's final Z.ai rung; private review remains isolated
+    # The local capability entry points apply their own ZDR filter, while public
+    # review has its explicit chain.
+    - name: Ordinary fallbacks share the D1 ladder; private review remains isolated
       ansible.builtin.assert:
         quiet: true
         that:
-          - >-
-            llm_router_role_deployments
-            | selectattr('role', 'in', ['fast', 'subagent', 'cheap'])
-            | map(attribute='fallbacks') | map('last') | unique | list
-            == [llm_router_zai_groups[-1]]
           - _config.router_settings.default_fallbacks == llm_router_d1_ladder_groups
-          - llm_router_external_terminal_rungs | intersect(llm_router_zai_groups) | length == 0
-          - llm_router_hermes_cloud_fallback_groups | intersect(llm_router_zai_groups) | length > 0
-          - llm_router_zai_groups | intersect(_private.fallbacks) | length == 0
         fail_msg: >-
-          ordinary roles/defaults/private={{ _config.router_settings.default_fallbacks }}
-          /{{ _private.fallbacks }}
+          ordinary fallback={{ _config.router_settings.default_fallbacks }}
+          /private={{ _private }}
+      vars:
+        _public: "{{ _fallbacks[llm_router_review_aliases.oss] }}"
+        _private: "{{ _fallbacks[llm_router_review_aliases.private] }}"
 
-    - name: Review roles retain their specific public and private tails
+    - name: Review aliases retain their specific public and private tails
       ansible.builtin.assert:
         quiet: true
         that:
-          - _public.fallbacks[-1] in llm_router_external_terminal_rungs
-          - _private.model == llm_router_hermes_local_4080_id
-          - _private.fallbacks == [llm_router_primary_model, 'codex-subscription', 'codex-api']
-          - llm_router_external_free_rungs | intersect(_private.fallbacks) | length == 0
-          - llm_router_zai_groups | intersect(_private.fallbacks) | length == 0
+          - _public[-1] in llm_router_external_terminal_rungs
+          - llm_router_model_group_aliases[llm_router_review_aliases.private]
+            == llm_router_primary_model
+          - _private == llm_router_review_local_fallback_groups + llm_router_ci_luna_groups
+          - llm_router_external_free_rungs | intersect(_private) | length == 0
+          - llm_router_external_paid_rungs | intersect(_private) | length == 0
+          - llm_router_ci_luna_groups | difference(_private) | length == 0
+          - >-
+            _fallbacks[llm_router_primary_model]
+            | difference(llm_router_zdr_asserted_group_names) | length == 0
         fail_msg: >-
-          review-oss={{ _public.fallbacks }}, private={{ _private.fallbacks }}
+          review-oss={{ _public }}, private={{ _private }}
+      vars:
+        _public: "{{ _fallbacks[llm_router_review_aliases.oss] }}"
+        _private: "{{ _fallbacks[llm_router_review_aliases.private] }}"
 
-    - name: Private review is local rungs then the Codex rungs and nothing else
+    - name: Private review is local rungs then the CI Luna group and nothing else
       ansible.builtin.assert:
         quiet: true
         that:
-          - _private.model == llm_router_hermes_local_4080_id
-          - _private.fallbacks == [llm_router_primary_model, 'codex-subscription', 'codex-api']
-          - llm_router_external_free_rungs | intersect(_private.fallbacks) | length == 0
-          - "'hermes-cloud-openrouter' not in _private.fallbacks"
-          - llm_router_zai_groups | intersect(_private.fallbacks) | length == 0
-        fail_msg: "review-private: {{ _private.model }} -> {{ _private.fallbacks | join(' -> ') }}"
-        success_msg: "review-private: {{ _private.model }} -> {{ _private.fallbacks | join(' -> ') }}"
+          - llm_router_model_group_aliases[llm_router_review_aliases.private]
+            == llm_router_primary_model
+          - _private == llm_router_review_local_fallback_groups + llm_router_ci_luna_groups
+          - llm_router_external_free_rungs | intersect(_private) | length == 0
+          - (llm_router_external_paid_rungs + llm_router_external_subscription_rungs)
+            | intersect(_private) | length == 0
+          - llm_router_ci_luna_groups | difference(_private) | length == 0
+        fail_msg: "review-private: {{ _private | join(' -> ') }}"
+        success_msg: "review-private: {{ _private | join(' -> ') }}"
+      vars:
+        _private: "{{ _fallbacks[llm_router_review_aliases.private] }}"
 
     - name: The Codex rungs render as specified
       ansible.builtin.assert:
@@ -175,7 +158,8 @@
           - _openai[0].litellm_params.api_key == 'os.environ/OPENAI_API_KEY'
           - _openai[0].litellm_params.reasoning_effort == 'xhigh'
           - _openai[0].litellm_params.stream_timeout | int < ai_ingress_response_header_timeout_seconds | int
-          - llm_router_external_terminal_rungs | last == 'codex-api'
+          - llm_router_external_terminal_rungs | last
+            == llm_router_hermes_cloud_api_key_groups | last
           - llm_router_external_subscription_rungs == ['codex-subscription']
           - >-
             llm_router_external_terminal_rungs.index('codex-subscription')
@@ -187,7 +171,8 @@
           {{ llm_router_registry_enabled
              | selectattr('provider', 'equalto', 'chatgpt') | first }}
         _openai: >-
-          {{ _config.model_list | selectattr('model_name', 'equalto', 'codex-api')
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', llm_router_hermes_cloud_api_key_groups | last)
              | selectattr('litellm_params.model', 'match', '^openai/gpt') | list }}
 
     # The public key sits behind llm_router_oss_ci_key_enabled: with the
@@ -211,60 +196,3 @@
         _on_value: >-
           {{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss')
              | map(attribute='value') | first }}
-        _apps_paths: >-
-          {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths
-             | select('mapping') | list }}
-
-    - name: The CI keys are scoped to exactly their review role
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          # First scope is the role; the rest is its chain (59-key-scopes.yml,
-          # asserted in test_local_first_by_order.yml).
-          - _gha.models[0] == 'review-private'
-          - _gha.models | intersect(['review-oss'] + llm_router_zai_groups) | length == 0
-          - _gha_oss.models[0] == 'review-oss'
-          - "'review-private' not in _gha_oss.models"
-      vars:
-        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
-        _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
-
-    # Whitespace, never absent: an absent field falls through to the RUNNER's
-    # environment (test_hermes_provider_keys.yml has the same fixture rule).
-    - name: Model a node with no ChatGPT login and no Codex or Z.ai key
-      ansible.builtin.set_fact:
-        llm_router_chatgpt_auth_file_present: false
-        bao_local_llm_secrets:
-          OPENROUTER_API_KEY: sk-or-fixture
-          OPENROUTER_HERMES_KEY: "   "
-          OPENAI_API_KEY: "   "
-          ZAI_API_KEY: "   "
-          GEMINI_API_KEY: "   "
-          DASHSCOPE_API_KEY: "   "
-          OPENCODE_API_KEY: "   "
-
-    - name: Render again with no Codex or Z.ai credential
-      ansible.builtin.set_fact:
-        _bare: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-        _bare_private: >-
-          {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}
-        _bare_public: >-
-          {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}
-
-    - name: Uncredentialed, both review roles are local-only
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _bare_private.fallbacks == [llm_router_primary_model]
-          - _bare_public.fallbacks == [llm_router_primary_model]
-          - >-
-            _bare.model_list
-            | selectattr('model_name', 'in', ['codex-subscription'] + _zai_ids)
-            | list | length == 0
-          - >-
-            _bare.model_list | selectattr('model_name', 'equalto', 'codex-api')
-            | selectattr('litellm_params.model', 'match', '^openai/gpt') | list | length == 0
-        fail_msg: "private={{ _bare_private.fallbacks }} public={{ _bare_public.fallbacks }}"
-      vars:
-        _zai_ids: "{{ llm_router_zai_models | map(attribute='client_model_id') | list }}"
-        success_msg: "uncredentialed: private={{ _bare_private.fallbacks }} public={{ _bare_public.fallbacks }}"

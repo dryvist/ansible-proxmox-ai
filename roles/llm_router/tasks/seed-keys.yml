@@ -61,6 +61,8 @@
       Authorization: "Bearer {{ llm_router_master_key }}"
     timeout: "{{ llm_router_seed_request_timeout }}"
   register: llm_router_existing_keys
+  # Read-only; a check run needs the live value to preview key reconciliation.
+  check_mode: false
 
 # ROTATION. Once minted, a key's `key` value is a LiteLLM primary identifier —
 # there is no "update the value" endpoint — so rotation is delete-then-mint,
@@ -107,13 +109,17 @@
       Authorization: "Bearer {{ llm_router_master_key }}"
     timeout: "{{ llm_router_seed_request_timeout }}"
   register: _llm_router_existing_keys_after_rotation
-  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
+  when:
+    - (llm_router_rotate_key_aliases | default([]) | length) > 0
+    - not ansible_check_mode
   no_log: true
 
 - name: Keep the first read when no rotation ran
   ansible.builtin.set_fact:
     llm_router_existing_keys: "{{ _llm_router_existing_keys_after_rotation }}"
-  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
+  when:
+    - (llm_router_rotate_key_aliases | default([]) | length) > 0
+    - not ansible_check_mode
 
 # CREATE, idempotently. seed-keys.yml used to pre-compute an "unseeded"
 # subset from the /key/list read above and mint only that subset — fragile,
@@ -150,7 +156,7 @@
       # Attribution contract (docs/LLM_KEY_ATTRIBUTION_CONTRACT.md): every key
       # carries at minimum `app` (its own alias, so no per-entry edit is ever
       # needed to keep this in sync) and `tier` (derived, never hand-listed —
-      # a key with a positive weekly budget is `subscription`; a budget-less
+      # a key with a positive daily budget is `subscription`; a budget-less
       # key draws on the local/free serving tier, which this router never
       # meters). `device`/`host`/`agent`/`session`/`zdr` are request-time
       # fields (the caller's own X-Litellm-Tags/metadata on each call) — this
@@ -166,26 +172,22 @@
           {
             'app': item.alias,
             'tier': item.tier | default(
-              'subscription' if (item.monthly_budget | default(0) | float > 0) else 'local'),
+              'subscription' if (item.daily_budget | default(0) | float > 0) else 'local'),
           },
           recursive=true,
         ) | combine({'tags': _metadata_tags}, recursive=true) }}
       router_settings: "{{ item.router_settings | default(omit) }}"
       allowed_routes: "{{ item.allowed_routes | default(omit) }}"
       rpm_limit: "{{ item.rpm_limit | default(omit) }}"
-      max_budget: "{{ item.monthly_budget if (item.monthly_budget | default(0) | float > 0) else omit }}"
-      budget_duration: "{{ '7d' if (item.monthly_budget | default(0) | float > 0) else omit }}"
-      # A second, tighter window stacked on top of the flat weekly fields
-      # above (litellm 1.98.0 GenerateKeyRequest.budget_limits — confirmed on
-      # the pinned tag, litellm/models/team.py BudgetLimitEntry): a bad DAY
-      # cannot burn the whole week even while the week itself is in budget.
-      # Daily figure is the weekly ceiling pro-rated to two days' worth,
-      # rounded — not a separate policy number to keep in sync by hand.
+      max_budget: "{{ item.daily_budget if (item.daily_budget | default(0) | float > 0) else omit }}"
+      budget_duration: "{{ '24h' if (item.daily_budget | default(0) | float > 0) else omit }}"
+      # The same single 24h window, stated again as budget_limits (litellm
+      # 1.98.0 GenerateKeyRequest.budget_limits — confirmed on the pinned tag,
+      # litellm/models/team.py BudgetLimitEntry), so the window list carries
+      # the daily cap explicitly.
       budget_limits: >-
-        {{ [{'budget_duration': '24h',
-             'max_budget': ((item.monthly_budget | float / 7 * 2) | round | float)},
-            {'budget_duration': '7d', 'max_budget': item.monthly_budget | float}]
-           if (item.monthly_budget | default(0) | float > 0) else omit }}
+        {{ [{'budget_duration': '24h', 'max_budget': item.daily_budget | float}]
+           if (item.daily_budget | default(0) | float > 0) else omit }}
     status_code: [200, 201, 400]
     timeout: "{{ llm_router_seed_request_timeout }}"
   loop: "{{ llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list }}"
@@ -193,7 +195,8 @@
     label: "{{ item.alias }}"
   register: _llm_router_key_generate_result
   failed_when: >-
-    _llm_router_key_generate_result.status not in [200, 201]
+    not ansible_check_mode
+    and _llm_router_key_generate_result.status not in [200, 201]
     and 'already exists' not in
       (_llm_router_key_generate_result.json.error.message | default(''))
   no_log: true

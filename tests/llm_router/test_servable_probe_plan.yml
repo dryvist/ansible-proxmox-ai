@@ -17,11 +17,29 @@
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_servable_probe_plan.yml -i localhost, -c local
 
+- name: Add an inventory member for the opted-in local endpoint probe
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Publish the serving fixture into the inventory group
+      ansible.builtin.add_host:
+        name: serving-probe-fixture
+        groups: llm_vllm_group
+        ansible_connection: local
+
 - name: The probe plan is a projection of the registry, grouped one query per endpoint
   hosts: localhost
   gather_facts: false
   vars:
     _defaults_dir: "{{ playbook_dir }}/../../roles/llm_router/defaults/main"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
     # Seeded so the credential gate can be proven in the TRUE direction without
     # depending on the runner's environment. The secret map wins over the env
     # lookup, so this holds identically on CI and on a workstation that happens
@@ -29,6 +47,7 @@
     bao_local_llm_secrets:
       OPENROUTER_API_KEY: fixture-key-not-a-secret
     bao_apps_secrets: {}
+    llm_router_llm_vllm_enabled: true
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -56,6 +75,27 @@
         success_msg: >-
           {{ llm_router_remote_probes | length }} endpoint(s) planned, each with
           the ids registered against it.
+
+    - name: Pre-render probes are projected from registry opt-ins with their own timeout
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _precheck_models | length > 0
+          - >-
+            llm_router_probe_prechecks | map(attribute='model') | list
+            == _precheck_models | map(attribute='upstream_model_id') | list
+          - >-
+            llm_router_probe_prechecks | map(attribute='first_byte_timeout') | list
+            == _precheck_models | map(attribute='first_byte_timeout') | list
+          - llm_router_probe_prechecks | rejectattr('endpoint') | list | length == 0
+        fail_msg: >-
+          Pre-render probe rows must follow the registry opt-in, upstream id,
+          endpoint and per-deployment timeout: {{ llm_router_probe_prechecks }}.
+        success_msg: Registry pre-render probes carry each opted-in model and timeout.
+      vars:
+        _precheck_models: >-
+          {{ llm_router_registry_enabled | selectattr('probe_before_render', 'defined')
+             | selectattr('probe_before_render') | list }}
 
     - name: The subscription tier's registered ids are grouped under its own listing URL
       ansible.builtin.assert:
@@ -171,3 +211,33 @@
           {%- endif -%}
           {%- endfor -%}
           {{ ns.out | unique | list }}
+
+    # The parity assert compares this set with the gate's own listing, which
+    # names physical models. Capability names (route groups) are what aliases
+    # and key scopes read, and the gate never lists one.
+    - name: The set compared with the serving gate is physical ids, never capability names
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_servable_models | length > 0
+          - llm_router_servable_models | sort == _gate_entries | sort
+          - llm_router_servable_models | intersect(_route_groups) | length == 0
+          - llm_router_servable_route_groups | difference(_route_groups) | length == 0
+          - llm_router_servable_route_groups | difference(llm_router_all_servable_models) | length == 0
+        fail_msg: >-
+          llm_router_servable_models={{ llm_router_servable_models }} is not the
+          physical ids of the enabled servable large-tier entries
+          ({{ _gate_entries }}), or names a capability. The gate answers only to
+          physical ids, so a capability name here is reported as unserved on
+          every converge.
+        success_msg: >-
+          The gate comparison set is {{ llm_router_servable_models | length }}
+          physical id(s); capability names stay in the alias and key projections.
+      vars:
+        _gate_entries: >-
+          {{ llm_router_registry_enabled | selectattr('servable', 'defined')
+             | selectattr('servable') | selectattr('tier', 'equalto', 'local-large')
+             | map(attribute='client_model_id') | list }}
+        _route_groups: >-
+          {{ llm_router_model_registry | selectattr('route_group', 'defined')
+             | map(attribute='route_group') | unique | list }}

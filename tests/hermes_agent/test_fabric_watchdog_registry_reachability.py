@@ -34,21 +34,21 @@ def _tiers(registry: list[dict]) -> list[str]:
 
 def test_only_servable_entries_produce_a_tier() -> None:
     registry = [
-        {"tier": "large", "servable": True},
-        {"tier": "large", "servable": False},
-        {"tier": "large"},  # servable undefined entirely
+        {"tier": "local-large", "servable": True},
+        {"tier": "local-large", "servable": False},
+        {"tier": "local-large"},  # servable undefined entirely
     ]
-    assert _tiers(registry) == ["large"]
+    assert _tiers(registry) == ["local-large"]
 
 
 def test_duplicate_tiers_collapse_to_one() -> None:
     """Two servable models sharing a tier must not produce
     two probes of the same URL."""
     registry = [
-        {"tier": "large", "servable": True},
-        {"tier": "large", "servable": True},
+        {"tier": "local-large", "servable": True},
+        {"tier": "local-large", "servable": True},
     ]
-    assert _tiers(registry) == ["large"]
+    assert _tiers(registry) == ["local-large"]
 
 
 def test_registry_is_loaded_the_same_way_the_llm_router_converge_does() -> None:

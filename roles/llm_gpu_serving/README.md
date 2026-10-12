@@ -32,13 +32,26 @@ mount point. Package, Python, Hugging Face, CUDA repository, and release
 downloads use the published inventory's `cache_proxy_urls.apt_cache` list; a
 missing list blocks the converge before upstream fetches.
 
+```sh
+ansible-galaxy install -r requirements.yml
+```
+
+## Usage
+
+The legacy group's serving play runs this role, one guest at a time. A scoped
+converge names the group and `localhost`, as the inventory loader needs:
+
+```sh
+scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.yml \
+  --tags llm_gpu_serving --limit llm_gpu_legacy_group,localhost
+```
+
 ## What it does
 
-- Installs the NVIDIA userspace (`libcuda1`, `nvidia-driver-cuda` for `nvidia-smi`)
-  from the vendor apt repository at `llm_gpu_serving_nvidia_userspace_version`, with
-  the vendor's version-pinning package and no kernel module or DKMS. The version
-  must equal the host driver exactly. The step is skipped when `nvidia-smi`
-  already reports that version. Debian guests only.
+- Installs NVIDIA userspace (`nvidia-vulkan-icd`, `libcuda1`, and
+  `nvidia-driver-cuda` for `nvidia-smi`) from the vendor apt repository, pinned
+  to the host module version read from `/proc/driver/nvidia/version`. No kernel
+  module or DKMS is installed. Debian guests only.
 - Installs a Renovate-pinned uv binary and creates a dedicated Python virtual environment.
 - Installs the Renovate-pinned `hf` CLI with uv under the supplied model cache; uv's package, Python, and tool caches use that same directory.
 - Links `vllm` and `hf` into `/usr/local/bin` so campaign preflights find them without a venv path.
@@ -46,14 +59,15 @@ missing list blocks the converge before upstream fetches.
   package for SM120 kernel support in one uv command.
 - Installs the Renovate-pinned llama.cpp CUDA assets from the shared
   `llamacpp_release` contract only when the recorded asset changes.
-- Seeds `model_store: true` artifacts from the base registry, GLM, and NVFP4
-  sweep shards into the declared origin with immutable Hub revisions. The seed playbook
+- Seeds `model_store: true` artifacts from the base registry and NVFP4 sweep
+  shards into the declared origin with immutable Hub revisions. The GLM shard is
+  not seeded. The seed playbook
   checks for running GPU compute applications before each download and verifies
   every populated repository with Hub checksums.
 - Pulls the active profile's registered repository from the origin into the
   writable local cache under `models/`, verifies the pinned revision, and then
-  lets the engine use that local path. Campaign playbooks can include the
-  `llm_gpu_serving` role with `tasks_from: cache-sync.yml` and an artifact ID
+  lets the engine use that local path. Campaign playbooks include the
+  `nvidia_gpu_guest` role with `tasks_from: cache-sync.yml` and an artifact ID
   without rendering or changing service units.
 - Renders one systemd unit for each enabled profile. On a profile change, handlers
   stop and disable the other units before starting and enabling the selected
@@ -70,8 +84,8 @@ UD-IQ1_S artifact; its router entry remains disabled until it is validated.
 Runtime serving settings live here; model bytes, Hub repository, include
 globs, file format, quantization, engine support, GGUF file name, and use are
 defined once in `llm-models.d/65-gpu-artifacts.yml`,
-`llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml`, and
-`llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml`. The router profile
+`llm-models.d/66-gpu-artifacts-glm53flash.yml`, and
+`llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml`. The router profile
 registry links to those records by `artifact_id` and stays `enabled: false`,
 `servable: false` until a serving floor is measured. The shared GPU registry
 also contains the `16gb` llama.cpp candidate owned by `llamacpp_serving`; this
@@ -127,7 +141,6 @@ profile's floor; `tasks/assert-profile-floors.yml` fails the role otherwise.
 | `llm_profiles` | Per-profile engine and serving settings |
 | `llm_gpu_serving_model_cache_mount_path` | Writable local model-cache directory supplied for the target |
 | `llm_gpu_serving_model_origin_mount_path` | Optional shared origin mount; when empty, models download straight into the local cache |
-| `llm_gpu_serving_nvidia_userspace_version` | Guest NVIDIA userspace version; equals the host driver version |
 | `llm_gpu_serving_uv_version` | Pinned uv installer version, tracked by Renovate |
 | `llm_gpu_serving_huggingface_hub_version` | Pinned Hugging Face CLI package version, tracked by Renovate |
 | `llm_gpu_serving_vllm_version` | Pinned vLLM package version, tracked by Renovate |

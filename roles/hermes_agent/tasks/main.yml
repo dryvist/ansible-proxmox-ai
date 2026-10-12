@@ -31,8 +31,32 @@
 - name: Load the pinned prompt catalog
   ansible.builtin.include_tasks: prompt_catalog.yml
 
-- name: Install Hermes Agent and build the dashboard bundle
-  ansible.builtin.include_tasks: install_and_dashboard.yml
+- name: Install Hermes system prerequisites and normalize the checkout refspec
+  ansible.builtin.include_tasks: install_prerequisites.yml
+
+- name: Install the pinned Hermes runtime
+  ansible.builtin.include_role:
+    name: dryvist.ai_agents.hermes_runtime
+    tasks_from: install
+  vars:
+    hermes_runtime_version: "{{ hermes_agent_version }}"
+    hermes_runtime_version_tag: "{{ hermes_agent_version_tag }}"
+    hermes_runtime_repo_url: "{{ hermes_agent_repo_url }}"
+    hermes_runtime_installer_url: "{{ hermes_agent_installer_url }}"
+    hermes_runtime_installer_sha256: "{{ hermes_agent_installer_sha256 }}"
+    hermes_runtime_installer_path: "{{ hermes_agent_installer_path }}"
+    hermes_runtime_install_dir: "{{ hermes_agent_install_dir }}"
+    hermes_runtime_bin: "{{ hermes_agent_bin }}"
+
+- name: Preserve the installer change state for consumer check-mode guards
+  ansible.builtin.set_fact:
+    hermes_agent_install:
+      changed: >-
+        {{ not hermes_agent_existing_binary.stat.exists
+           or hermes_runtime_checkout.before != hermes_runtime_checkout.after }}
+
+- name: Build and verify the Hermes dashboard bundle
+  ansible.builtin.include_tasks: dashboard_build.yml
 
 - name: Pinned-source patches — retry/backoff and cron markup guard
   ansible.builtin.include_tasks: patches_retry_and_markup.yml
@@ -136,8 +160,45 @@
 - name: Reconcile the direct-deliver and script-fed cron fleet
   ansible.builtin.include_tasks: cron_reconcile.yml
 
-- name: Deploy and start the gateway and dashboard units
+- name: Deploy the gateway restart wrapper and remove the stale restart drop-in
   ansible.builtin.include_tasks: gateway_and_dashboard_units.yml
+
+- name: Deploy and start the Hermes gateway and dashboard units
+  ansible.builtin.include_role:
+    name: dryvist.ai_agents.hermes_runtime
+    tasks_from: units
+  vars:
+    hermes_runtime_bin: "{{ hermes_agent_bin }}"
+    hermes_runtime_user: "{{ hermes_agent_user }}"
+    hermes_runtime_group: "{{ hermes_agent_user }}"
+    hermes_runtime_uid: "{{ hermes_agent_uid | int }}"
+    hermes_runtime_hermes_home: "{{ hermes_agent_hermes_home }}"
+    hermes_runtime_environment_file: "{{ hermes_agent_hermes_home }}/.env"
+    hermes_runtime_dashboard_web_dist: "{{ hermes_agent_web_dist }}"
+    hermes_runtime_dashboard_host: "{{ hermes_agent_dashboard_host }}"
+    hermes_runtime_dashboard_port: "{{ hermes_agent_dashboard_port | int }}"
+    hermes_runtime_gateway_cmd: "{{ hermes_agent_gateway_cmd }}"
+    hermes_runtime_unit_restart_interval_sec: "{{ hermes_agent_unit_restart_interval_sec | int }}"
+    hermes_runtime_unit_restart_burst: "{{ hermes_agent_unit_restart_burst | int }}"
+    hermes_runtime_restart: always
+    hermes_runtime_restart_sec: 5s
+    hermes_runtime_systemd_unit_dir: /etc/systemd/system
+    hermes_runtime_gateway_unit_path: /etc/systemd/system/hermes-gateway.service
+    hermes_runtime_dashboard_unit_path: /etc/systemd/system/hermes-dashboard.service
+    hermes_runtime_gateway_restart_handler: Restart hermes-gateway
+    hermes_runtime_dashboard_restart_handler: Restart hermes-dashboard
+    hermes_runtime_unit_on_failure: hermes-unit-alert@%n.service
+    hermes_runtime_gateway_environment:
+      - name: HERMES_GITHUB_APP_SLUG
+        value: "{{ hermes_agent_github_app_slug }}"
+      - name: HERMES_TRUST_BOUNDARY
+        value: "{{ hermes_agent_github_trust_boundary_default }}"
+      - name: HERMES_CRON_GOAL_JOBS
+        value: "{{ hermes_agent_cron_goal_mode_jobs | join(',') }}"
+      - name: HERMES_CRON_GOAL_MAX_TURNS
+        value: "{{ hermes_agent_kanban_goal_max_turns }}"
+    hermes_runtime_dashboard_environment: []
+    hermes_runtime_gateway_after_user_manager: true
 
 - name: Deploy and start (or stop) the public-review gateway
   ansible.builtin.include_tasks: public_gateway.yml

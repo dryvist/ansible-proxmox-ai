@@ -1,0 +1,32 @@
+---
+- name: Install role prerequisites (installer + clone)
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - git
+      - sudo
+      - jq # hermes-brain-sync.sh JSON parsing (OpenBao KV, router /v1/model/info)
+    state: present
+    update_cache: false
+
+- name: Check whether the Hermes CLI already exists
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_bin }}"
+  register: hermes_agent_existing_binary
+
+- name: Check whether the Hermes checkout already exists
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_install_dir }}/.git/config"
+  register: hermes_agent_existing_checkout
+
+# Installer clones of a release tag can leave remote.origin.fetch pointing at a
+# nonexistent branch. Restore the standard branch-tracking refspec so later
+# plain fetches remain valid; the collection uses an explicit tag refspec.
+- name: Normalize the Hermes checkout's remote fetch refspec
+  community.general.git_config:
+    name: remote.origin.fetch
+    scope: local
+    repo: "{{ hermes_agent_install_dir }}"
+    value: "+refs/heads/*:refs/remotes/origin/*"
+  when: hermes_agent_existing_checkout.stat.exists

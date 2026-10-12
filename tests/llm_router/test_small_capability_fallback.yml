@@ -1,0 +1,51 @@
+---
+# The small capability renders only while a deployment serves it. With the vllm
+# rung on, routine callers, the small aliases and the key scopes name it. With
+# the rung off they name the primary capability instead, so no alias target,
+# key-scope grant or required brain names a group the router does not render.
+# The ZDR-isolated hindsight key is the exception: it keeps the small
+# capability and fails closed rather than follow the fallback.
+#
+# Run (from the REPO ROOT):
+#   PROXMOX_SUBDOMAIN=pve.example.test \
+#     ansible-playbook tests/llm_router/test_small_capability_fallback.yml -i localhost, -c local
+
+- name: Verify the small capability with the vllm rung on and off
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets: {}
+    llm_router_subdomain: "pve.example.test"
+    llm_large_serving_host: llm-large
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_default_model: "{{ llm_router_primary_model }}"
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    llm_router_vllm_first_byte_timeout_seconds: 40
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+    hermes_goal_judge_model: "{{ llm_router_small_model }}"
+    bao_local_llm_secrets: {}
+  tasks:
+    - name: Load the role defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Check each vllm rung state
+      ansible.builtin.include_tasks: tasks/small_capability_case.yml
+      loop: [true, false]
+      loop_control:
+        loop_var: _vllm_on

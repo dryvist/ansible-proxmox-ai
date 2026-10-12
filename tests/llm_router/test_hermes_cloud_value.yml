@@ -23,14 +23,14 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
     - name: Produce the fully credentialed render
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
 
-    - name: Load sanitized auto-router rows captured from a live router
+    - name: Load the sanitized primary capability row from the live-router fixture
       ansible.builtin.set_fact:
         llm_router_live_role_model_info_fixture: >-
           {{ (lookup('template', playbook_dir ~ '/fixtures/live-auto-router-db-rows.yml.j2')
@@ -47,7 +47,7 @@
           # two Alibaba, two Gemini, and one OpenRouter group.
           # hermes-cloud-free was the fourth until it was disabled (upstream
           # withdrew its model); the count follows that removal.
-          - _local_groups | length == 1
+          - _local_groups | length > 0
           - llm_router_hermes_cloud_only_fallback_groups | length == 5
           - llm_router_hermes_cloud_fallback_groups == _expected_full_chain
           - _fallback_chain == _expected_chain
@@ -78,13 +78,11 @@
             _config.router_settings.allowed_fails_policy.TimeoutErrorAllowedFails | int
             < _config.router_settings.allowed_fails_policy.RateLimitErrorAllowedFails | int
           # The zero-retry set starts with the full default fallback groups
-          # (D1's ladder, including the auto alias's initial rung), then the
+          # (D1's ladder), then the
           # ordered provider groups and every entry-point name. The
           # four provider groups are stated literally so a change there gets a
           # direct review; entry points derive from the servable set and the
-          # rendered alias map, never a copied model list. `_expected_chain`
-          # is the auto alias's post-entry continuation and intentionally
-          # omits its initial rung.
+          # rendered alias map, never a copied model list.
           - >-
             llm_router_hermes_cloud_zero_retry_groups
             == (llm_router_d1_ladder_groups
@@ -95,8 +93,8 @@
                 + (llm_router_all_servable_models
                    + (_config.router_settings.model_group_alias | list))
                 + [hermes_brain_model]) | unique | list
-          # The complexity router is a name the Hermes agents call, so it is the
-          # one chain-carrying name that waits out a busy local slot (honouring
+          # The primary capability is a name the Hermes agents call, so it is the
+          # chain-carrying name that waits out a busy local slot (honouring
           # the upstream's Retry-After) before handing it to its chain. The
           # no-credential render keeps the same figure
           # (test_hermes_default_failover.yml); the rest of the contract is
@@ -116,25 +114,20 @@
             == (llm_router_multi_member_cloud_groups + llm_router_rate_limit_retry_names) | unique | sort
           - "'enforce_model_rate_limits' in _config.router_settings.optional_pre_call_checks"
           - "'session_affinity' in _config.router_settings.optional_pre_call_checks"
-          - _cloud_models | length == 6
-          - _modified_auto_routers | length == 1
-          - _modified_auto_routers[0].model_name == hermes_brain_model
-          - llm_router_model_group_aliases['fast'] == hermes_brain_model
-          - llm_router_model_group_aliases['cheap'] == hermes_brain_model
-          - "'fast' in llm_router_zdr_entry_point_names"
-          - "'cheap' in llm_router_zdr_entry_point_names"
+          - _cloud_models | length > 0
+          - _cloud_models | length == _registry_paid_cloud | length
+          - _primary_deployments | length > 0
+          - _primary_deployments | map(attribute='model_name') | unique | list == [llm_router_primary_model]
           - >-
-            _config.router_settings.fallbacks
-            | selectattr('fast', 'defined') | map(attribute='fast') | first
-            == _expected_zdr_entry_chain
-          - >-
-            _config.router_settings.fallbacks
-            | selectattr('cheap', 'defined') | map(attribute='cheap') | first
-            == _expected_zdr_entry_chain
-          - _post_migration_auto_router_count == 1
-          - _live_auto_router_names == ['cheap', 'fast']
-          - _retired_auto_router_names == ['cheap', 'fast']
-          - _unaliased_auto_router_roles | length == 0
+            _primary_deployments[0].litellm_params.model
+            == (_primary_registry_entry.provider ~ '/' ~ _primary_registry_entry.upstream_model_id)
+          - _small_zdr_aliases | length >= 2
+          - _small_zdr_aliases | difference(llm_router_zdr_entry_point_names) | length == 0
+          - _small_zdr_alias_mismatches | length == 0
+          - _fallback_chain | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
+          - _live_primary_names == [llm_router_primary_model]
+          - _live_primary_rows | selectattr('litellm_params.complexity_router_config', 'defined') | list | length == 0
+          - _config.model_list | selectattr('litellm_params.complexity_router_config', 'defined') | list | length == 0
           - _uncapped | length == 0
           - _wrong_input_cap | length == 0
           - _wrong_output_cap | length == 0
@@ -156,7 +149,8 @@
           # final-resort deployments must appear in ascending input price, read
           # from their own litellm_params rather than restated as literals.
           - "'routing_groups' not in _config.router_settings"
-          - _final_resort | length == 2
+          - _final_resort | length > 0
+          - _final_resort | length == _registry_final_resort | length
           - >-
             _final_resort | map(attribute='litellm_params.input_cost_per_token')
             | map('float') | list | sort
@@ -167,47 +161,60 @@
           cloud_count={{ _cloud_models | length }}, monthly={{ _monthly_total }},
           uncapped={{ _uncapped }}.
         success_msg: >-
-          Hermes has one configured auto-router, ordered provider groups, zero
+          The primary capability has ordered provider groups, zero
           ordinary or rate-limit retries, and bounded rate/concurrency controls.
       vars:
-        _modified_auto_routers: >-
+        _primary_deployments: >-
           {{ _config.model_list
-             | selectattr('litellm_params.model', 'equalto', _auto_router_backend_model)
+             | selectattr('model_name', 'equalto', llm_router_primary_model)
              | list }}
-        _live_auto_router_rows: >-
+        _live_primary_rows: >-
           {{ llm_router_live_role_model_info_fixture
-             | selectattr('litellm_params.model', 'equalto', _auto_router_backend_model)
+             | selectattr('model_name', 'equalto', llm_router_primary_model)
              | list }}
-        _auto_router_backend_model: >-
-          {{ llm_router_hermes_virtual_models | map(attribute='litellm_model_name') | first }}
-        _live_auto_router_names: >-
-          {{ _live_auto_router_rows | map(attribute='model_name') | list | sort }}
-        _retired_auto_router_names: >-
-          {{ _live_auto_router_names | intersect(llm_router_model_group_aliases | list) | sort }}
-        _unaliased_auto_router_roles: >-
-          {{ llm_router_role_deployments
-             | selectattr('model', 'equalto', llm_router_auto_router_model)
-             | rejectattr('role', 'in', llm_router_model_group_aliases | list)
-             | map(attribute='role') | list }}
-        _post_migration_auto_router_count: >-
-          {{ (_modified_auto_routers | length)
-             + (_live_auto_router_names | difference(_retired_auto_router_names) | length)
-             + (_unaliased_auto_router_roles | length) }}
+        _live_primary_names: "{{ _live_primary_rows | map(attribute='model_name') | list | sort }}"
+        _primary_registry_entry: >-
+          {{ llm_router_registry_enabled
+             | selectattr('serving_role', 'defined')
+             | selectattr('serving_role', 'equalto', 'primary') | first }}
         # Class order and rung names are derived from the registry.
         _local_groups: >-
-          {{ llm_router_model_registry | selectattr('tier', 'equalto', 'hermes-local')
-             | map(attribute='route_group') | unique | list }}
+          {{ llm_router_d1_rungs_by_class['local'] }}
         _expected_full_chain: "{{ llm_router_d1_ladder_groups }}"
         _expected_chain: >-
           {{ llm_router_d1_ladder_groups
-             | reject('equalto', llm_router_d1_auto_initial_group) | list }}
+             | reject('equalto', hermes_brain_model)
+             | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
         _expected_zdr_entry_chain: >-
           {{ _expected_chain
              | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
+        _expected_zdr_alias_chain: >-
+          {{ llm_router_d1_ladder_groups
+             | reject('equalto', llm_router_small_model)
+             | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
+        _small_zdr_aliases: >-
+          {{ llm_router_model_group_aliases | dict2items
+             | selectattr('value', 'equalto', llm_router_small_model)
+             | map(attribute='key')
+             | reject('in', llm_router_local_only_fail_fast_names)
+             | reject('in', llm_router_cross_modality_fail_fast_names) | list }}
+        _fallbacks_by_key: >-
+          {{ dict(_config.router_settings.fallbacks
+                  | map('dict2items') | flatten | map(attribute='key')
+                  | zip(_config.router_settings.fallbacks
+                       | map('dict2items') | flatten | map(attribute='value'))) }}
+        _small_zdr_alias_mismatches: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for alias in _small_zdr_aliases -%}
+          {%- if _fallbacks_by_key.get(alias, []) != _expected_zdr_alias_chain -%}
+          {%- set ns.names = ns.names + [alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.names }}
         _fallback_chain: >-
-          {{ _config.router_settings.fallbacks
-             | selectattr('hermes-default', 'defined')
-             | map(attribute='hermes-default') | flatten }}
+          {{ _config.router_settings.fallbacks | map('dict2items') | flatten
+             | selectattr('key', 'equalto', hermes_brain_model)
+             | map(attribute='value') | first }}
         _final_resort: >-
           {{ _config.model_list
              | selectattr('litellm_params.input_cost_per_token', 'defined')
@@ -218,6 +225,16 @@
              | selectattr('model_name', 'match', '^hermes-cloud-')
              | selectattr('litellm_params.input_cost_per_token', 'defined')
              | rejectattr('litellm_params.input_cost_per_token', 'in', [0, '0', '0.0']) | list }}
+        # Paid credentialed hermes-cloud registry entries, counted from the registry.
+        _registry_paid_cloud: >-
+          {{ llm_router_hermes_cloud_models_credentialed
+             | selectattr('input_cost_per_token', 'defined')
+             | rejectattr('input_cost_per_token', 'in', [0, '0', '0.0'])
+             | map(attribute='client_model_id') | select('match', '^hermes-cloud-') | list }}
+        _registry_final_resort: >-
+          {{ llm_router_hermes_cloud_models_credentialed
+             | selectattr('route_group', 'defined')
+             | selectattr('route_group', 'equalto', 'hermes-cloud-openrouter') | list }}
         _cloud_retry_groups: >-
           {{ _config.router_settings.model_group_retry_policy.keys() | list | sort }}
         _nonzero_cloud_retry_groups: >-

@@ -29,8 +29,8 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
   the playbooks (the only literal it accepts is one the inventory itself
   assigns as a consumer selection), and when any other role, the inventory or
   a test names an upstream-only id instead of the client-facing name.**
-  **Alias rule (hard): consumer-facing model aliases (`ai-default`,
-  `ai-deep-analysis`, `claude-*`, any future tier name) live ONLY in
+  **Alias rule (hard): consumer-facing model aliases (`hermes-default`,
+  `subagent`, `review-*`, any future tier name) live ONLY in
   `llm_router_model_group_aliases` (rendered as LiteLLM
   `router_settings.model_group_alias`). Registering an alias as its own
   `model_list` deployment entry — duplicating a physical entry's
@@ -236,9 +236,11 @@ host into a silent skip. Adopt them in the same change that adds the 2nd node.
 | Molecule (per scenario) | `molecule test -s llamaindex` / `-s qdrant` | CI |
 
 CI uses the shared Ansible workflow: pull requests into `develop` run mapped
-changed-role scenarios; promotion pull requests into `main` and pushes to
-`main` or `develop` run the full matrix. `Merge Gate` includes Molecule and
-the repository contract checks.
+changed-role scenarios; promotion pull requests into `main` run the full
+matrix. Pushes to `main` or `develop` skip Molecule and run the full Data
+Contract suite. `Merge Gate` includes Molecule and the repository contract
+checks, and allows both to be skipped only on pushes and on pull requests into
+`develop`.
 
 **Inventory-load validation locally:**
 
@@ -292,10 +294,16 @@ nix develop "github:JacobPEvans/nix-devenv#ansible-apps"
 ## CI
 
 Pull requests into `develop` use changed-role Molecule selection with lint,
-syntax, and contract checks. Pull requests into `main` and non-PR runs use the
-full matrix. CI-harness and GPU contract-fixture changes select the
-`llm_gpu_serving` smoke scenario; other unclassified paths widen to the full
-matrix. Required validation is aggregated by `Merge Gate`. Public pull-request
-CI stays on GitHub-hosted runners.
+syntax, and contract checks. Pull requests into `main` run the full matrix.
+Pushes to `main` and `develop` skip Molecule and run the full Data Contract
+suite. CI-harness and GPU contract-fixture changes select the `llm_gpu_serving`
+smoke scenario; other unclassified paths widen to the full matrix. The Data
+Contract selector sends any path its mapping does not cover, including an
+unmapped test playbook, to the full contract suite; it does not fail the run.
+A removed test file selects its owner's scope, if any. Runner jobs cap at ten
+minutes (Molecule and the data contract at fifteen), or at sixty on pull requests from `develop` into
+`main` in this repository; the Renovate checksum fix job caps at five. Required validation is
+aggregated by `Merge Gate`.
+Public pull-request CI stays on GitHub-hosted runners.
 
 See the canonical policy in the `dryvist/.github` README, “Ansible CI policy.”

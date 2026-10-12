@@ -35,9 +35,9 @@ Required on every entry:
                     `dashscope`, `gemini`, `openrouter`, or `chatgpt` (the
                     subscription over OAuth; no key field resolves for it —
                     a per-node login file credentials it).
-  tier              `large` | `light` | `cpu-moe` | `cpu-9b` | `vllm` |
+  tier              `local-large` | `light` | `cpu-moe` | `cpu-9b` | `vllm` |
                     `opencode` | `hermes-router` | `hermes-cloud` |
-                    `openrouter` | `zai`. Selects the deployment shape; light entries
+                    `openrouter`. Selects the deployment shape; light entries
                     become two same-name deployments (GPU + CPU standby);
                     cpu-moe and cpu-9b each become two same-name deployments
                       against the CPU pool instances (warm + scaled).
@@ -60,6 +60,9 @@ Optional:
                       is NOT free (the chatgpt/ rung): it joins neither the
                       free nor the paid segment. Ladder order is derived from
                       the deployment class, not this flag alone.
+  review_private_only true keeps a credentialed deployment out of shared
+                      fallback ladders and broad key scopes; only the
+                      review-private role can widen its CI key to that group.
   mode                model_info.mode override (`responses` for a
                       Responses-native model; default `chat`).
   reasoning_effort    Forwarded as litellm_params.reasoning_effort (hermes-cloud
@@ -159,7 +162,7 @@ Optional:
                       matches nothing (pinned by
                       tests/llm_router/test_registry_hints_projection.yml):
 
-                        speed     `fast` | `medium` | `slow` — decode class AS
+                        speed     `quick` | `moderate` | `slow` — decode class AS
                                   SERVED HERE, not the model's reputation.
                         quality   `routine` | `strong` | `frontier`.
                         best_for  Free-form subtask labels a caller matches

@@ -5,7 +5,12 @@
     groups: >-
       {{
         ['lxc_containers', 'all'] +
-        (['managed_secrets_group'] if 'managed-secrets' in (item.value.tags | default([])) else []) +
+        (
+          ['managed_secrets_group']
+          if 'managed-secrets' in (item.value.tags | default([]))
+             or (item.key | default('')) in _ai_agent_by_container
+          else []
+        ) +
         (['nvidia_gpu_group'] if 'nvidia-gpu' in (item.value.tags | default([])) else []) +
         (
           ['qdrant_group']
@@ -34,7 +39,8 @@
         ) +
         (
           ['hermes_agent_group']
-          if (item.value.tags | default([])) | intersect(['hermes-agent', 'hermes-donna'])
+          if (item.key | default('')) in _ai_agent_by_container
+             or (item.value.tags | default([])) | intersect(['hermes-agent', 'hermes-donna'])
           else []
         ) +
         (
@@ -289,10 +295,18 @@
     # keeps those plays from silently reverting every guest to the first
     # agent and reconciling it with the first agent's credentials.
     hermes_agent_identity: >-
-      {{ 'hermes-private' if 'hermes-private' in (item.value.tags | default([]))
-         else ('donna' if 'hermes-donna' in (item.value.tags | default([]))
-               else 'hermes') }}
+      {{ _ai_agent_by_container[item.key | default('')]
+         if (item.key | default('')) in _ai_agent_by_container
+         else ('hermes-private' if 'hermes-private' in (item.value.tags | default([]))
+               else ('donna' if 'hermes-donna' in (item.value.tags | default([]))
+                     else 'hermes')) }}
   vars:
+    # group_vars/all is not loaded for implicit localhost during inventory
+    # construction, so derive the container lookup from the resolved artifact.
+    _ai_agents: "{{ (tofu_data | default({})).agents | default({}) }}"
+    _ai_agent_by_container: >-
+      {{ dict(_ai_agents | dict2items | map(attribute='value.container')
+              | zip(_ai_agents.keys())) }}
     # Derived from tags, per-item, rather than a hand-maintained name
     # list: 'hermes-agent' covers every Hermes agent guest (hermes-donna
     # guests carry both tags — see hermes_agent_identity above),

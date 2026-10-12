@@ -54,6 +54,7 @@ services:
     volumes:
       - {{ langfuse_docker_clickhouse_data_dir }}:/var/lib/clickhouse
       - {{ langfuse_docker_clickhouse_logs_dir }}:/var/log/clickhouse-server
+      - {{ langfuse_docker_clickhouse_config_dir }}/system_logs.xml:/etc/clickhouse-server/config.d/system_logs.xml:ro
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
       interval: 5s
@@ -106,8 +107,11 @@ services:
       LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST: "{{ langfuse_docker_llm_connection_whitelisted_host }}"
       LANGFUSE_MIGRATION_V4_WRITE_MODE: "{{ langfuse_docker_migration_v4_write_mode }}"
       LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR: "{{ langfuse_docker_migration_v4_native_otel_behaviour }}"
+      LANGFUSE_SKIP_INGESTION_CLICKHOUSE_READ_MIN_PROJECT_CREATE_DATE: "{{ langfuse_docker_skip_ingestion_clickhouse_read_min_project_create_date }}"
       LANGFUSE_BACKGROUND_MIGRATION_V4_ENABLE_HISTORIC_BACKFILL: "{{ langfuse_docker_migration_v4_historic_backfill }}"
+{% if langfuse_docker_code_eval_dispatcher %}
       LANGFUSE_CODE_EVAL_DISPATCHER: "{{ langfuse_docker_code_eval_dispatcher }}"
+{% endif %}
       QUEUE_CONSUMER_CODE_EVAL_EXECUTION_QUEUE_IS_ENABLED: "{{ langfuse_docker_code_eval_queue_enabled }}"
       REDIS_HOST: "{{ langfuse_docker_redis_service }}"
       REDIS_PORT: "{{ langfuse_docker_redis_internal_port }}"
@@ -128,6 +132,10 @@ services:
       LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "{{ langfuse_docker_s3_secret_access_key }}"
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
       LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "{{ langfuse_docker_s3_media_prefix }}"
+      LANGFUSE_S3_CONCURRENT_READS: "{{ langfuse_docker_s3_concurrent_reads }}"
+      LANGFUSE_S3_CONCURRENT_WRITES: "{{ langfuse_docker_s3_concurrent_writes }}"
+      LANGFUSE_INGESTION_QUEUE_PROCESSING_CONCURRENCY: "{{ langfuse_docker_ingestion_queue_concurrency }}"
+      LANGFUSE_OTEL_INGESTION_QUEUE_PROCESSING_CONCURRENCY: "{{ langfuse_docker_otel_ingestion_queue_concurrency }}"
     healthcheck:
       # The worker binds the container's own interface address, not loopback,
       # so the probe has to dial the service name rather than localhost.
@@ -135,6 +143,26 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+{% for n in range(2, langfuse_docker_worker_count | int + 1) %}
+
+  langfuse-worker-{{ n }}:
+    image: {{ langfuse_docker_worker_image }}
+    restart: {{ langfuse_docker_restart_policy }}
+    logging: *langfuse_docker_logging
+    depends_on:
+      {{ langfuse_docker_postgres_service }}:
+        condition: service_healthy
+      {{ langfuse_docker_clickhouse_service }}:
+        condition: service_healthy
+      {{ langfuse_docker_redis_service }}:
+        condition: service_healthy
+    environment: *langfuse_env
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider 'http://langfuse-worker-{{ n }}:3030/api/health?failIfQueueConsumptionStuck=true' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+{% endfor %}
 
   langfuse-web:
     image: {{ langfuse_docker_web_image }}

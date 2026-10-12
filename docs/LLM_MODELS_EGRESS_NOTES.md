@@ -106,19 +106,15 @@ self-selects out of requests too large for this card, even though it no
 longer trims further below the `vllm`-tier entry's own window the way it once
 did.
 
-## The free OpenRouter preset (`hermes-cloud-free` / `best-free`)
+## The free OpenRouter preset (`hermes-cloud-free`)
 
 `@preset/best-free` is a server-side config edited in OpenRouter's dashboard,
 so the model behind it changes with no code change here. Never write a
 concrete model id in its place; the preset IS the pointer.
 
-`hermes-cloud-free` (`hermes-cloud` tier) and `best-free` (`openrouter` tier)
-name the same preset deliberately: they differ in tier and routing role, not
-target. The first is the free rung of the Hermes chain; the second is a plain
-handle a caller names directly. Neither can be an alias of the other — an
-alias may point only at a first-class large-tier entry — and `best-free` gets
-no `stable_aliases` for the same reason, hence the memorable `client_model_id`
-instead.
+`hermes-cloud-free` (`hermes-cloud` tier) is the free rung of the Hermes
+chain. It points at the preset directly: an alias may point only at a
+first-class large-tier entry, so no alias stands in for it.
 
 `hermes-cloud-free` sets no `monthly_budget`: nothing to bound.
 `assert-budget-backing.yml` only fires on a budget with no store behind it, so

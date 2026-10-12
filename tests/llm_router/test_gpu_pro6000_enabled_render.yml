@@ -1,183 +1,105 @@
 ---
-# The enabled profile render, imported with the inactive-profile contract.
-- name: Verify the explicitly enabled Pro6000 profile render
+- name: Verify profile deployments join the same capability groups by order
   hosts: localhost
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    _enable_gpu_profiles: true
     tofu_data:
       constants:
         service_ports:
           llm_router_api: 4000
           llm_fast_api: 10434
           ollama_api: 11434
+          otel_traces_http: 4318
           redis_default: 6379
+    bao_apps_secrets: {}
     bao_local_llm_secrets: {}
-    # Exercise the inventory's runtime model override with a synthetic alias:
-    # it must follow the shared primary route without revealing the live value.
-    bao_ai_public_secrets:
-      active_model: "{{ llm_router_primary_registry_aliases | first }}"
-    ai_default_model: >-
-      {{ bao_ai_public_secrets.active_model
-         | default(llm_router_primary_model, true) }}
-    # Match the router fleet group so the existing vLLM model name cannot
-    # collide with the shared route alias.
-    llm_router_llm_vllm_enabled: false
+    llm_router_subdomain: "pve.example.test"
     llm_large_serving_host: llm-large
-    llm_router_subdomain: pve.example.test
     llm_router_master_key: sk-test-master
     llm_router_llm_large_bearer: test-bearer-token
+    llm_router_llm_gpu_base_url: "http://localhost:10434/v1"
+    llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
     ai_router_request_timeout_seconds: 2400
-    ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
-    ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: "{{ llm_router_hermes_router_ids | first }}"
-    llm_active_profile: medium-a
-    hindsight_retain_model: "{{ llm_router_light_models | map(attribute='client_model_id') | first }}"
     hermes_goal_judge_model: judge
+    llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_light_base_url: "http://localhost:10434/v1"
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
   tasks:
-    - name: Add the fixture member used by the enabled backend projection
+    - name: Add a synthetic inventory GPU member
       ansible.builtin.add_host:
         name: llm-gpu-fixture
         groups: llm_gpu_group
         ansible_connection: local
 
-    - name: Load defaults and registry for the enabled render
-      ansible.builtin.import_tasks: tasks/parity_setup.yml
+    - name: Load role defaults and registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
 
-    - name: Load the sanitized benchmark app-field fixture
-      ansible.builtin.include_vars: fixtures/openbao-benchmark-app.yml
+    - name: Load registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
 
-    - name: Enable profiles and configure only render fixtures
+    - name: Enable profile and precheck projections for the render fixture
       ansible.builtin.set_fact:
-        llm_router_gpu_profiles_enabled: "{{ _enable_gpu_profiles | default(false) | bool }}"
-        llm_router_llm_vllm_enabled: false
-        llm_router_vllm_medium_enabled: true
-        bao_local_llm_secrets:
-          OPENROUTER_API_KEY: test-openrouter-provider-key
-          OPENROUTER_HERMES_KEY: test-openrouter-hermes-provider-key
-          GEMINI_API_KEY: test-gemini-provider-key
-          DASHSCOPE_API_KEY: test-dashscope-provider-key
-          OPENAI_API_KEY: test-openai-provider-key
-          ZAI_API_KEY: test-zai-provider-key
-        llm_router_llm_fast_base_url: "http://localhost:10434/v1"
-        llm_router_llm_light_base_url: "http://localhost:10434/v1"
-        llm_router_llm_large_base_url: "https://localhost:11434/v1"
-        llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
-        llm_router_llm_gpu_base_url: "http://localhost:10434/v1"
+        llm_router_gpu_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_active_profile: medium-a
 
-    - name: Load the production Hermes selector without replacing test fixtures
-      ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
-        name: _production_group_vars
-
-    - name: Evaluate the production Hermes selector with profiles enabled
+    - name: Render the medium capability with its Pro and Mac members
       ansible.builtin.set_fact:
-        _production_hermes_brain_model: "{{ _production_group_vars.hermes_brain_model }}"
+        _medium_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: Re-evaluate credentialed cloud projections for the config render
-      ansible.builtin.include_vars:
-        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
-
-    - name: Load Hermes profiles for the full render
-      ansible.builtin.import_tasks: "{{ _role_dir }}/../../playbooks/tasks/load_hermes_profiles.yml"
-      vars:
-        _hermes_agent_role_dir: "{{ _role_dir }}/../hermes_agent"
-
-    - name: Render the proxy config with GPU profiles enabled
-      ansible.builtin.set_fact:
-        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-
-    - name: Save the auto-router tier targets for the switch-off comparison
-      ansible.builtin.set_fact:
-        _auto_router_tiers_enabled: >-
-          {{ (_config.model_list | selectattr('model_name', 'equalto', hermes_brain_model)
-              | first).litellm_params.complexity_router_config.tiers }}
-        _auto_router_initial_enabled: >-
-          {{ (_config.model_list | selectattr('model_name', 'equalto', hermes_brain_model)
-              | first).litellm_params.complexity_router_config.default_model }}
-
-    - name: Collect the rendered GPU deployments
-      ansible.builtin.set_fact:
-        _gpu_ids: "{{ llm_router_gpu_models | map(attribute='client_model_id') | list }}"
-        _gpu_rendered: >-
-          {{ _config.model_list | selectattr('model_name', 'in',
-               llm_router_gpu_models | map(attribute='client_model_id') | list) | list }}
-        _gpu_aliases: >-
-          {{ llm_router_gpu_profile_aliases }}
-
-    # Keep the engine profile maps separate; the router's selected profile
-    # comes from the engine selector and the shared per-engine profile map.
-    - name: Load shared NVIDIA guest defaults for engine profile projections
-      ansible.builtin.include_vars:
-        dir: "{{ _role_dir }}/../nvidia_gpu_guest/defaults/main"
-
-    - name: Load vLLM engine defaults for the shared profile map
-      ansible.builtin.include_vars:
-        file: "{{ _role_dir }}/../vllm_serving/defaults/main/00-engine.yml"
-
-    - name: Load llama.cpp engine defaults for the shared profile map
-      ansible.builtin.include_vars:
-        file: "{{ _role_dir }}/../llamacpp_serving/defaults/main/00-engine.yml"
-
-    - name: Load vLLM profiles for the router admission contract
-      ansible.builtin.include_vars:
-        file: "{{ _role_dir }}/../vllm_serving/defaults/main/10-profiles.yml"
-        name: _vllm_defaults
-
-    - name: Load llama.cpp profiles for the router admission contract
-      ansible.builtin.include_vars:
-        file: "{{ _role_dir }}/../llamacpp_serving/defaults/main/10-profiles.yml"
-        name: _llamacpp_defaults
-
-    - name: Combine engine-owned profile maps for the router contract
-      ansible.builtin.set_fact:
-        _serving_profiles: >-
-          {{ _vllm_defaults.vllm_serving_profiles
-             | combine(_llamacpp_defaults.llamacpp_serving_profiles) }}
-
-    - name: Verify the GPU profile render contract
-      ansible.builtin.import_tasks: tasks/gpu_profile_render_contract.yml
-
-    - name: Verify the Hermes GPU fallback chain
-      ansible.builtin.import_tasks: tasks/hermes_gpu_fallback_contract.yml
-
-    - name: Verify GPU rung saturation contract
-      ansible.builtin.import_tasks: tasks/gpu_rung_saturation_contract.yml
-
-    - name: Assert the judge and subagent take the GPU medium rung first in the enabled render
+    - name: The medium capability orders Pro first and Mac second
       ansible.builtin.assert:
         quiet: true
         that:
-          # Judge: the small tier, which is the medium deployment while the small
-          # profile is off, then the routine model, which stays local.
-          - _judge.model == llm_router_gpu_small_model
-          - _judge.model == llm_router_vllm_medium_model
-          - _judge.fallbacks == [llm_router_routine_model]
-          # Subagent: the medium deployment first, the fast GPU rung second,
-          # and the medium deployment never repeated inside its own tail.
-          - _subagent.model == llm_router_vllm_medium_model
-          - _subagent.fallbacks | first == llm_router_hermes_local_4080_id
-          - llm_router_hermes_local_4080_id in _subagent.fallbacks
-          - llm_router_vllm_medium_model not in _subagent.fallbacks
+          - llm_router_gpu_models | length == 1
+          - llm_router_gpu_models[0].route_group == llm_router_primary_model
+          - llm_router_gpu_models[0].order | int == 1
+          - _medium_members | length == 2
+          - _medium_members | map(attribute='litellm_params.order') | map('int') | sort == [1, 2]
+          - llm_router_model_group_aliases.values() | select('equalto', llm_router_primary_model) | list | length > 0
+          - llm_router_gpu_profile_aliases | length == 0
+        fail_msg: "medium capability members={{ _medium_members }}"
       vars:
-        _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'judge') | first }}"
-        _subagent: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'subagent') | first }}"
+        _medium_members: >-
+          {{ _medium_config.model_list
+             | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
 
-    - name: Verify the medium deployment is rung 1 of every GPU-capable role and CI key
+    - name: Select the small profile and render its same-name member pair
+      ansible.builtin.set_fact:
+        llm_active_profile: small
+
+    - name: Render the small capability with both assigned members
+      ansible.builtin.set_fact:
+        _small_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: The 4080 and enabled Pro small profile share the small capability
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_gpu_models | length == 1
+          - llm_router_gpu_models[0].route_group == llm_router_small_model
+          - llm_router_gpu_models[0].order | int == 2
+          - _small_members | length == 2
+          - _small_members | map(attribute='litellm_params.order') | map('int') | sort == [1, 2]
+          - >-
+            _vllm_entry.litellm_params.max_parallel_requests | int
+            == llm_router_gpu_models[0].max_parallel_requests | int
+        fail_msg: "small capability members={{ _small_members }}"
+      vars:
+        _small_members: >-
+          {{ _small_config.model_list
+             | selectattr('model_name', 'equalto', llm_router_small_model) | list }}
+        _vllm_entry: >-
+          {{ _small_members
+             | selectattr('litellm_params.order', 'equalto', llm_router_gpu_models[0].order)
+             | first }}
+
+    - name: Preserve GPU-first behavior through capability aliases
       ansible.builtin.import_tasks: tasks/gpu_first_rung_contract.yml
-
-    - name: Assert the benchmark key is scoped to GPU profiles and has no budget
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _benchmark_seed_entry.models | sort == _gpu_ids | sort
-          - _benchmark_seed_entry.monthly_budget is not defined
-          - "'&zdr' in _benchmark_seed_entry.tags"
-
-    - name: Run the primary brain guard against the enabled rendered route
-      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-safe-models.yml"
-
-    - name: Verify the route switch and sanitized target compatibility
-      ansible.builtin.import_tasks: tasks/gpu_pro6000_route_switch.yml

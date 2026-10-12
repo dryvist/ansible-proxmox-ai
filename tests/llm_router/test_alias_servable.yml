@@ -2,8 +2,8 @@
 # Pins the servable-alias contract from roles/llm_router/tasks/assert.yml.
 #
 # WHY THIS TEST EXISTS. On 2026-07-28 every consumer alias in the router pointed
-# at a model the serving host does not serve — hermes-default, tool-calling,
-# goal-judge and interim-brain all returned HTTP 404 against the live gate, at
+# at a model the serving host does not serve — medium, tool-calling,
+# small and interim-brain all returned HTTP 404 against the live gate, at
 # the same time. The serving host runs llama-swap in single-model mode, where
 # every non-resident model is demoted to `disabledModels` and answers 404 rather
 # than being served under the wrong weights. Nothing in the repo could catch it:
@@ -73,25 +73,24 @@
           router, and the long-context entry, and would return HTTP 404.
         success_msg: "all {{ llm_router_model_group_aliases | length }} aliases are servable"
 
-    - name: Every servable model is a first-class entry with a real context_window
+    - name: Every capability has a member with a real context_window
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_all_servable_models | difference(_safe) | length == 0
+          - llm_router_capability_names | difference(_safe) | length == 0
         fail_msg: >-
-          [{{ llm_router_all_servable_models | difference(_safe) | join(', ') }}]
-          are in the servable set but carry no context_window in the large/GPU
-          registry — they would fall through the "*" wildcard and
-          compress every caller to death.
-        success_msg: "servable models all carry explicit context windows"
+          [{{ llm_router_capability_names | difference(_safe) | join(', ') }}]
+          have no registered capability member with a real context_window.
+          They would fall through the "*" wildcard and compress every caller.
+        success_msg: "all capabilities have a registered member with an explicit context window"
       vars:
         _safe: >-
-          {{ (llm_router_large_models + llm_router_gpu_models)
+          {{ llm_router_capability_members
              | selectattr('context_window', 'defined')
              | rejectattr('context_window', 'none')
-             | map(attribute='client_model_id') | list }}
+             | map(attribute='route_group') | unique | list }}
 
-    - name: The advertised window for the resident matches what the serving host provisions
+    - name: The advertised window for the primary capability matches the serving profile
       # nix-ai catalog-data.nix pins the RESIDENT profile at
       # maxRequestTokens = 65536 (cacheMemoryMb 16384) — the same figure for
       # qwen38-27b, which holds serving_role: primary since 2026-08-14, as for
@@ -104,53 +103,45 @@
         quiet: true
         that:
           - _primary_entry | length == 1
+          - (llm_router_primary_model == (_primary_entry | first).route_group)
           - (_primary_entry | first).context_window | int > 0
           - >-
-            (_primary_entry | first).tier != 'large'
+            (_primary_entry | first).tier != 'local-large'
             or (_primary_entry | first).context_window | int == 65536
         fail_msg: >-
-          llm_router_primary_model ({{ llm_router_primary_model }}) resolves to
-          {{ _primary_target }}, which must be one tuned large/GPU entry with a
+          llm_router_primary_model ({{ llm_router_primary_model }}) must be
+          backed by one tuned serving entry with a
           positive context window; a large-tier primary must keep the
           nix-ai resident window 65536. Found
           {{ _primary_entry | map(attribute='context_window') | list }}.
         success_msg: "primary route resolves to one tuned large/GPU entry"
       vars:
-        _primary_target: >-
-          {{ llm_router_model_group_aliases.get(llm_router_primary_model, llm_router_primary_model) }}
+        _primary_target: "{{ llm_router_primary_serving_model }}"
         _primary_entry: >-
           {{ (llm_router_large_models + llm_router_gpu_models)
              | selectattr('client_model_id', 'equalto', _primary_target) | list }}
 
-    - name: The judge targets the smallest GPU profile and keeps the routine fallback
+    - name: The judge role targets the small capability without changing its params
       ansible.builtin.assert:
         quiet: true
         that:
-          - _judge.model == llm_router_gpu_small_model
-          - llm_router_routine_model in _judge.fallbacks
-        success_msg: "judge uses the small GPU profile with the previous routine tier as fallback"
+          - _judge.model == llm_router_small_model
+          - _judge.litellm_params.extra_body.chat_template_kwargs.enable_thinking is sameas false
+          - _judge.fallbacks == []
+        success_msg: "judge keeps its request policy on the small capability"
       vars:
         _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', hermes_goal_judge_model) | first }}"
 
-    - name: The parked routine selector and judge fallback use the active primary
+    - name: The recorder role targets the small capability and keeps logging disabled
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_routine_model == llm_router_primary_model
-          - _judge.model == llm_router_gpu_small_model
-          - llm_router_primary_model in _judge.fallbacks
-          - _mapped_fast_model in _parked_routine | map(attribute='client_model_id') | list
-        fail_msg: "the parked routine role must remain a judge fallback target"
-        success_msg: "judge falls through to the active primary when the routine selector is parked"
+          - _recorder.model == llm_router_small_model
+          - _recorder.litellm_params.turn_off_message_logging is sameas true
+          - _recorder.fallbacks == []
+        success_msg: "recorder keeps its logging policy on the small capability"
       vars:
-        _mapped_fast_model: "{{ llm_roles.models[llm_roles.roles.fast.model].id }}"
-        _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', hermes_goal_judge_model) | first }}"
-        _parked_routine: >-
-          {{ llm_router_model_registry
-             | selectattr('client_model_id', 'equalto', _mapped_fast_model)
-             | selectattr('enabled', 'equalto', false)
-             | selectattr('standby', 'defined') | selectattr('standby') | list }}
-      when: _mapped_fast_model not in llm_router_servable_models
+        _recorder: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'recorder') | first }}"
 
     - name: Every per-caller virtual key scopes only names the router advertises
       # WHY THIS EXISTS. A key's `models` list is an allowlist enforced by the

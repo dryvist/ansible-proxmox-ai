@@ -79,20 +79,24 @@
     shell: /usr/sbin/nologin
     create_home: true
 
-- name: Create the install, config and models directories
+- name: Create the install and config directories
   ansible.builtin.file:
-    path: "{{ item.path }}"
+    path: "{{ item }}"
     state: directory
-    owner: "{{ item.owner }}"
-    group: "{{ item.group }}"
-    mode: "{{ item.mode }}"
+    owner: root
+    group: root
+    mode: "0755"
   loop:
-    - { path: "{{ llama_cpp_install_dir }}", owner: root, group: root, mode: "0755" }
-    - { path: "{{ llama_cpp_config_dir }}", owner: root, group: root, mode: "0755" }
-    - path: "{{ llama_cpp_models_dir }}"
-      owner: "{{ llama_cpp_user }}"
-      group: "{{ llama_cpp_group }}"
-      mode: "0750"
+    - "{{ llama_cpp_install_dir }}"
+    - "{{ llama_cpp_config_dir }}"
+
+# The models directory is the read-only shared mount, so its owner and mode
+# come from the mount; this only checks that it is a directory.
+- name: Assert the shared models mount is a directory
+  ansible.builtin.stat:
+    path: "{{ llama_cpp_models_dir }}"
+  register: llama_cpp_models_dir_stat
+  failed_when: not (llama_cpp_models_dir_stat.stat.isdir | default(false))
 
 # Device-group resolution plus, on the vulkan backend, the visibility gate that
 # stops a silent CPU fallback from shipping as a GPU deployment.
@@ -106,6 +110,8 @@
     cmd: "{{ llama_cpp_server_bin }} --version"
   register: llama_cpp_server_check
   changed_when: false
+  # Read-only; a check run needs the live value to preview the installed server.
+  check_mode: false
   failed_when: false
 
 - name: Inspect the installed llama.cpp asset marker
@@ -119,75 +125,8 @@
   register: llama_cpp_asset_marker
   when: llama_cpp_asset_marker_stat.stat.exists
 
-- name: Install the llama.cpp release binary
-  when: >-
-    llama_cpp_server_check.rc != 0
-    or not llama_cpp_asset_marker_stat.stat.exists
-    or (llama_cpp_asset_marker.content | b64decode | trim)
-    != llama_cpp_llamacpp_asset_name
-  block:
-    - name: Create a temporary extraction directory
-      ansible.builtin.tempfile:
-        state: directory
-        suffix: llama-cpp
-      register: llama_cpp_extract_tmp
-
-    - name: Download the pinned llama.cpp release asset through the cache
-      ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
-      vars:
-        llamacpp_release_asset_name: "{{ llama_cpp_llamacpp_asset_name }}"
-        llamacpp_release_asset_sha256: "{{ llama_cpp_llamacpp_asset_sha256 }}"
-        llamacpp_release_download_path: >-
-          {{ llama_cpp_extract_tmp.path }}/{{ llama_cpp_llamacpp_asset_name }}
-
-    - name: Extract the pinned llama.cpp release tarball
-      ansible.builtin.unarchive:
-        src: "{{ llama_cpp_extract_tmp.path }}/{{ llama_cpp_llamacpp_asset_name }}"
-        dest: "{{ llama_cpp_extract_tmp.path }}"
-        remote_src: true
-
-    - name: Locate the extracted llama-server binary
-      ansible.builtin.find:
-        paths: "{{ llama_cpp_extract_tmp.path }}"
-        patterns: llama-server
-        file_type: file
-        recurse: true
-      register: llama_cpp_server_find
-
-    - name: Assert the llama-server binary was found in the archive
-      ansible.builtin.assert:
-        that:
-          - llama_cpp_server_find.matched | int > 0
-        fail_msg: "No 'llama-server' binary found in the llama.cpp release archive — the layout may have changed."
-
-    # Flatten the release's bin dir into the install dir so the binary and its
-    # bundled .so files share one directory (also LD_LIBRARY_PATH in the unit).
-    # cp -a, not ansible.builtin.copy: the release ships SONAME symlinks
-    # (libllama-common.so.0 -> libllama-common.so.0.0.NNNN) that copy with
-    # remote_src drops, leaving the binary unable to resolve its own libs.
-    - name: Install the llama.cpp bin directory contents
-      ansible.builtin.command:
-        argv:
-          - cp
-          - -a
-          - --remove-destination
-          - "{{ llama_cpp_server_find.files[0].path | dirname }}/."
-          - "{{ llama_cpp_install_dir }}/"
-      changed_when: true
-      notify: Restart llama-server
-
-    - name: Record the installed llama.cpp asset name
-      ansible.builtin.copy:
-        content: "{{ llama_cpp_llamacpp_asset_name }}\n"
-        dest: "{{ llama_cpp_llamacpp_asset_marker }}"
-        owner: "{{ llama_cpp_user }}"
-        group: "{{ llama_cpp_group }}"
-        mode: "0640"
-
-    - name: Remove the temporary extraction directory
-      ansible.builtin.file:
-        path: "{{ llama_cpp_extract_tmp.path }}"
-        state: absent
+- name: Run the llama.cpp release install when needed
+  ansible.builtin.import_tasks: install-release.yml
 
 # --- Model presence -----------------------------------------------------------
 # This guest never downloads model weights: it is told where they are and how
@@ -240,6 +179,8 @@
     cmd: findmnt --noheadings --output OPTIONS --target {{ llama_cpp_models_dir }}
   register: llama_cpp_models_dir_mount
   changed_when: false
+  # Read-only; a check run needs the live value to preview mount safety.
+  check_mode: false
 
 - name: Assert the model storage is mounted read-only
   ansible.builtin.assert:

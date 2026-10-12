@@ -14,9 +14,9 @@ LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
-    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
-    REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
-    REPO_ROOT / "llm-models.d/68-gpu-pro6000-stage0-artifacts.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
+    REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
+    REPO_ROOT / "llm-models.d/68-gpu-stage0-artifacts.yml",
 )
 
 
@@ -262,6 +262,9 @@ def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
         retire = next(task for task in activate_tasks if task.get("name", "").startswith("Retire units for disabled"))
         assert any(task.get("ansible.builtin.include_tasks") == "validate-profiles.yml" for task in main_tasks)
         assert render_unit["when"] == "item.value.enabled | default(true)"
+        assert "notify" not in render_unit
+        restart = next(task for task in render_tasks if "notify" in task)
+        assert "active_profile" in restart["when"]
         assert profile_validation["when"] == "item.value.enabled | default(true)"
         assert profile_state["when"] == "item.value.enabled | default(true)"
         assert "not (item.value.enabled | default(true))" in retire["when"]

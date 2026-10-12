@@ -13,6 +13,11 @@
 hermes_agent_digest_slack_channel: "{{ hermes_agent_slack_home_channel }}"
 
 # --- Which identities a job belongs to ---------------------------------------
+# Empty keeps the role independent of an inventory selection. The inventory
+# supplies the model for agentic direct crons; script-only enqueuers do not use it.
+hermes_agent_cron_model: ''
+hermes_agent_cron_model_provider: custom
+
 # The identity plumbing above scopes an agent's CREDENTIALS and HANDLES (Slack
 # app, OpenBao domain, Vikunja project, memory bank, OTel name). It never
 # scoped the WORKLOAD, so every hermes_agent guest reconciled the entire
@@ -29,16 +34,16 @@ hermes_agent_digest_slack_channel: "{{ hermes_agent_slack_home_channel }}"
 # `identities:` list to share or move it.
 hermes_agent_job_identities_default: [hermes]
 
-# The same rule for the script-fed job families (Splunk status digest, Splunk
-# triage, Kanban digest, Zammad auto-close). Those reconcile through
-# reconcile_enqueuer_cron.yml, where ANDing this flag into a job's gate does
-# two different things depending on WHY the gate is false. If this flag is the
-# reason — the identity does not own the workload — the job is actively
-# withdrawn: that file checks this flag directly, independently of item.enabled.
-# If the job's OWN capability gate is the reason (a missing credential, a
-# feature flag turned off), the installed job is left alone and only
-# re-creation stops (disable-don't-delete). Ownership and capability are judged
-# separately; only the former removes anything.
+# A roster owner takes a system-scoped job; without an owner, retain the job's
+# existing identities (or the original ops default).
+hermes_agent_job_identities: >-
+  {{ [ai_agent_owner[item.system]]
+     if item.system is defined and item.system in (ai_agent_owner | default({}))
+     else item.identities | default(hermes_agent_job_identities_default) }}
+
+# Script-fed jobs use the same per-job identity selection. Their reconcile path
+# distinguishes an unowned job (withdrawn) from a disabled capability (left
+# installed), so identity and capability remain separate decisions.
 hermes_agent_ops_workload_enabled: >-
   {{ hermes_agent_id in hermes_agent_job_identities_default }}
 
@@ -48,11 +53,16 @@ hermes_agent_ops_workload_enabled: >-
 # genuinely about ownership, such as whether a named profile has any job left
 # to tick.
 hermes_agent_direct_cron_jobs_owned: >-
-  {{ ((hermes_agent_direct_cron_jobs | rejectattr('identities', 'defined') | list)
-      if (hermes_agent_ops_workload_enabled | bool) else [])
-     + (hermes_agent_direct_cron_jobs
-        | selectattr('identities', 'defined')
-        | selectattr('identities', 'contains', hermes_agent_id) | list) }}
+  {%- set owned = namespace(jobs=[]) -%}
+  {%- for job in hermes_agent_direct_cron_jobs -%}
+  {%- set identities = ([ai_agent_owner[job.system]]
+     if job.system is defined and job.system in (ai_agent_owner | default({}))
+     else job.identities | default(hermes_agent_job_identities_default)) -%}
+  {%- if hermes_agent_id in identities -%}
+  {%- set _ = owned.jobs.append(job) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ owned.jobs }}
 
 # `hermes cron`'s ticker runs IN-PROCESS inside whichever gateway registered
 # the job (cron/scheduler.py: "Cron is per-profile by design") — only the

@@ -76,10 +76,10 @@ reach, not by what it might someday need — a new capability is a new profile
 decision made in the PR that adds the work, not a widened existing one.
 
 **Concurrency**: `hermes_agent_kanban_max_in_progress` is the SUM cap across
-every profile combined (1 today — see the comment on that var). Naming a
-profile never raises real concurrency by itself; raising the cap back up is a
-separate, deliberate operator decision after the serving tier proves the
-capacity.
+every profile combined. It takes the shared `ai_agent_default_concurrency`
+(`inventory/group_vars/all.yml`), the same cap the API uses, and that value does
+not track any serving profile. Naming a profile never raises real concurrency by
+itself; changing the shared cap is a separate, deliberate operator decision.
 
 **Verifying a new profile** (manual, not part of the converge — it burns an
 LLM run): see "Profile smoke test" in `docs/HERMES_OPS.md`.

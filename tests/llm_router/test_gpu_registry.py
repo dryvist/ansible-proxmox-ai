@@ -9,8 +9,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
-    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
-    REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
+    REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
 )
 REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 REGISTRY_TASKS = REPO_ROOT / "roles/llm_router/tasks/registry.yml"
@@ -40,7 +40,10 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     serving_profiles = _serving_profiles()
     serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
-    assert len(entries) == 31
+    profiles = [entry["profile"] for entry in entries]
+    assert profiles
+    assert len(profiles) == len(set(profiles))
+    assert set(profiles) <= set(serving_profiles)
     assert defaults["llm_router_gpu_profiles_enabled"] is False
     assert {entry["profile"] for entry in entries} == {
         "small",
@@ -107,8 +110,8 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         entry["profile"]: entry.get("stable_aliases", []) for entry in entries
     }
     assert {profile: len(aliases) for profile, aliases in aliases_by_profile.items()} == {
-        "small": 1,
-        "medium-a": 2,
+        "small": 0,
+        "medium-a": 0,
         "medium-b": 0,
         "16gb": 0,
         "max": 0,
@@ -139,8 +142,11 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "muse-glimmer-30b": 0,
         "nemotron-lightning-30b-a3b": 0,
     }
-    assert aliases_by_profile["medium-a"] == ["qwen3.8-27b", "local-medium"]
-    assert len({alias for aliases in aliases_by_profile.values() for alias in aliases}) == 3
+    assert {entry["profile"]: entry.get("route_group") for entry in entries} == {
+        "small": "small",
+        "medium-a": "medium",
+        **{entry["profile"]: None for entry in entries if entry["profile"] not in {"small", "medium-a"}},
+    }
 
     # medium-a stays the active eight-slot production profile, outside the sweep matrix.
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
@@ -177,8 +183,6 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
     }
     assert caps == expected_caps
 
-    primary = [name for name, profile in serving_profiles.items() if profile.get("primary")]
-    assert primary == ["medium-a"]
     assert caps["medium-a"] == 64
 
 

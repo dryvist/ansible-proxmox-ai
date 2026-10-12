@@ -1,0 +1,51 @@
+---
+- name: Assert each registry alias has one target
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_alias_keys | unique | length == _llm_router_alias_keys | length
+    fail_msg: >-
+      A stable alias appears more than once in llm-models.d: {{ _llm_router_duplicate_aliases }}.
+      Every alias must identify one registry entry and one capability target.
+    success_msg: >-
+      All {{ _llm_router_alias_keys | length }} registry aliases have one target.
+  vars:
+    _llm_router_alias_keys: >-
+      {{ llm_router_model_registry | map(attribute='stable_aliases')
+         | select('defined') | flatten | list }}
+    _llm_router_duplicate_aliases: >-
+      {%- set ns = namespace(dupes=[]) -%}
+      {%- for alias in _llm_router_alias_keys | unique -%}
+      {%- if _llm_router_alias_keys | select('equalto', alias) | list | length > 1 -%}
+      {%- set ns.dupes = ns.dupes + [alias] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.dupes }}
+
+- name: Assert capability members have distinct deployment orders
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_capability_order_errors | length == 0
+    fail_msg: >-
+      Each local capability member needs a unique order value: {{ _llm_router_capability_order_errors }}.
+    success_msg: >-
+      Capability deployment orders are unique across {{ _llm_router_capability_groups | length }} groups.
+  vars:
+    _llm_router_capability_registry: >-
+      {{ llm_router_model_registry
+         | selectattr('tier', 'in', llm_router_local_registry_tiers)
+         | selectattr('route_group', 'defined') | list }}
+    _llm_router_capability_groups: >-
+      {{ _llm_router_capability_registry | map(attribute='route_group') | unique | list }}
+    _llm_router_capability_order_errors: >-
+      {%- set ns = namespace(errors=[]) -%}
+      {%- for group in _llm_router_capability_groups -%}
+      {%- set members = _llm_router_capability_registry
+            | selectattr('route_group', 'equalto', group) | list -%}
+      {%- set orders = members | map(attribute='order', default=none) | list -%}
+      {%- if none in orders or orders | unique | length != orders | length -%}
+      {%- set ns.errors = ns.errors + [group] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.errors }}

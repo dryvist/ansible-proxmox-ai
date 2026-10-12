@@ -23,6 +23,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -34,7 +41,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -84,7 +91,7 @@
           {{ _policy | dict2items | rejectattr('value.RateLimitErrorRetries', 'equalto', 0)
              | map(attribute='key') | list }}
 
-- name: With no ladder rendered, the names the Hermes agents call still wait out a 429
+- name: With provider credentials absent, local capability retries stay declared
   hosts: localhost
   gather_facts: false
   vars:
@@ -97,6 +104,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -107,7 +121,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -125,27 +139,39 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: With nothing to hand a busy slot to, the listed names are the whole retry policy
+    - name: Without provider credentials the capability ladder stays local
       ansible.builtin.assert:
         quiet: true
         that:
-          # ANTI-VACUITY: the render really has no ladder, so the policy block
-          # exists only because of the listed names.
-          - llm_router_hermes_default_fallback_chain | length == 0
-          - "'fallbacks' not in _config.router_settings"
-          - "'default_fallbacks' not in _config.router_settings"
+          # Capabilities still have local members even when cloud and GPU
+          # routes are unavailable, so their fallback ladder remains active.
+          - llm_router_hermes_default_fallback_chain | length > 0
+          - llm_router_default_fallbacks | length > 0
+          - _config.router_settings.default_fallbacks == llm_router_default_fallbacks
+          - llm_router_hermes_default_fallback_chain | difference(_local_groups) | length == 0
+          - llm_router_default_fallbacks | difference(_local_groups) | length == 0
+          - _cloud_models | length == 0
           - llm_router_rate_limit_retry_names | length > 0
           - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 0
-          - _policy.keys() | list | sort == llm_router_rate_limit_retry_names | sort
+          - _rendered == llm_router_rate_limit_retries_by_group
+          - hermes_brain_model in _policy
           - >-
-            _policy.values() | map(attribute='RateLimitErrorRetries') | unique | list
-            == [llm_router_hermes_rate_limit_retries | int]
+            _policy[hermes_brain_model].RateLimitErrorRetries | int
+            == llm_router_hermes_rate_limit_retries | int
         fail_msg: >-
-          Without a ladder the policy must be exactly the listed names;
-          rendered {{ _policy | default('(none)') }}.
-        success_msg: "No ladder rendered; {{ llm_router_rate_limit_retry_names }} still retry."
+          Without provider credentials only local capability fallbacks may
+          render; retry policy={{ _policy | default('(none)') }},
+          ladder={{ llm_router_hermes_default_fallback_chain }}.
+        success_msg: "The local capability ladder renders with the expected retry policy."
       vars:
         _policy: "{{ _config.router_settings.model_group_retry_policy | default({}) }}"
+        _local_groups: "{{ llm_router_d1_rungs_by_class['local'] }}"
+        _rendered: >-
+          {{ dict(_policy | dict2items | map(attribute='key')
+                  | zip(_policy | dict2items | map(attribute='value.RateLimitErrorRetries'))) }}
+        _cloud_models: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.input_cost_per_token', 'defined') | list }}
 
 - name: The admission assert refuses each way of breaking the retry policy
   hosts: localhost
@@ -170,7 +196,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:

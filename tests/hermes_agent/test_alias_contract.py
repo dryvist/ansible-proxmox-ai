@@ -1,233 +1,57 @@
-"""The registry-side half of the Hermes brain contract.
-
-Split out of test_goal_mode_contract.py along its real seam: everything here
-reads llm-models.d/ and the llm_router role, nothing here renders a
-hermes_agent template. STRUCTURE is pinned, never a model name or alias — an
-alias is written once, in the registry, and
-tests/llm_router/test_registry_retype_scan.py fails the build on a second copy.
-"""
+"""The capability and alias projection stays single-sourced in the registry."""
 
 from __future__ import annotations
 
-import yaml
-
-from _registry import (
-    REPO_ROOT,
-    backend_for_role,
-    effective_backend_for_role,
-    load_registry,
-    role_is_parked,
-)
+from _registry import REPO_ROOT, load_registry
 from _role_files import role_defaults
 
 
-def test_static_aliases_and_roles_follow_the_registry() -> None:
+def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> None:
     registry = load_registry()
-    group_vars = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all.yml").read_text())
-    router_defaults = role_defaults(REPO_ROOT / "roles" / "llm_router")
-    router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
+    local_entries = [
+        entry for entry in registry
+        if entry.get("enabled") and entry.get("route_group")
+        and entry.get("tier") in {
+            "local-large", "light", "vllm", "gpu", "hermes-local", "cpu-moe", "cpu-9b",
+        }
+    ]
+    capabilities = {entry["route_group"] for entry in local_entries}
+    assert len(capabilities) == 5, capabilities
 
-    hermes_backend = backend_for_role(registry, "primary")
-    # The judge uses the routine model while it is active. During its explicit
-    # parked state, the router sends the role to the active primary instead.
-    routine_parked = role_is_parked(registry, "routine")
-    judge_backend = effective_backend_for_role(registry, "routine")
-    assert (judge_backend == hermes_backend) is routine_parked
-
-    # Physical aliases belong to the entries they point at. Hermes selects
-    # the complexity-router entry while GPU profiles are inactive, then the
-    # registry alias for its active profile. Split the same way
-    # roles/llm_router splits them. An
-    # alias on a SERVABLE entry renders as a static model_group_alias and is
-    # bound by the role's two render-time asserts; an alias on any other entry
-    # is a ROLE seeded into the router database. Asserting the union would let
-    # a stray static alias hide behind a legitimate role name, which is the
-    # case this test exists to catch.
-    # The hermes-router tier is a second admitted class alongside `servable`
-    # (roles/llm_router/defaults/main/50-servable.yml's llm_router_alias_pairs):
-    # the local complexity router dispatches to llm_router_routine_model /
-    # llm_router_primary_model rather than answering directly, so an alias on
-    # it renders as a static model_group_alias too, not a DB role. A5 adds a
-    # third: an OpenRouter entry whose >=1M context and ZDR eligibility are
-    # projected from the shared catalog (llm_router_long_context_alias_ids).
-    # Raw registry YAML no longer carries context_window, so this unit test
-    # recognizes that category by its explicit ZDR marker; the Ansible alias
-    # contract checks the threshold against the loaded catalog projection.
-    def _is_long_context(entry: dict) -> bool:
-        return (
-            entry.get("tier") == "openrouter"
-            and entry.get("stable_aliases")
-            and entry.get("zero_data_retention", False) is True
-        )
-
-    aliases = {
-        alias: entry["client_model_id"]
-        for entry in registry
-        if entry.get("enabled")
-        and (entry.get("servable") or entry.get("tier") == "hermes-router" or _is_long_context(entry))
-        for alias in entry.get("stable_aliases", [])
+    enabled_alias_entries = [
+        entry for entry in registry
+        if entry.get("enabled") and entry.get("stable_aliases")
+    ]
+    excluded_non_servable_aliases = {
+        alias for entry in enabled_alias_entries if not entry.get("servable")
+        for alias in entry["stable_aliases"]
     }
-    db_role_aliases = {
-        alias: entry["client_model_id"]
-        for entry in registry
-        if entry.get("enabled")
-        and not entry.get("servable")
-        and entry.get("tier") != "hermes-router"
-        and not _is_long_context(entry)
-        for alias in entry.get("stable_aliases", [])
+    alias_pairs = [
+        (alias, entry.get("route_group", entry["client_model_id"]))
+        for entry in enabled_alias_entries if entry.get("servable")
+        for alias in entry["stable_aliases"]
+    ]
+    assert len({alias for alias, _ in alias_pairs}) == len(alias_pairs), alias_pairs
+    aliases = dict(alias_pairs)
+    declared_aliases = {
+        alias for entry in enabled_alias_entries for alias in entry["stable_aliases"]
     }
-    # The count and every target's servability are what a stray alias would
-    # break, so a new consumer-facing name still lands here as a reviewed edit.
-    assert aliases, "no static alias loaded; nothing below is checked"
-    assert len(aliases) == 10
-    # Judge and subagent remain database-seeded roles, selected from the
-    # registry-derived GPU profile projection rather than static aliases.
-    seeded_roles = {item["role"]: item for item in router_defaults["llm_router_role_deployments"]}
-    assert "llm_router_gpu_small_model" in seeded_roles["judge"]["model"]
-    # The subagent target is the shared helper, and the helper resolves from
-    # the registry-derived medium deployment variables on both branches of the
-    # route switch.
-    assert seeded_roles["subagent"]["model"] == "{{ _llm_router_subagent_model }}"
-    subagent_helper = router_defaults["_llm_router_subagent_model"]
-    assert "llm_router_vllm_medium_model" in subagent_helper
-    assert "llm_router_gpu_medium_b_model" in subagent_helper
-    assert "llm_router_vllm_medium_registry_entry" in router_defaults["llm_router_vllm_medium_model"]
-    # The brain is reached by alias too; routine-role placement is independent.
-    assert hermes_backend in aliases.values()
-    # The document tier is reached by image content parts, not by a selector
-    # var, so it has no hermes_* binding to assert — only that a name a human
-    # picks in the model list resolves to the vision entry.
-    assert backend_for_role(registry, "ocr") in aliases.values()
-    # A role is a caller-facing name, so an accidental one is as costly as an
-    # accidental static alias. `subagent` and `judge` stay DB roles and carry
-    # no stable_alias of their own.
-    assert len(db_role_aliases) == 0
-    assert set(db_role_aliases.values()) & set(aliases.values()) == set()
+    projected_aliases = set(aliases)
+    assert projected_aliases.isdisjoint(excluded_non_servable_aliases)
+    assert declared_aliases == projected_aliases | excluded_non_servable_aliases
+    assert len(aliases) == 12, aliases
+    assert set(aliases.values()) <= capabilities
 
-    hermes_selector = group_vars["hermes_brain_model"]
-    assert "llm_router_gpu_profiles_enabled" in hermes_selector
-    assert "llm_router_gpu_model_aliases_by_profile" in hermes_selector
-    assert "llm_active_profile" in hermes_selector
-    hermes_router = next(
-        entry for entry in registry if entry.get("enabled") and entry.get("tier") == "hermes-router"
-    )
-    assert hermes_router["tier"] == "hermes-router"
-    # The deployment name is the entry's own provider and upstream id; a drift
-    # between the three registry fields is what this catches.
-    assert hermes_router["litellm_model_name"] == (
-        f"{hermes_router['provider']}/{hermes_router['upstream_model_id']}"
-    )
-    # Its `default` and `auto` names are the router's two declared entry
-    # points, not aliases for physical model backends.
-    assert hermes_router.get("stable_aliases") == ["default", "auto"]
+    defaults = role_defaults(REPO_ROOT / "roles" / "llm_router")
+    seeded = {entry["role"]: entry for entry in defaults["llm_router_role_deployments"]}
+    assert set(seeded) == {"judge", "recorder"}
+    small_group = next(entry["route_group"] for entry in local_entries if entry["tier"] == "vllm")
+    assert seeded["judge"]["model"] == "{{ llm_router_small_model }}"
+    assert seeded["judge"]["litellm_params"]["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+    assert seeded["recorder"]["model"] == "{{ llm_router_small_model }}"
+    assert seeded["recorder"]["litellm_params"]["turn_off_message_logging"] is True
+    assert small_group in capabilities
 
-    # Both selectors must be declared servable, or the alias indirection just
-    # moves the 404 one level down.
-    #
-    # `servable` is deliberately NOT `enabled`: every large-tier entry is
-    # enabled (the router offers it), only these are servable (the backend
-    # answers for it). Conflating them yields a 404, not an answer.
-    #
-    # Mac serving-role entries and inventory-backed GPU profiles are distinct
-    # servable classes. A GPU profile has no Mac serving_role by design.
-    expected_servable = [
-        entry["client_model_id"]
-        for entry in registry
-        if entry.get("enabled") and ("serving_role" in entry or entry.get("tier") == "gpu")
-    ]
-    assert [
-        entry["client_model_id"] for entry in registry if entry.get("servable")
-    ] == expected_servable
-    assert hermes_backend in expected_servable
-    assert all(
-        entry.get("serving_role")
-        for entry in registry
-        if entry.get("servable") and entry.get("tier") == "large"
-    )
-    assert all(
-        entry.get("profile") and "serving_role" not in entry
-        for entry in registry
-        if entry.get("servable") and entry.get("tier") == "gpu"
-    )
-    # And so must every static alias target, or an alias is a 404 with a name
-    # — except the local complexity router and the long-context carve-out,
-    # each admitted above for the same reason llm_router_alias_pairs admits
-    # them (neither is something the serving host answers for directly).
-    hermes_router_ids = [
-        entry["client_model_id"]
-        for entry in registry
-        if entry.get("enabled") and entry.get("tier") == "hermes-router"
-    ]
-    long_context_ids = [
-        entry["client_model_id"] for entry in registry if entry.get("enabled") and _is_long_context(entry)
-    ]
-    assert set(aliases.values()) <= set(expected_servable) | set(hermes_router_ids) | set(long_context_ids)
-    hermes_entries = [
-        entry for entry in registry if entry["client_model_id"] == hermes_backend
-    ]
-    assert len(hermes_entries) == 1
-
-    # The registry is the SOLE spelling of a model name or key field: the role's
-    # defaults project it and must never re-type one. A literal here is exactly
-    # the drift this indirection exists to prevent, so it fails the build rather
-    # than waiting for a live 404. Values only — the defaults' prose may of
-    # course still discuss the tiers.
-    def _leaf_values(value: object) -> list[object]:
-        if isinstance(value, dict):
-            return [leaf for child in value.values() for leaf in _leaf_values(child)]
-        if isinstance(value, list):
-            return [leaf for child in value for leaf in _leaf_values(child)]
-        return [value]
-
-    router_defaults_values = _leaf_values(router_defaults)
-    for entry in registry:
-        for field in ("client_model_id", "upstream_model_id", "key_field"):
-            if field in entry:
-                assert entry[field] not in router_defaults_values, (
-                    f"{entry[field]} is re-typed in roles/llm_router/defaults/main.yml; "
-                    "derive it from llm-models.d/ instead"
-                )
-    assert router_defaults["llm_router_num_retries"] == 0
-    # 429 = "the slot is busy" and is the HAND-OFF signal (operator rule,
-    # 2026-09-19): never retried on the same rung, the ladder behind it takes
-    # the request. The 2026-07-24 cron kill this figure once guarded against is
-    # covered by every name carrying a ladder plus default_fallbacks.
-    assert router_defaults["llm_router_rate_limit_retries"] == 0
-    # 4 (was 15): the "no queueing" rule (operator, 2026-09-21) — a busy
-    # local slot hands over instantly, never waits out a retry window.
-    assert router_defaults["llm_router_admission_budget_seconds"] == 4
-    assert "model_group_alias:" in router_config
-    assert "llm_router_model_group_aliases.items()" in router_config
-
-
-def test_credential_gated_entries_declare_their_own_credential() -> None:
-    """Every entry of a credential-gated tier names its own credential.
-
-    The env, probe and role projections read `credential_env` and `key_field`
-    bare off the entry; there is deliberately no per-tier default to fall back
-    on, because a default shared across a loop that mixes tiers is how one
-    provider's entry gets silently credentialed with another provider's key.
-    So the registry has to carry both fields on every gated entry, and this is
-    where an entry that omits one fails.
-
-    Anti-vacuity: remove either field from any opencode, hermes-cloud or
-    openrouter entry and `missing` is non-empty. The gated set is asserted
-    non-empty first, so a registry slice that failed to load cannot pass by
-    having nothing to check. The gated tiers are the same four the render
-    parity guard exempts from enabled-but-unrendered for being key-gated
-    (roles/llm_router/tasks/assert-registry-render-parity.yml).
-    """
-    registry = load_registry()
-    gated_tiers = {"opencode", "hermes-cloud", "openrouter"}
-    gated = [entry for entry in registry if entry["tier"] in gated_tiers]
-    assert gated, "no credential-gated registry entries loaded; nothing was checked"
-    missing = [
-        (entry["client_model_id"], field)
-        for entry in gated
-        for field in ("credential_env", "key_field")
-        if not entry.get(field)
-    ]
-    assert not missing, (
-        f"credential-gated entries without their own credential fields: {missing}; "
-        "declare credential_env and key_field on the entry (docs/LLM_MODELS_SCHEMA.md)"
-    )
+    config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
+    assert "llm_router_model_group_aliases.items()" in config
+    assert "model_group_alias:" in config

@@ -108,6 +108,7 @@ def _context() -> dict[str, Any]:
         hermes_agent_webhook_enabled=True,
         hermes_agent_webhook_secret="WEBHOOKSECRET",
         hermes_agent_api_server_key="APIKEY",
+        hermes_agent_owned_mcp_slugs=[],
         hermes_agent_slack_bot_token="xoxb-x",
         hermes_agent_slack_app_token="xapp-x",
         # These outputs are set by identity-derived environment lookups in

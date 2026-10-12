@@ -32,7 +32,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -63,7 +63,6 @@
           GEMINI_API_KEY: "   "
           DASHSCOPE_API_KEY: "   "
           OPENAI_API_KEY: "   "
-          ZAI_API_KEY: "   "
 
     - name: Re-evaluate the Hermes cloud projections
       ansible.builtin.include_vars:
@@ -83,7 +82,7 @@
           # escape-groups var the template renders from. A literal described
           # what the map WAS and could not notice what it was MISSING; the var
           # would only prove the template copied itself. This composition is
-          # the policy: local legs, the auto-router groups, every servable id,
+          # the policy: local legs, the primary capability, every servable id,
           # every advertised alias.
           - _cwf_keys | sort == _expected_cwf_keys | sort
           # ANTI-VACUITY: the expected set must hold a local leg, a router
@@ -94,7 +93,7 @@
           - (_config.router_settings.model_group_alias | list) | length > 0
           # The primary itself must be keyed. Five cron jobs died of exactly its
           # absence, one exceeding the served window by 482 tokens.
-          - "'hermes-default' in _cwf_keys"
+          - llm_router_primary_model in _cwf_keys
           # Every escape target is drawn from the local legs and the groups
           # backed by this provider credential. A chain member's own tail can
           # be a narrower slice of those groups.
@@ -104,10 +103,11 @@
             | unique
             | difference(llm_router_local_fallback_groups + _openrouter_groups)
             | length == 0
-          - llm_router_model_group_aliases.long in llm_router_d1_rungs_by_class['paid-zdr']
+          - llm_router_model_group_aliases.subagent == llm_router_primary_model
+          - "'subagent' in _cwf_keys"
         fail_msg: >-
           The context-window escape map must key exactly the local legs, the
-          auto-router groups, every servable id, and every advertised alias --
+          the primary capability, every servable id, and every advertised alias --
           got {{ _cwf_keys | sort }}, expected {{ _expected_cwf_keys | sort }}.
       vars:
         # One OpenRouter credential supplies every credentialed paid, free,
@@ -120,16 +120,14 @@
         _cwf_keys: >-
           {{ _config.router_settings.context_window_fallbacks | default([])
              | map('dict2items') | flatten | map(attribute='key') | list }}
-        # PLUS `free`: an unconditional entry pointing at the wider
-        # `free-zdrless`, which carries no entry of its own here.
         _expected_cwf_keys: >-
           {{ (llm_router_local_fallback_groups
-              + (llm_router_hermes_virtual_models
-                 | map(attribute='client_model_id') | list)
-              + llm_router_all_servable_models
-              + (_config.router_settings.model_group_alias | list)
-              + ['free']
-              + llm_router_long_context_escape_roles
+              + [llm_router_primary_model]
+              + (llm_router_all_servable_models
+                 | reject('in', llm_router_cross_modality_fail_fast_names) | list)
+              + ((_config.router_settings.model_group_alias | list)
+             | reject('in', llm_router_cross_modality_fail_fast_names)
+             | reject('in', llm_router_context_window_no_wider_entry_points) | list)
               + _roles_with_external
               + llm_router_chain_groups_with_own_tail)
              | unique | list }}
@@ -139,8 +137,7 @@
           {%- set _local = llm_router_local_fallback_groups + [llm_router_primary_model]
                            + llm_router_all_servable_models -%}
           {%- for d in llm_router_role_deployments
-                if d.role not in llm_router_long_context_escape_roles
-                and d.fallbacks | difference(_local) | length > 0 -%}
+                if d.fallbacks | difference(_local) | length > 0 -%}
           {%- set _ = out.append(d.role) -%}
           {%- endfor -%}
           {{ out }}

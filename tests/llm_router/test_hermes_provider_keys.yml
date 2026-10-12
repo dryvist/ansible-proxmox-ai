@@ -32,19 +32,12 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
     # Registry-derived expectations, built from llm_router_model_registry
     # directly rather than from the credentialed projection the render uses.
-    _local_groups: >-
-      {%- set ns = namespace(g=[]) -%}
-      {%- for m in llm_router_model_registry | selectattr('enabled')
-                   | selectattr('tier', 'equalto', 'hermes-local') -%}
-      {%- set g = m.fallback_group | default(m.route_group) -%}
-      {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
-      {%- endfor -%}
-      {{ ns.g }}
+    _local_groups: "{{ llm_router_d1_rungs_by_class['local'] }}"
     # Every OpenRouter rung shares OPENROUTER_API_KEY. Build the expected set
     # from the catalog's D1 classes, retaining class order independently of
     # the credentialed ladder projection this play asserts.
@@ -75,7 +68,7 @@
           - "'openbao_secrets_ai_api_key_path_prefix' in _secrets_defaults_source"
       vars:
         _local_llm_domain: >-
-          {{ _secrets_defaults.openbao_secrets_domains
+          {{ _secrets_defaults._openbao_secrets_static_domains
              | selectattr('name', 'equalto', 'local-llm') | first }}
         _provider_paths: >-
           {{ _local_llm_domain.paths | select('mapping') | list }}
@@ -100,9 +93,6 @@
             optional: true
           - mount: test-external
             path: test/provider-keys/openai
-            optional: true
-          - mount: test-external
-            path: test/provider-keys/zai
             optional: true
           - mount: test-kv
             path: ai/mcp/nautobot
@@ -149,7 +139,6 @@
           GEMINI_API_KEY: "   "
           DASHSCOPE_API_KEY: "   "
           OPENAI_API_KEY: "   "
-          ZAI_API_KEY: "   "
           # Deliberately absent (not even blank): the dedicated Hermes
           # OpenRouter credential (OPENROUTER_HERMES_KEY, see
           # llm-models.d/40-hermes-cloud.yml) is a SEPARATE key from the one
@@ -176,7 +165,7 @@
           # The catalog must keep more than the free endpoint under the
           # provider key, so newly declared paid-ZDR rungs remain represented.
           - _openrouter_groups | length > 1
-          - _local_groups | length == 1
+          - _local_groups | length > 0
           - llm_router_d1_auto_initial_group in _local_groups
           - (_config.router_settings.model_group_alias | list) | length > 0
           # hermes-cloud-openrouter (glm-5.3-flash x2) stays dark: its
@@ -196,13 +185,19 @@
         # isolates credential membership for the OpenRouter provider.
         _expected_chain: "{{ _local_groups + _openrouter_groups }}"
         _expected_rendered_chain: >-
-          {{ _expected_chain | reject('equalto', llm_router_d1_auto_initial_group) | list }}
+          {{ _expected_chain
+             | reject('equalto', llm_router_d1_auto_initial_group)
+             | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
-             | selectattr('hermes-default', 'defined')
-             | map(attribute='hermes-default') | flatten }}
+             | selectattr('medium', 'defined')
+             | map(attribute='medium') | flatten }}
+        _openrouter_group: >-
+          {{ llm_router_hermes_cloud_models
+             | selectattr('provider', 'equalto', 'openrouter')
+             | map(attribute='route_group') | unique | first }}
         # Provider deployments only: a per-provider credential assertion.
         _cloud_models: >-
           {{ _config.model_list
-             | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter')
+             | selectattr('model_name', 'equalto', _openrouter_group)
              | selectattr('litellm_params.model', 'match', '^openrouter/') | list }}

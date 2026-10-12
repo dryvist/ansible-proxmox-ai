@@ -10,25 +10,38 @@
       {%- for role in llm_router_role_deployments -%}
       {%- set live = (_llm_router_roles_for_tag_sync.json.data | default([])
             | selectattr('model_name', 'equalto', role.role) | first | default({})) -%}
-      {%- if live -%}
+      {%- if live and ((live.model_info | default({})).db_model | default(false)) -%}
       {%- set actual = live.litellm_params | default({}) -%}
-      {%- set candidates = namespace(ids=[]) -%}
-      {%- for entry in _llm_router_role_params | dict2items -%}
+      {%- set _capability_groups = llm_router_capability_members
+            | map(attribute='route_group') | unique | list -%}
+      {%- set candidates = namespace(entries=[]) -%}
+      {%- for member in _llm_router_capability_member_params -%}
+      {%- if (member.params.model | default('')) == (actual.model | default(''))
+            and (member.params.api_base | default('')) == (actual.api_base | default('')) -%}
+      {%- set candidates.entries = candidates.entries + [member.entry] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {#- Preserve non-capability targets such as the native Hermes router. -#}
+      {%- for entry in _llm_router_role_params | dict2items
+            if entry.key not in _capability_groups -%}
       {%- if (entry.value.model | default('')) == (actual.model | default(''))
             and (entry.value.api_base | default('')) == (actual.api_base | default('')) -%}
-      {%- set candidates.ids = candidates.ids + [entry.key] -%}
+      {%- set target_entry = (llm_router_registry_enabled
+            | selectattr('client_model_id', 'equalto', entry.key) | first | default(none)) -%}
+      {%- if target_entry is not none -%}
+      {%- set candidates.entries = candidates.entries + [target_entry] -%}
+      {%- endif -%}
       {%- endif -%}
       {%- endfor -%}
       {%- set policies = namespace(tags=[]) -%}
-      {%- for target in candidates.ids -%}
-      {%- set target_entry = (llm_router_registry_enabled
-            | selectattr('client_model_id', 'equalto', target) | first) -%}
-      {%- set policy_tags = llm_router_deployment_tags_by_model[target]
-            | reject('match', '^sensitivity:') | list -%}
+      {%- for target_entry in candidates.entries -%}
+      {%- set entry_tags = llm_router_deployment_tags_by_entry[
+            target_entry.client_model_id ~ '|' ~ target_entry.tier] -%}
+      {%- set policy_tags = entry_tags | reject('match', '^sensitivity:')
+            | reject('match', '^telemetry_') | list -%}
       {%- set sensitivity_tags = (['sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii']
             if target_entry.tier == 'hermes-router'
-            else llm_router_deployment_tags_by_model[target]
-                 | select('match', '^sensitivity:') | list) -%}
+            else entry_tags | select('match', '^sensitivity:') | list) -%}
       {%- set signature = (policy_tags + sensitivity_tags) | unique | sort -%}
       {%- if signature not in policies.tags -%}
       {%- set policies.tags = policies.tags + [signature] -%}
