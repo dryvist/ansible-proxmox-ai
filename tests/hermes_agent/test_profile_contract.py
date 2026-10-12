@@ -41,6 +41,7 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_vikunja_mcp_url": "https://mcp.example.com/vikunja",
     "hermes_agent_nautobot_mcp_url": "https://mcp.example.com/nautobot",
     "hermes_agent_splunk_mcp_enabled": True,
+    "hermes_agent_splunk_access": True,
     "hermes_agent_splunk_mcp_url": "https://mcp.example.com/splunk",
     "hermes_agent_docs_mcp_enabled": True,
     "hermes_agent_grep_mcp_enabled": True,

@@ -14,8 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/_llm-router-contract.yml").read_text())
 JOB = WORKFLOW["jobs"]["llm-router-contract"]
 SELECTOR = runpy.run_path(str(ROOT / ".github/scripts/select-contract-scope.py"))
-BATCHES = [{"batch": index, "playbooks": " ".join(paths)}
-           for index, paths in enumerate(SELECTOR["llm_router_matrix"]())]
+BATCHES = SELECTOR["router_shards"](SELECTOR["llm_router_matrix"]())
 LOOP = JOB["steps"][-1]["run"]
 
 
@@ -58,16 +57,23 @@ def _assert_calls(result, calls, batch):
 def test_matrix_paths_are_nonempty_unique_existing_playbooks():
     paths = [path for batch in BATCHES for path in batch["playbooks"].split()]
     assert all(batch["playbooks"].strip() for batch in BATCHES)
-    assert len(BATCHES) == len(SELECTOR["llm_router_matrix"]())
-    assert all(len(batch["playbooks"].split()) <= 3 for batch in BATCHES)
+    names = [batch["name"] for batch in BATCHES]
+    matrix_paths = [path for entry in SELECTOR["llm_router_matrix"]() for path in entry]
+    assert len(BATCHES) <= 16
+    assert all(name.strip() for name in names)
+    assert len(names) == len(set(names))
+    assert sorted(paths) == sorted(matrix_paths)
     assert len(paths) == len(set(paths)) == sum(len(entry) for entry in SELECTOR["llm_router_matrix"]())
-    assert JOB["strategy"]["matrix"]["playbook"] == "${{ fromJSON(inputs.playbooks) }}"
+    assert JOB["strategy"]["matrix"]["shard"] == "${{ fromJSON(inputs.playbooks) }}"
+    assert JOB["name"] == "Router contract: ${{ matrix.shard.name }}"
+    assert JOB["steps"][-1]["env"]["PLAYBOOKS"] == "${{ matrix.shard.playbooks }}"
+    assert JOB["if"] == "inputs.full_suite || inputs.playbooks != '[]'"
     assert all((ROOT / path).is_file() for path in paths)
     assert JOB["strategy"]["fail-fast"] is False
-    assert JOB["strategy"]["max-parallel"] == 32
+    assert JOB["strategy"]["max-parallel"] == 16
 
 
-@pytest.mark.parametrize("batch", BATCHES, ids=lambda batch: str(batch["batch"]))
+@pytest.mark.parametrize("batch", BATCHES, ids=lambda batch: batch["name"])
 def test_every_contract_executes_its_path_in_an_independent_cli_process(tmp_path, batch):
     result, calls = _replay(tmp_path, batch)
     assert result.returncode == 0, result.stderr
