@@ -46,9 +46,9 @@ def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> 
     seeded = {entry["role"]: entry for entry in defaults["llm_router_role_deployments"]}
     assert set(seeded) == {"judge", "recorder"}
     small_group = next(entry["route_group"] for entry in local_entries if entry["tier"] == "vllm")
-    assert seeded["judge"]["model"] == "{{ llm_router_small_capability_name }}"
+    assert seeded["judge"]["model"] == "{{ llm_router_small_model }}"
     assert seeded["judge"]["litellm_params"]["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
-    assert seeded["recorder"]["model"] == "{{ llm_router_small_capability_name }}"
+    assert seeded["recorder"]["model"] == "{{ llm_router_small_model }}"
     assert seeded["recorder"]["litellm_params"]["turn_off_message_logging"] is True
     assert small_group in capabilities
 
