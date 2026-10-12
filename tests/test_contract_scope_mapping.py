@@ -12,6 +12,7 @@ import yaml
 
 SELECTOR = Path(__file__).parents[1] / ".github/scripts/select-contract-scope.py"
 CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
+sys.path.insert(0, str(SELECTOR.parent))
 # The router matrix as the selector generates it from the workflow.
 GENERATED_MATRIX = runpy.run_path(str(SELECTOR))["llm_router_matrix"]()
 
