@@ -12,6 +12,7 @@ SELECTOR = Path(__file__).parents[1] / ".github/scripts/select-contract-scope.py
 CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
 # The router matrix as the selector generates it from the workflow.
 GENERATED_MATRIX = runpy.run_path(str(SELECTOR))["llm_router_matrix"]()
+ROUTER_SHARDS = runpy.run_path(str(SELECTOR))["router_shards"]
 
 
 def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
@@ -21,6 +22,10 @@ def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def router_paths(shards: list[dict[str, str]]) -> list[str]:
+    return [path for shard in shards for path in shard["playbooks"].split()]
 
 
 def test_hermes_agent_role_selects_its_role_tests() -> None:
@@ -38,7 +43,7 @@ def test_changed_llm_router_playbook_selects_its_matrix_entry() -> None:
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
     assert len(selection["llm_router_playbooks"]) == 1
-    assert "tests/llm_router/test_review_key_scopes.yml" in selection["llm_router_playbooks"][0].split()
+    assert "tests/llm_router/test_review_key_scopes.yml" in selection["llm_router_playbooks"][0]["playbooks"].split()
 
 
 def test_changed_router_playbook_selects_only_its_playbook() -> None:
@@ -47,7 +52,7 @@ def test_changed_router_playbook_selects_only_its_playbook() -> None:
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
     assert len(selection["llm_router_playbooks"]) == 1
-    assert selection["llm_router_playbooks"][0].split() == [
+    assert selection["llm_router_playbooks"][0]["playbooks"].split() == [
         "tests/llm_router/test_service_restart_policy.yml"
     ]
 
@@ -60,7 +65,8 @@ def test_registered_router_playbook_selects_its_own_entry(playbook: str) -> None
     result = run_selector(playbook)
 
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["llm_router_playbooks"] == [playbook]
+    shards = json.loads(result.stdout)["llm_router_playbooks"]
+    assert router_paths(shards) == [playbook]
 
 
 @pytest.mark.parametrize(("imported", "importer"), [
@@ -76,7 +82,7 @@ def test_imported_router_playbook_selects_its_importing_entry(imported: str, imp
     assert result.returncode == 0, result.stderr
     entries = json.loads(result.stdout)["llm_router_playbooks"]
     assert len(entries) == 1
-    assert importer in entries[0].split()
+    assert importer in entries[0]["playbooks"].split()
 
 
 @pytest.mark.parametrize("path", [
@@ -130,7 +136,7 @@ def test_llm_router_role_paths_select_the_complete_router_contract() -> None:
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
     full = json.loads(run_selector("--full").stdout)
-    assert set(selection["llm_router_playbooks"]) == set(full["llm_router_playbooks"])
+    assert selection["llm_router_playbooks"] == full["llm_router_playbooks"]
     assert {"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"} <= set(selection["pytest_targets"])
 
 
@@ -184,4 +190,21 @@ def test_full_suite_keeps_every_router_matrix_entry() -> None:
 
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
-    assert len(selection["llm_router_playbooks"]) == len(GENERATED_MATRIX)
+    assert len(selection["llm_router_playbooks"]) <= 16
+    assert sorted(router_paths(selection["llm_router_playbooks"])) == sorted(
+        path for entry in GENERATED_MATRIX for path in entry)
+
+
+def test_router_shards_pack_topics_and_split_only_oversized_topics() -> None:
+    paths = [f"tests/llm_router/test_alpha_{index}_contract.yml" for index in range(3)]
+    paths.extend(f"tests/llm_router/test_topic{index}_contract.yml" for index in range(14))
+    shards = ROUTER_SHARDS([[path] for path in paths])
+    alpha = [shard for shard in shards if "alpha " in shard["name"]]
+    counts = [len(shard["playbooks"].split()) for shard in shards]
+
+    assert len(shards) <= 16
+    assert len(alpha) == 2
+    assert {shard["name"].split(", ", 1)[0] for shard in alpha} == {"alpha 1/2", "alpha 2/2"}
+    assert any(", " in shard["name"] for shard in shards)
+    assert max(counts) - min(counts) <= 1
+    assert sorted(router_paths(shards)) == sorted(paths)

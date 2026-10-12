@@ -5,7 +5,7 @@
 # without a matrix entry is decorative — so the list only grows, and it grew
 # past the repo's per-file token budget twice while it repeated a full step
 # block (name, comment, run) per check. A `strategy.matrix` collapses that to
-# one shared step and schedules each playbook as an independent contract job.
+# one shared step and schedules named router playbook groups as contract jobs.
 #
 # Called by _data-contract.yml, so its result still reaches the Merge Gate
 # through that workflow's conclusion.
@@ -30,16 +30,17 @@ permissions:
 
 jobs:
   llm-router-contract:
-    name: Router contract ${{ strategy.job-index }}
+    name: "Router contract: ${{ matrix.shard.name }}"
     if: inputs.full_suite || inputs.playbooks != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+    timeout-minutes: ${{ inputs.timeout_minutes < 30 && 30 || inputs.timeout_minutes }}
     strategy:
       fail-fast: false
-      max-parallel: 32
+      max-parallel: 16
       matrix:
-        # One playbook per matrix item lets independent jobs schedule all paths.
-        playbook: ${{ fromJSON(inputs.playbooks) }}
+        # Each named shard runs its playbooks through the shared loop.
+        shard: ${{ fromJSON(inputs.playbooks) }}
+        # This commented playbook list is the selector's single source of router checks.
         # - tests/llm_router/test_vllm_tier_switch.yml
         # - tests/llm_router/test_vllm_tier_switch_on.yml
         # - tests/llm_router/test_vllm_tier_switch_guard.yml
@@ -175,8 +176,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r .github/requirements-ci.txt
 
-      # Cache Galaxy content keyed on requirements.yml. install --force
-      # reinstalls every entry, so restored content never satisfies it alone.
+      # Exact-key hits already match requirements.yml; misses and partial restores run the forced install.
       # Same v2 key/paths as dryvist/.github's _ansible-ci.yml on main, so a warm run of
       # either workflow warms the other.
       - name: Cache Ansible Galaxy content
@@ -191,12 +191,13 @@ jobs:
             ansible-galaxy-v2-${{ runner.os }}-
 
       - name: Install Ansible dependencies
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
         run: |
           ansible-galaxy install --force -r requirements.yml
 
       - name: Run llm_router contract playbook
         env:
-          PLAYBOOKS: ${{ matrix.playbook }}
+          PLAYBOOKS: ${{ matrix.shard.playbooks }}
         run: |
           result=0
           for playbook in $PLAYBOOKS; do
@@ -248,6 +249,7 @@ jobs:
             ansible-galaxy-v2-${{ runner.os }}-
 
       - name: Install Ansible dependencies
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
         run: |
           ansible-galaxy install --force -r requirements.yml
 

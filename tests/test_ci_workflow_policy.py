@@ -106,6 +106,7 @@ def test_promotion_timeout_is_sixty_only_for_same_repo_develop_into_main(
 HERMES_UI_TIMEOUT = (
     "${{ (matrix.scenario == 'hermes_ui' && inputs.timeout_minutes < 25) && 25 || inputs.timeout_minutes }}"
 )
+ROUTER_TIMEOUT = "${{ inputs.timeout_minutes < 30 && 30 || inputs.timeout_minutes }}"
 
 
 @pytest.mark.parametrize(("scenario", "caller", "expected"), [
@@ -119,6 +120,11 @@ def test_hermes_ui_timeout_only_raises_hermes_ui(scenario: str, caller: int, exp
     assert _evaluate_timeout(HERMES_UI_TIMEOUT, context) == expected
 
 
+@pytest.mark.parametrize(("caller", "expected"), [(15, 30), (60, 60)])
+def test_router_contract_timeout_is_thirty_or_preserves_the_caller(caller: int, expected: int) -> None:
+    assert _evaluate_timeout(ROUTER_TIMEOUT, {"inputs.timeout_minutes": caller}) == expected
+
+
 @pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda path: path.name)
 def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
     for name, job in yaml.safe_load(path.read_text())["jobs"].items():
@@ -127,6 +133,8 @@ def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
             allowed = {PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"}
             if (path.name, name) == ("_molecule.yml", "test"):
                 allowed = {HERMES_UI_TIMEOUT}
+            elif (path.name, name) == ("_llm-router-contract.yml", "llm-router-contract"):
+                allowed = {ROUTER_TIMEOUT}
             assert value in allowed, f"{path.name}:{name}"
 
 
@@ -152,6 +160,22 @@ def test_ansible_install_uses_the_pinned_ci_requirements(workflow: str, job: str
     assert setup["with"]["cache-dependency-path"] == ".github/requirements-ci.txt"
     install = next(step for step in steps if "pip install" in step.get("run", ""))
     assert "pip install -r .github/requirements-ci.txt" in install["run"]
+
+
+@pytest.mark.parametrize(("workflow", "job"), [
+    ("_data-contract.yml", "syntax-check"),
+    ("_data-contract.yml", "verify-inventory-load"),
+    ("_llm-router-contract.yml", "llm-router-contract"),
+    ("_llm-router-contract.yml", "llm-router-registry-contract"),
+    ("_molecule.yml", "test"),
+])
+def test_galaxy_install_skips_exact_cache_hits(workflow: str, job: str) -> None:
+    steps = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"]
+    cache = next(step for step in steps if step.get("id") == "galaxy-cache")
+    install = next(step for step in steps if "ansible-galaxy install --force -r requirements.yml"
+                   in step.get("run", ""))
+    assert cache["uses"].startswith("actions/cache@")
+    assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
 
 
 def test_ci_requirements_pin_exact_versions() -> None:
