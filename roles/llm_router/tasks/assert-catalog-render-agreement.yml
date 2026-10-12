@@ -51,19 +51,22 @@
       {{ llm_model_catalog_models
          | selectattr('name', 'equalto', item.catalog_model_name) | first }}
     _llm_router_catalog_profile: >-
-      {{ (_llm_router_catalog_model.profiles | default({})).get(item.catalog_profile_name, {}) }}
+      {{ (_llm_router_catalog_model.profiles | default({})).get(item.catalog_profile_name | default(''), {}) }}
 
 - name: Assert rendered per-model limits match the catalog projection
   ansible.builtin.set_fact:
     _llm_router_catalog_render_mismatches: >-
       {%- set ns = namespace(errors=[]) -%}
       {%- set rendered_models = _llm_router_parity_config.model_list | default([]) -%}
-      {%- set local_tiers = ['local-large', 'light', 'vllm', 'hermes-local', 'cpu-moe', 'cpu-9b'] -%}
+      {%- set local_tiers = ['local-large', 'light', 'vllm', 'gpu', 'hermes-local', 'cpu-moe', 'cpu-9b'] -%}
       {%- for model in llm_router_registry_enabled -%}
       {%- set model_name = model.route_group | default(model.client_model_id) -%}
-      {%- set deployments = rendered_models | selectattr('model_name', 'equalto', model_name) | list -%}
+      {%- set upstream_model = model.litellm_model_name | default(model.provider ~ '/' ~ model.upstream_model_id) -%}
+      {%- set deployments = rendered_models
+            | selectattr('model_name', 'equalto', model_name)
+            | selectattr('litellm_params.model', 'equalto', upstream_model) | list -%}
       {%- set profile_endpoints = {'llama_cpp_vulkan': llm_router_llm_vllm_base_url | default(none)} -%}
-      {%- set expected_endpoint = profile_endpoints.get(model.catalog_profile_name, none) -%}
+      {%- set expected_endpoint = profile_endpoints.get(model.catalog_profile_name | default(''), none) -%}
       {%- if expected_endpoint is not none -%}
       {%- set deployments = deployments | selectattr('litellm_params.api_base', 'equalto', expected_endpoint) | list -%}
       {%- endif -%}
@@ -120,7 +123,7 @@
       {%- endfor -%}
       {{ ns.errors | to_json }}
 
-- name: Assert rendered router limits agree with the shared model catalog
+- name: Assert rendered router limits match their catalog or registry projections
   ansible.builtin.assert:
     quiet: true
     that:
@@ -129,5 +132,5 @@
       Rendered model limits disagree with the shared catalog:
       {{ _llm_router_catalog_render_mismatches | from_json }}
     success_msg: >-
-      Rendered context, output, concurrency, and timeout values agree with the
-      shared model catalog (with the configured local timeout/pre-fill caps).
+      Rendered context, output, concurrency, and timeout values match their
+      catalog or registry projections (with the configured local timeout/pre-fill caps).
