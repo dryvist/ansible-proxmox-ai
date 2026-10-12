@@ -67,6 +67,10 @@
 # hermes user's plain $HOME, one level above the actual profile home. Pinned
 # to the same value already used for the HERMES_HOME env var below, so a
 # profile-scoped job's tools land in its own profile home.
+# Upstream `tools.cronjob_tools.cronjob` accepts per-job `enabled_toolsets`,
+# but the `hermes cron create` CLI omits that field. Use the same native tool
+# handler only for jobs that declare a per-job allowlist, preserving the
+# normal CLI path for every other direct Cron job.
 - name: "Direct cron | Build create argv for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_argv: >-
@@ -82,6 +86,28 @@
             '--workdir', item.hermes_home | default(hermes_agent_hermes_home)]
          + (['--failure-deliver', hermes_agent_cron_failure_deliver]
             if (hermes_agent_cron_failure_deliver | length > 0) else []) }}
+    hermes_agent_direct_cronjob_argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - >-
+        import json,sys; from tools.cronjob_tools import cronjob;
+        result=json.loads(cronjob(**json.load(sys.stdin)));
+        print(json.dumps(result)); sys.exit(0 if result.get('success') else 1)
+    hermes_agent_direct_cronjob_spec:
+      action: create
+      schedule: "{{ item.schedule }}"
+      prompt: "{{ hermes_agent_direct_prompt }}"
+      name: "{{ item.name }}"
+      deliver: "{{ hermes_agent_direct_deliver }}"
+      skill: "{{ item.skill | default('') }}"
+      script: "{{ item.script | default('') }}"
+      model: "{{ hermes_agent_direct_model }}"
+      provider: >-
+        {{ hermes_agent_direct_model_provider
+           if hermes_agent_direct_model | length > 0 else '' }}
+      failure_deliver: "{{ hermes_agent_cron_failure_deliver }}"
+      workdir: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+      enabled_toolsets: "{{ item.enabled_toolsets | default([]) }}"
   when: hermes_agent_direct_wanted | bool
 
 # Deliberately NOT gated on hermes_agent_direct_wanted: the removal task below
@@ -147,7 +173,9 @@
          | combine({'model': hermes_agent_direct_model}
                   if hermes_agent_direct_model | length > 0 else {})
          | combine({'model_provider': hermes_agent_direct_model_provider}
-                  if hermes_agent_direct_model | length > 0 else {}))
+                  if hermes_agent_direct_model | length > 0 else {})
+         | combine({'enabled_toolsets': item.enabled_toolsets}
+                  if item.enabled_toolsets is defined else {}))
          | to_json | hash('sha256') }}
   when: hermes_agent_direct_wanted | bool
 
@@ -196,6 +224,23 @@
   changed_when: true
   when:
     - hermes_agent_direct_wanted | bool
+    - item.enabled_toolsets is not defined
+    - >-
+      item.name not in (hermes_agent_direct_cron_list.stdout | default(''))
+      or hermes_agent_direct_marker_probe.changed | bool
+
+- name: "Direct cron | Create with job-scoped toolsets: {{ item.name }}"
+  ansible.builtin.command:
+    argv: "{{ hermes_agent_direct_cronjob_argv }}"
+    stdin: "{{ hermes_agent_direct_cronjob_spec | to_json }}"
+  environment:
+    HERMES_HOME: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - hermes_agent_direct_wanted | bool
+    - item.enabled_toolsets is defined
     - >-
       item.name not in (hermes_agent_direct_cron_list.stdout | default(''))
       or hermes_agent_direct_marker_probe.changed | bool

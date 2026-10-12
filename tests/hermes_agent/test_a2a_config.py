@@ -127,25 +127,25 @@ def test_defaults_leave_existing_gateway_and_slack_config_byte_unchanged() -> No
         )
         assert slack_config == LEGACY_SLACK_CONFIG
 
-    # The existing Slack allowlist remains byte-equivalent with no peers.
+    # Slack inherits the base Cron list, which no longer includes Kanban.
     toolsets = defaults["hermes_agent_slack_toolsets"]
     rendered_toolsets = _environment().from_string(str(toolsets)).render(
-        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"] + ["kanban"],
+        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_a2a_peers=[],
     )
-    legacy_slack_toolsets = (
-        defaults["hermes_agent_api_server_toolsets"] + ["kanban", "clarify"]
-    )
-    assert yaml.safe_load(rendered_toolsets) == legacy_slack_toolsets
+    expected_slack_toolsets = defaults["hermes_agent_api_server_toolsets"] + ["clarify"]
+    assert yaml.safe_load(rendered_toolsets) == expected_slack_toolsets
     policy = yaml.safe_load(_toolsets_fragment(
-        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"] + ["kanban"],
+        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_api_server_key="",
         hermes_agent_api_server_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_slack_bot_token="fixture-slack-token",
-        hermes_agent_slack_toolsets=legacy_slack_toolsets,
+        hermes_agent_slack_toolsets=expected_slack_toolsets,
         hermes_agent_a2a_peers=[],
     ))
-    assert policy["platform_toolsets"]["slack"] == legacy_slack_toolsets
+    assert policy["platform_toolsets"]["slack"] == expected_slack_toolsets
+    assert "kanban" not in policy["platform_toolsets"]["cron"]
+    assert "kanban" not in policy["platform_toolsets"]["slack"]
 
 
 def test_enabled_a2a_renders_authenticated_inbound_peer_and_slack_config() -> None:
@@ -191,13 +191,13 @@ def test_enabled_a2a_renders_authenticated_inbound_peer_and_slack_config() -> No
     slack_toolsets_expression = _environment().from_string(
         str(defaults["hermes_agent_slack_toolsets"])
     ).render(
-        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"] + ["kanban"],
+        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_a2a_peers=peers,
     )
     slack_toolsets = yaml.safe_load(slack_toolsets_expression)
     assert "a2a" in slack_toolsets
     policy = yaml.safe_load(_toolsets_fragment(
-        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"] + ["kanban"],
+        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_api_server_key="",
         hermes_agent_api_server_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_slack_bot_token="fixture-slack-token",

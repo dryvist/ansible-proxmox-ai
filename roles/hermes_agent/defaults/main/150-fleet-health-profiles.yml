@@ -66,8 +66,9 @@ hermes_agent_fleet_health_cron_prompt: >-
 # environment, so simply omitting a line would leave the default profile's
 # credential silently readable. `mcp` names the mcp_servers entries
 # templates/config-profile.yaml.j2 renders. `skills` are copied from the
-# nix-hermes bundle into the profile's own skills/dryvist/ dir — a card's
-# --skill only resolves what its assignee actually has.
+# nix-hermes bundle into the profile's own skills/dryvist/ dir. The
+# hermes_agent/github-issues-api skill is role-local and copied separately.
+# A card's --skill only resolves what its assignee actually has.
 #
 # NOTE: profile isolation is a CONFIG/tool-availability boundary, not an OS
 # sandbox — every profile runs as the same `hermes` OS user in the same LXC,
@@ -82,12 +83,16 @@ hermes_agent_profiles:
     mcp: [splunk, docs]
     env: [slack, splunk]
     skills: [dryvist/splunk-monitor]
+    toolsets:
+      cron: []
     soul_addendum_file: soul-splunk-admin.md.j2
   - name: homelab-admin
     description: Incident lifecycle + fabric health (evidence-before-resolve)
     mcp: [docs]                     # nautobot once its gateway route goes live
     env: [slack, zammad]
     skills: [dryvist/zammad-incidents]
+    toolsets:
+      cron: []
     soul_addendum_file: soul-homelab-admin.md.j2
   - name: github-maint
     description: Read-only repository-maintenance analyst (proposals out-of-band, no repo writes)
@@ -98,23 +103,22 @@ hermes_agent_profiles:
     mcp: [docs, grep]
     env: [slack, github]
     skills: [dryvist/github-issues]
+    toolsets:
+      cron: []
     soul_addendum_file: soul-github-maint.md.j2
   - name: orchestrator
     description: Kanban decomposition and assignment owner; the only profile that reads the Vikunja backlog
     mcp: [vikunja, docs]
     env: []
-    skills: []
+    skills: [hermes_agent/github-issues-api]
+    toolsets:
+      cli: [kanban]
+      cron: [kanban]
     soul_addendum_file: soul-orchestrator.md.j2
 
-# Kanban is no longer used for recurring work at all (native-cron reframe,
-# 18/18): the board keeps doing what it is actually for — ad-hoc work and the
-# follow-up cards these cron jobs themselves file via kanban_create (review's
-# gap follow-ups, anomaly-hunt's findings, ai-news's actionable items) — but
-# nothing here declares a recurring Kanban card any more. docs-sync (below,
-# hermes_agent_direct_cron_jobs) was the last one; `hermes cron create` has no
-# max_runtime/max_retries/assignee equivalent to kanban create's, so those
-# three fields do not carry over for any of the 18 — see the PR that removed
-# hermes_agent_kanban_cards for the full gap report.
+# Card-filing Cron jobs declare Kanban in their per-job tool allowlist. Most
+# run from the orchestrator profile; credential-bound jobs keep their own
+# profile and receive Kanban only for the job that needs to file a card.
 
 # Every `hermes cron`-managed job this role seeds that is NOT agentic (script
 # only, no model snapshot) — every agentic job (the whole
