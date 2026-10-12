@@ -61,9 +61,11 @@ value — with one caveat noted where checked:
 | `prometheus-scrape` | none (metrics only) | n/a | scrape auth, not a chat consumer |
 | `zammad` | cheap | local | AI provider integration |
 | `github-actions` | small, medium, large, review-private, review-local, CI Luna | local | CI, private repos |
-| `github-actions-oss` | review-oss | local | CI, public repos |
-| `opencode` \| `raycast` \| `codex` \| `cursor` \| `claude-code` | full | subscription | one key per **app**, shared across every host that runs it |
-| `litellm-local` | small, medium, large | local | one workstation's local proxy |
+| `github-actions-oss` | review-oss, medium, local and paid API-key rungs | local (unbudgeted) | CI, public repos |
+| `opencode` | small, medium, large, embed, ocr | local | one key per **app**, shared across every host that runs it |
+| `raycast` \| `codex` \| `cursor` \| `claude-code` | full | subscription | one key per **app**, shared across every host that runs it |
+| `litellm-local` | small, medium, large, embed, ocr | local | one workstation's local proxy |
+| `litellm-local-workstation` | small, medium, large, embed, ocr | local | the primary workstation's local proxy |
 | `hermes-<profile>` | per-profile | subscription (`default`) / local (named) | one key per Hermes operating profile |
 
 **Confirmed shared-across-device today:** `codex`, `cursor`, `raycast`,
