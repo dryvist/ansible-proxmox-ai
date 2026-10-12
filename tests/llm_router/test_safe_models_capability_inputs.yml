@@ -1,0 +1,89 @@
+---
+- name: Resolve raw catalog input and capability targets before the safe-model assertion
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+        llm_cpu_scaler:
+          tags:
+            moe: cpu-moe-fixture
+            nine_b: cpu-9b-fixture
+      containers:
+        cpu-moe-fixture:
+          ip: 127.0.0.1
+          tags: [cpu-moe-fixture]
+        cpu-9b-fixture:
+          ip: 127.0.0.1
+          tags: [cpu-9b-fixture]
+    bao_local_llm_secrets: {}
+    bao_apps_secrets: {}
+    ai_default_model: "{{ llm_router_primary_serving_model }}"
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Add the local GPU and held-out vLLM fixture groups
+      ansible.builtin.add_host:
+        name: pro6000-fixture
+        groups: [llm_gpu_group, llm_router_group]
+        ansible_connection: local
+
+    - name: Add the disabled vLLM group fixture
+      ansible.builtin.add_host:
+        name: vllm-fixture
+        groups: llm_vllm_group
+        ansible_connection: local
+
+    - name: Load role defaults as shipped
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Select the live Pro6000 and CPU small capability rungs
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+        llm_active_profile: small
+        llm_router_llm_fast_base_url: http://localhost:10434/v1
+        llm_router_llm_light_base_url: http://localhost:10434/v1
+        llm_router_llm_large_base_url: http://localhost:11434/v1
+        llm_router_llm_large_standby_base_url: ""
+        llm_router_llm_gpu_base_url: http://localhost:10434/v1
+        llm_router_llm_vllm_enabled: false
+        llm_router_llm_vllm_base_url: http://localhost:10434/v1
+        llm_router_vllm_precheck_passed: false
+
+    - name: Load registry and canonical role projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Prove the failing inputs are present and registry-backed
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - ai_default_model == llm_router_primary_serving_model
+          - _default_route.route_group == llm_router_primary_model
+          - llm_router_routine_model == llm_router_small_model
+          - _judge_target == llm_router_small_model
+          - _small_member.context_window is not none
+      vars:
+        _default_route: >-
+          {{ llm_router_model_registry
+             | selectattr('client_model_id', 'equalto', ai_default_model) | first }}
+        _judge_target: >-
+          {{ llm_router_role_deployments
+             | selectattr('role', 'equalto', hermes_goal_judge_model)
+             | map(attribute='model') | first }}
+        _small_member: >-
+          {{ llm_router_capability_members
+             | selectattr('route_group', 'equalto', llm_router_small_model)
+             | selectattr('context_window', 'defined')
+             | rejectattr('context_window', 'none') | first }}
+
+    - name: The raw default id and role alias resolve to safe capability groups
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-safe-models.yml"
