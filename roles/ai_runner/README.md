@@ -46,7 +46,9 @@ For each undone, unassigned task carrying this guest's `AI_RUNNER_PROFILE_LABEL`
   `--dangerously-bypass-approvals-and-sandbox`; both receive the requested model
   and Codex receives `model_reasoning_effort` when `effort` is set. Jobs have a
   hard `JOB_TIMEOUT_SECONDS` ceiling,
-- posts the output as a task comment, marks the task done, pushes an ntfy alert.
+- posts the output as a task comment, marks the task done, pushes successful
+  completions to `ai_runner_ntfy_status_topic` (`status`) and failures to
+  `ai_runner_ntfy_topic` (`ai-jobs`).
 
 Queue a Codex job by creating a task in the AI Jobs project with the
 `profile:ai-github` label and a description like:
@@ -81,7 +83,7 @@ tier (WS7A spec). Empty tokens leave the worker idle rather than failing.
 | `ai_runner_vikunja_url` / `ai_runner_vikunja_project` | dispatch queue |
 | `ai_runner_profile_label` | which jobs this guest claims |
 | `ai_runner_poll_interval_seconds` / `ai_runner_job_timeout_seconds` | poll + kill timings |
-| `ai_runner_ntfy_topic` | result-push topic |
+| `ai_runner_ntfy_topic` / `ai_runner_ntfy_status_topic` | failure / success ntfy topics |
 
 ## Runtime verification
 
