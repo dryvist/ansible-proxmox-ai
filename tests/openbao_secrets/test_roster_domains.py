@@ -1,5 +1,6 @@
 """Roster-backed OpenBao domains preserve the static and identity views."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -82,7 +83,7 @@ def test_optional_fetch_skip_does_not_apply_to_required_domains():
     )
 
 
-def test_roster_name_cannot_collide_with_a_static_domain():
+def test_domain_names_map_to_distinct_approle_env_prefixes():
     defaults = yaml.safe_load(DOMAIN_DEFAULTS.read_text(encoding="utf-8"))
     tasks = yaml.safe_load(ROLE_TASKS.read_text(encoding="utf-8"))
     assertion = next(
@@ -90,14 +91,21 @@ def test_roster_name_cannot_collide_with_a_static_domain():
         for task in tasks
         if "ansible.builtin.assert" in task
     )
-    overlap = NativeEnvironment().from_string(
-        "{{ " + assertion["that"][0] + " }}"
-    ).render(
-        _openbao_secrets_static_domains=defaults["_openbao_secrets_static_domains"],
-        ai_agents={"hermes-private": {}},
-    )
+    env = NativeEnvironment()
+    env.filters["regex_replace"] = lambda value, pattern, repl: re.sub(pattern, repl, value)
+    distinct = env.from_string("{{ " + assertion["that"][0] + " }}")
 
-    assert overlap is False
+    assert distinct.render(openbao_secrets_domains=defaults["_openbao_secrets_static_domains"])
+    assert distinct.render(openbao_secrets_domains=_render_domains(ROSTER))
+    for colliding in (
+        {"hermes-private": {}},
+        {"hermes_private": {}},
+        {"llm-router-agent-keys": {}},
+        {"llm_router_agent_keys": {}},
+        {"agentgateway-agent-keys": {}},
+        {"a-x": {}, "a_x": {}},
+    ):
+        assert distinct.render(openbao_secrets_domains=_render_domains(colliding)) is False, colliding
 
 
 
