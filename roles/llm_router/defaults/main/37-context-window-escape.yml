@@ -79,6 +79,18 @@ llm_router_context_window_wider_groups: >-
 llm_router_context_window_override_wider_groups: >-
   {{ (llm_router_context_window_wider_groups + llm_router_ci_luna_groups)
      | unique | list }}
+llm_router_small_alias_local_zdr_entrypoint: >-
+  {{ llm_router_small_capability_name in llm_router_model_group_aliases
+     and llm_router_model_group_aliases.get(llm_router_small_capability_name)
+         == llm_router_primary_large_model
+     and llm_router_primary_large_model in llm_router_rendered_capability_names
+     and llm_router_d1_group_class_by_name.get(llm_router_primary_large_model) == 'local'
+     and llm_router_small_capability_name in llm_router_zdr_entry_point_names }}
+llm_router_small_alias_zdr_context_window_targets: >-
+  {%- set _override = llm_router_entry_point_fallback_overrides.get(llm_router_small_capability_name) -%}
+  {%- set _wider = (_override | intersect(llm_router_context_window_override_wider_groups))
+        if _override is not none else llm_router_context_window_wider_groups -%}
+  {{ _wider | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
 llm_router_context_window_no_wider_entry_points: >-
   {%- set ns = namespace(names=[]) -%}
   {%- for _name, _chain in llm_router_entry_point_fallback_overrides.items() -%}
@@ -86,7 +98,11 @@ llm_router_context_window_no_wider_entry_points: >-
   {%- set ns.names = ns.names + [_name] -%}
   {%- endif -%}
   {%- endfor -%}
-  {{ ns.names }}
+  {%- if llm_router_small_alias_local_zdr_entrypoint
+        and llm_router_small_alias_zdr_context_window_targets | length == 0 -%}
+  {%- set ns.names = ns.names + [llm_router_small_capability_name] -%}
+  {%- endif -%}
+  {{ ns.names | unique | list }}
 #
 # fast/subagent (55-roles.yml) ADD TWO MORE KEYS here — a DIFFERENT failure
 # mode from the block above. Those two DB-seeded roles' ORDINARY fallback
@@ -108,6 +124,10 @@ llm_router_context_window_fallbacks: >-
   {%- set _override = llm_router_entry_point_fallback_overrides.get(group) -%}
   {%- set _wider = (_override | intersect(llm_router_context_window_override_wider_groups))
         if _override is not none else llm_router_context_window_wider_groups -%}
+  {%- if group == llm_router_small_capability_name
+        and llm_router_small_alias_local_zdr_entrypoint -%}
+  {%- set _wider = llm_router_small_alias_zdr_context_window_targets -%}
+  {%- endif -%}
   {%- if _wider | length > 0 -%}
   {%- set ns.pairs = ns.pairs + [{group: _wider}] -%}
   {%- endif -%}
