@@ -1,0 +1,81 @@
+---
+- name: Install the llama.cpp release binary
+  when: >-
+    llama_cpp_server_check.rc != 0
+    or not llama_cpp_asset_marker_stat.stat.exists
+    or (llama_cpp_asset_marker.content | b64decode | trim)
+    != llama_cpp_llamacpp_asset_name
+  block:
+    - name: Create a temporary extraction directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: llama-cpp
+      register: llama_cpp_extract_tmp
+
+    - name: Install the downloaded llama.cpp release
+      when: not ansible_check_mode
+      block:
+        - name: Download the pinned llama.cpp release asset through the cache
+          ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
+          vars:
+            llamacpp_release_asset_name: "{{ llama_cpp_llamacpp_asset_name }}"
+            llamacpp_release_asset_sha256: "{{ llama_cpp_llamacpp_asset_sha256 }}"
+            llamacpp_release_download_path: >-
+              {{ llama_cpp_extract_tmp.path }}/{{ llama_cpp_llamacpp_asset_name }}
+
+        - name: Extract the pinned llama.cpp release tarball
+          ansible.builtin.unarchive:
+            src: "{{ llama_cpp_extract_tmp.path }}/{{ llama_cpp_llamacpp_asset_name }}"
+            dest: "{{ llama_cpp_extract_tmp.path }}"
+            remote_src: true
+
+        - name: Locate the extracted llama-server binary
+          ansible.builtin.find:
+            paths: "{{ llama_cpp_extract_tmp.path }}"
+            patterns: llama-server
+            file_type: file
+            recurse: true
+          register: llama_cpp_server_find
+
+        - name: Assert the llama-server binary was found in the archive
+          ansible.builtin.assert:
+            that:
+              - llama_cpp_server_find.matched | int > 0
+            fail_msg: "No 'llama-server' binary found in the llama.cpp release archive — the layout may have changed."
+
+        # Flatten the release's bin dir into the install dir so the binary and its
+        # bundled .so files share one directory (also LD_LIBRARY_PATH in the unit).
+        # cp -a, not ansible.builtin.copy: the release ships SONAME symlinks
+        # (libllama-common.so.0 -> libllama-common.so.0.0.NNNN) that copy with
+        # remote_src drops, leaving the binary unable to resolve its own libs.
+        - name: Install the llama.cpp bin directory contents
+          ansible.builtin.command:
+            argv:
+              - cp
+              - -a
+              - --remove-destination
+              - "{{ llama_cpp_server_find.files[0].path | dirname }}/."
+              - "{{ llama_cpp_install_dir }}/"
+          changed_when: true
+          notify: Restart llama-server
+
+        - name: Record the installed llama.cpp asset name
+          ansible.builtin.copy:
+            content: "{{ llama_cpp_llamacpp_asset_name }}\n"
+            dest: "{{ llama_cpp_llamacpp_asset_marker }}"
+            owner: "{{ llama_cpp_user }}"
+            group: "{{ llama_cpp_group }}"
+            mode: "0640"
+
+        - name: Remove the temporary extraction directory
+          ansible.builtin.file:
+            path: "{{ llama_cpp_extract_tmp.path }}"
+            state: absent
+    - name: Preview the llama.cpp release install in check mode
+      ansible.builtin.debug:
+        msg: >-
+          Would install {{ llama_cpp_llamacpp_asset_name }}
+          (sha256 {{ llama_cpp_llamacpp_asset_sha256 }}, tag {{ llamacpp_release_tag }})
+          to {{ llama_cpp_install_dir }}.
+      register: llama_cpp_install_preview
+      when: ansible_check_mode

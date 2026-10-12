@@ -225,7 +225,16 @@
          | selectattr('stdout', 'defined')
          | rejectattr('stdout', 'search', 'Will download 0 files')
          | list | length > 0 }}
-  when: llm_gpu_serving_cache_sync_operation == 'download'
+  when:
+    - not ansible_check_mode
+    - llm_gpu_serving_cache_sync_operation == 'download'
+
+- name: Keep artifact downloads pending only after a real preview
+  ansible.builtin.set_fact:
+    llm_gpu_serving_cache_sync_download_pending: false
+  when:
+    - ansible_check_mode
+    - llm_gpu_serving_cache_sync_operation == 'download'
 
 # A profile converge replaces the running server anyway, so it clears its own
 # GPU work here; every other caller keeps the strict idle-GPU check below.
@@ -255,6 +264,7 @@
   register: llm_gpu_serving_cache_sync_compute_apps
   changed_when: false
   when:
+    - not ansible_check_mode
     - llm_gpu_serving_cache_sync_operation == 'download'
     - llm_gpu_serving_cache_sync_download_pending | bool
 
@@ -268,6 +278,7 @@
       Clear the benchmark workload and retry through the runner.
     quiet: true
   when:
+    - not ansible_check_mode
     - llm_gpu_serving_cache_sync_operation == 'download'
     - llm_gpu_serving_cache_sync_download_pending | bool
 
