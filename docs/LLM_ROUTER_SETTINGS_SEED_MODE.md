@@ -1,12 +1,12 @@
-# llm_router router_settings seed mode and LiteLLM 1.104.0 schema upgrade
+# llm_router router_settings seed mode and LiteLLM schema upgrade
 
 Split out of `roles/llm_router/README.md` ("Editing ladders in the UI") to
 keep both files under the repo's per-file token budget
-(`.token-limits.yaml`). The router-settings API details below are a historical
-source check against LiteLLM 1.102.0; LiteLLM 1.104.0 refactored the proxy
-internals, so re-verify those exact paths before relying on them for a later
-upgrade. The schema-upgrade section describes the current `litellm==1.104.2` migration
-contract.
+(`.token-limits.yaml`). The router-settings API details below come from a source check against an
+older LiteLLM release; a later release refactored the proxy internals, so
+re-verify those exact paths before relying on them. The schema-upgrade section
+describes the migration contract of the release pinned in
+`roles/llm_router/defaults/main/00-identity.yml`.
 
 - **Startup merge direction**: with `store_model_in_db: true`, the database
   row wins over `config.yaml` for every key it carries — `ProxyConfig.
@@ -36,7 +36,7 @@ contract.
   changes are served from `user_api_key_cache`, in-memory TTL 60s by default
   (`proxy_server.py:1660`, `general_settings.user_api_key_cache_ttl`, read at
   `proxy_server.py:5860`).
-  - New in the 1.102.0 source check (additive, not consulted by this role's converge):
+  - Found in the same source check (additive, not consulted by this role's converge):
     `management_endpoints/router_settings_endpoints.py` adds a Key > Team
     hierarchical `router_settings` lookup ahead of the global one this doc
     describes. The benchmark key uses per-key tag filtering; other seeded keys
@@ -67,34 +67,34 @@ Scope is deliberately narrow, and the reasoning is in
 
 `main.yml` runs `prisma db push` as the service user after generating the
 client for the installed schema. It does not pass `--accept-data-loss`. On
-startup, LiteLLM 1.104.0 uses Prisma migrations and its migration check is
+startup, the pinned LiteLLM release uses Prisma migrations and its migration check is
 enabled by default; `litellm.env.j2` sets
 `ENFORCE_PRISMA_MIGRATION_CHECK=True` explicitly. Do not set
 `DISABLE_SCHEMA_UPDATE` or turn off the migration check.
 
 This router's existing database was managed by `db push` and has no
-`_prisma_migrations` ledger. LiteLLM 1.104.0's v2 resolver handles that case
+`_prisma_migrations` ledger. The pinned release's v2 resolver handles that case
 only after verifying that the current database schema matches the installed
 Prisma model; if the diff is non-empty or setup fails, startup exits. The
 resolver's baseline records packaged migrations only after that schema check;
 it does not apply old data backfills. This keeps an uncertain schema from
 serving silently.
 
-For an existing database upgraded from LiteLLM 1.102.x or earlier, release
-notes require two SpendLogs indexes to be created concurrently before the
-rollout. The migration package's 1.104.0 entries for these indexes are no-ops,
+For an existing database upgraded from a release before the Prisma migration
+change, the release notes require two SpendLogs indexes to be created concurrently before the
+rollout. The migration package's entries for these indexes are no-ops,
 so the schema push and startup baseline do not create them. Use the exact SQL
 and one-member-first rollout below.
 
-### LiteLLM 1.104.0 release and rollout
+### LiteLLM release and rollout
 
-The role pins `litellm[proxy]==1.104.2`, a patch release of the 1.104 line.
-See the [official release and migration notes](https://docs.litellm.ai/release_notes/v1.104.0/v1-104-0).
-The release rejects an unset, empty, or public default master key; this role
+See the [official release and migration notes](https://docs.litellm.ai/release_notes).
+The pinned release rejects an unset, empty, or public default master key; this role
 checks the configured key without logging its value. Admin UI and `lite` CLI
 users sign in again after a completed rolling upgrade.
 
-For an existing database upgraded from 1.102.x or earlier, create both indexes
+For an existing database upgraded from a release before the Prisma migration
+change, create both indexes
 outside a transaction before the rollout:
 
 ```sql
