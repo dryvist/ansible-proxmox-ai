@@ -145,11 +145,16 @@ def test_reusable_calls_forward_the_timeout_input() -> None:
     ("_llm-router-contract.yml", "llm-router-contract"),
     ("_llm-router-contract.yml", "llm-router-registry-contract"),
 ])
-def test_ansible_install_uses_the_pinned_ci_requirements(workflow: str, job: str) -> None:
+def test_ansible_install_uses_cached_pinned_ci_requirements(workflow: str, job: str) -> None:
     steps = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"]
     setup = next(step for step in steps if step.get("uses", "").startswith("actions/setup-python@"))
     assert setup["with"]["cache"] == "pip"
     assert setup["with"]["cache-dependency-path"] == ".github/requirements-ci.txt"
+    galaxy_cache = next(step for step in steps if step.get("id") == "galaxy-cache")
+    assert "hashFiles('requirements.yml')" in galaxy_cache["with"]["key"]
+    galaxy_install = next(step for step in steps if "ansible-galaxy install" in step.get("run", ""))
+    assert galaxy_install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
+    assert "--force" in galaxy_install["run"]
     install = next(step for step in steps if "pip install" in step.get("run", ""))
     assert "pip install -r .github/requirements-ci.txt" in install["run"]
 
