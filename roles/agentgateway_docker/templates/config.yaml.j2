@@ -13,6 +13,15 @@
 # /mcp suffix carried no protocol meaning (Streamable HTTP POSTs to whatever
 # URL the client is given). The transitional /<name>/mcp aliases were
 # removed once Hermes and the workstation client configs migrated (#22).
+{%- set agentgateway_docker_api_key_block %}
+          keys:
+{% for agent_name, agent_key in agentgateway_docker_roster_keys | dictsort %}
+            - key: {{ agent_key | to_json }}
+              metadata:
+                agent: {{ agent_name | to_json }}
+{% endfor %}
+{%- endset %}
+
 config:
   # Bind the admin UI (Traefik-fronted) and the stats server (Prometheus
   # /metrics) on all interfaces so the LXC can publish them; the guest
@@ -34,6 +43,18 @@ binds:
     - matches:
       - path:
           exact: /{{ target.name }}
+{% if target.name in ai_agent_owner %}
+      policies:
+        apiKey:
+          mode: strict
+          location:
+            header:
+              name: X-Agent-Key
+{{ agentgateway_docker_api_key_block }}
+        authorization:
+          rules:
+            - allow: {{ ("apiKey.agent == '" ~ ai_agent_owner[target.name] ~ "'") | to_json }}
+{% endif %}
       backends:
       - mcp:
           targets:
