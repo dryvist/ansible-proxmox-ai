@@ -25,6 +25,10 @@ def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def router_paths(shards: list[dict[str, str]]) -> list[str]:
+    return [path for shard in shards for path in shard["playbooks"].split()]
+
+
 @pytest.mark.parametrize(("path", "target"), [
     ("roles/nvidia_gpu_guest/tasks/cache-sync.yml", "tests/nvidia_gpu_guest/"),
     ("roles/llm_gpu_serving/tasks/main.yml", "tests/llm_gpu_engine_roles/"),
@@ -70,7 +74,9 @@ def test_registry_selects_all_consumers_without_global_pytest() -> None:
     assert selection["run_selector_checks"]
     assert {"tests/nvidia_gpu_guest/", "tests/llm_model_campaign/", "tests/hermes_agent/"} <= set(
         selection["pytest_targets"])
-    assert len(selection["llm_router_playbooks"]) == len(GENERATED_MATRIX)
+    assert len(selection["llm_router_playbooks"]) <= 16
+    assert sorted(router_paths(selection["llm_router_playbooks"])) == sorted(
+        path for entry in GENERATED_MATRIX for path in entry)
     assert "tests/nvidia_gpu_guest/test_cache_only_sync.yml" in selection["ansible_tests"]
 
 
@@ -85,7 +91,7 @@ def test_inventory_and_playbook_edits_route_to_full_suite(path: str) -> None:
     selection = json.loads(result.stdout)
     full = json.loads(run_selector("--full").stdout)
     assert selection["pytest_targets"] == ["tests/"]
-    assert set(selection["llm_router_playbooks"]) == set(full["llm_router_playbooks"])
+    assert selection["llm_router_playbooks"] == full["llm_router_playbooks"]
 
 
 @pytest.mark.parametrize("path", [
@@ -133,7 +139,7 @@ def test_seed_fixture_adds_python_guard_and_preserves_full_router_scope() -> Non
     full = subprocess.run([sys.executable, str(SELECTOR), "--full"],
                           check=False, capture_output=True, text=True)
     assert full.returncode == 0, full.stderr
-    assert set(selection["llm_router_playbooks"]) == set(json.loads(full.stdout)["llm_router_playbooks"])
+    assert selection["llm_router_playbooks"] == json.loads(full.stdout)["llm_router_playbooks"]
 
 
 @pytest.mark.parametrize("path", [
@@ -153,22 +159,27 @@ def test_captured_hermes_inputs_reach_existing_contract_family(path: str) -> Non
     "llm-models.d/10-large.yml",
     "tests/fixtures/llm-router-target-output.yml",
 ])
-def test_router_scope_preserves_manifest_execution_order(path: str) -> None:
+def test_router_scope_preserves_the_full_sorted_shard_selection(path: str) -> None:
     result = run_selector(path)
     assert result.returncode == 0, result.stderr
     full = json.loads(run_selector("--full").stdout)["llm_router_playbooks"]
     selected = json.loads(result.stdout)["llm_router_playbooks"]
     assert selected == full
-    paths = [playbook for group in selected for playbook in group.split()]
+    paths = router_paths(selected)
     assert len(paths) == len(set(paths)) == sum(len(entry) for entry in GENERATED_MATRIX)
+    assert sorted(paths) == sorted(path for entry in GENERATED_MATRIX for path in entry)
 
 
-def test_changed_router_groups_follow_manifest_order_not_path_order() -> None:
+def test_changed_router_shards_are_sorted_independently_of_path_order() -> None:
     full = json.loads(run_selector("--full").stdout)["llm_router_playbooks"]
-    chosen = [full[0], full[-1]]
-    result = run_selector(*(group.split()[0] for group in reversed(chosen)))
+    chosen = [full[0]["playbooks"].split()[0], full[-1]["playbooks"].split()[-1]]
+    result = run_selector(*reversed(chosen))
+    expected = run_selector(*chosen)
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["llm_router_playbooks"] == chosen
+    assert expected.returncode == 0, expected.stderr
+    selected = json.loads(result.stdout)["llm_router_playbooks"]
+    assert selected == json.loads(expected.stdout)["llm_router_playbooks"]
+    assert sorted(router_paths(selected)) == sorted(chosen)
 
 
 @pytest.mark.parametrize(("scenario", "role"), [

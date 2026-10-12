@@ -97,12 +97,24 @@ TEST_SCOPES = {target.removeprefix("tests/").rstrip("/")
                for targets in ROLE_TESTS.values() for target in targets if target.endswith("/")}
 TEST_SCOPES.update({"llm_router", "llm_model_campaign", "inventory_load", "repo_guards",
                     "dify_docker", "phoenix_docker", "openbao_secrets", "llamaindex", "agent_guest"})
+MAX_ROUTER_SHARDS = 16
+MAX_ROUTER_SHARD_NAME = 60
+
+
+class RouterShard(TypedDict):
+    name: str
+    playbooks: str
+
+
+class RouterShardBuilder(TypedDict):
+    units: list[tuple[str, str, list[str]]]
+    playbooks: list[str]
 
 
 class Selection(TypedDict):
     pytest_targets: list[str]
     ansible_tests: list[str]
-    llm_router_playbooks: list[str]
+    llm_router_playbooks: list[RouterShard]
     run_inventory: bool
     run_selector_checks: bool
 
@@ -112,7 +124,7 @@ def llm_router_matrix() -> list[list[str]]:
     in_matrix = False
     entries: list[list[str]] = []
     for line in workflow.splitlines():
-        if re.match(r"\s*playbook:", line):
+        if re.match(r"\s*shard:", line):
             in_matrix = True
             continue
         if in_matrix:
@@ -126,6 +138,64 @@ def llm_router_matrix() -> list[list[str]]:
     if not entries:
         raise ValueError("could not read explicit LLM Router matrix entries")
     return entries
+
+
+def router_topic(playbook: str) -> str:
+    stem = re.sub(r"^(?:test|verify)_", "", Path(playbook).stem)
+    return stem.split("_", 1)[0]
+
+
+def router_shard_target(matrix: list[list[str]]) -> int:
+    return max(1, (sum(len(entry) for entry in matrix) + MAX_ROUTER_SHARDS - 1) // MAX_ROUTER_SHARDS)
+
+
+def router_shards(matrix: list[list[str]], shard_target: int | None = None) -> list[RouterShard]:
+    playbooks = sorted(playbook for entry in matrix for playbook in entry)
+    if not playbooks:
+        return []
+
+    target = shard_target or router_shard_target(matrix)
+    shard_count = min(MAX_ROUTER_SHARDS, (len(playbooks) + target - 1) // target)
+    by_topic: dict[str, list[str]] = {}
+    for playbook in playbooks:
+        by_topic.setdefault(router_topic(playbook), []).append(playbook)
+
+    units: list[tuple[str, str, list[str]]] = []
+    for topic, paths in sorted(by_topic.items()):
+        chunk_count = (len(paths) + target - 1) // target
+        for index in range(chunk_count):
+            label = f"{topic} {index + 1}/{chunk_count}" if chunk_count > 1 else topic
+            units.append((topic, label, paths[index * target:(index + 1) * target]))
+    units.sort(key=lambda unit: (-len(unit[2]), unit[1]))
+
+    shards: list[RouterShardBuilder] = [
+        {"units": [], "playbooks": []} for _ in range(shard_count)
+    ]
+    for unit in units:
+        topic = unit[0]
+        candidates = [shard for shard in shards
+                      if all(existing[0] != topic for existing in shard["units"])]
+        shard = min(candidates, key=lambda item: (len(item["playbooks"]),
+                                                   sorted(existing[1] for existing in item["units"])))
+        shard["units"].append(unit)
+        shard["playbooks"].extend(unit[2])
+
+    result: list[RouterShard] = []
+    used_names: set[str] = set()
+    for shard in shards:
+        topics = ", ".join(sorted(unit[1] for unit in shard["units"]))
+        name = topics[:MAX_ROUTER_SHARD_NAME - 1].rstrip() + "…" if len(topics) > MAX_ROUTER_SHARD_NAME else topics
+        if name in used_names:
+            suffix = "… 2"
+            name = name[:MAX_ROUTER_SHARD_NAME - len(suffix)] + suffix
+            suffix_index = 3
+            while name in used_names:
+                suffix = f"… {suffix_index}"
+                name = name[:MAX_ROUTER_SHARD_NAME - len(suffix)] + suffix
+                suffix_index += 1
+        used_names.add(name)
+        result.append({"name": name, "playbooks": " ".join(sorted(shard["playbooks"]))})
+    return sorted(result, key=lambda shard: shard["name"])
 
 
 def router_imports(matrix: list[list[str]]) -> dict[str, list[str]]:
@@ -147,7 +217,7 @@ def full_selection() -> Selection:
     return {
         "pytest_targets": ["tests/"],
         "ansible_tests": sorted(ANSIBLE_TESTS),
-        "llm_router_playbooks": [" ".join(entry) for entry in llm_router_matrix()],
+        "llm_router_playbooks": router_shards(llm_router_matrix()),
         "run_inventory": True,
         "run_selector_checks": True,
     }
@@ -298,8 +368,8 @@ def select(paths: list[str]) -> Selection:
     return {
         "pytest_targets": sorted(pytest_targets),
         "ansible_tests": sorted(ansible_tests),
-        "llm_router_playbooks": [" ".join(entry) for entry in matrix
-                                 if " ".join(entry) in router_tests],
+        "llm_router_playbooks": router_shards(
+            [entry for entry in matrix if " ".join(entry) in router_tests], router_shard_target(matrix)),
         "run_inventory": run_inventory,
         "run_selector_checks": run_selector_checks,
     }
