@@ -30,6 +30,15 @@
   loop_control:
     label: "{{ item.path }}"
 
+- name: Deploy the Prometheus endpoint config
+  ansible.builtin.template:
+    src: config.d/prometheus.xml.j2
+    dest: "{{ clickhouse_docker_config_d_dir }}/prometheus.xml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart clickhouse
+
 # =============================================================================
 # Default-user lockdown
 # =============================================================================
@@ -209,9 +218,8 @@
 # =============================================================================
 # The application database + app user are bootstrapped by the image's own
 # CLICKHOUSE_DB / CLICKHOUSE_USER / CLICKHOUSE_PASSWORD entrypoint mechanism
-# (see the compose template) on first init only. The three read-only
-# consumer users are provisioned here instead, on every converge, so they
-# exist regardless of when this role first ran relative to their addition.
+# (see the compose template) on first init only. Langfuse's app grants and the
+# three read-only consumer users are provisioned here on every converge.
 # `CREATE USER IF NOT EXISTS` + a repeatable `GRANT` are both converge-safe:
 # a second run issues the same statements again and changes nothing.
 
@@ -225,6 +233,18 @@
       - clickhouse_docker_grafana_password
       - clickhouse_docker_hyperdx_password
       - clickhouse_docker_splunk_password
+
+- name: Grant Langfuse access to its database and required system metadata
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ clickhouse_docker_data_dir }}/docker-compose.yml
+      exec -T {{ clickhouse_docker_service }}
+      clickhouse-client --user {{ clickhouse_docker_app_user }}
+      --password {{ clickhouse_docker_app_password }}
+      --multiquery
+      --query "{{ clickhouse_docker_app_grants | join('; ') }}"
+  changed_when: false
+  no_log: true
 
 - name: Provision the read-only ClickHouse users
   ansible.builtin.command:
