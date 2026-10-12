@@ -8,7 +8,7 @@ so the backend topology is swappable with no app change.
 
 ## Installation
 
-The role installs the pinned proxy extra litellm[proxy]==1.104.0; release-specific
+The role installs the pinned proxy extra litellm[proxy]==1.104.2; release-specific
 behavior is verified against that pin.
 
 Ships with the `ansible-proxmox-apps` repo; no external install. Wired into
