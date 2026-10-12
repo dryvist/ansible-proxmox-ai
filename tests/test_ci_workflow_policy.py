@@ -160,10 +160,9 @@ def test_ansible_install_uses_cached_pinned_ci_requirements(workflow: str, job: 
     assert setup["with"]["cache-dependency-path"] == ".github/requirements-ci.txt"
     galaxy_cache = next(step for step in steps if step.get("id") == "galaxy-cache")
     assert "hashFiles('requirements.yml')" in galaxy_cache["with"]["key"]
-    galaxy_install = next(step for step in steps if ".github/scripts/galaxy-install.sh" in step.get("run", ""))
+    galaxy_install = next(step for step in steps if step.get("uses", "").startswith("nick-fields/retry@"))
     assert galaxy_install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
-    helper = (WORKFLOWS.parent / "scripts" / "galaxy-install.sh").read_text()
-    assert "ansible-galaxy install --force -r requirements.yml" in helper
+    assert galaxy_install["with"]["command"] == "ansible-galaxy install --force -r requirements.yml"
     install = next(step for step in steps if "pip install" in step.get("run", ""))
     assert "pip install -r .github/requirements-ci.txt" in install["run"]
 
@@ -179,7 +178,7 @@ def test_galaxy_install_skips_exact_cache_hits(workflow: str, job: str) -> None:
     steps = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"]
     cache = next(step for step in steps if step.get("id") == "galaxy-cache")
     install = next(step for step in steps if "ansible-galaxy install --force -r requirements.yml"
-                   in step.get("run", ""))
+                   == step.get("with", {}).get("command"))
     assert cache["uses"].startswith("actions/cache@")
     assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
 
