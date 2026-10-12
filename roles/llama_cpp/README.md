@@ -1,36 +1,29 @@
 # llama_cpp
 
 Deploys the **light serving tier**: [llama.cpp](https://github.com/ggml-org/llama.cpp)
-(`llama-server`) on an AMD **ROCm** GPU, inside a privileged LXC (guest `llm-fast`,
-RX 6800 = gfx1030). `llama-server` runs directly as the systemd unit, in its
-native **router mode**, presenting **one** OpenAI-compatible endpoint over
-exactly the models a rendered `--models-preset` (one section per present,
-guard-checked model — see `templates/llama-cpp-models.ini.j2`) declares.
+(`llama-server`) in guests assigned to `llm_fast_group`. The group includes the
+CPU guest `llm-light`; `llama_cpp_gpu_backend` selects a ROCm, Vulkan, or CPU
+build per guest. `llama-server` runs as a systemd service in native **router
+mode**, presenting **one** OpenAI-compatible endpoint over the models declared
+in its rendered `--models-preset` (see `templates/llama-cpp-models.ini.j2`).
 
-llama-swap is retired: no value for a single-model card — llama-server's
-own router mode covers swapping.
-**Residual**: the router's own admission cap (`max_parallel_requests`,
-`roles/llm_router`) is per LiteLLM process, and the pool runs three, so up to
-three requests can be admitted against this card's one slot; the fourth and
-later collisions queue in llama-server itself, bounded by this rung's
-`stream_timeout` override (`llm_router_admission_budget_seconds`).
+The router's admission cap (`max_parallel_requests`, `roles/llm_router`) is per
+LiteLLM process. llama-server queues requests beyond the configured
+`llama_cpp_parallel` value, bounded by the router's
+`llm_router_admission_budget_seconds` setting.
 
-**Absolute rule:** never serve a model with `param_billions >= 14` on this GPU.
-The host has hard-locked repeatedly under large-model GPU loads (VRAM eviction
-hard-hangs the host); a converge-time assert in `tasks/main.yml` enforces this,
-scoped to `llm_fast_group` only.
+**Model-size rule:** models in `llm_fast_group` must be below 14B parameters.
+The role also enforces `llama_cpp_max_param_billions` for each guest.
 
 ## Installation
 
-Ships with the `ansible-proxmox-apps` repo; no external install. The container is
-provisioned by `tofu-proxmox` and the GPU device nodes (`/dev/kfd`, `/dev/dri`)
-are passed in by `ansible-proxmox` (role `lxc_gpu_features`) — both must be in place
-first. Wired into `playbooks/site.yml` against `llm_fast_group` (guests tagged
-`llm-fast` in the tofu inventory). Tools come from the repo's Nix dev shell
-(`direnv allow`).
+The container is provisioned by `tofu-proxmox`. GPU device nodes are passed in
+by `ansible-proxmox` (role `lxc_gpu_features`) for GPU builds. The role is wired
+into `playbooks/site.yml` against `llm_fast_group` (guests tagged `llm-fast` in
+the tofu inventory). Tools come from the repo's Nix dev shell (`direnv allow`).
 
-Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
-**this role** (llama.cpp + models) → `llm_router` (LiteLLM front door).
+Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough for
+GPU builds) → **this role** (llama.cpp + models) → `llm_router` (LiteLLM front door).
 
 ## What it does
 
@@ -65,8 +58,7 @@ Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
 | `qwen3-4b` | — | chat (`--jinja`) |
 | `embeddings` | `nomic-embed-text-v1.5` | `--embeddings` |
 
-`hermes-4-14b` (14B) was removed — see "Absolute rule" above. The preset's
-section name (== `model_name`/registry `client_model_id`) is the id the
+The preset's section name (== `model_name`/registry `client_model_id`) is the id the
 router serves — unlike a plain `--models-dir` scan, it does not depend on the
 GGUF filename, and each section carries its own ctx-size and
 chat/embeddings/rerank flags, so mixing model kinds on one guest still gets
@@ -76,9 +68,9 @@ A `llama_cpp_models` entry can also set `rerank: true` (a reranking model —
 `embeddings = true` + `rerank = true` + `pooling = rank`) and `pooling:
 <mean|cls|last|none>` (overrides the embeddings branch's default of `mean`
 for a model whose own GGUF wants something else, e.g. BAAI/bge-m3's CLS
-pooling) — see the field doc in `defaults/main/00-core.yml`. This host
-(`llm-fast`) does not use either; the `llm_vllm_group` and `llm_cpu_9b_group`
-group_vars do, for the estate's embedding/reranker pair.
+pooling) — see the field doc in `defaults/main/00-core.yml`. The role defaults
+do not set either field; `llm_vllm_group` and `llm_cpu_9b_group` group_vars use
+them for their embedding/reranker entries.
 
 ## GPU backend
 
@@ -87,12 +79,11 @@ Nothing is compiled — upstream publishes one Linux asset per backend.
 
 | Value | Build | Devices | Notes |
 | --- | --- | --- | --- |
-| `rocm` (default) | `ubuntu-rocm` | `/dev/kfd`, `/dev/dri` | `-ngl 99`, `HSA_OVERRIDE_GFX_VERSION=10.3.0` for gfx1030 |
+| `rocm` (default) | `ubuntu-rocm` | `/dev/kfd`, `/dev/dri` | `-ngl 99`, ROCm architecture override |
 | `vulkan` | `ubuntu-vulkan` | `/dev/nvidia*` | the NVIDIA path; gated on a `vulkaninfo` device check |
 | `cpu` | `ubuntu` plain | none | `-ngl 0`, smaller context, all GPU tasks skipped |
 
-`llama_cpp_gpu` remains as a derived boolean (`backend != 'cpu'`) so existing
-task and template conditions were not touched.
+`llama_cpp_gpu` is derived from the backend and gates shared GPU tasks.
 
 **Why Vulkan and not CUDA for NVIDIA.** Upstream ships no Linux CUDA release
 binary — the CUDA prebuilts are Windows-only. Vulkan is the Linux GPU backend
@@ -125,15 +116,7 @@ GPU deployment that quietly is not one.
 ## Usage
 
 ```bash
-# Deploy (after terraform + ansible-proxmox GPU passthrough)
+# Deploy the light serving capability group
 env -u DOPPLER_PROJECT -u DOPPLER_CONFIG -u DOPPLER_ENVIRONMENT doppler run -- \
-  ./scripts/run-ansible.sh playbooks/site.yml --limit llm-fast --tags llama_cpp,ai
+  ./scripts/run-ansible.sh playbooks/site.yml --limit llm_fast_group --tags llama_cpp,ai
 ```
-
-## Not yet live-validated
-
-Verify on the first converge (W6): (a) the prebuilt ROCm llama.cpp binary runs
-against the container's ROCm userspace (it is dynamically linked to the ROCm runtime
-— the LXC must provide it; see `llama_cpp_rocm_packages`); (b)
-`HSA_OVERRIDE_GFX_VERSION=10.3.0` is honoured by the release build for gfx1030; (c)
-the GGUF asset filenames still resolve on HuggingFace.

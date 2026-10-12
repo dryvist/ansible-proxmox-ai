@@ -1,35 +1,9 @@
 ---
-# llama_cpp role defaults — the light serving tier: llama.cpp (llama-server) on an
-# AMD ROCm GPU inside a privileged LXC (guest `llm-fast`, RX 6800 = gfx1030).
-# llama-server runs directly as the systemd unit (native router mode, a
-# rendered --models-preset — see templates/llama-server.service.j2 and
-# templates/llama-cpp-models.ini.j2), presenting ONE OpenAI-compatible
-# endpoint over exactly the models this role declares present.
-#
-# llama-swap was used until 2026-09-19 and was retired: no value for a
-# single-model card — llama-server's own router mode covers swapping, without
-# a second process or a second config format.
-#
-# ABSOLUTE RULE: never serve a model with param_billions >= 14 on this GPU
-# (llm-fast, RX 6800, 16 GB VRAM). A single Hermes-4-14B (Q4, ~8.4 GB) load
-# hard-locked the HOST twice even alone, on top of two earlier co-resident
-# load hard-locks (see llama_cpp_service_enabled below). The `param_billions`
-# field on every llama_cpp_models entry + the converge-time assert in
-# tasks/main.yml enforce this; never add a model here without a param_billions
-# value.
-#
-# GPU device nodes (/dev/kfd, /dev/dri) are passed into the container UPSTREAM by
-# ansible-proxmox (role lxc_gpu_features); this role assumes they already exist and
-# makes the `llama-cpp` service user able to open them (same runtime-group-resolution
-# idiom as roles/ollama). Restart-on-failure is applied DRY by the shared
-# systemd_restart_policy role via group_vars, not here.
-#
-# NOT YET LIVE-VALIDATED (verify on first converge, W6): (a) the ROCm llama.cpp
-# release tarball runs against the container's ROCm userspace — the prebuilt
-# `ubuntu-rocm` binary is dynamically linked to the ROCm runtime, so the LXC must
-# provide it (see llama_cpp_rocm_packages); (b) HSA_OVERRIDE_GFX_VERSION=10.3.0 is
-# honoured by the release build for gfx1030; (c) the exact GGUF asset filenames
-# below still resolve on HuggingFace.
+# llama_cpp role defaults. llama-server runs as a systemd service in native
+# router mode, presenting one OpenAI-compatible endpoint over the declared
+# models. `llama_cpp_gpu_backend` selects the per-guest ROCm, Vulkan, or CPU build.
+# The llm_fast_group and per-guest model-size ceilings are enforced in
+# tasks/guards.yml; every model entry must declare `param_billions`.
 #
 # KV-cache-reuse and speculative-decoding variables split into
 # defaults/main/10-cache-specdecode.yml (repo per-file token budget).
@@ -73,14 +47,13 @@ llama_cpp_config_file: "{{ llama_cpp_config_dir }}/models.ini"
 #             actually ships for this hardware. Uses /dev/nvidia*; the NVIDIA
 #             Vulkan ICD talks to those nodes directly and does NOT need
 #             /dev/dri, which is absent in an NVIDIA-passthrough LXC.
-#   cpu    -> CPU-only standby: skips every GPU task, -ngl 0, smaller context.
+#   cpu    -> CPU-only build: skips every GPU task, -ngl 0, smaller context.
 #
-# `llama_cpp_gpu` stays as the derived boolean every existing task and template
-# already keys off, so adding a backend did not touch that logic.
+# `llama_cpp_gpu` is derived from the selected backend and gates shared GPU tasks.
 llama_cpp_gpu_backend: rocm
 llama_cpp_gpu: "{{ llama_cpp_gpu_backend != 'cpu' }}"
 
-# AMD RX 6800 = Navi 21 / gfx1030; ROCm needs the gfx-version override for this card.
+# ROCm architecture override passed to llama-server by the systemd template.
 llama_cpp_hsa_override_gfx_version: "10.3.0"
 
 # GPU-layer offload + context: full offload + full context on GPU; none + a smaller
@@ -247,28 +220,11 @@ llama_cpp_models:
     param_billions: 0.137
     embeddings: true
 
-# Whether llama-swap actually serves. llm-fast is FROZEN (false in host_vars):
-# four host hard-locks — two from co-resident triple loads (which included the
-# now-removed hermes-4-14b), two from a SINGLE Hermes-4-14B (8.4 GB) load with
-# every software fix applied — put the fault at the host/hardware level under
-# large GPU allocations (qwen3-4b at 2.5 GB is fine). Do NOT re-enable on
-# llm-fast until the hardware question is settled (BIOS/PSU/memtest); the light
-# tier serves from llm-light (CPU) meanwhile.
 # --- Per-guest parameter ceiling ---------------------------------------------
-# The >=14B rule above is an ABSOLUTE, group-scoped rule for llm-fast, born of
-# four host hard-locks on that specific card. It is not a general ceiling, and
-# outside llm_fast_group the role previously enforced NOTHING — so re-using it
-# on another GPU ran with no size limit at all.
-#
-# That absence is the problem this closes. A ceiling that only exists on one
-# guest is not a ceiling; it is a special case. This one applies to EVERY host
-# running the role, defaulting to the same conservative 14 so nothing gets
-# quietly larger, and a guest with a bigger card raises it EXPLICITLY in its own
-# vars — a deliberate, reviewable act naming the number, rather than inheriting
-# permission by being in a different group.
-#
-# Raising this is not weakening a check. The llm-fast absolute rule is separate,
-# still group-scoped, and untouched by any value set here.
+# This per-guest ceiling applies everywhere the role runs. The llm_fast_group
+# also has its own 14B ceiling in tasks/guards.yml.
 llama_cpp_max_param_billions: 14
 
+# Whether the llama-server service is enabled. Defaults to true; false stops
+# and disables the service, and restart handlers use the same flag.
 llama_cpp_service_enabled: true
