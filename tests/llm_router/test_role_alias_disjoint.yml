@@ -1,0 +1,50 @@
+---
+- name: Verify database role names never overlap model-group aliases
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets: {}
+  tasks:
+    - name: Load role defaults and model registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the shipped model registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Accept the shipped disjoint role and alias names
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-role-alias-disjoint.yml"
+
+    - name: Add a database role name to the alias set
+      ansible.builtin.set_fact:
+        llm_router_model_group_aliases: >-
+          {{ llm_router_model_group_aliases
+             | combine({(llm_router_role_deployments | map(attribute='role') | first):
+                        llm_router_small_model}) }}
+
+    - name: Reject a synthetic role and alias collision
+      block:
+        - name: Run the production role-alias assertion against the collision
+          ansible.builtin.include_tasks: >-
+            {{ _role_dir }}/tasks/assert-role-alias-disjoint.yml
+        - name: Fail if the production assertion accepted the collision
+          ansible.builtin.fail:
+            msg: The role-alias assertion accepted a synthetic overlap.
+      rescue:
+        - name: Confirm the production assertion reported the overlap
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - ansible_failed_task.name == 'Assert database role and model-group alias names are disjoint'
+              - "'also appear as model-group aliases' in ansible_failed_result.msg"
