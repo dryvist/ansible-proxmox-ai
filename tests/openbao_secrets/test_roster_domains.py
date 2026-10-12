@@ -21,9 +21,15 @@ READER_DOMAIN_NAMES = {"llm-router-agent-keys", "agentgateway-agent-keys"}
 def _render_domains(ai_agents):
     defaults = yaml.safe_load(DOMAIN_DEFAULTS.read_text(encoding="utf-8"))
     roster = yaml.safe_load(ROSTER_DEFAULTS.read_text(encoding="utf-8"))
+    owners = {
+        slug: agent_name
+        for agent_name, agent in ai_agents.items()
+        for slug in agent.get("owns", [])
+    }
     return NativeEnvironment().from_string(roster["openbao_secrets_domains"]).render(
         _openbao_secrets_static_domains=defaults["_openbao_secrets_static_domains"],
         ai_agents=ai_agents,
+        ai_agent_owner=owners,
     )
 
 
@@ -62,6 +68,13 @@ def test_roster_agent_gets_its_paths_and_owned_mcp_paths():
             "required": True,
         }
     ]
+
+
+def test_owned_mcp_paths_are_removed_from_legacy_domains():
+    domains = _render_domains(ROSTER)
+    legacy_domains = [domain for domain in domains if domain["name"] != "splunk-heimdall"]
+
+    assert all("ai/mcp/splunk" not in domain["paths"] for domain in legacy_domains)
 
 
 def test_optional_fetch_skip_does_not_apply_to_required_domains():
