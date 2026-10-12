@@ -110,13 +110,7 @@ def _profiles() -> list[dict[str, Any]]:
     return _defaults()["hermes_agent_profiles"]
 
 
-# _cards() and its three assignee/profile tests were removed: `assignee` no
-# longer exists as a field anywhere (18/18 native-cron reframe) —
-# `hermes cron create` has no profile-selection flag at all, so every
-# converted job runs under the default profile regardless of what the retired
-# hermes_agent_kanban_cards entry used to name. Flagged as a real gap in the
-# PR (6 of the 18 cards, including every splunk-monitor one, had a non-default
-# assignee), not silently dropped.
+# Cron jobs select their store through HERMES_HOME; Kanban workers use assignee.
 
 
 def test_profile_env_lists_never_grant_a_forbidden_credential_section() -> None:
@@ -140,7 +134,7 @@ def test_profile_env_lists_never_grant_a_forbidden_credential_section() -> None:
 def test_profile_mcp_lists_never_grant_a_forbidden_server() -> None:
     forbidden_mcp = {
         "splunk-admin": {"codex", "context7", "vikunja", "nautobot"},
-        "homelab-admin": {"splunk", "codex", "context7"},
+        "homelab-admin": {"splunk", "codex", "context7", "vikunja"},
         "github-maint": {"splunk", "codex", "context7", "vikunja", "nautobot"},
     }
     for profile in _profiles():
@@ -314,6 +308,8 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
     for profile in _profiles():
         context = dict(_RENDER_CONTEXT)
         context["hermes_agent_disabled_toolsets"] = defaults["hermes_agent_disabled_toolsets"]
+        context["hermes_agent_cron_toolsets"] = defaults["hermes_agent_api_server_toolsets"]
+        context["hermes_agent_context_limits"] = {}
         rendered = env.from_string(src).render(hermes_agent_profile=profile, **context)
         parsed = yaml.safe_load(rendered)
 
@@ -322,7 +318,7 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
         assert parsed["agent"]["run_budget_seconds"] == wall_timeout_seconds()
         assert "dashboard" not in parsed
         assert "platforms" not in parsed
-        assert "platform_toolsets" not in parsed
+        assert ("platform_toolsets" in parsed) == ("toolsets" in profile)
         # Goal-mode judging must be wired identically to the default profile,
         # or completion judging fails for any card this profile owns.
         assert "auxiliary" in parsed

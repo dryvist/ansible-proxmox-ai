@@ -33,21 +33,6 @@
   vars:
     hermes_agent_profile: "{{ item }}"
 
-# This profile's own per-profile router key
-# (hermes_<name>_llm_router_key) is not seeded on every fleet yet — loud so
-# a converge running a profile on the shared master key is visible, not
-# silent.
-- name: "Warn if the router key is not seeded yet for profile {{ item.name }}"
-  ansible.builtin.debug:
-    msg: >-
-      hermes_{{ item.name | replace('-', '_') }}_llm_router_key is not in
-      bao_apps_secrets — profile {{ item.name }} falls back to the shared
-      HERMES_AGENT_MODEL_API_KEY. Seed it in ansible-proxmox-apps
-      for per-profile spend attribution.
-  when: >-
-    (bao_apps_secrets.get('hermes_' ~ (item.name | replace('-', '_')) ~ '_llm_router_key', '')
-     | default('', true)) == ''
-
 - name: "Deploy profile secrets (.env) for {{ item.name }}"
   ansible.builtin.template:
     src: hermes-env-profile.j2
@@ -96,17 +81,17 @@
       {{ (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/SOUL.md')
           ~ "\n\n" ~
           lookup('ansible.builtin.template', role_path ~ '/templates/' ~ item.soul_addendum_file)
-          ~ "\n\n" ~
-          lookup('ansible.builtin.template', role_path ~ '/templates/soul-kanban-lifecycle.md.j2')) }}
+          ~ ("\n\n" ~ lookup('ansible.builtin.template', role_path ~ '/templates/soul-kanban-lifecycle.md.j2')
+             if item.name == hermes_agent_kanban_orchestrator_profile else "")) }}
     dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/SOUL.md"
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0644"
   when: hermes_agent_soul_managed | bool
 
-# Only the skills this profile is scoped to reach — a card's --skill only
-# resolves what its assignee actually has materialized under its own
-# skills/dryvist/ dir.
+# Only the bundle skills this profile is scoped to reach — a card's --skill
+# only resolves what its assignee actually has materialized under its own
+# skills/dryvist/ dir. The role-local Hermes API skill is copied separately.
 - name: "Deploy the scoped dryvist skills for profile {{ item.name }}"
   ansible.builtin.copy:
     src: "{{ hermes_agent_bundle_path }}/skills/{{ hermes_agent_profile_skill }}/"
@@ -119,6 +104,16 @@
   loop_control:
     loop_var: hermes_agent_profile_skill
     label: "{{ hermes_agent_profile_skill }}"
+
+- name: "Deploy the Hermes GitHub issue API skill for profile {{ item.name }}"
+  ansible.builtin.copy:
+    src: github-issues-api/
+    dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/skills/hermes_agent/github-issues-api/"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    directory_mode: "0750"
+  when: "'hermes_agent/github-issues-api' in item.skills"
 
 # research/llm-wiki ships from the hermes-agent install itself
 # (hermes_agent_install_dir), not the nix-hermes dryvist bundle above, so it

@@ -39,6 +39,7 @@ def _ctx() -> dict:
         hermes_agent_log_level="INFO",
         hermes_agent_max_turns=90,
         hermes_agent_disabled_toolsets=["x"],
+        hermes_agent_context_limits={},
         hermes_agent_timezone="UTC",
         hermes_agent_user="hermes",
         hermes_agent_github_app_slug="example-app",

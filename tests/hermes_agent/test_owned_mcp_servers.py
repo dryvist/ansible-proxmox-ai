@@ -84,6 +84,7 @@ def _config_context(identity: str, owner_map: dict[str, str] = ROSTER) -> dict:
     access = _splunk_access(identity, owner_map)
     context.update(
         hermes_agent_id=identity,
+        hermes_agent_context_limits={},
         hermes_agent_splunk_access=access,
         hermes_agent_splunk_mcp_url=_splunk_url(identity, owner_map),
         hermes_agent_owned_mcp_slugs=_owned_slugs(identity, owner_map),

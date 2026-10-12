@@ -48,10 +48,11 @@ written to memory by any profile should be treated as private to it.
 
 | Profile | Mission | Has | Must NOT have (tools/MCP/skills — memory is shared across every profile, see above) |
 | --- | --- | --- | --- |
-| `default` | Cross-domain, board-meta, write-bearing GitHub | everything (unchanged) | — |
+| `default` | Cross-domain, board-meta, write-bearing GitHub | broad tool scope; no ordinary-call Kanban | — |
 | `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Docs MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
-| `homelab-admin` | Incidents + fabric health | Docs MCP (+ Vikunja/Nautobot later), `zammad-incidents` skill | Splunk, GitHub, other MCP/skills |
+| `homelab-admin` | Incidents + fabric health | Docs MCP, `zammad-incidents` skill | Splunk, Vikunja, GitHub, other MCP/skills |
 | `github-maint` | Read-only repo review + proposals | Docs MCP, `github-issues` skill, read-only token | GitHub writes, `docs-pr`, Splunk, Zammad, other |
+| `orchestrator` | Kanban decomposition and assignment | Vikunja + Docs MCP; follow-up card creation | Operational MCP servers and credentials |
 
 `github-maint` is the one profile whose headline constraint is enforced by a
 **credential** rather than by tool availability. It renders the read-only
@@ -60,17 +61,16 @@ so the skill works unchanged and every write call fails at the API. Its
 proposals leave through Slack and `kanban_create`; it opens no issues, files
 no pull requests, and posts no comments.
 
-**A job selects its profile by `HERMES_HOME`, not by a flag.** `hermes cron
-create` has no profile-selection flag (unlike `kanban create`'s `--assignee`),
-so an entry in `hermes_agent_direct_cron_jobs` sets `hermes_home:` to the
-profile's directory instead — the create, the lookup, and the periodic tick
-all run against that store. An entry that omits `hermes_home:` runs under the
-default profile, which is what the 18 converted jobs did on landing; the
-splunk-* jobs, the zammad review, the fabric status, and `github-maint-review`
-carry it today.
+**A job selects its profile by `HERMES_HOME` and its tools by the job spec.**
+An entry in `hermes_agent_direct_cron_jobs` sets `hermes_home:` to the
+profile's directory; creation, lookup, and the profile tick use that store.
+The Cron platform baseline excludes Kanban. Only card-filing jobs add it to
+their upstream `enabled_toolsets` field. Most use the orchestrator profile;
+credential-bound jobs keep their own profile and receive Kanban only for that
+job.
 
 **Adding a new profile**: add an entry to `hermes_agent_profiles`
-(`mcp`/`env`/`skills`/`soul_addendum_file`), add a
+(`mcp`/`env`/`skills`/optional `toolsets`/`soul_addendum_file`), add a
 `templates/soul-<name>.md.j2` addendum, and scope it by what it must **not**
 reach, not by what it might someday need — a new capability is a new profile
 decision made in the PR that adds the work, not a widened existing one.

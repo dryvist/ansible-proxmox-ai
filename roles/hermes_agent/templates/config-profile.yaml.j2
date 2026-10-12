@@ -1,9 +1,10 @@
 {{ ansible_managed | comment }}
+{% import 'config-context-limits.yaml.j2' as context_limits %}
 # Hermes Agent profile config: {{ hermes_agent_profile.name }} — {{ hermes_agent_profile.description }}
 # A named operating profile (see hermes_agent_profiles in defaults/main.yml).
 # Scoped subset of the default profile's config.yaml: same brain/agent/session
-# floor, but NO dashboard, NO platforms, NO platform_toolsets, and only the
-# mcp_servers this profile is scoped to reach.
+# floor, but NO dashboard, NO platforms, and only the toolsets and mcp_servers
+# this profile is scoped to reach.
 
 model:
   provider: {{ hermes_agent_model_provider }}
@@ -14,10 +15,13 @@ model:
   max_tokens: {{ hermes_agent_model_max_tokens }}
   api_key: '${HERMES_AGENT_MODEL_API_KEY}'
 
+{{ context_limits.top_level(hermes_agent_context_limits) }}
+
 memory:
   provider: {{ hermes_agent_memory_provider }}
   memory_enabled: true
   user_profile_enabled: true
+{{ context_limits.memory(hermes_agent_context_limits) }}
 
 logging:
   level: {{ hermes_agent_log_level }}
@@ -30,18 +34,26 @@ agent:
   # H-17 global deny floor — same list every profile inherits; see
   # hermes_agent_disabled_toolsets in defaults/main.yml for the rationale.
   disabled_toolsets: {{ hermes_agent_disabled_toolsets | to_json }}
+{{ context_limits.tool_output_tools_delegation(hermes_agent_context_limits) }}
+
+{% if hermes_agent_profile.toolsets is defined %}
+# Per-profile additions; the Cron platform inherits the shared role allowlist.
+platform_toolsets:
+{% for platform, additions in hermes_agent_profile.toolsets.items() %}
+  {{ platform }}: {{ (hermes_agent_cron_toolsets + additions if platform == 'cron' else additions) | to_json }}
+{% endfor %}
+{% endif %}
 
 terminal:
   backend: local
   timeout: 180
 
-# Same pin as the default profile's config.yaml: profiles carry no
-# platform_toolsets, so a spawned worker gets the web toolset by upstream
-# default — without the pin its backend rides the key/env auto-detect cascade,
-# which a stray provider key would silently redirect. ddgs is installed once
-# into the shared venv (tasks/main.yml).
+# Same pin as the default profile's config.yaml; without it the backend rides
+# the key/env auto-detect cascade, which a stray provider key could redirect.
+# ddgs is installed once into the shared venv (tasks/main.yml).
 web:
   backend: ddgs
+{{ context_limits.web(hermes_agent_context_limits) }}
 {% if hermes_agent_firecrawl_enabled | bool %}
   extract_backend: firecrawl
 {% endif %}
@@ -67,6 +79,7 @@ compression:
   enabled: {{ hermes_agent_context_compression_enabled | to_json }}
   threshold: {{ hermes_agent_context_compression_threshold }}
   summary_model: {{ hermes_agent_compression_model }}
+{{ context_limits.compression(hermes_agent_context_limits) }}
 
 {% if hermes_agent_kanban_goal_mode | bool %}
 # A card assigned to this profile is judged from ITS OWN config.yaml (the
@@ -101,11 +114,7 @@ auxiliary:
     api_mode: {{ hermes_agent_model_api_mode }}
 {% endif %}
 
-session_reset:
-  mode: both
-  at_hour: {{ hermes_agent_session_reset_at_hour }}
-  idle_minutes: {{ hermes_agent_session_reset_idle_minutes }}
-  notify: true
+{% include 'config-session-reset.yaml.j2' %}
 
 plugins:
   enabled:
