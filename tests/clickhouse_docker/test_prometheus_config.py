@@ -31,3 +31,9 @@ def test_prometheus_config_is_deployed_and_mounted_read_only():
     assert "src: config.d/prometheus.xml.j2" in tasks
     assert "prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro" in compose
     assert '"{{ clickhouse_docker_prometheus_port }}:{{ clickhouse_docker_prometheus_port }}"' in compose
+
+
+def test_prometheus_port_reads_the_published_metrics_constant():
+    defaults = (ROLE / "defaults/main.yml").read_text()
+
+    assert "['service_ports']['clickhouse_metrics']" in defaults
