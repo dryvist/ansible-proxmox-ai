@@ -68,7 +68,7 @@ def test_all_three_installers_use_markers_and_never_query_release_api():
     cases = (
         ("roles/llm_gpu_serving/tasks/main.yml", "llm_gpu_serving_llamacpp_asset_marker"),
         ("roles/llamacpp_serving/tasks/install.yml", "llamacpp_serving_asset_marker"),
-        ("roles/llama_cpp/tasks/main.yml", "llama_cpp_llamacpp_asset_marker"),
+        ("roles/llama_cpp/tasks/install-release.yml", "llama_cpp_llamacpp_asset_marker"),
     )
     for relative_path, marker in cases:
         text = (ROOT / relative_path).read_text(encoding="utf-8")
@@ -91,7 +91,7 @@ def test_all_three_installers_use_markers_and_never_query_release_api():
             "llamacpp_release_cpu_sha256",
             "llama_cpp_llamacpp_asset_sha256",
         ),
-        "roles/llama_cpp/tasks/main.yml": ("llama_cpp_llamacpp_asset_sha256",),
+        "roles/llama_cpp/tasks/install-release.yml": ("llama_cpp_llamacpp_asset_sha256",),
     }
     for relative_path, checksums in installers.items():
         text = (ROOT / relative_path).read_text(encoding="utf-8")
