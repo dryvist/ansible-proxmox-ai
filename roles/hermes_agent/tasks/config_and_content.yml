@@ -25,6 +25,44 @@
       Distro CA bundle present at {{ hermes_agent_ca_bundle_path }} — safe to
       pin as SSL_CERT_FILE.
 
+# --- nix-hermes content bundle: SOUL.md, skills, and optional limits ---------
+# Build on the controller before rendering config so the optional limits file
+# can adjust context caps without putting prompt text in SOUL.md.
+- name: Build the nix-hermes content bundle on the controller
+  ansible.builtin.command:
+    cmd: nix build --no-link --print-out-paths "{{ hermes_agent_bundle_flake_ref }}"
+  delegate_to: localhost
+  # See assert.yml: the ansible_become connection var outranks the keyword.
+  become: false
+  vars:
+    ansible_become: false
+  run_once: true
+  register: hermes_agent_bundle_build
+  changed_when: false
+  # Controller-local build; writes only the controller Nix store, never a target.
+  check_mode: false
+
+- name: Resolve the nix-hermes bundle store path
+  ansible.builtin.set_fact:
+    hermes_agent_bundle_path: "{{ hermes_agent_bundle_build.stdout_lines | last }}"
+
+- name: Stat optional bundle context limits on the controller
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_bundle_path }}/limits.json"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: hermes_agent_context_limits_file
+  check_mode: false
+
+- name: Load bundle context limits and apply the role override
+  ansible.builtin.set_fact:
+    hermes_agent_context_limits: >-
+      {{ ((lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/limits.json') | from_json)
+          if hermes_agent_context_limits_file.stat.exists else {})
+         | combine(hermes_agent_context_limits_override, recursive=true) }}
+
 # Every store's router key is mandatory at the template layer now
 # (hermes-env.j2 / hermes-env-profile.j2, defaults/main/20-brain-and-slack.yml)
 # — an unseeded hermes_<profile>_llm_router_key fails the converge loudly
@@ -49,29 +87,6 @@
     group: "{{ hermes_agent_user }}"
     mode: "0640"
   notify: Restart hermes-gateway
-
-# --- nix-hermes content bundle: SOUL.md + the dryvist skills ------------------
-# Content is built by the pinned nix-hermes flake ref on the CONTROLLER (the
-# only side with nix; the guest never needs it) and byte-copied over. First
-# build needs network; the nix store caches re-runs. changed_when: false —
-# building never mutates the guest.
-- name: Build the nix-hermes content bundle on the controller
-  ansible.builtin.command:
-    cmd: nix build --no-link --print-out-paths "{{ hermes_agent_bundle_flake_ref }}"
-  delegate_to: localhost
-  # See assert.yml: the ansible_become connection var outranks the keyword.
-  become: false
-  vars:
-    ansible_become: false
-  run_once: true
-  register: hermes_agent_bundle_build
-  changed_when: false
-  # Controller-local build; writes only the controller Nix store, never a target.
-  check_mode: false
-
-- name: Resolve the nix-hermes bundle store path
-  ansible.builtin.set_fact:
-    hermes_agent_bundle_path: "{{ hermes_agent_bundle_build.stdout_lines | last }}"
 
 # SOUL.md = the persona/behavior surface upstream loads FRESH on every message
 # (no restart needed) — the role the AGENTS.md chain plays for Claude Code.

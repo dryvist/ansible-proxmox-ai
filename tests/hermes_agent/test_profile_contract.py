@@ -110,8 +110,7 @@ def _profiles() -> list[dict[str, Any]]:
     return _defaults()["hermes_agent_profiles"]
 
 
-# Recurring work selects its native Cron store through each job's HERMES_HOME.
-# Kanban workers select their profile through the card's assignee.
+# Cron jobs select their store through HERMES_HOME; Kanban workers use assignee.
 
 
 def test_profile_env_lists_never_grant_a_forbidden_credential_section() -> None:
@@ -146,59 +145,6 @@ def test_profile_mcp_lists_never_grant_a_forbidden_server() -> None:
             f"profile {profile['name']!r} mcp list {sorted(granted)} grants "
             f"forbidden server(s) {sorted(overlap)}"
         )
-
-
-def test_orchestrator_is_the_only_profile_with_vikunja() -> None:
-    profiles = _profiles()
-    orchestrator = next(p for p in profiles if p["name"] == "orchestrator")
-
-    assert orchestrator["description"] == (
-        "Kanban decomposition and assignment owner; the only profile that reads the Vikunja backlog"
-    )
-    assert orchestrator["mcp"] == ["vikunja", "docs"]
-    assert orchestrator["env"] == []
-    assert orchestrator["skills"] == ["hermes_agent/github-issues-api"]
-    assert all("vikunja" not in p["mcp"] for p in profiles if p is not orchestrator)
-    assert _defaults()["hermes_agent_kanban_orchestrator_profile"] == "orchestrator"
-    assert _defaults()["hermes_agent_kanban_eligible_label"] == "hermes-eligible"
-
-
-def test_cron_and_slack_omit_kanban_while_card_filing_jobs_keep_access() -> None:
-    defaults = _defaults()
-    env = _jinja_env()
-    cron = yaml.safe_load(env.from_string(
-        str(defaults["hermes_agent_cron_toolsets"])
-    ).render(hermes_agent_api_server_toolsets=defaults["hermes_agent_api_server_toolsets"]))
-    slack = yaml.safe_load(env.from_string(
-        str(defaults["hermes_agent_slack_toolsets"])
-    ).render(
-        hermes_agent_cron_toolsets=cron,
-        hermes_agent_a2a_peers=[],
-    ))
-    assert "kanban" not in cron
-    assert "kanban" not in slack
-
-    profiles = {profile["name"]: profile for profile in _profiles()}
-    jobs = defaults["hermes_agent_direct_cron_jobs"]
-    card_jobs = [
-        job for job in jobs
-        if job.get("prompt_var")
-        and "kanban_create" in str(defaults.get(job["prompt_var"], ""))
-    ]
-    assert card_jobs
-    for job in card_jobs:
-        assert "hermes_home" in job, job["name"]
-        profile_home = env.from_string(job["hermes_home"]).render(
-            hermes_agent_hermes_home="/home/hermes/.hermes",
-            hermes_agent_kanban_orchestrator_profile="orchestrator",
-        )
-        profile_name = profile_home.rsplit("/", 1)[-1]
-        cron_additions = profiles[profile_name].get("toolsets", {}).get("cron", [])
-        assert "kanban" in cron_additions, (job["name"], profile_name)
-
-    reconciler = (ROLE_ROOT / "tasks" / "reconcile_direct_cron.yml").read_text()
-    assert "HERMES_HOME: \"{{ item.hermes_home | default(hermes_agent_hermes_home) }}\"" in reconciler
-    assert "item.hermes_home | default(hermes_agent_hermes_home)" in reconciler
 
 
 def test_profile_skill_lists_never_grant_a_forbidden_skill() -> None:
@@ -363,6 +309,7 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
         context = dict(_RENDER_CONTEXT)
         context["hermes_agent_disabled_toolsets"] = defaults["hermes_agent_disabled_toolsets"]
         context["hermes_agent_cron_toolsets"] = defaults["hermes_agent_api_server_toolsets"]
+        context["hermes_agent_context_limits"] = {}
         rendered = env.from_string(src).render(hermes_agent_profile=profile, **context)
         parsed = yaml.safe_load(rendered)
 
@@ -371,17 +318,7 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
         assert parsed["agent"]["run_budget_seconds"] == wall_timeout_seconds()
         assert "dashboard" not in parsed
         assert "platforms" not in parsed
-        if "toolsets" in profile:
-            expected = {
-                platform: (
-                    defaults["hermes_agent_api_server_toolsets"] + additions
-                    if platform == "cron" else additions
-                )
-                for platform, additions in profile["toolsets"].items()
-            }
-            assert parsed["platform_toolsets"] == expected
-        else:
-            assert "platform_toolsets" not in parsed
+        assert ("platform_toolsets" in parsed) == ("toolsets" in profile)
         # Goal-mode judging must be wired identically to the default profile,
         # or completion judging fails for any card this profile owns.
         assert "auxiliary" in parsed

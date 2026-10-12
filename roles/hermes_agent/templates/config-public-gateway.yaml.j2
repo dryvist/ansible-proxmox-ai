@@ -1,4 +1,5 @@
 {{ ansible_managed | comment }}
+{% import 'config-context-limits.yaml.j2' as context_limits %}
 # Hermes Agent config for the standalone github-public gateway
 # (hermes_agent_github_public_gateway_*). Serves only the github-public webhook
 # route: its own model, no memory, no chat platform, no MCP servers, and only the
@@ -13,10 +14,13 @@ model:
   max_tokens: {{ hermes_agent_model_max_tokens }}
   api_key: '${HERMES_AGENT_MODEL_API_KEY}'
 
+{{ context_limits.top_level(hermes_agent_context_limits) }}
+
 # No memory provider and no built-in memory or user-profile store.
 memory:
   memory_enabled: false
   user_profile_enabled: false
+{{ context_limits.memory(hermes_agent_context_limits) }}
 
 logging:
   level: {{ hermes_agent_log_level }}
@@ -26,6 +30,7 @@ agent:
   api_max_retries: 2
   tool_use_enforcement: auto
   disabled_toolsets: {{ hermes_agent_disabled_toolsets | to_json }}
+{{ context_limits.tool_output_tools_delegation(hermes_agent_context_limits) }}
 
 platform_toolsets:
   webhook: {{ hermes_agent_github_route_toolsets | to_json }}
@@ -36,6 +41,12 @@ terminal:
 
 web:
   backend: ddgs
+{{ context_limits.web(hermes_agent_context_limits) }}
+
+{% if 'proactive_prune_tokens' in hermes_agent_context_limits.get('compression', {}) %}
+compression:
+{{ context_limits.compression(hermes_agent_context_limits) }}
+{% endif %}
 
 security:
   redact_secrets: true
