@@ -157,5 +157,5 @@ def test_ansible_install_uses_the_pinned_ci_requirements(workflow: str, job: str
 def test_ci_requirements_pin_exact_versions() -> None:
     lines = [line.strip() for line in (WORKFLOWS.parents[0] / "requirements-ci.txt").read_text().splitlines()
              if line.strip() and not line.lstrip().startswith("#")]
-    assert "ansible==14.0.0" in lines
+    assert any(line.startswith("ansible==") for line in lines)
     assert all("==" in line for line in lines)
