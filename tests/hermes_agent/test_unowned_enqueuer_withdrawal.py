@@ -1,11 +1,8 @@
 """An enqueuer cron the agent identity does not own must be actively removed.
 
-`reconcile_enqueuer_cron.yml` gates its create/drift path on `item.enabled`, and
-each script-fed job ANDs `hermes_agent_ops_workload_enabled` into that gate. Those
-two conditions collapse into one boolean, so the file cannot tell "my credential
-is missing" apart from "this identity does not own this job" — and its
-disable-don't-delete rule, correct for the first case, is wrong for the second.
-An identity that already had the job installed keeps firing it forever.
+`reconcile_enqueuer_cron.yml` resolves each job's identities independently of
+its capability gate. A system owner can move a job, while an unowned job is
+withdrawn and a capability-disabled job remains installed.
 
 The withdrawal task closes that. This check keeps it in place, and keeps it keyed
 on ownership rather than on the collapsed gate: re-adding the active gate to the
@@ -28,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ENQUEUER_PATH = REPO_ROOT / "roles/hermes_agent/tasks/reconcile_enqueuer_cron.yml"
 DEFAULTS_PATH = REPO_ROOT / "roles" / "hermes_agent"
 
-OWNERSHIP_GATE = "hermes_agent_ops_workload_enabled"
+OWNERSHIP_GATE = "hermes_agent_job_identities"
 
 
 def _tasks(text):
@@ -51,10 +48,10 @@ def test_a_withdrawal_task_exists_and_is_keyed_on_ownership():
     )
 
     for name, body in removals:
-        assert f"not ({OWNERSHIP_GATE} | bool)" in body, (
-            f"{name!r} must gate on {OWNERSHIP_GATE} directly — gating on the "
-            "collapsed item.enabled cannot distinguish an unowned job from one "
-            "whose capability gate is merely off"
+        assert f"hermes_agent_id not in {OWNERSHIP_GATE}" in body, (
+            f"{name!r} must gate on the per-job identity selection — gating on "
+            "the collapsed item.enabled cannot distinguish an unowned job "
+            "from one whose capability gate is merely off"
         )
         # The whole point is that this fires when the active gate is FALSE.
         assert "hermes_agent_enqueuer_active | bool" not in body.split("when:")[-1], (
@@ -71,7 +68,7 @@ def test_the_cron_listing_runs_for_unowned_jobs_too():
 
     name, body = lookups[0]
     when = body.split("when:")[-1]
-    assert OWNERSHIP_GATE in when, (
+    assert f"hermes_agent_id not in {OWNERSHIP_GATE}" in when, (
         f"{name!r} must also run when the job is unowned, otherwise the "
         "withdrawal task has no listing to test against and silently no-ops"
     )
