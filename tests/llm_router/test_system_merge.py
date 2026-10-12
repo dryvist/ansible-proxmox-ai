@@ -83,6 +83,27 @@ def test_content_parts_are_flattened(merge):
     assert merge(msgs)[0] == {"role": "system", "content": "p1\np2\n\ns"}
 
 
+def test_chat_merge_preserves_cache_control_blocks(merge):
+    cached = {
+        "type": "text",
+        "text": "cached instructions",
+        "cache_control": {"type": "ephemeral"},
+    }
+    msgs = [
+        {"role": "system", "content": [cached]},
+        {"role": "user", "content": "hi"},
+        {"role": "developer", "content": "later instructions"},
+    ]
+
+    assert merge(msgs) == [
+        {
+            "role": "system",
+            "content": [cached, {"type": "text", "text": "later instructions"}],
+        },
+        {"role": "user", "content": "hi"},
+    ]
+
+
 BRIDGED = [
     {"role": "system", "content": "instructions"},
     {"role": "developer", "content": "developer"},
@@ -119,6 +140,34 @@ def test_unhashable_role_is_left_in_place(ns):
 def test_deployment_hook_without_messages_is_untouched(ns):
     kwargs = {"model": "m", "input": "x"}
     assert asyncio.run(ns["proxy_handler_instance"].async_pre_call_deployment_hook(dict(kwargs), "aembedding")) == kwargs
+
+
+@pytest.mark.parametrize("call_type", ["anthropic_messages", "aanthropic_messages"])
+def test_anthropic_deployment_hook_preserves_cache_control_blocks(ns, call_type):
+    cached = {
+        "type": "text",
+        "text": "top-level system",
+        "cache_control": {"type": "ephemeral"},
+    }
+    kwargs = {
+        "system": [cached],
+        "messages": [
+            {"role": "user", "content": "before"},
+            {"role": "system", "content": "message system"},
+            {"role": "user", "content": "go"},
+        ],
+    }
+
+    outgoing = asyncio.run(
+        ns["proxy_handler_instance"].async_pre_call_deployment_hook(kwargs, call_type)
+    )
+
+    assert outgoing["system"] == [cached, {"type": "text", "text": "message system"}]
+    assert outgoing["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert outgoing["messages"] == [
+        {"role": "user", "content": "before"},
+        {"role": "user", "content": "go"},
+    ]
 
 
 @pytest.mark.parametrize("call_type", ["anthropic_messages", "aanthropic_messages"])
