@@ -13,6 +13,9 @@ import sys
 from pathlib import Path
 from typing import TypedDict
 
+# runpy loaders do not put the script directory on sys.path, so add it before the sibling import.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from router_shards import RouterShard, router_shard_target, router_shards
 
 ANSIBLE_TESTS = {
