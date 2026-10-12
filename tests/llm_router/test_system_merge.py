@@ -109,16 +109,24 @@ def test_deployment_hook_merges_the_bridged_messages(ns):
     assert kwargs == {"model": "m", "messages": MERGED}
 
 
+def test_unhashable_role_is_left_in_place(ns):
+    messages = [{"role": ["system"], "content": "x"}, {"role": "user", "content": "hi"}]
+    kwargs = {"messages": list(messages)}
+    out = asyncio.run(ns["proxy_handler_instance"].async_pre_call_deployment_hook(kwargs, "anthropic_messages"))
+    assert out["messages"] == messages
+
+
 def test_deployment_hook_without_messages_is_untouched(ns):
     kwargs = {"model": "m", "input": "x"}
     assert asyncio.run(ns["proxy_handler_instance"].async_pre_call_deployment_hook(dict(kwargs), "aembedding")) == kwargs
 
 
+@pytest.mark.parametrize("call_type", ["anthropic_messages", "aanthropic_messages"])
 @pytest.mark.parametrize(
     "system",
     ["top-level system", [{"type": "text", "text": "top-level system"}]],
 )
-def test_anthropic_messages_request_reaches_local_rung_with_one_system(ns, system):
+def test_anthropic_messages_request_reaches_local_rung_with_one_system(ns, system, call_type):
     request = {
         "system": system,
         "messages": [
@@ -128,10 +136,10 @@ def test_anthropic_messages_request_reaches_local_rung_with_one_system(ns, syste
         ],
     }
     before_deployment = asyncio.run(
-        ns["proxy_handler_instance"].async_pre_call_hook(None, None, request, "anthropic_messages")
+        ns["proxy_handler_instance"].async_pre_call_hook(None, None, request, call_type)
     )
     outgoing = asyncio.run(
-        ns["proxy_handler_instance"].async_pre_call_deployment_hook(before_deployment, "anthropic_messages")
+        ns["proxy_handler_instance"].async_pre_call_deployment_hook(before_deployment, call_type)
     )
 
     # LiteLLM's Anthropic adapter turns the top-level system into the leading

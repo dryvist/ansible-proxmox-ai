@@ -24,7 +24,7 @@ or one system-like message and none out of place is returned untouched.
 
 from litellm.integrations.custom_logger import CustomLogger
 
-_SYSTEMISH = frozenset({"system", "developer"})
+_SYSTEMISH = ("system", "developer")
 
 
 def _as_text(content):
@@ -84,7 +84,7 @@ class SystemMerge(CustomLogger):
     async def async_pre_call_deployment_hook(self, kwargs: dict, call_type):
         # LiteLLM builds Responses messages and adapts Anthropic's top-level
         # system after async_pre_call_hook, so merge the deployment kwargs too.
-        if getattr(call_type, "value", call_type) == "anthropic_messages":
+        if getattr(call_type, "value", call_type) in ("anthropic_messages", "aanthropic_messages"):
             merge_anthropic_system(kwargs)
         else:
             messages = kwargs.get("messages")
