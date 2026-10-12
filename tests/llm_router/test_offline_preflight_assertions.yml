@@ -1,0 +1,161 @@
+---
+- name: Render every router preflight assertion against offline fixtures
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+          postgres_default: 5432
+        llm_cpu_scaler:
+          tags:
+            moe: cpu-moe-fixture
+            nine_b: cpu-9b-fixture
+      containers:
+        cpu-moe-fixture:
+          ip: 127.0.0.1
+          tags: [cpu-moe-fixture]
+        cpu-9b-fixture:
+          ip: 127.0.0.1
+          tags: [cpu-9b-fixture]
+    bao_local_llm_secrets: {}
+    bao_apps_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hermes_goal_judge_model: judge
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://localhost:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+  tasks:
+    - name: Add fixture members for every router serving group
+      ansible.builtin.add_host:
+        name: pro6000-fixture
+        groups: [llm_gpu_group, llm_router_group]
+        ansible_connection: local
+
+    - name: Add a held-out 4080 group member
+      ansible.builtin.add_host:
+        name: vllm-fixture
+        groups: llm_vllm_group
+        ansible_connection: local
+
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Select Pro6000 and CPU small rungs and hold the 4080 tier out
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+        llm_active_profile: small
+        llm_router_llm_fast_base_url: http://localhost:10434/v1
+        llm_router_llm_light_base_url: http://localhost:10434/v1
+        llm_router_llm_large_base_url: http://localhost:11434/v1
+        llm_router_llm_large_standby_base_url: ""
+        llm_router_llm_gpu_base_url: http://localhost:10434/v1
+        llm_router_llm_vllm_enabled: false
+        llm_router_llm_vllm_base_url: http://localhost:10434/v1
+        llm_router_vllm_precheck_passed: false
+
+    - name: Load the registry and catalog projections the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Prove the fixture selects capability and small role targets
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - ai_default_model == llm_router_primary_model
+          - llm_router_routine_model == llm_router_small_model
+          - _judge_target == llm_router_small_model
+      vars:
+        _judge_target: >-
+          {{ llm_router_role_deployments
+             | selectattr('role', 'equalto', hermes_goal_judge_model)
+             | map(attribute='model') | first }}
+
+    - name: Load Hermes' operating-profile list
+      ansible.builtin.import_tasks: "{{ _role_dir }}/../../playbooks/tasks/load_hermes_profiles.yml"
+      vars:
+        _hermes_agent_role_dir: "{{ _role_dir }}/../hermes_agent"
+
+    - name: Add an offline Hermes key fixture so its chain assertion executes
+      ansible.builtin.set_fact:
+        llm_router_virtual_keys: >-
+          {{ llm_router_virtual_keys + [{
+               'alias': 'hermes-offline-fixture',
+               'tags': [],
+               'models': _llm_router_directly_callable_ladder_names
+             }] }}
+
+    - name: Run every router preflight assertion
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
+
+    - name: Check the full rendered config against catalog limits
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-catalog-render-agreement.yml"
+
+    - name: Select the legacy physical ids still returned by the serving gate
+      ansible.builtin.set_fact:
+        _fixture_legacy_gate_models: >-
+          {{ (llm_router_model_registry
+              | selectattr('tier', 'equalto', 'local-large')
+              | selectattr('lifecycle', 'defined')
+              | list)[:2] }}
+
+    - name: Build the five physical serving-gate ids from registry entries
+      ansible.builtin.set_fact:
+        _fixture_gate_ids: >-
+          {{ llm_router_servable_models
+             + (_fixture_legacy_gate_models | map(attribute='client_model_id') | list) }}
+        _fixture_gpu_ids: >-
+          {{ llm_router_gpu_models | map(attribute='upstream_model_id') | unique | list }}
+
+    - name: Prove the fixture contains all five catalogued gate ids
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _fixture_gate_ids | length == 5
+          - _fixture_gpu_ids | length == llm_router_gpu_models | length
+
+    - name: Set offline model-list responses for both local serving gates
+      ansible.builtin.set_fact:
+        _llm_router_gate_models:
+          status: 200
+          json:
+            data: >-
+              {%- set ns = namespace(rows=[]) -%}
+              {%- for id in _fixture_gate_ids -%}
+              {%- set ns.rows = ns.rows + [{'id': id}] -%}
+              {%- endfor -%}
+              {{ ns.rows }}
+        _llm_router_gpu_models_response:
+          status: 200
+          json:
+            data: >-
+              {%- set ns = namespace(rows=[]) -%}
+              {%- for id in _fixture_gpu_ids -%}
+              {%- set ns.rows = ns.rows + [{'id': id}] -%}
+              {%- endfor -%}
+              {{ ns.rows }}
+        _llm_router_remote_models:
+          results: []
+
+    - name: Run serving-gate parity against the five fixture ids
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+    - name: Run the seed-key format assertion with no seeded credentials
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-seed-key-format.yml"
+      vars:
+        _llm_router_unseeded_keys: []
