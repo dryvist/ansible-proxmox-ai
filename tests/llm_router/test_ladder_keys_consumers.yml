@@ -19,7 +19,7 @@
           - _active_target_aliases | length == _enabled_target_aliases | length
           - >-
             llm_router_disabled_virtual_keys | intersect(_target_aliases) | sort
-            == ['agy', 'donna', 'hermes-private', 'judge', 'opencode',
+            == ['agy', 'donna', 'hermes-private', 'judge', 'opencode', 'qwen-code',
                 'recorder', 'zcode']
           - _class_scope_mismatches | length == 0
           - _class_model_mismatches | length == 0
@@ -28,7 +28,7 @@
         fail_msg: >-
           Consumer declarations={{ _class_scope_mismatches }}, model scope={{ _class_model_mismatches }},
           MCP scope={{ _mcp_permission_mismatches }}.
-        success_msg: "Each enabled target consumer has one key; the seven unprovisioned sources remain disabled."
+        success_msg: "Each enabled target consumer has one key; the eight unprovisioned sources remain disabled."
       vars:
         _declared_target_aliases: >-
           {{ _llm_router_declared_virtual_keys | selectattr('alias', 'in', _target_aliases)
@@ -46,7 +46,7 @@
           {%- for _key in _llm_router_declared_virtual_keys
                 if _key.alias in _target_aliases -%}
           {%- set _want = _standard if _key.alias in ['claude-code', 'codex', 'agy']
-                else ['local'] if _key.alias in ['judge', _recorder, 'opencode']
+                else ['local'] if _key.alias in ['judge', _recorder, 'opencode', 'qwen-code']
                 else _zdr if _key.alias in ['hermes-private', 'donna']
                 else _all -%}
           {%- if _key.allowed_classes | list != _want -%}
@@ -115,6 +115,8 @@
             mcp_access_groups: [hub-public]
           opencode:
             mcp_access_groups: [hub-public]
+          qwen-code:
+            mcp_access_groups: [hub-public]
         _mcp_permission_mismatches: >-
           {%- set ns = namespace(rows=[]) -%}
           {%- for _alias in _target_aliases -%}
@@ -127,19 +129,20 @@
           {%- endfor -%}
           {{ ns.rows }}
 
-    - name: OpenCode and ZCode wait for the matching sandbox source fields
+    - name: OpenCode, Qwen Code, and ZCode wait for matching sandbox source fields
       ansible.builtin.assert:
         quiet: true
         that:
           - "'opencode' in llm_router_disabled_virtual_keys"
+          - "'qwen-code' in llm_router_disabled_virtual_keys"
           - "'zcode' in llm_router_disabled_virtual_keys"
-          - _source_gate_aliases | sort == ['opencode', 'zcode']
+          - _source_gate_aliases | sort == ['opencode', 'qwen-code', 'zcode']
         fail_msg: "A sandbox key must remain disabled until its own delivery field exists."
-        success_msg: "OpenCode and ZCode stay disabled while their sandbox fields are absent."
+        success_msg: "Sandbox keys stay disabled while their matching delivery fields are absent."
       vars:
         _source_gate_aliases: >-
           {{ _llm_router_declared_virtual_keys
-             | selectattr('alias', 'in', ['opencode', 'zcode'])
+             | selectattr('alias', 'in', ['opencode', 'qwen-code', 'zcode'])
              | rejectattr('enabled', 'truthy') | map(attribute='alias') | list }}
 
     - name: Model the peer-provisioned sandbox fields with the existing consumer values
@@ -148,7 +151,8 @@
           {{ (bao_apps_secrets | default({})) | combine({
             'zcode_llm_router_key': 'fixture-zcode',
             'ZCODE_ROUTER_KEY': 'fixture-zcode',
-            'OPENCODE_ROUTER_KEY': 'fixture-opencode'}) }}
+            'OPENCODE_ROUTER_KEY': 'fixture-opencode',
+            'QWEN_CODE_ROUTER_KEY': 'fixture-qwen-code'}) }}
 
     - name: Refresh the virtual-key projection after sandbox delivery
       vars:
@@ -160,17 +164,20 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _enabled_delivery_aliases | sort == ['opencode', 'zcode']
+          - _enabled_delivery_aliases | sort == ['opencode', 'qwen-code', 'zcode']
           - _delivery_values['opencode'] == bao_apps_secrets['OPENCODE_ROUTER_KEY']
+          - _delivery_values['qwen-code'] == bao_apps_secrets['QWEN_CODE_ROUTER_KEY']
           - _delivery_values['zcode'] == bao_apps_secrets['ZCODE_ROUTER_KEY']
           - _delivery_values['opencode'] != _delivery_values['zcode']
+          - _delivery_values['opencode'] != _delivery_values['qwen-code']
+          - _delivery_values['qwen-code'] != _delivery_values['zcode']
         fail_msg: "Sandbox delivery must reuse its matching per-consumer key value."
         success_msg: "Each sandbox delivery field activates only its matching consumer key."
       vars:
         _enabled_delivery_aliases: >-
-          {{ _active_virtual_keys | selectattr('alias', 'in', ['opencode', 'zcode'])
+          {{ _active_virtual_keys | selectattr('alias', 'in', ['opencode', 'qwen-code', 'zcode'])
              | map(attribute='alias') | list }}
         _delivery_values: >-
-          {{ dict(_active_virtual_keys | selectattr('alias', 'in', ['opencode', 'zcode'])
+          {{ dict(_active_virtual_keys | selectattr('alias', 'in', ['opencode', 'qwen-code', 'zcode'])
              | map(attribute='alias') | zip(_active_virtual_keys
-             | selectattr('alias', 'in', ['opencode', 'zcode']) | map(attribute='value'))) }}
+             | selectattr('alias', 'in', ['opencode', 'qwen-code', 'zcode']) | map(attribute='value'))) }}
