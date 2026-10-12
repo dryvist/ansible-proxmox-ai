@@ -1,0 +1,62 @@
+---
+# One vllm rung state for test_small_capability_fallback.yml (_vllm_on).
+- name: Set the vllm rung state
+  ansible.builtin.set_fact:
+    llm_router_llm_vllm_enabled: "{{ _vllm_on }}"
+    llm_router_vllm_precheck_passed: "{{ _vllm_on }}"
+    llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
+
+- name: Load the registry through the role task
+  ansible.builtin.include_role:
+    name: llm_router
+    tasks_from: registry.yml
+
+- name: Render the model names and capture the projections
+  ansible.builtin.set_fact:
+    _rendered_names: >-
+      {{ (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml).model_list
+         | map(attribute='model_name') | unique | list }}
+    _small_group: >-
+      {{ (llm_router_model_registry | selectattr('tier', 'equalto', 'vllm') | first).route_group }}
+    _key_grants: "{{ llm_router_virtual_keys | map(attribute='models') | flatten | unique | list }}"
+
+- name: Name the capability groups this converge does not render
+  ansible.builtin.set_fact:
+    _unrendered_capabilities: "{{ llm_router_capability_names | difference(_rendered_names) }}"
+
+- name: Assert the small capability selector follows the rung
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - (_small_group in _rendered_names) == (_vllm_on | bool)
+      - llm_router_small_model == (_small_group if _vllm_on | bool else llm_router_primary_large_model)
+      - llm_router_small_model in _rendered_names
+    fail_msg: >-
+      vllm={{ _vllm_on }}: small model {{ llm_router_small_model }}, rendered
+      {{ _rendered_names }}.
+
+- name: Assert no alias target or key-scope grant names an unrendered capability
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_model_group_aliases.values() | list | difference(_rendered_names) | length == 0
+      - _key_grants | intersect(_unrendered_capabilities) | length == 0
+    fail_msg: >-
+      vllm={{ _vllm_on }}: unrendered {{ _unrendered_capabilities }}; alias
+      targets {{ llm_router_model_group_aliases.values() | list | unique }};
+      key grants naming them {{ _key_grants | intersect(_unrendered_capabilities) }}.
+
+- name: Run the role's required-brain assert
+  ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-safe-models.yml"
+
+- name: Assert a key scoped only to the small selector resolves to a served model
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _small_only_keys | length > 0
+      - _small_only_keys | map(attribute='models') | flatten | unique | difference(_rendered_names) | length == 0
+    fail_msg: >-
+      vllm={{ _vllm_on }}: small-only keys {{ _small_only_keys | map(attribute='alias') | list }}
+      name {{ _small_only_keys | map(attribute='models') | flatten | unique }}; rendered {{ _rendered_names }}.
+  vars:
+    _small_only_keys: "{{ llm_router_virtual_keys | selectattr('models', 'equalto', [llm_router_small_model]) | list }}"

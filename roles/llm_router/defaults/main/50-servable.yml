@@ -49,8 +49,11 @@ llm_router_primary_model: >-
 llm_router_primary_serving_model: >-
   {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
       | selectattr('serving_role', 'equalto', 'primary') | first).client_model_id }}
+# The small capability while a deployment renders it; otherwise the primary
+# capability, so routine callers never name a group the router does not serve.
 llm_router_small_model: >-
-  {{ (llm_router_model_registry | selectattr('tier', 'equalto', 'vllm') | first).route_group }}
+  {%- set _group = (llm_router_model_registry | selectattr('tier', 'equalto', 'vllm') | first).route_group -%}
+  {{ _group if _group in llm_router_rendered_capability_names else llm_router_primary_large_model }}
 llm_router_routine_model: >-
   {{ llm_router_small_model }}
 # The physical ids the Mac serving gate must list: what the parity assert
@@ -106,7 +109,12 @@ llm_router_alias_pairs: >-
          | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) | list)) -%}
   {%- for _entry in _entries | selectattr('stable_aliases', 'defined') -%}
   {%- for _alias in _entry.stable_aliases -%}
-  {%- set ns.pairs = ns.pairs + [[_entry.route_group | default(_entry.client_model_id), _alias]] -%}
+  {%- set _target = _entry.route_group | default(_entry.client_model_id) -%}
+  {%- if _entry.tier in llm_router_local_registry_tiers
+        and _target not in llm_router_rendered_capability_names -%}
+  {%- set _target = llm_router_primary_large_model -%}
+  {%- endif -%}
+  {%- set ns.pairs = ns.pairs + [[_target, _alias]] -%}
   {%- endfor -%}
   {%- endfor -%}
   {{ ns.pairs }}
