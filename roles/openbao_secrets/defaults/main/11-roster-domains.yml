@@ -8,8 +8,22 @@ openbao_secrets_optional_domains: >-
   {%- endif -%}
   {{ optional_domains }}
 
+# Remove owned MCP paths from static legacy domains before adding roster domains.
 openbao_secrets_domains: >-
-  {%- set domains = _openbao_secrets_static_domains.copy() -%}
+  {%- set owners = ai_agent_owner | default({}) -%}
+  {%- set domains = [] -%}
+  {%- for domain in _openbao_secrets_static_domains -%}
+    {%- set paths = [] -%}
+    {%- for path in domain.paths -%}
+      {%- set kv_path = path.path if path is mapping else path -%}
+      {%- if not (kv_path.startswith('ai/mcp/') and kv_path[7:] in owners) -%}
+        {%- set _ = paths.append(path) -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {%- set legacy_domain = domain.copy() -%}
+    {%- set _ = legacy_domain.update({'paths': paths}) -%}
+    {%- set _ = domains.append(legacy_domain) -%}
+  {%- endfor -%}
   {%- set agents = ai_agents | default({}) -%}
   {%- set router_paths = [] -%}
   {%- set gateway_paths = [] -%}
