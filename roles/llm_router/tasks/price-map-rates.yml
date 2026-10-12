@@ -1,0 +1,105 @@
+---
+# run_once applies once per serial batch. Cache the fetched and resolved data on
+# localhost, then let later batches reuse it and copy it to their router host.
+- name: Load and project LiteLLM price rates once on the controller
+  run_once: true
+  delegate_to: localhost
+  when: not (hostvars.get('localhost', {}).get('_llm_router_price_map_rates_loaded', false) | bool)
+  block:
+    - name: Fetch the pinned LiteLLM model price map
+      ansible.builtin.uri:
+        url: "{{ llm_router_price_map_rates_url }}"
+        method: GET
+        return_content: true
+        status_code: 200
+        timeout: 20
+      register: _llm_router_price_map_rates_response
+      until: _llm_router_price_map_rates_response.status | default(0) | int == 200
+      retries: 3
+      delay: 2
+      failed_when: false
+      when: llm_router_price_map_rates_file | trim | length == 0
+
+    - name: Require the controller fetch to return HTTP 200
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_price_map_rates_response.status | default(0) | int == 200
+        fail_msg: >-
+          The pinned LiteLLM price map could not be fetched. Set
+          llm_router_price_map_rates_file to a valid local JSON file or verify
+          controller access to llm_router_price_map_rates_url.
+      when: llm_router_price_map_rates_file | trim | length == 0
+
+    - name: Read the local override or fetched content on the controller
+      ansible.builtin.set_fact:
+        _llm_router_price_map_rates_content: >-
+          {{ lookup('ansible.builtin.file', llm_router_price_map_rates_file)
+             if llm_router_price_map_rates_file | trim | length > 0
+             else _llm_router_price_map_rates_response.content | default('') }}
+      delegate_facts: true
+
+    - name: Parse the pinned LiteLLM price map as JSON
+      ansible.builtin.set_fact:
+        _llm_router_price_map_rates_document: >-
+          {{ hostvars['localhost']._llm_router_price_map_rates_content | from_json }}
+      delegate_facts: true
+
+    - name: Validate the LiteLLM price map document
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "{{ llm_router_price_map_rates_document_valid_when }}"
+        fail_msg: >-
+          The LiteLLM price map must be a nonempty JSON object, and the fetched
+          document must contain more than 1000 keys.
+
+    - name: Initialize the per-entry price rate projection
+      ansible.builtin.set_fact:
+        llm_router_price_rates: {}
+      delegate_facts: true
+
+    - name: Resolve accounting rates for rendered cloud deployments
+      ansible.builtin.set_fact:
+        llm_router_price_rates: >-
+          {%- set ns = namespace(rates={}) -%}
+          {%- for price_model in (llm_router_hermes_cloud_models + llm_router_openrouter_models) -%}
+          {%- set model = price_model.litellm_model_name
+                           | default(price_model.provider ~ '/' ~ price_model.upstream_model_id) -%}
+          {%- set candidates = [model] -%}
+          {%- if '/' in model and model.split('/', 1)[0] == price_model.provider -%}
+          {%- set candidates = candidates + [model.split('/', 1)[1]] -%}
+          {%- endif -%}
+          {%- set selected = namespace(found=false) -%}
+          {%- for key in candidates -%}
+          {%- set row = hostvars['localhost']._llm_router_price_map_rates_document.get(key, {}) -%}
+          {%- if not selected.found and row is mapping
+                and row.get('input_cost_per_token') is number
+                and row.get('input_cost_per_token') is not boolean
+                and row.get('output_cost_per_token') is number
+                and row.get('output_cost_per_token') is not boolean -%}
+          {%- set selected.found = true -%}
+          {%- if row.input_cost_per_token > 0 and row.output_cost_per_token > 0 -%}
+          {%- set ns.rates = ns.rates | combine({price_model.client_model_id: {
+                'input': row.input_cost_per_token,
+                'output': row.output_cost_per_token
+              }}) -%}
+          {%- endif -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.rates }}
+      delegate_facts: true
+
+    - name: Mark the controller price map as loaded for later serial batches
+      ansible.builtin.set_fact:
+        _llm_router_price_map_rates_loaded: true
+      delegate_facts: true
+  rescue:
+    - name: Fail with the supported price map override and URL variables
+      ansible.builtin.fail:
+        msg: >-
+          Could not load and validate the pinned LiteLLM price map. Set
+          llm_router_price_map_rates_file to a valid local JSON file or verify
+          controller access to llm_router_price_map_rates_url
+          ({{ llm_router_price_map_rates_url }}).
