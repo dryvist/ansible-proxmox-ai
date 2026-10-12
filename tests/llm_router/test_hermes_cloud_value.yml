@@ -30,6 +30,80 @@
     - name: Produce the fully credentialed render
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
 
+    - name: Model a logged-in node for the subscription segment golden
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Re-evaluate cloud projections with the login present
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
+    - name: Capture Hermes cloud route-group membership and ordering
+      ansible.builtin.set_fact:
+        _hermes_cloud_route_groups_json: >-
+          {%- set ns = namespace(groups=[], rows=[]) -%}
+          {%- for m in llm_router_hermes_cloud_models_credentialed -%}
+          {%- if m.route_group is defined and m.route_group not in ns.groups -%}
+          {%- set ns.groups = ns.groups + [m.route_group] -%}
+          {%- set _members = (llm_router_hermes_cloud_models_credentialed
+                | selectattr('route_group', 'equalto', m.route_group)
+                | sort(attribute='input_cost_per_token')
+                | map(attribute='client_model_id') | list) -%}
+          {%- set ns.rows = ns.rows + [{'group': m.route_group, 'members': _members}] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows | to_json }}
+
+    - name: Capture Hermes cloud routing projections
+      ansible.builtin.set_fact:
+        _hermes_cloud_routing_golden:
+          route_groups: "{{ _hermes_cloud_route_groups_json | from_json }}"
+          segments:
+            paid:
+              groups: "{{ llm_router_hermes_cloud_paid_groups }}"
+              members: >-
+                {{ llm_router_hermes_cloud_models_credentialed
+                   | selectattr('input_cost_per_token', 'defined')
+                   | rejectattr('hermes_chain', 'defined')
+                   | rejectattr('review_private_only', 'defined')
+                   | map(attribute='client_model_id') | list }}
+            free:
+              groups: "{{ llm_router_hermes_cloud_free_groups }}"
+              members: >-
+                {{ llm_router_hermes_cloud_models_credentialed
+                   | rejectattr('input_cost_per_token', 'defined')
+                   | rejectattr('subscription', 'defined')
+                   | map(attribute='client_model_id') | list }}
+            subscription:
+              groups: "{{ llm_router_hermes_cloud_subscription_groups }}"
+              members: >-
+                {{ llm_router_hermes_cloud_models_credentialed
+                   | selectattr('subscription', 'defined')
+                   | rejectattr('review_private_only', 'defined')
+                   | map(attribute='client_model_id') | list }}
+          d1:
+            rungs_by_class: "{{ llm_router_d1_rungs_by_class }}"
+            ladder_groups: "{{ llm_router_d1_ladder_groups }}"
+
+    - name: Assert Hermes cloud routing matches its golden structure
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _hermes_cloud_routing_golden
+            == (lookup('file', playbook_dir ~ '/fixtures/hermes_cloud_routing_golden.json')
+            | from_json)
+        fail_msg: "Hermes cloud routing order, segments, or D1 membership changed."
+        success_msg: "Hermes cloud routing order, segments, and D1 membership match the golden structure."
+
+    - name: Restore the non-login fixture used by the remaining test
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: false
+
+    - name: Re-evaluate cloud projections without the login
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
     - name: Load the sanitized primary capability row from the live-router fixture
       ansible.builtin.set_fact:
         llm_router_live_role_model_info_fixture: >-
