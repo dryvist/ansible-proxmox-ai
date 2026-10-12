@@ -23,6 +23,85 @@
     group: root
     mode: "0755"
 
+- name: Remove the legacy Nautobot env file when its route is inactive
+  ansible.builtin.file:
+    path: "{{ agentgateway_docker_nautobot_legacy_env_file }}"
+    state: absent
+  when: >-
+    agentgateway_docker_nautobot_openapi_enabled | bool
+    or not (agentgateway_docker_nautobot_mcp_enabled | bool)
+    or agentgateway_docker_nautobot_read_token | length == 0
+
+- name: Deploy the legacy Nautobot MCP env file
+  ansible.builtin.copy:
+    content: "NAUTOBOT_READ_TOKEN={{ agentgateway_docker_nautobot_read_token }}"
+    dest: "{{ agentgateway_docker_nautobot_legacy_env_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart agentgateway
+  when:
+    - not (agentgateway_docker_nautobot_openapi_enabled | bool)
+    - agentgateway_docker_nautobot_mcp_enabled | bool
+    - agentgateway_docker_nautobot_read_token | length > 0
+
+- name: Remove the native Nautobot token file when its route is inactive
+  ansible.builtin.file:
+    path: "{{ agentgateway_docker_nautobot_openapi_token_file }}"
+    state: absent
+  when: >-
+    not (agentgateway_docker_nautobot_openapi_enabled | bool)
+    or agentgateway_docker_nautobot_read_token | length == 0
+
+- name: Deploy the native Nautobot token file
+  ansible.builtin.copy:
+    content: "{{ agentgateway_docker_nautobot_read_token }}"
+    dest: "{{ agentgateway_docker_nautobot_openapi_token_file }}"
+    owner: "65532"
+    group: "65532"
+    mode: "0400"
+  no_log: true
+  notify: Restart agentgateway
+  when:
+    - agentgateway_docker_nautobot_openapi_enabled | bool
+    - agentgateway_docker_nautobot_read_token | length > 0
+
+- name: Fetch the Nautobot REST OpenAPI schema
+  ansible.builtin.uri:
+    url: "{{ agentgateway_docker_nautobot_url }}/api/swagger.json"
+    method: GET
+    headers:
+      Authorization: "Token {{ agentgateway_docker_nautobot_read_token }}"
+    return_content: true
+    validate_certs: true
+    status_code: 200
+    timeout: 60
+  register: agentgateway_docker_nautobot_openapi_response
+  changed_when: false
+  no_log: true
+  when:
+    - agentgateway_docker_nautobot_openapi_enabled | bool
+    - agentgateway_docker_nautobot_read_token | length > 0
+
+- name: Validate the Nautobot OpenAPI allowlist
+  ansible.builtin.include_tasks: validate_nautobot_openapi.yml
+  when:
+    - agentgateway_docker_nautobot_openapi_enabled | bool
+    - agentgateway_docker_nautobot_read_token | length > 0
+
+- name: Deploy the filtered Nautobot OpenAPI schema
+  ansible.builtin.template:
+    src: nautobot-openapi.json.j2
+    dest: "{{ agentgateway_docker_nautobot_openapi_schema_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart agentgateway
+  when:
+    - agentgateway_docker_nautobot_openapi_enabled | bool
+    - agentgateway_docker_nautobot_read_token | length > 0
+
 - name: Deploy agentgateway config
   ansible.builtin.template:
     src: config.yaml.j2

@@ -1,0 +1,38 @@
+---
+- name: Require a Nautobot OpenAPI document with paths
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - agentgateway_docker_nautobot_openapi_response.json is mapping
+      - agentgateway_docker_nautobot_openapi_response.json.paths is mapping
+    fail_msg: The authenticated Nautobot response must contain an OpenAPI paths object.
+
+- name: Initialize the Nautobot OpenAPI operation index
+  ansible.builtin.set_fact:
+    _agentgateway_docker_nautobot_openapi_index: []
+
+- name: Index Nautobot OpenAPI operation IDs and methods
+  ansible.builtin.set_fact:
+    _agentgateway_docker_nautobot_openapi_index: >-
+      {{ _agentgateway_docker_nautobot_openapi_index
+         + [{'method': item.key, 'operation_id': item.value.operationId}] }}
+  loop: >-
+    {{ agentgateway_docker_nautobot_openapi_response.json.paths.values()
+       | map('dict2items') | flatten }}
+  when: >-
+    item.key in ['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'trace']
+    and item.value.operationId is defined
+
+- name: Require each configured Nautobot operation to be one GET operation
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _matches | length == 1 and _matches[0].method == 'get'
+    fail_msg: "Configured Nautobot operation {{ item }} must exist exactly once and use GET."
+  vars:
+    _matches: >-
+      {{ _agentgateway_docker_nautobot_openapi_index
+         | selectattr('operation_id', 'equalto', item) | list }}
+  loop: "{{ agentgateway_docker_nautobot_openapi_operations }}"
+  loop_control:
+    label: "{{ item }}"
