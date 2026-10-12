@@ -86,6 +86,64 @@
         _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
         _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
 
+    - name: Model a node with its ChatGPT login present
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Render the credentialed model and fallback graph
+      ansible.builtin.set_fact:
+        _credentialed_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Map the credentialed fallback chains
+      ansible.builtin.set_fact:
+        _credentialed_fallback_map: >-
+          {{ dict(_credentialed_config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='key')
+             | zip(_credentialed_config.router_settings.fallbacks
+               | map('dict2items') | flatten | map(attribute='value'))) }}
+
+    - name: Resolve the private CI key's fallback reachability through its allowlist
+      ansible.builtin.set_fact:
+        _gha_paid_reachable: >-
+          {%- set key = llm_router_virtual_keys
+               | selectattr('alias', 'equalto', 'github-actions') | first -%}
+          {%- set ns = namespace(reachable=key.models | unique | list) -%}
+          {%- for _ in range(0, key.models | length + 1) -%}
+          {%- set _next = namespace(models=ns.reachable) -%}
+          {%- for name in ns.reachable -%}
+          {%- set targets = _credentialed_fallback_map.get(
+               name, _credentialed_config.router_settings.default_fallbacks | default([])) -%}
+          {%- if targets is string -%}{%- set targets = [targets] -%}{%- endif -%}
+          {%- if name in llm_router_model_group_aliases -%}
+          {%- set targets = targets + [llm_router_model_group_aliases[name]] -%}
+          {%- endif -%}
+          {%- for target in targets if target in key.models and target not in _next.models -%}
+          {%- set _ = _next.models.append(target) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {%- set ns.reachable = _next.models -%}
+          {%- endfor -%}
+          {{ ns.reachable }}
+
+    - name: Credentialed private CI reaches Luna but not paid fallback rungs
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_ci_luna_groups | length > 0
+          - llm_router_external_paid_rungs | length > 0
+          - _gha.models | intersect(llm_router_ci_luna_groups) | length > 0
+          - >-
+            _credentialed_config.model_list
+            | selectattr('model_name', 'in', llm_router_external_paid_rungs)
+            | list | length > 0
+          - llm_router_enforce_fallback_model_access | bool
+          - _gha_paid_reachable | intersect(llm_router_external_paid_rungs) | length == 0
+        fail_msg: >-
+          reachable paid groups={{ _gha_paid_reachable
+          | intersect(llm_router_external_paid_rungs) }}
+      vars:
+        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
+
     # Whitespace, never absent: an absent field falls through to the RUNNER's
     # environment (test_hermes_provider_keys.yml has the same fixture rule).
     - name: Model a node with no ChatGPT login and no Codex key
