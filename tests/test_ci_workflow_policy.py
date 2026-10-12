@@ -152,9 +152,10 @@ def test_ansible_install_uses_cached_pinned_ci_requirements(workflow: str, job: 
     assert setup["with"]["cache-dependency-path"] == ".github/requirements-ci.txt"
     galaxy_cache = next(step for step in steps if step.get("id") == "galaxy-cache")
     assert "hashFiles('requirements.yml')" in galaxy_cache["with"]["key"]
-    galaxy_install = next(step for step in steps if "ansible-galaxy install" in step.get("run", ""))
+    galaxy_install = next(step for step in steps if ".github/scripts/galaxy-install.sh" in step.get("run", ""))
     assert galaxy_install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
-    assert "--force" in galaxy_install["run"]
+    helper = (WORKFLOWS.parent / "scripts" / "galaxy-install.sh").read_text()
+    assert "ansible-galaxy install --force -r requirements.yml" in helper
     install = next(step for step in steps if "pip install" in step.get("run", ""))
     assert "pip install -r .github/requirements-ci.txt" in install["run"]
 
