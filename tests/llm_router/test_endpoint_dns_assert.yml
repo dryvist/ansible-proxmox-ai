@@ -23,6 +23,7 @@
     # resolves via /etc/hosts — this fixture is about the guard's own logic,
     # not about the specific hostnames a real converge builds.
     llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_fast_enabled: true
     llm_router_llm_light_base_url: "http://localhost:10434/v1"
     llm_router_llm_large_base_url: "https://localhost:11434/v1"
     llm_router_llm_vllm_enabled: true
@@ -38,6 +39,7 @@
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_fast_enabled: true
     llm_router_llm_light_base_url: "http://localhost:10434/v1"
     llm_router_llm_large_base_url: "https://localhost:11434/v1"
     # Disabled vllm tier and an empty (disabled) standby must not be resolved
@@ -59,12 +61,81 @@
           is not honoring llm_router_llm_vllm_enabled / the empty-standby skip.
         success_msg: "Disabled/empty backends are excluded from the resolved set."
 
+- name: The llm-fast hostname follows its router enable flag
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_llm_fast_base_url: "http://llm-fast-disabled-fixture.invalid:10434/v1"
+    llm_router_llm_light_base_url: "http://localhost:10434/v1"
+    llm_router_llm_large_base_url: "https://localhost:11434/v1"
+    llm_router_llm_fast_enabled: false
+    llm_router_llm_vllm_enabled: false
+    llm_router_llm_vllm_base_url: ""
+    llm_router_llm_large_standby_base_url: ""
+  tasks:
+    - name: Run the DNS guard with the llm-fast backend disabled
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-endpoint-dns.yml"
+
+    - name: Confirm the disabled llm-fast hostname is not checked
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'llm-fast-disabled-fixture.invalid' not in _llm_router_endpoint_hosts"
+        fail_msg: >-
+          The disabled llm-fast hostname was included in the DNS-checked set.
+        success_msg: "The disabled llm-fast hostname is excluded from DNS checks."
+
+- name: An enabled llm-fast hostname is included in DNS checks
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_llm_fast_base_url: "http://llm-fast-enabled-fixture.invalid:10434/v1"
+    llm_router_llm_light_base_url: "http://localhost:10434/v1"
+    llm_router_llm_large_base_url: "https://localhost:11434/v1"
+    llm_router_llm_fast_enabled: true
+    llm_router_llm_vllm_enabled: false
+    llm_router_llm_vllm_base_url: ""
+    llm_router_llm_large_standby_base_url: ""
+  tasks:
+    - name: Prove the enabled llm-fast hostname is checked
+      block:
+        - name: Run the DNS guard with the llm-fast backend enabled
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-endpoint-dns.yml"
+
+        - name: Fail if the enabled llm-fast hostname was not checked
+          ansible.builtin.fail:
+            msg: >-
+              The enabled llm-fast hostname passed without a DNS check.
+      rescue:
+        - name: Confirm the enabled llm-fast hostname failed DNS resolution
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Unresolvable backend host' in (ansible_failed_result.msg | default(''))"
+              - >-
+                _llm_router_endpoint_hosts
+                | select('equalto', 'llm-fast-enabled-fixture.invalid')
+                | list | length == 1
+              - >-
+                _llm_router_endpoint_dns.results
+                | selectattr('item', 'equalto', 'llm-fast-enabled-fixture.invalid')
+                | selectattr('rc', 'equalto', 1)
+                | list | length == 1
+            fail_msg: >-
+              The enabled llm-fast hostname was not included in the DNS-checked
+              set, or the failure came from a different task.
+            success_msg: >-
+              The enabled llm-fast hostname is in the DNS-checked set.
+
 - name: The guard fails loud when an advertised backend hostname cannot resolve
   hosts: localhost
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_fast_enabled: true
     llm_router_llm_light_base_url: "http://localhost:10434/v1"
     # .invalid is reserved by RFC 2606 to never resolve.
     llm_router_llm_large_base_url: "https://unresolvable-fixture.invalid:11434/v1"
@@ -106,6 +177,7 @@
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_fast_enabled: true
     llm_router_llm_light_base_url: "http://localhost:10434/v1"
     llm_router_llm_large_base_url: "https://localhost:11434/v1"
     llm_router_llm_vllm_enabled: false
