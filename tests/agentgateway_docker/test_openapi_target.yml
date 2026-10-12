@@ -1,0 +1,250 @@
+---
+- name: Verify the Nautobot OpenAPI target render contract
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/agentgateway_docker"
+    _legacy_route:
+      matches:
+        - path:
+            exact: /nautobot
+      backends:
+        - mcp:
+            targets:
+              - name: nautobot
+                mcp:
+                  host: http://mcp-nautobot:8003/mcp/
+    ansible_managed: test fixture
+  tasks:
+    - name: Load the role defaults
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main.yml"
+
+    - name: Override inventory and credential values with fixtures
+      ansible.builtin.set_fact:
+        _fixture_token: fixture-nautobot-token
+        agentgateway_docker_data_dir: /tmp/agentgateway-openapi-test
+        agentgateway_docker_image: fixture/agentgateway
+        agentgateway_docker_container_name: fixture-agentgateway
+        agentgateway_docker_restart_policy: unless-stopped
+        agentgateway_docker_proxy_port: 38080
+        agentgateway_docker_admin_port: 39000
+        agentgateway_docker_metrics_port: 39001
+        agentgateway_docker_otlp_endpoint: http://collector.example.invalid:4318
+        agentgateway_docker_trace_sampling: "true"
+        agentgateway_docker_mcp_targets: []
+        agentgateway_docker_qdrant_mcp_enabled: true
+        agentgateway_docker_qdrant_url: http://qdrant.example.invalid:6333
+        agentgateway_docker_qdrant_memory_mcp_api_key: fixture-qdrant-key
+        agentgateway_docker_docs_mcp_enabled: false
+        agentgateway_docker_vikunja_mcp_enabled: false
+        agentgateway_docker_nautobot_mcp_enabled: true
+        agentgateway_docker_nautobot_read_token: fixture-nautobot-token
+        agentgateway_docker_nautobot_url: https://nautobot.example.invalid
+        agentgateway_docker_nautobot_mcp_port: 8003
+        agentgateway_docker_nautobot_openapi_schema_path: /nautobot-openapi.json
+        agentgateway_docker_nautobot_openapi_token_path: /nautobot-token
+        agentgateway_docker_a2a_targets: []
+
+    - name: Set legacy route mode
+      ansible.builtin.set_fact:
+        agentgateway_docker_nautobot_openapi_enabled: false
+
+    - name: Render legacy route templates
+      ansible.builtin.set_fact:
+        _legacy_config_text: "{{ lookup('ansible.builtin.template', _role_dir ~ '/templates/config.yaml.j2') }}"
+        _legacy_compose_text: "{{ lookup('ansible.builtin.template', _role_dir ~ '/templates/docker-compose.yml.j2') }}"
+
+    - name: Set native route mode
+      ansible.builtin.set_fact:
+        agentgateway_docker_nautobot_openapi_enabled: true
+
+    - name: Render native route templates
+      ansible.builtin.set_fact:
+        _native_config_text: "{{ lookup('ansible.builtin.template', _role_dir ~ '/templates/config.yaml.j2') }}"
+        _native_compose_text: "{{ lookup('ansible.builtin.template', _role_dir ~ '/templates/docker-compose.yml.j2') }}"
+
+    - name: Parse the rendered configuration and Compose documents
+      ansible.builtin.set_fact:
+        _legacy_config: "{{ _legacy_config_text | from_yaml }}"
+        _native_config: "{{ _native_config_text | from_yaml }}"
+        _legacy_compose: "{{ _legacy_compose_text | from_yaml }}"
+        _native_compose: "{{ _native_compose_text | from_yaml }}"
+        _legacy_routes: >-
+          {{ (_legacy_config_text | from_yaml).binds[0].listeners[0].routes
+             | selectattr('matches.0.path.exact', 'equalto', '/nautobot') | list }}
+        _native_routes: >-
+          {{ (_native_config_text | from_yaml).binds[0].listeners[0].routes
+             | selectattr('matches.0.path.exact', 'equalto', '/nautobot') | list }}
+      no_log: true
+
+    - name: Keep the legacy Nautobot route unchanged when native mode is disabled
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _legacy_routes == [_legacy_route]
+          - "'mcp-nautobot' in _legacy_compose.services"
+        fail_msg: The disabled native target changed the legacy Nautobot route or service.
+
+    - name: Route enabled native mode through the OpenAPI backend
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _native_routes | length == 1
+          - >-
+            _native_routes[0].backends[0].mcp.targets[0].openapi.schema.file
+            == agentgateway_docker_nautobot_openapi_schema_path
+          - >-
+            _native_routes[0].backends[0].mcp.targets[0].openapi.host
+            == agentgateway_docker_nautobot_url
+          - >-
+            _native_routes[0].backends[0].mcp.targets[0].policies.backendAuth.key.value.file
+            == agentgateway_docker_nautobot_openapi_token_path
+          - _fixture_token not in (_native_routes | to_json)
+          - "'mcp-nautobot' not in _native_compose.services"
+          - >-
+            agentgateway_docker_nautobot_openapi_schema_file ~ ':' ~
+            agentgateway_docker_nautobot_openapi_schema_path ~ ':ro'
+            in (_native_compose.services.agentgateway.volumes | join(' '))
+          - >-
+            agentgateway_docker_nautobot_openapi_token_file ~ ':' ~
+            agentgateway_docker_nautobot_openapi_token_path ~ ':ro'
+            in (_native_compose.services.agentgateway.volumes | join(' '))
+        fail_msg: Native mode must use the schema file, backend auth file and no Nautobot sidecar.
+
+    - name: Keep the fixture token out of Compose and gateway configuration
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _fixture_token not in _legacy_compose_text
+          - _fixture_token not in _native_compose_text
+          - _fixture_token not in _legacy_config_text
+          - _fixture_token not in _native_config_text
+        fail_msg: A rendered Compose or gateway configuration contains the fixture token.
+
+    - name: Remove the Nautobot token from the native mode fixtures
+      ansible.builtin.set_fact:
+        agentgateway_docker_nautobot_openapi_enabled: true
+        agentgateway_docker_nautobot_read_token: ""
+
+    - name: Render native mode without a Nautobot token
+      ansible.builtin.set_fact:
+        _gated_config_text: "{{ lookup('ansible.builtin.template', _role_dir ~ '/templates/config.yaml.j2') }}"
+        _gated_compose_text: "{{ lookup('ansible.builtin.template', _role_dir ~ '/templates/docker-compose.yml.j2') }}"
+
+    - name: Keep the Nautobot route inactive without a token
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            (_gated_config_text | from_yaml).binds[0].listeners[0].routes
+            | selectattr('matches.0.path.exact', 'equalto', '/nautobot')
+            | list | length == 0
+          - "'mcp-nautobot' not in (_gated_compose_text | from_yaml).services"
+        fail_msg: The Nautobot route or sidecar is active without a token.
+
+    - name: Restore fixture credentials for schema projection checks
+      ansible.builtin.set_fact:
+        agentgateway_docker_nautobot_read_token: "{{ _fixture_token }}"
+
+    - name: Set a synthetic OpenAPI document for allowlist validation
+      ansible.builtin.set_fact:
+        agentgateway_docker_nautobot_openapi_operations: [fixture_read]
+        agentgateway_docker_nautobot_openapi_response:
+          json:
+            openapi: 3.0.3
+            info:
+              title: fixture
+              version: fixture
+            servers:
+              - url: /api
+            paths:
+              /items/:
+                parameters:
+                  - name: shared_filter
+                    in: query
+                    schema:
+                      type: string
+                get:
+                  operationId: fixture_read
+                  responses:
+                    "200":
+                      description: success
+                post:
+                  operationId: fixture_write
+                  responses:
+                    "200":
+                      description: success
+            components:
+              schemas:
+                Item:
+                  type: object
+
+    - name: Validate the synthetic GET allowlist entry
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/validate_nautobot_openapi.yml"
+
+    - name: Render the allowlisted OpenAPI projection
+      ansible.builtin.set_fact:
+        _filtered_openapi: >-
+          {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/nautobot-openapi.json.j2')
+             | from_json }}
+
+    - name: Retain only the allowlisted GET operation and its shared components
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "_filtered_openapi.paths['/items/']['get'].operationId == 'fixture_read'"
+          - "_filtered_openapi.paths['/items/'] | length == 2"
+          - "_filtered_openapi.paths['/items/'].parameters[0].name == 'shared_filter'"
+          - "_filtered_openapi.servers == [{'url': '/api'}]"
+          - _filtered_openapi.components.schemas.Item.type == 'object'
+          - "'fixture_write' not in (_filtered_openapi | to_json)"
+        fail_msg: The OpenAPI projection must retain the selected GET and shared schema references only.
+
+    - name: Reject an allowlisted operation missing from the schema
+      block:
+        - name: Set a schema without the allowlisted operation
+          ansible.builtin.set_fact:
+            agentgateway_docker_nautobot_openapi_response:
+              json:
+                paths:
+                  /items/:
+                    get:
+                      operationId: another_read
+
+        - name: Run the production OpenAPI allowlist validator
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/validate_nautobot_openapi.yml"
+
+        - name: Fail if the missing operation was accepted
+          ansible.builtin.fail:
+            msg: The allowlist validator accepted an operation missing from the schema.
+      rescue:
+        - name: Confirm that the allowlist assertion rejected the missing operation
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - ansible_failed_task.name == 'Require each configured Nautobot operation to be one GET operation'
+
+    - name: Reject an allowlisted operation exposed only as POST
+      block:
+        - name: Set a schema with a non-GET allowlisted operation
+          ansible.builtin.set_fact:
+            agentgateway_docker_nautobot_openapi_response:
+              json:
+                paths:
+                  /items/:
+                    post:
+                      operationId: fixture_read
+
+        - name: Run the production OpenAPI allowlist validator
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/validate_nautobot_openapi.yml"
+
+        - name: Fail if the non-GET operation was accepted
+          ansible.builtin.fail:
+            msg: The allowlist validator accepted an operation that is not GET.
+      rescue:
+        - name: Confirm that the allowlist assertion rejected the non-GET operation
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - ansible_failed_task.name == 'Require each configured Nautobot operation to be one GET operation'
