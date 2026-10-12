@@ -1,13 +1,29 @@
 ---
 # Each roster identity gets its own AppRole domain; fetch_domain.yml derives its
 # OPENBAO_APPROLE_<NAME>_ROLE_ID/_SECRET_ID variables from the domain name.
+openbao_secrets_optional_domains: >-
+  {%- set optional_domains = _openbao_secrets_static_optional_domains.copy() -%}
+  {%- if ai_agents | default({}) -%}
+    {%- set _ = optional_domains.extend(['llm-router-agent-keys', 'agentgateway-agent-keys']) -%}
+  {%- endif -%}
+  {{ optional_domains }}
+
 openbao_secrets_domains: >-
   {%- set domains = _openbao_secrets_static_domains.copy() -%}
-  {%- for agent_name, agent in (ai_agents | default({})).items() -%}
+  {%- set agents = ai_agents | default({}) -%}
+  {%- set router_paths = [] -%}
+  {%- set gateway_paths = [] -%}
+  {%- for agent_name, agent in agents.items() -%}
     {%- set paths = ['ai/' ~ agent_name, 'apps/' ~ agent_name, 'apps/' ~ agent_name ~ '-gw'] -%}
+    {%- set _ = router_paths.append('apps/' ~ agent_name) -%}
+    {%- set _ = gateway_paths.append('apps/' ~ agent_name ~ '-gw') -%}
     {%- for slug in agent.owns | default([]) -%}
       {%- set _ = paths.append('ai/mcp/' ~ slug) -%}
     {%- endfor -%}
     {%- set _ = domains.append({'name': agent_name, 'paths': paths, 'required': true}) -%}
   {%- endfor -%}
+  {%- if agents -%}
+    {%- set _ = domains.append({'name': 'llm-router-agent-keys', 'paths': router_paths}) -%}
+    {%- set _ = domains.append({'name': 'agentgateway-agent-keys', 'paths': gateway_paths}) -%}
+  {%- endif -%}
   {{ domains }}

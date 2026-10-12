@@ -13,6 +13,8 @@ AGENT_DEFAULTS = REPO_ROOT / "inventory/group_vars/hermes_agent_group/00-agent-s
 FETCH_DOMAIN_TASKS = REPO_ROOT / "roles/openbao_secrets/tasks/fetch_domain.yml"
 ROLE_TASKS = REPO_ROOT / "roles/openbao_secrets/tasks/main.yml"
 ROSTER = {"splunk-heimdall": {"owns": ["splunk"]}}
+TWO_AGENT_ROSTER = {"a-x": {"owns": []}, "b-y": {"owns": []}}
+READER_DOMAIN_NAMES = {"llm-router-agent-keys", "agentgateway-agent-keys"}
 
 
 def _render_domains(ai_agents):
@@ -24,10 +26,24 @@ def _render_domains(ai_agents):
     )
 
 
-def test_empty_roster_keeps_the_static_domain_list_unchanged():
+def _render_optional_domains(ai_agents):
     defaults = yaml.safe_load(DOMAIN_DEFAULTS.read_text(encoding="utf-8"))
+    roster = yaml.safe_load(ROSTER_DEFAULTS.read_text(encoding="utf-8"))
+    return NativeEnvironment().from_string(roster["openbao_secrets_optional_domains"]).render(
+        _openbao_secrets_static_optional_domains=defaults[
+            "_openbao_secrets_static_optional_domains"
+        ],
+        ai_agents=ai_agents,
+    )
 
-    assert _render_domains({}) == defaults["_openbao_secrets_static_domains"]
+
+def test_empty_roster_keeps_static_domain_lists_unchanged():
+    defaults = yaml.safe_load(DOMAIN_DEFAULTS.read_text(encoding="utf-8"))
+    domains = _render_domains({})
+
+    assert domains == defaults["_openbao_secrets_static_domains"]
+    assert READER_DOMAIN_NAMES.isdisjoint({domain["name"] for domain in domains})
+    assert _render_optional_domains({}) == defaults["_openbao_secrets_static_optional_domains"]
 
 
 def test_roster_agent_gets_its_paths_and_owned_mcp_paths():
@@ -82,6 +98,30 @@ def test_roster_name_cannot_collide_with_a_static_domain():
     )
 
     assert overlap is False
+
+
+
+def test_reader_domains_cover_each_roster_key_family_and_are_optional():
+    domains = _render_domains(TWO_AGENT_ROSTER)
+    by_name = {domain["name"]: domain for domain in domains}
+
+    assert by_name["llm-router-agent-keys"] == {
+        "name": "llm-router-agent-keys",
+        "paths": ["apps/a-x", "apps/b-y"],
+    }
+    assert by_name["agentgateway-agent-keys"] == {
+        "name": "agentgateway-agent-keys",
+        "paths": ["apps/a-x-gw", "apps/b-y-gw"],
+    }
+
+    optional_domains = _render_optional_domains(TWO_AGENT_ROSTER)
+    assert optional_domains == [
+        *_render_optional_domains({}),
+        "llm-router-agent-keys",
+        "agentgateway-agent-keys",
+    ]
+    assert READER_DOMAIN_NAMES <= set(optional_domains)
+    assert {"a-x", "b-y"}.isdisjoint(optional_domains)
 
 
 def test_roster_domain_is_selected_by_the_container_identity():
