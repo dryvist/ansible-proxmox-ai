@@ -260,6 +260,23 @@ def select(paths: list[str]) -> Selection:
             role_scope("hermes_agent")
         elif path == "renovate.json":
             run_selector_checks = True
+        elif path.startswith("inventory/group_vars/hermes_agent_group/"):
+            # Hermes-only vars: the role, the inventory load, and every test that loads the file.
+            role_scope("hermes_agent")
+            run_inventory = True
+            for reader in sorted(test.as_posix() for test in Path("tests").rglob("*")
+                                 if test.suffix in {".py", ".yml", ".yaml"}
+                                 and not test.name.startswith("test_contract_scope")
+                                 and Path(path).name in test.read_text(errors="ignore")):
+                if reader in matrix_by_test:
+                    router_tests.add(" ".join(matrix_by_test[reader]))
+                elif reader.endswith(".py"):
+                    pytest_targets.add(reader)
+                elif reader in ANSIBLE_TESTS:
+                    ansible_tests.add(reader)
+                else:
+                    warn_unmapped(reader)
+                    route_full = True  # a reader with no contract entry: run the full suite
         elif path.startswith(("inventory/", "group_vars/", "host_vars/", "playbooks/")) or path == "requirements.yml":
             route_full = True  # every role and router playbook reads these files
         elif path == ".github/workflows/_llm-router-contract.yml":
