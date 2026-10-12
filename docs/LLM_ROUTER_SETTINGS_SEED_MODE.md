@@ -5,7 +5,7 @@ keep both files under the repo's per-file token budget
 (`.token-limits.yaml`). The router-settings API details below are a historical
 source check against LiteLLM 1.102.0; LiteLLM 1.104.0 refactored the proxy
 internals, so re-verify those exact paths before relying on them for a later
-upgrade. The schema-upgrade section describes the current `litellm==1.104.0` migration
+upgrade. The schema-upgrade section describes the current `litellm==1.104.2` migration
 contract.
 
 - **Startup merge direction**: with `store_model_in_db: true`, the database
@@ -88,7 +88,7 @@ and one-member-first rollout below.
 
 ### LiteLLM 1.104.0 release and rollout
 
-The role pins `litellm[proxy]==1.104.0`, verified as the current stable release
+The role pins `litellm[proxy]==1.104.2`, verified as the current stable release
 on 2026-10-05. See the [official release and migration notes](https://docs.litellm.ai/release_notes/v1.104.0/v1-104-0).
 The release rejects an unset, empty, or public default master key; this role
 checks the configured key without logging its value. Admin UI and `lite` CLI
