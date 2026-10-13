@@ -54,6 +54,7 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 | `daily-innovation` | `47 6 * * *` | Agent home |
 | `app-seeding` | `53 7 * * *` | Agent home |
 | `release-watch` | `17 12 * * *` | Agent home |
+| `promotion-drift` | `33 13 * * *` | Agent home |
 | `fleet-health` | `3 10 * * 1` (weekly) | Agent home |
 | `docs-sync` | `13 8 * * 1` (weekly) | Agent home |
 | `self-audit` | `29 3,15 * * *` | Agent home |
