@@ -55,6 +55,8 @@ page continues with the variable surface.
 | `hermes_agent_a2a_inbound_token` | identity-scoped env/OpenBao lookup | required bearer token when inbound A2A is enabled |
 | `hermes_agent_a2a_peers` | `[]` | inventory-owned `{name, url, token}` outbound peers |
 | `hermes_agent_slack_rich_blocks` | `false` | enable Slack Block Kit rendering |
+| `hermes_agent_slack_reaction_triggers` | `true` | route emoji reactions on bot posts to the agent as `reaction:added:<emoji>` |
+| `hermes_agent_splunk_memory_bank_id` | agent bank on the splunk owner, else `<id>-splunk` | Hindsight bank for the `splunk-admin` profile |
 
 ## Group / invocation
 

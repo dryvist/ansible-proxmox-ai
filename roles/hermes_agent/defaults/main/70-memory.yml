@@ -24,7 +24,8 @@ hermes_agent_memory_api_key: >-
      | mandatory('hindsight_api_key missing from bao_apps_secrets') }}
 hermes_agent_memory_llm_model: "{{ hermes_brain_model }}"
 
-# Per-AGENT memory isolation — deliberately not per-profile.
+# Per-AGENT memory isolation — per-profile only where a profile entry sets
+# `memory_bank_id` (splunk-admin, see hermes_agent_splunk_memory_bank_id).
 #
 # The memory service is multi-tenant by bank: every route is scoped
 # /v1/<tenant>/banks/<bank_id>/..., so two agents pointed at ONE deployment stay
@@ -33,14 +34,23 @@ hermes_agent_memory_llm_model: "{{ hermes_brain_model }}"
 #
 # This is a static bank_id, NOT bank_id_template, and that is load-bearing:
 # tasks/profiles.yml documents an explicit decision to leave the template unset
-# so every profile of one agent SHARES a bank. That keeps the default profile
-# able to read a moved job's findings and preserves memory continuity when a
-# card changes assignee. Setting a {profile} template here would silently
-# reverse that decision for the existing agent. Isolate agents, not profiles.
+# so profiles of one agent SHARE a bank unless an entry names its own. That
+# keeps the default profile able to read a moved job's findings and preserves
+# memory continuity when a card changes assignee. Setting a {profile} template
+# here would silently reverse that decision for every profile. Isolate agents,
+# not profiles.
 #
 # The value matches the plugin's own static default for the existing agent, so
 # this is a no-op for it and only takes effect for a differently-named agent.
 hermes_agent_memory_bank_id: "{{ hermes_agent_id }}"
+# The one bank every Splunk job (the splunk-admin profile) recalls from and
+# retains into. On the agent that owns the splunk system its agent bank already
+# holds only Splunk work, so the profile keeps it; any other agent gives the
+# profile a dedicated bank.
+hermes_agent_splunk_memory_bank_id: >-
+  {{ hermes_agent_memory_bank_id
+     if hermes_agent_id == (ai_agent_owner | default({})).get('splunk')
+     else hermes_agent_id ~ '-splunk' }}
 # The gateway's hindsight plugin lazily installs its client when it is absent,
 # but that path can never succeed in this uv venv (no pip/ensurepip). The role
 # therefore installs an explicit, Renovate-managed client pin into the Hermes

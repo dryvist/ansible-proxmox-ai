@@ -1,0 +1,85 @@
+---
+# --- Hourly local-LLM stats report -------------------------------------------
+# One open-ended agentic direct cron under the splunk-admin profile. The prompt
+# carries the whole protocol: sources, "llm-stats:" memory keys, feedback.
+#
+# Minute 54 is one no other job in this table starts on
+# (tests/hermes_agent/test_cron_stagger.py).
+hermes_agent_llm_stats_hourly_enabled: true
+hermes_agent_llm_stats_hourly_cron_name: llm-stats-hourly
+hermes_agent_llm_stats_hourly_cron_schedule: "54 * * * *"
+hermes_agent_llm_stats_hourly_cron_prompt: >-
+  Hourly local-LLM stats report for the homelab, posted to the Splunk channel.
+  Report whatever best shows how the local LLM stack is doing right now and how
+  that moved over time. You choose the stats; the operator's feedback (below)
+  steers what you keep, drop and add.
+
+
+  WHAT TO LOOK FOR. The LLM router (LiteLLM): requests, tokens in and out,
+  error and 429 rate, fallback activity, latency and cost class, split by model
+  and by the backend host that served it. The serving backends: which host is
+  running which model, throughput, saturation, restarts. Hermes itself: model
+  calls, tokens, job outcomes and failures. The hypervisor nodes hosting all of
+  it: node health, load, memory, storage, anything degraded. Always show tokens
+  over time (this hour against the last 24 hours and against your recalled
+  baseline) and name the host behind every number. Prefer the trend and the
+  change to a static snapshot, and lead with whatever moved materially.
+
+
+  WHERE TO LOOK. Find the sources yourself. List indexes
+  and sourcetypes with a narrow-window tstats or eventcount, then sample the
+  ones that look like router logs, the router's daily serving-share event,
+  Hermes logs, AI-usage and trace data, and hypervisor or node health data.
+  Bounded queries only: a narrow time window, stats or tstats, head, never an
+  unbounded search. A number counts only if it came from a tool result in this
+  run. If a stat you want cannot be queried with the tools you have, say so on
+  a "gaps" line naming the stat and the source it would need, and never
+  estimate, recall or invent a number in its place.
+
+
+  MEMORY (read first, write last, every run). The memory service holds one
+  bank shared by all Splunk jobs. At the start, recall every entry whose key
+  starts with "llm-stats:". "llm-stats:baselines" holds typical per-model and
+  per-host token rates, latencies and error rates, and which host serves what.
+  "llm-stats:sources" holds the sources and queries that worked and the dead
+  ends not to retry. "llm-stats:feedback" holds dated operator guidance on what
+  was useful and what was not. "llm-stats:last" holds the headline numbers of
+  your previous report, for deltas. At the end, save a compact dated
+  "llm-stats:last", merge new working queries and dead ends into
+  "llm-stats:sources", and rewrite "llm-stats:baselines" as a consolidated
+  current picture rather than an ever-growing log, so it survives trimming. If
+  recall returns nothing, say this is a first run and build the baseline.
+
+
+  FEEDBACK. Operators react to your post or reply in its thread. A later turn
+  such as "reaction:added:👍", "reaction:added:👎" or any other emoji, or a
+  human reply, is feedback on that report. Save it to "llm-stats:feedback" as
+  one dated line naming the sections that report had, and answer with one short
+  acknowledgement. A thumbs up means keep doing that; a thumbs down or a
+  critical reply means change it. Follow "llm-stats:feedback" over these
+  defaults.
+
+
+  FORMAT. Slack mrkdwn, scannable: a one-line headline with the single most
+  important change, then short sections with numbers, host names and deltas,
+  then a "gaps" line if anything was unavailable. No preamble, no sign-off, no
+  restating this task. Finish within 20 minutes and about 15 queries. You only
+  observe and report: never change, restart or reconfigure anything.
+
+hermes_agent_direct_cron_jobs_llm_stats:
+  - name: "{{ hermes_agent_llm_stats_hourly_cron_name }}"
+    system: splunk
+    schedule: "{{ hermes_agent_llm_stats_hourly_cron_schedule }}"
+    prompt_var: hermes_agent_llm_stats_hourly_cron_prompt
+    skill: dryvist/splunk-monitor
+    deliver: >-
+      slack:{{ hermes_agent_slack_splunk_channel
+               | default(hermes_agent_slack_hermes_all_channel, true) }}
+    hermes_home: "{{ hermes_agent_hermes_home }}/profiles/splunk-admin"
+    enabled: >-
+      {{ hermes_agent_llm_stats_hourly_enabled | bool
+         and hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
