@@ -64,9 +64,12 @@ requests, a 2,400s attempt timeout, and zero retries of any kind. The six
 deployment-level monthly ceilings total $10.00 ($3.33 Alibaba, $3.33 Gemini,
 $3.34 OpenRouter); the account-wide OpenRouter budget stays separately owned
 by `llm_router_openrouter_budget_limit`. Per-token rates are not registry
-facts; a separate projection will source accounting rates from LiteLLM's
-upstream `model_prices_and_context_window.json`. Review spend ceilings and
-provider account limits before activation and before 2027-01-01.
+facts. At converge time the controller fetches accounting rates from
+LiteLLM's `model_prices_and_context_window.json` at the tag matching the pinned
+package. The controller needs HTTPS egress to `raw.githubusercontent.com`; set
+`llm_router_price_map_rates_file` to a local JSON snapshot when that egress is
+unavailable. Review spend ceilings and provider account limits before
+activation and before 2027-01-01.
 
 ### Why MiniMax is two entries
 

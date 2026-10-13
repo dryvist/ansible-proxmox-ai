@@ -128,13 +128,16 @@ Optional:
                       failover deployment when the role has a standby backend
                       URL configured.
   input_cost_per_token / output_cost_per_token
-                      Optional accounting metadata passed through from
-                      LiteLLM's `model_prices_and_context_window.json`. These
-                      fields are not routing facts and must not be typed into
-                      the registry. Route preference uses `route_rank`; the
-                      free, paid and subscription split uses `price_class`.
-                      When an accounting rate is unavailable, omit the field
-                      instead of emitting zero.
+                      Optional accounting metadata projected from LiteLLM's
+                      `model_prices_and_context_window.json` at the package's
+                      pinned tag. The controller fetches it at converge time;
+                      HTTPS egress to `raw.githubusercontent.com` is required,
+                      or set `llm_router_price_map_rates_file` to a local JSON
+                      snapshot. These fields are not routing facts and must
+                      not be typed into the registry. Route preference uses
+                      `route_rank`; price class uses `price_class`. Missing or
+                      zero upstream rates are omitted rather than rendered as
+                      zero.
   credential_env      One provider-level environment variable:
                       `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
                       `DASHSCOPE_API_KEY`, or `OPENCODE_API_KEY`. REQUIRED,
