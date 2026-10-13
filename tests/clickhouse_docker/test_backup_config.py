@@ -54,15 +54,21 @@ def test_dedicated_clickhouse_system_logs_use_information_and_30_day_ttl():
         assert root.findtext(f"{table}/ttl") == ("event_date + INTERVAL 30 DAY DELETE")
 
 
-def test_database_defaults_to_default_and_grants_follow_the_variable():
+def test_database_defaults_to_default_and_read_grants_follow_the_variable():
     defaults = _defaults(CLICKHOUSE_ROLE)
-    grants = defaults["clickhouse_docker_app_grants"]
+    tasks = (CLICKHOUSE_ROLE / "tasks/main.yml").read_text(encoding="utf-8")
 
     assert defaults["clickhouse_docker_database"] == "default"
-    assert any("ON {{ clickhouse_docker_database }}.*" in grant for grant in grants)
-    assert "CREATE DATABASE" not in (CLICKHOUSE_ROLE / "tasks/main.yml").read_text(
-        encoding="utf-8"
-    )
+    assert "GRANT SELECT ON {{ clickhouse_docker_database }}.* TO {{ item.key }}" in tasks
+    assert "CREATE DATABASE" not in tasks
+
+
+def test_app_user_is_never_a_grant_target():
+    """The entrypoint defines the app user in users.xml, which ClickHouse will not GRANT to."""
+    tasks = (CLICKHOUSE_ROLE / "tasks/main.yml").read_text(encoding="utf-8")
+
+    assert "TO {{ clickhouse_docker_app_user }}" not in tasks
+    assert "clickhouse_docker_app_grants" not in tasks
 
 
 def test_backup_dropins_are_rendered_mounted_and_created_on_the_data_mount():
