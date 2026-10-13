@@ -27,7 +27,9 @@ CAPTURE = Path(__file__).parent / "fixtures/api-response-shapes.json"
     ],
 )
 def test_stage0_reconciliation(tmp_path, scenario):
-    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+    defaults: dict = {}
+    for path in sorted((ROLE / "defaults/main").glob("*.yml")):
+        defaults.update(yaml.safe_load(path.read_text()))
     bundle = json.loads((ROLE / "files/datasets/typed-decisions-stage0.json").read_text())
     source = (ROLE / "files/evaluators/typed-decisions.ts").read_text().rstrip()
     captured = json.loads(CAPTURE.read_text())
@@ -117,7 +119,7 @@ def test_stage0_reconciliation(tmp_path, scenario):
         "vars": variables,
         "tasks": [
             {"name": "Load production defaults", "ansible.builtin.include_vars": {
-                "file": str(ROLE / "defaults/main.yml")}},
+                "dir": str(ROLE / "defaults/main")}},
             {"name": "Select the local fixture endpoint", "ansible.builtin.set_fact": {
                 key: value for key, value in variables.items() if key != "role_path"}},
             reconcile,
