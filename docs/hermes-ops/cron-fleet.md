@@ -60,11 +60,8 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 
 `llm-stats-hourly` is open-ended. It finds its own sources, posts every hour,
 and keeps what it learns in the Splunk bank under the `llm-stats:` key prefix.
-With `hermes_agent_slack_reaction_triggers` on, a reaction on any bot post
-reaches the agent as the turn text `reaction:added:<emoji>`, and a thread reply
-continues the post's session. The job's prompt treats both as feedback and
-saves them to `llm-stats:feedback`. Reactions need the Slack app's
-`reactions:read` scope and the `reaction_added` and `reaction_removed` events.
+Its prompt treats reactions and thread replies on its posts as feedback; the
+Slack requirements are in `44-slack-and-status-cron-vars.yml`.
 
 Every job is additionally **capability-gated**: all require the Slack bot
 token, app token and home channel; the `splunk-*` jobs also require
