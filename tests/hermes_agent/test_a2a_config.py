@@ -84,6 +84,20 @@ def _slack_fragment(**context: object) -> str:
     )
 
 
+def test_default_slack_config_routes_reactions_on_bot_posts() -> None:
+    defaults = role_defaults(ROLE_ROOT)
+    slack = yaml.safe_load(
+        _slack_fragment(
+            _slack_on=True,
+            hermes_agent_slack_rich_blocks=defaults["hermes_agent_slack_rich_blocks"],
+            hermes_agent_slack_reaction_triggers=defaults["hermes_agent_slack_reaction_triggers"],
+            hermes_agent_slack_reply_in_thread=True,
+            hermes_agent_slack_cron_continuable_surface="thread",
+        )
+    )["platforms"]["slack"]
+    assert slack["extra"] == {"reaction_triggers": True}
+
+
 def test_defaults_leave_existing_gateway_and_slack_config_byte_unchanged() -> None:
     defaults = role_defaults(ROLE_ROOT)
     assert defaults["hermes_agent_a2a_inbound_enabled"] is False
@@ -122,6 +136,7 @@ def test_defaults_leave_existing_gateway_and_slack_config_byte_unchanged() -> No
         slack_config = _slack_fragment(
             _slack_on=True,
             hermes_agent_slack_rich_blocks=False,
+            hermes_agent_slack_reaction_triggers=False,
             hermes_agent_slack_reply_in_thread=True,
             hermes_agent_slack_cron_continuable_surface="thread",
         )
