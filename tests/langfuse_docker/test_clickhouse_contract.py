@@ -58,12 +58,7 @@ def test_clickhouse_inventory_contract_uses_published_ports_and_guest_tag():
     assert group_vars["clickhouse_docker_app_user"] == "langfuse"
     assert defaults["clickhouse_docker_version"] == "25.12"
     assert defaults["clickhouse_docker_prometheus_port"].endswith("default(9363) }}")
-    grants = defaults["clickhouse_docker_app_grants"]
-    assert any("SELECT, INSERT ON {{ clickhouse_docker_database }}.*" in grant for grant in grants)
-    assert any("ALTER UPDATE, ALTER DELETE" in grant for grant in grants)
-    assert any("system.parts" in grant and "partition_id" in grant for grant in grants)
-    assert any("system.mutations" in grant and "is_done" in grant for grant in grants)
-    assert any("system.query_log*" in grant for grant in grants)
+    assert "clickhouse_docker_app_grants" not in defaults
 
 
 def test_external_langfuse_password_projects_the_clickhouse_openbao_field():

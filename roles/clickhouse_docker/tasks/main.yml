@@ -236,8 +236,10 @@
 # =============================================================================
 # The application database + app user are bootstrapped by the image's own
 # CLICKHOUSE_DB / CLICKHOUSE_USER / CLICKHOUSE_PASSWORD entrypoint mechanism
-# (see the compose template) on first init only. Langfuse's app grants and the
-# three read-only consumer users are provisioned here on every converge.
+# (see the compose template). The entrypoint defines that user in users.xml, a
+# read-only access storage: it holds the image's full rights and ClickHouse
+# refuses any GRANT to it (ACCESS_STORAGE_READONLY). The three read-only
+# consumer users are provisioned here, in SQL storage, on every converge.
 # `CREATE USER IF NOT EXISTS` + a repeatable `GRANT` are both converge-safe:
 # a second run issues the same statements again and changes nothing.
 
@@ -251,18 +253,6 @@
       - clickhouse_docker_grafana_password
       - clickhouse_docker_hyperdx_password
       - clickhouse_docker_splunk_password
-
-- name: Grant Langfuse access to its database and required system metadata
-  ansible.builtin.command:
-    cmd: >-
-      docker compose -f {{ clickhouse_docker_data_dir }}/docker-compose.yml
-      exec -T {{ clickhouse_docker_service }}
-      clickhouse-client --user {{ clickhouse_docker_app_user }}
-      --password {{ clickhouse_docker_app_password }}
-      --multiquery
-      --query "{{ clickhouse_docker_app_grants | join('; ') }}"
-  changed_when: false
-  no_log: true
 
 - name: Provision the read-only ClickHouse users
   ansible.builtin.command:
