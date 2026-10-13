@@ -46,13 +46,15 @@
 
 # Memory: the same standalone Hindsight service as the default profile
 # (hermes_agent_memory_api_url), local_external mode. bank_id_template is
-# deliberately UNSET (matches the default profile), so every profile shares
-# this agent's identity-derived bank_id. Memory is explicitly NOT part of the
+# deliberately UNSET (matches the default profile), so a profile uses the static
+# bank_id written to its own hindsight/config.json: this agent's identity-derived
+# bank_id unless the profile entry sets `memory_bank_id` (splunk-admin does, so
+# every Splunk job shares one Splunk bank). Memory is explicitly NOT part of the
 # profile isolation boundary (verified against the pinned hindsight plugin
 # source: a blank bank_id_template falls back to static bank_id). Different
 # agents receive different static bank IDs through hermes_agent_id; profiles
-# within one agent share their bank so daily-summary can read a moved card's
-# findings without losing continuity.
+# without `memory_bank_id` share their agent's bank so daily-summary can read a
+# moved card's findings without losing continuity.
 - name: "Ensure the hindsight config dir exists for profile {{ item.name }}"
   ansible.builtin.file:
     path: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/hindsight"
@@ -69,6 +71,8 @@
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0640"
+  vars:
+    hermes_agent_profile_memory_bank_id: "{{ item.memory_bank_id | default(hermes_agent_memory_bank_id) }}"
   when: hermes_agent_memory_provider == 'hindsight'
 
 # SOUL.md = the shared autonomous-base persona (same content every profile
