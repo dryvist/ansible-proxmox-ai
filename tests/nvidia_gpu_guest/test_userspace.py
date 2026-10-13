@@ -111,6 +111,31 @@ def test_userspace_install_is_userspace_only_and_pinned():
     assert installs[1]["allow_downgrade"] is True
 
 
+def test_nvidia_package_installs_skip_only_for_a_new_repo_in_check_mode():
+    guard = (
+        "not (ansible_check_mode and "
+        "(nvidia_gpu_guest_nvidia_repo | default({})).changed | default(false))"
+    )
+    tasks = _load(USERSPACE_TASKS)
+    package_installs = [
+        task for task in tasks if "ansible.builtin.apt" in task
+    ] + _load(ROLE_ROOT / "tasks/install-cuda-toolkit.yml")
+    environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
+    template = environment.from_string("{{ " + guard + " }}")
+    scenarios = [
+        {"ansible_check_mode": True, "nvidia_gpu_guest_nvidia_repo": {"changed": True}},
+        {"ansible_check_mode": True, "nvidia_gpu_guest_nvidia_repo": {"changed": False}},
+        {"ansible_check_mode": False, "nvidia_gpu_guest_nvidia_repo": {"changed": True}},
+    ]
+
+    assert (
+        len(package_installs) == 3
+        and [task.get("when") for task in package_installs] == [[guard]] * 3
+        and [yaml.safe_load(template.render(**scenario)) for scenario in scenarios]
+        == [False, True, True]
+    )
+
+
 def test_stale_package_scan_selects_every_installed_package_at_another_version(tmp_path):
     # Shape of a guest left with a newer userspace than the host module.
     fixture = tmp_path / "dpkg.txt"
