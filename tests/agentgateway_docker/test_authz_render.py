@@ -13,7 +13,7 @@ from ansible.plugins.filter.core import FilterModule
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = REPO_ROOT / "inventory/group_vars/all.yml"
-DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main.yml"
+DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/00-gateway.yml"
 TASKS = REPO_ROOT / "roles/agentgateway_docker/tasks/main.yml"
 TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/config.yaml.j2"
 BASELINE_SHA256 = "c6f329d4ff68fd4fbb1466bcda56033352413ab9e973ddcdf650825964f255b6"
@@ -81,6 +81,7 @@ def _render(
         "agentgateway_docker_nautobot_mcp_enabled": True,
         "agentgateway_docker_nautobot_read_token": "example-nautobot-token",
         "agentgateway_docker_nautobot_mcp_port": 8003,
+        "agentgateway_docker_nautobot_openapi_enabled": False,
         "agentgateway_docker_a2a_targets": [
             {"path_prefix": "/a2a/test/", "host": "http://langgraph.example.com:5000"}
         ],
