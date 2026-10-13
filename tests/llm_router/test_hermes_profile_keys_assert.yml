@@ -48,3 +48,25 @@
             success_msg: "An empty/undefined hermes_agent_profiles is fatal, and says so."
           vars:
             _hermes_profile_failure_text: "{{ ansible_failed_result.msg | default('(none)') }}"
+
+- name: The loader hands a router host the profile names without resolving role-only variables
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _hermes_agent_role_dir: "{{ playbook_dir }}/../../roles/hermes_agent"
+  tasks:
+    - name: Load the profile list through the shared loader
+      ansible.builtin.import_tasks: "{{ playbook_dir }}/../../playbooks/tasks/load_hermes_profiles.yml"
+
+    - name: Only each profile's name reaches the router host
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - hermes_agent_profiles | length > 0
+          - hermes_agent_profiles | map(attribute='name') | list
+            == _hermes_fleet_health_defaults.hermes_agent_profiles | map(attribute='name') | list
+          - hermes_agent_profiles | map('length') | unique | list == [1]
+        fail_msg: >-
+          The loader published more than the profile names; a field that
+          references a variable only the hermes_agent role defines would then
+          fail the router play.
