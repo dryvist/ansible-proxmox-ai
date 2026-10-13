@@ -1,5 +1,61 @@
 # Changelog
 
+## [1.2.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v1.1.0...v1.2.0) (2026-10-13)
+
+
+### Features
+
+* **agentgateway_docker:** require the owner's agent key on owned system routes ([62e3125](https://github.com/dryvist/ansible-proxmox-ai/commit/62e31258bfe3b0736d6d948327c9ef565ee3eaf1))
+* **agentgateway_docker:** require the owner's agent key on owned system routes ([#1382](https://github.com/dryvist/ansible-proxmox-ai/issues/1382)) ([c586725](https://github.com/dryvist/ansible-proxmox-ai/commit/c586725e6b2bfc6f269c64f0158f0e9d479420a0))
+* **agentgateway:** add the Nautobot OpenAPI target ([#1392](https://github.com/dryvist/ansible-proxmox-ai/issues/1392)) ([45a24d2](https://github.com/dryvist/ansible-proxmox-ai/commit/45a24d29242e0d3eda97b7bf81feb6b6b426b347))
+* **agentgateway:** define Nautobot OpenAPI read allowlist ([81d1a2f](https://github.com/dryvist/ansible-proxmox-ai/commit/81d1a2fb5658f75d8d5d1b6363d52a7133c05fe9))
+* **agentgateway:** fetch filtered Nautobot OpenAPI schema ([3c8dace](https://github.com/dryvist/ansible-proxmox-ai/commit/3c8dace1f39bb7d9383c7feda66bfa67083d1bc8))
+* **agentgateway:** route Nautobot through OpenAPI target ([a456b38](https://github.com/dryvist/ansible-proxmox-ai/commit/a456b38e197ca3dce6cac614ff88504e66769805))
+* **clickhouse_docker:** converge the dedicated ClickHouse guest and let Langfuse select it ([#1373](https://github.com/dryvist/ansible-proxmox-ai/issues/1373)) ([e9b9a5b](https://github.com/dryvist/ansible-proxmox-ai/commit/e9b9a5bb30079c08551335456f01a1be51ad7d2a))
+* **hermes_agent:** add the hourly local-LLM stats cron ([2f6d2dd](https://github.com/dryvist/ansible-proxmox-ai/commit/2f6d2dd3d43fa5fb576d3d1dd2b785732b478522))
+* **hermes_agent:** add the Kanban orchestrator profile ([392a028](https://github.com/dryvist/ansible-proxmox-ai/commit/392a028d9d354549bab1ae43feee582a7f71c873))
+* **hermes_agent:** apply context limits from the nix-hermes bundle ([6512dd0](https://github.com/dryvist/ansible-proxmox-ai/commit/6512dd00f0d50307e56a8b6f180150ceadc89876))
+* **hermes_agent:** hourly local-LLM stats cron with Slack reaction feedback ([#1404](https://github.com/dryvist/ansible-proxmox-ai/issues/1404)) ([9c0b5e7](https://github.com/dryvist/ansible-proxmox-ai/commit/9c0b5e75231d8507833a4cf711708ec5f3308915))
+* **hermes_agent:** let a profile entry pick its own Hindsight bank ([a23587f](https://github.com/dryvist/ansible-proxmox-ai/commit/a23587f9cda8962002675cecbe1cfbe52c3f8415))
+* **hermes_agent:** limit Kanban to routed profile Cron calls ([0515db2](https://github.com/dryvist/ansible-proxmox-ai/commit/0515db2e1757830f251d1ffca0ea0e714cb9b593))
+* **hermes_agent:** orchestrator profile, scoped Kanban, and bundle context limits ([#1395](https://github.com/dryvist/ansible-proxmox-ai/issues/1395)) ([a9cab22](https://github.com/dryvist/ansible-proxmox-ai/commit/a9cab22af2155a014a8aac769680b3c15cc71c04))
+* **hermes_agent:** route Slack reactions on bot posts to the agent ([22c29b6](https://github.com/dryvist/ansible-proxmox-ai/commit/22c29b61eddaa51062cf4cd305e1fc31c0f946f2))
+* **hermes-agent:** pin nix-hermes v0.21.0 and source profile SOUL addenda from the bundle ([#1405](https://github.com/dryvist/ansible-proxmox-ai/issues/1405)) ([c2a1c6d](https://github.com/dryvist/ansible-proxmox-ai/commit/c2a1c6df1823c42257888d859fb610620aadcf96))
+* **hermes-agent:** source profile SOUL addenda from bundle ([2e2e8de](https://github.com/dryvist/ansible-proxmox-ai/commit/2e2e8de549764ac5e40147d02b3ef7e9791ebacb))
+* **hermes:** seed and register the orchestrator profile router key ([605608f](https://github.com/dryvist/ansible-proxmox-ai/commit/605608fb91e31fd3b146cef9acf10e7ee8aae6ef))
+* **hermes:** seed and register the orchestrator profile router key ([#1407](https://github.com/dryvist/ansible-proxmox-ai/issues/1407)) ([4639c8b](https://github.com/dryvist/ansible-proxmox-ai/commit/4639c8b9b37001cb5f46b6690f5d2095ae58029d))
+* **llm_router:** give the CI review keys their own medium fallback tails ([473c139](https://github.com/dryvist/ansible-proxmox-ai/commit/473c13901a2056dec3661e17ad468c91582c5f2e))
+* **llm_router:** give the CI review keys their own medium fallback tails ([#1389](https://github.com/dryvist/ansible-proxmox-ai/issues/1389)) ([745b267](https://github.com/dryvist/ansible-proxmox-ai/commit/745b2672e450b648975fab3a89154856257e3307))
+* **llm-router:** render per-token rates from the upstream price file ([#1403](https://github.com/dryvist/ansible-proxmox-ai/issues/1403)) ([012f33e](https://github.com/dryvist/ansible-proxmox-ai/commit/012f33e60e03e7eb2479faaa1db8667352226ff4))
+* **llm-router:** resolve per-token rates from the upstream price file ([277c964](https://github.com/dryvist/ansible-proxmox-ai/commit/277c964e54e0350c91cb1cf903e766272018b894))
+* **llm-router:** schedule the native price map reload ([704271b](https://github.com/dryvist/ansible-proxmox-ai/commit/704271bb91ef32a0b5f2f5e2f8382d2d9b5dddb9))
+* **llm-router:** schedule the native price map reload ([#1396](https://github.com/dryvist/ansible-proxmox-ai/issues/1396)) ([8ecc671](https://github.com/dryvist/ansible-proxmox-ai/commit/8ecc67117d5590b36123aa792699efd134ef83e4))
+* **llm:** serve the small model from the pinned GPU guest ([#1401](https://github.com/dryvist/ansible-proxmox-ai/issues/1401)) ([79b4f9c](https://github.com/dryvist/ansible-proxmox-ai/commit/79b4f9ccf599f31a5fd12a31427a9236511cf3df))
+
+
+### Bug Fixes
+
+* **agentgateway_docker:** request the embed capability name for docs search ([d894ff7](https://github.com/dryvist/ansible-proxmox-ai/commit/d894ff70960b568fbdd26e5cee813aa369bbe47b))
+* **agentgateway_docker:** request the embed capability name for docs search ([#1388](https://github.com/dryvist/ansible-proxmox-ai/issues/1388)) ([f238590](https://github.com/dryvist/ansible-proxmox-ai/commit/f2385902600fe06caacf13144c46d52d54ebfe96))
+* **ai-runner:** keep the success push disabled when the ntfy topic is empty ([dd24d02](https://github.com/dryvist/ansible-proxmox-ai/commit/dd24d028452e6cb8bda0c6e7c591bf234dc8a79b))
+* **ai-runner:** route successes to status topic ([eccb11d](https://github.com/dryvist/ansible-proxmox-ai/commit/eccb11d522650b80e466524528780a0583948d4e))
+* **ci:** pack the Router contract shards by measured minutes ([#1393](https://github.com/dryvist/ansible-proxmox-ai/issues/1393)) ([c7db173](https://github.com/dryvist/ansible-proxmox-ai/commit/c7db173323608677294c1a9257951d1a44953122))
+* **clickhouse_docker:** name the environment in the missing-password messages ([3c070ed](https://github.com/dryvist/ansible-proxmox-ai/commit/3c070ed06c044edfb631ad75635e3a72f0dbb53f))
+* **clickhouse_docker:** read the metrics port from the published constant ([d20bc14](https://github.com/dryvist/ansible-proxmox-ai/commit/d20bc144c9c59cceaabe47a98a20821741771603))
+* **clickhouse_docker:** read the metrics port from the published constant ([#1394](https://github.com/dryvist/ansible-proxmox-ai/issues/1394)) ([ebdb810](https://github.com/dryvist/ansible-proxmox-ai/commit/ebdb810d20e3773455967a40a0976b054d42eaef))
+* **hermes_agent:** reject empty router keys before rendering secrets ([9de89c0](https://github.com/dryvist/ansible-proxmox-ai/commit/9de89c0f45d251d890989d4907dbea04a39e4ea4))
+* **hindsight_docker:** switch model thinking off for Hindsight LLM requests ([57fe6c6](https://github.com/dryvist/ansible-proxmox-ai/commit/57fe6c6fe87eafeecf77710ba3dd53a578d2fecb))
+* **hindsight_docker:** switch model thinking off for Hindsight LLM requests ([#1402](https://github.com/dryvist/ansible-proxmox-ai/issues/1402)) ([ed37593](https://github.com/dryvist/ansible-proxmox-ai/commit/ed3759351d1b3e28079a76c644bdb09089e4bae6))
+* **llm_router:** hand router hosts only the Hermes profile names ([b3efd98](https://github.com/dryvist/ansible-proxmox-ai/commit/b3efd98a7ae58587cce94ff5658c14b7affac7df))
+* **llm_router:** hand router hosts only the Hermes profile names ([#1406](https://github.com/dryvist/ansible-proxmox-ai/issues/1406)) ([1a3d2cb](https://github.com/dryvist/ansible-proxmox-ai/commit/1a3d2cb7470c0e1d2eb56f454482a15f669cb4c4))
+* **llm_router:** order route-group members by input price ([74a0daf](https://github.com/dryvist/ansible-proxmox-ai/commit/74a0daffaaaa6ccfc02587e367146560b86f9d6e))
+* **llm_router:** order route-group members by input price ([#1387](https://github.com/dryvist/ansible-proxmox-ai/issues/1387)) ([c731146](https://github.com/dryvist/ansible-proxmox-ai/commit/c73114644dbb826a3c115168a3a93e5f6c1a8b9e))
+* **llm-router:** deploy the exfiltration matcher into the bundled category folder ([#1398](https://github.com/dryvist/ansible-proxmox-ai/issues/1398)) ([42238fb](https://github.com/dryvist/ansible-proxmox-ai/commit/42238fb3c91e6a98601bd06ef5f2397c6ca3adb8))
+* **llm-router:** group drift notifications by file ([77a4767](https://github.com/dryvist/ansible-proxmox-ai/commit/77a4767bdf9f566e4a2fa22dbbe59dc603e31cfa))
+* **llm-router:** group drift notifications by file and route job successes to status ([#1385](https://github.com/dryvist/ansible-proxmox-ai/issues/1385)) ([2a6f5ff](https://github.com/dryvist/ansible-proxmox-ai/commit/2a6f5ffd4912f16ae21e04d1a3a4d1c7455a7b06))
+* **openbao_secrets:** fetch the qwen-code and open-llm router key paths ([8172ea0](https://github.com/dryvist/ansible-proxmox-ai/commit/8172ea0a882cafeb357c6715082fccaedbf28427))
+* **openbao_secrets:** fetch the qwen-code and open-llm router key paths ([#1390](https://github.com/dryvist/ansible-proxmox-ai/issues/1390)) ([27c0b1e](https://github.com/dryvist/ansible-proxmox-ai/commit/27c0b1e86347835453b12eaff77a5ef7069a7664))
+
 ## [1.1.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v1.0.0...v1.1.0) (2026-10-12)
 
 
