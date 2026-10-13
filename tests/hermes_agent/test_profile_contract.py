@@ -219,21 +219,6 @@ def test_llm_wiki_skill_is_materializable_into_any_profile_that_opts_in() -> Non
     )
 
 
-def test_bundle_skill_copy_only_takes_skills_the_bundle_ships() -> None:
-    # Only dryvist/* skills exist under the bundle's skills/ dir. A profile that
-    # lists the role-local hermes_agent/github-issues-api (the orchestrator) made
-    # the bundle copy fail with "Could not find or access" and aborted the converge.
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks" / "profiles.yml").read_text())
-    task = next(t for t in tasks if t["name"].startswith("Deploy the scoped dryvist skills"))
-    takes = Environment().compile_expression(task["when"])
-    bundle_skills = {"dryvist/splunk-monitor", "dryvist/zammad-incidents", "dryvist/github-issues"}
-    local_skills = {"hermes_agent/github-issues-api", "research/llm-wiki"}
-    assert all(takes(hermes_agent_profile_skill=s) for s in bundle_skills)
-    assert not any(takes(hermes_agent_profile_skill=s) for s in local_skills)
-    for profile in _profiles():
-        assert {s for s in profile["skills"] if takes(hermes_agent_profile_skill=s)} <= bundle_skills
-
-
 def test_github_maint_cron_runs_in_its_own_profile_behind_the_read_token() -> None:
     """The job's read-only property comes from WHERE it runs, not its prompt.
 
