@@ -84,7 +84,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     assert all("upstream_model_id" not in entry for entry in entries)
 
     for entry in entries:
-        assert entry["provider"] == "openai"
+        assert entry["provider"] == "hosted_vllm"
         assert entry["tier"] == "gpu"
         assert entry["enabled"] is False
         assert entry["servable"] is False

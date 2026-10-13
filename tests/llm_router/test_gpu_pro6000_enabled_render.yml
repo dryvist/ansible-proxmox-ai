@@ -103,3 +103,29 @@
 
     - name: Preserve GPU-first behavior through capability aliases
       ansible.builtin.import_tasks: tasks/gpu_first_rung_contract.yml
+
+    - name: Render GPU deployments with hosted_vllm and retain the openai passthrough
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gpu_deployments | length == llm_router_gpu_models | length
+          - >-
+            _gpu_deployments
+            | selectattr('litellm_params.model', 'match', '^hosted_vllm/')
+            | list | length == _gpu_deployments | length
+          - >-
+            _gpu_deployments
+            | selectattr('litellm_params.model', 'match', '^openai/')
+            | list | length == 0
+          - >-
+            _small_config.model_list
+            | selectattr('model_name', 'equalto', '*')
+            | selectattr('litellm_params.model', 'equalto', 'openai/*')
+            | list | length == 1
+        fail_msg: >-
+          GPU deployments must use hosted_vllm while the large-tier openai
+          wildcard passthrough remains present.
+      vars:
+        _gpu_deployments: >-
+          {{ _small_config.model_list
+             | selectattr('model_info.profile', 'defined') | list }}
