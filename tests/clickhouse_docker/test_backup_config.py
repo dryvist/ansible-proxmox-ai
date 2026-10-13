@@ -20,7 +20,11 @@ SYSTEM_LOG_TABLES = (
 
 
 def _defaults(role: Path) -> dict:
-    return yaml.safe_load((role / "defaults/main.yml").read_text(encoding="utf-8"))
+    files = sorted((role / "defaults/main").glob("*.yml")) or [role / "defaults/main.yml"]
+    merged: dict = {}
+    for path in files:
+        merged.update(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+    return merged
 
 
 def _render(role: Path, template: str, defaults: dict) -> ET.Element:
