@@ -47,7 +47,10 @@ from _registry_retype_scan import REPO_ROOT, _Permissive, _literals, registry_va
 
 def test_zdr_true_registry_entries_name_the_provider_source() -> None:
     """An explicit ZDR claim must carry its source next to the field."""
-    source_comment = "OpenRouter request-level `zdr: true` (provider routing)"
+    source_comments = (
+        "OpenRouter request-level `zdr: true` (provider routing)",
+        "OpenCode Go 0-day retention contract",
+    )
     registry_files = sorted((REPO_ROOT / "llm-models.d").glob("*.yml"))
     assert registry_files
     for path in registry_files:
@@ -55,7 +58,11 @@ def test_zdr_true_registry_entries_name_the_provider_source() -> None:
         for index, line in enumerate(lines):
             if re.match(r"^\s*zero_data_retention:\s*true\s*$", line):
                 nearby = lines[max(0, index - 2) : index]
-                assert any(source_comment in candidate for candidate in nearby), (
+                assert any(
+                    source_comment in candidate
+                    for candidate in nearby
+                    for source_comment in source_comments
+                ), (
                     f"{path.relative_to(REPO_ROOT)}:{index + 1} has no provider source comment"
                 )
 

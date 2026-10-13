@@ -119,12 +119,15 @@
              | selectattr('route_group', 'defined')
              | map(attribute='route_group') | unique | list }}
         _asserted_zdr_cloud_names: >-
-          {{ llm_router_registry_enabled
-             | rejectattr('tier', 'in', llm_router_local_registry_tiers)
-             | selectattr('zero_data_retention', 'defined')
-             | selectattr('zero_data_retention', 'truthy')
-             | selectattr('route_group', 'defined')
-             | map(attribute='route_group') | unique | list }}
+          {%- set ns = namespace(names=[]) -%}
+          {%- for m in llm_router_registry_enabled
+                if m.tier not in llm_router_local_registry_tiers
+                and llm_router_registry_zdr_by_model[m.client_model_id] -%}
+          {%- set ns.names = ns.names + [m.client_model_id]
+                + ([m.route_group] if m.route_group is defined else [])
+                + ([m.fallback_group] if m.fallback_group is defined else []) -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
 
     - name: Assert the original key retains the full ladder
       ansible.builtin.assert:
