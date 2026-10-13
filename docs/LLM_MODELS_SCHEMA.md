@@ -30,7 +30,8 @@ Required on every entry:
                     where it currently equals client_model_id: the two are
                     independent naming decisions, and collapsing them is how a
                     rename upstream silently becomes a rename for callers.
-  provider          LiteLLM provider prefix — `openai` (local OpenAI-compatible
+  provider          LiteLLM provider prefix — `hosted_vllm` (vLLM-compatible
+                    GPU backends), `openai` (other local OpenAI-compatible
                     backends, and the provider's own API), `auto_router`,
                     `dashscope`, `gemini`, `openrouter`, or `chatgpt` (the
                     subscription over OAuth; no key field resolves for it —
