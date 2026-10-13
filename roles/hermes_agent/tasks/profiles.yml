@@ -74,18 +74,21 @@
     hermes_agent_profile_memory_bank_id: "{{ item.memory_bank_id | default(hermes_agent_memory_bank_id) }}"
   when: hermes_agent_memory_provider == 'hindsight'
 
-# SOUL.md = the shared autonomous-base persona (same content every profile
-# gets) plus this profile's own addendum, appended. The lazy first cut per
-# the profiles plan: role-local templates/soul-<name>.md.j2, concatenated at
-# render time; move into the nix-hermes bundle once the content stabilizes.
+# SOUL.md = the shared bundle persona plus this profile's addendum. Profile
+# addenda come from the bundle except the orchestrator's own role-local
+# template; its Kanban lifecycle addendum also comes from the bundle.
 - name: "Deploy composed SOUL.md (shared base + addendum) for profile {{ item.name }}"
   ansible.builtin.copy:
     content: >-
       {{ (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/SOUL.md')
           ~ "\n\n" ~
-          lookup('ansible.builtin.template', role_path ~ '/templates/' ~ item.soul_addendum_file)
-          ~ ("\n\n" ~ lookup('ansible.builtin.template', role_path ~ '/templates/soul-kanban-lifecycle.md.j2')
-             if item.name == hermes_agent_kanban_orchestrator_profile else "")) }}
+          (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/soul/profiles/' ~ item.name ~ '.md')
+           if item.soul_addendum_bundle | default(false)
+           else lookup('ansible.builtin.template', role_path ~ '/templates/' ~ item.soul_addendum_file))
+          ~ ("\n\n" ~ lookup(
+              'ansible.builtin.file',
+              hermes_agent_bundle_path ~ '/soul/profiles/' ~ item.soul_addendum_bundle_extra_file
+            ) if item.soul_addendum_bundle_extra_file is defined else "")) }}
     dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/SOUL.md"
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"

@@ -191,12 +191,6 @@ def test_hermes_gateway_renders_agent_api_cap_as_eight() -> None:
     assert yaml.safe_load(rendered) == {"max_concurrent_runs": 8}
 
 
-def test_every_profile_has_a_soul_addendum_template_on_disk() -> None:
-    for profile in _profiles():
-        addendum = ROLE_ROOT / "templates" / profile["soul_addendum_file"]
-        assert addendum.is_file(), f"missing {addendum}"
-
-
 def test_profiles_tasks_are_wired_before_the_direct_cron_reconcile() -> None:
     """Native-cron reframe (18/18): there is no Kanban card left whose
     `assignee` needs a profile to exist first — direct-cron jobs carry no

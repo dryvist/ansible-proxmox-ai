@@ -166,11 +166,14 @@ def test_prompt_catalog_build_keeps_a_gc_root() -> None:
     assert "--no-link" not in command
 
 
-def test_every_named_profile_gets_the_kanban_lifecycle_contract() -> None:
-    profiles_task = (ROLE_ROOT / "tasks" / "profiles.yml").read_text()
-    contract = (ROLE_ROOT / "templates" / "soul-kanban-lifecycle.md.j2").read_text()
-
-    assert "soul-kanban-lifecycle.md.j2" in profiles_task
-    assert "kanban_complete" in contract
-    assert "kanban_block(kind=needs_input" in contract
-    assert "never use it to end a Kanban task" in contract
+def test_kanban_lifecycle_addendum_file_is_selected_by_profile_data() -> None:
+    profiles = {
+        profile["name"]: profile
+        for profile in role_defaults(ROLE_ROOT)["hermes_agent_profiles"]
+    }
+    assert profiles["orchestrator"]["soul_addendum_bundle_extra_file"] == "kanban-lifecycle.md"
+    assert all(
+        "soul_addendum_bundle_extra_file" not in profile
+        for name, profile in profiles.items()
+        if name != "orchestrator"
+    )
