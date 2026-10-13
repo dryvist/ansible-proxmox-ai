@@ -73,10 +73,11 @@ credential-bound jobs keep their own profile and receive Kanban only for that
 job.
 
 **Adding a new profile**: add an entry to `hermes_agent_profiles`
-(`mcp`/`env`/`skills`/optional `toolsets`/`soul_addendum_file`), add a
-`templates/soul-<name>.md.j2` addendum, and scope it by what it must **not**
-reach, not by what it might someday need — a new capability is a new profile
-decision made in the PR that adds the work, not a widened existing one.
+(`mcp`/`env`/`skills`/optional `toolsets` and SOUL addendum source). Profile
+addenda ship in the pinned nix-hermes bundle under `soul/profiles/`; the
+orchestrator keeps its role-local addendum. Scope each profile by what it must
+**not** reach, not by what it might someday need — a new capability is a new
+profile decision made in the PR that adds the work, not a widened existing one.
 
 **Concurrency**: `hermes_agent_kanban_max_in_progress` is the SUM cap across
 every profile combined. It takes the shared `ai_agent_default_concurrency`
