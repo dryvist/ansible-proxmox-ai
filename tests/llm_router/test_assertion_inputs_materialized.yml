@@ -34,6 +34,53 @@
         tasks_from: registry.yml
         public: true
 
+    - name: Validate Hermes cloud class and rank fields from the loaded registry
+      ansible.builtin.import_tasks: >-
+        {{ playbook_dir }}/../../roles/llm_router/tasks/assert-hermes-cloud-price-class.yml
+
+    - name: Prepare malformed cloud entries for negative guard checks
+      ansible.builtin.set_fact:
+        _registry_with_missing_cloud_class: >-
+          {{ llm_router_model_registry
+             + [{'client_model_id': 'missing-class', 'tier': 'hermes-cloud',
+                 'route_group': 'missing-class', 'route_rank': 10}] }}
+        _registry_with_unknown_cloud_class: >-
+          {{ llm_router_model_registry
+             + [{'client_model_id': 'unknown-class', 'tier': 'hermes-cloud',
+                 'route_group': 'unknown-class', 'price_class': 'other',
+                 'route_rank': 10}] }}
+
+    - name: The Hermes cloud class guard rejects a missing class
+      block:
+        - name: Try the guard with a route group missing its class
+          ansible.builtin.include_tasks: >-
+            {{ playbook_dir }}/../../roles/llm_router/tasks/assert-hermes-cloud-price-class.yml
+          vars:
+            llm_router_model_registry: "{{ _registry_with_missing_cloud_class }}"
+      rescue:
+        - name: Record that the missing class failed the guard
+          ansible.builtin.set_fact:
+            _missing_cloud_class_rejected: true
+
+    - name: The Hermes cloud class guard rejects an unknown class
+      block:
+        - name: Try the guard with an unknown class
+          ansible.builtin.include_tasks: >-
+            {{ playbook_dir }}/../../roles/llm_router/tasks/assert-hermes-cloud-price-class.yml
+          vars:
+            llm_router_model_registry: "{{ _registry_with_unknown_cloud_class }}"
+      rescue:
+        - name: Record that the unknown class failed the guard
+          ansible.builtin.set_fact:
+            _unknown_cloud_class_rejected: true
+
+    - name: Confirm the Hermes cloud class guard failed closed
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _missing_cloud_class_rejected | default(false)
+          - _unknown_cloud_class_rejected | default(false)
+
     - name: Confirm inventory-backed key-scope selectors load from source files
       ansible.builtin.assert:
         quiet: true

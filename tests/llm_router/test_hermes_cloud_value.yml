@@ -30,256 +30,84 @@
     - name: Produce the fully credentialed render
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
 
+    - name: Model a logged-in node for the subscription segment golden
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Re-evaluate cloud projections with the login present
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
+    - name: Capture Hermes cloud route-group membership and ordering
+      ansible.builtin.set_fact:
+        _hermes_cloud_route_groups_json: >-
+          {%- set ns = namespace(groups=[], rows=[]) -%}
+          {%- for m in llm_router_hermes_cloud_models_credentialed -%}
+          {%- if m.route_group is defined and m.route_group not in ns.groups -%}
+          {%- set ns.groups = ns.groups + [m.route_group] -%}
+          {%- set _members = (llm_router_hermes_cloud_models_credentialed
+                | selectattr('route_group', 'equalto', m.route_group)
+                | sort(attribute='route_rank')
+                | map(attribute='client_model_id') | list) -%}
+          {%- set ns.rows = ns.rows + [{'group': m.route_group, 'members': _members}] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows | to_json }}
+
+    - name: Capture Hermes cloud routing projections
+      ansible.builtin.set_fact:
+        _hermes_cloud_routing_golden:
+          route_groups: "{{ _hermes_cloud_route_groups_json | from_json }}"
+          segments:
+            paid:
+              groups: "{{ llm_router_hermes_cloud_paid_groups }}"
+              members: >-
+                {{ llm_router_hermes_cloud_models_credentialed
+                   | selectattr('price_class', 'equalto', 'paid')
+                   | rejectattr('hermes_chain', 'defined')
+                   | rejectattr('review_private_only', 'defined')
+                   | map(attribute='client_model_id') | list }}
+            free:
+              groups: "{{ llm_router_hermes_cloud_free_groups }}"
+              members: >-
+                {{ llm_router_hermes_cloud_models_credentialed
+                   | selectattr('price_class', 'equalto', 'free')
+                   | map(attribute='client_model_id') | list }}
+            subscription:
+              groups: "{{ llm_router_hermes_cloud_subscription_groups }}"
+              members: >-
+                {{ llm_router_hermes_cloud_models_credentialed
+                   | selectattr('price_class', 'equalto', 'subscription')
+                   | rejectattr('review_private_only', 'defined')
+                   | map(attribute='client_model_id') | list }}
+          d1:
+            rungs_by_class: "{{ llm_router_d1_rungs_by_class }}"
+            ladder_groups: "{{ llm_router_d1_ladder_groups }}"
+
+    - name: Assert Hermes cloud routing matches its golden structure
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _hermes_cloud_routing_golden
+            == (lookup('file', playbook_dir ~ '/fixtures/hermes_cloud_routing_golden.json')
+            | from_json)
+        fail_msg: "Hermes cloud routing order, segments, or D1 membership changed."
+        success_msg: "Hermes cloud routing order, segments, and D1 membership match the golden structure."
+
+    - name: Restore the non-login fixture used by the remaining test
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: false
+
+    - name: Re-evaluate cloud projections without the login
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
     - name: Load the sanitized primary capability row from the live-router fixture
       ansible.builtin.set_fact:
         llm_router_live_role_model_info_fixture: >-
           {{ (lookup('template', playbook_dir ~ '/fixtures/live-auto-router-db-rows.yml.j2')
              | from_yaml).llm_router_live_role_model_info_fixture }}
 
-    - name: Provider chain, costs, and operational ceilings are exact
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          # D1 determines cross-class order; each class preserves the catalog
-          # order derived by the role defaults.
-          #
-          # Five enabled, credentialed, chain-joining provider groups:
-          # two Alibaba, two Gemini, and one OpenRouter group.
-          # hermes-cloud-free was the fourth until it was disabled (upstream
-          # withdrew its model); the count follows that removal.
-          - _local_groups | length > 0
-          - llm_router_hermes_cloud_only_fallback_groups | length == 5
-          - llm_router_hermes_cloud_fallback_groups == _expected_full_chain
-          - _fallback_chain == _expected_chain
-          # Distinct target names PLUS one order-based retarget per budgeted
-          # target: max_fallbacks bounds rung ATTEMPTS along a path
-          # (37-fallback-entry-points.yml carries the source citations). Stated
-          # as the two sets rather than a bare number, so a new target family or
-          # a new budgeted rung has to be reviewed here instead of silently
-          # absorbed. The property itself (bound >= attempt keys, read off the
-          # render) is proven in test_fallback_entry_points.yml.
-          - >-
-            _config.router_settings.max_fallbacks | int
-            >= ((llm_router_d1_ladder_groups + [llm_router_primary_model]) | unique | length)
-          - _config.router_settings.num_retries | int == 0
-          - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 0
-          # One failure counter per deployment serves EVERY allowance
-          # (cooldown_handlers.py:404-408 passes no per-type suffix), so a
-          # timeout is judged against a counter the busy-slot 429s have already
-          # filled. The timeout allowance must exist, sit strictly above the
-          # generic allowed_fails (or the first timeout after two 429s parks
-          # the deployment) and strictly below the rate-limit allowance (a
-          # timeout is the stronger signal). Rationale: 40-routing.yml.
-          - _config.router_settings.allowed_fails_policy.TimeoutErrorAllowedFails is defined
-          - >-
-            _config.router_settings.allowed_fails_policy.TimeoutErrorAllowedFails | int
-            > _config.router_settings.allowed_fails | int
-          - >-
-            _config.router_settings.allowed_fails_policy.TimeoutErrorAllowedFails | int
-            < _config.router_settings.allowed_fails_policy.RateLimitErrorAllowedFails | int
-          # The zero-retry set starts with the full default fallback groups
-          # (D1's ladder), then the
-          # ordered provider groups and every entry-point name. The
-          # four provider groups are stated literally so a change there gets a
-          # direct review; entry points derive from the servable set and the
-          # rendered alias map, never a copied model list.
-          - >-
-            llm_router_hermes_cloud_zero_retry_groups
-            == (llm_router_d1_ladder_groups
-                + ['hermes-cloud-alibaba-routine',
-                   'hermes-cloud-alibaba-agentic',
-                   'hermes-cloud-gemini-routine',
-                   'hermes-cloud-gemini-agentic']
-                + (llm_router_all_servable_models
-                   + (_config.router_settings.model_group_alias | list))
-                + [hermes_brain_model]) | unique | list
-          # The primary capability is a name the Hermes agents call, so it is the
-          # chain-carrying name that waits out a busy local slot (honouring
-          # the upstream's Retry-After) before handing it to its chain. The
-          # no-credential render keeps the same figure
-          # (test_hermes_default_failover.yml); the rest of the contract is
-          # pinned in test_hermes_rate_limit_retry.yml.
-          - llm_router_hermes_rate_limit_retries | int > 0
-          - >-
-            _config.router_settings.model_group_retry_policy[hermes_brain_model]
-              .RateLimitErrorRetries | int == llm_router_hermes_rate_limit_retries | int
-          # The policy keys are the chain groups plus the listed names (the goal
-          # judge carries no chain, so it is listed but not a chain group).
-          - _cloud_retry_groups
-            == (llm_router_hermes_cloud_zero_retry_groups + llm_router_rate_limit_retry_names) | unique | sort
-          # Only the multi-member cloud groups (onto their next member) and the
-          # names the Hermes agents call retry.
-          - >-
-            _nonzero_cloud_retry_groups | sort
-            == (llm_router_multi_member_cloud_groups + llm_router_rate_limit_retry_names) | unique | sort
-          - "'enforce_model_rate_limits' in _config.router_settings.optional_pre_call_checks"
-          - "'session_affinity' in _config.router_settings.optional_pre_call_checks"
-          - _cloud_models | length > 0
-          - _cloud_models | length == _registry_paid_cloud | length
-          - _primary_deployments | length > 0
-          - _primary_deployments | map(attribute='model_name') | unique | list == [llm_router_primary_model]
-          - >-
-            _primary_deployments[0].litellm_params.model
-            == (_primary_registry_entry.provider ~ '/' ~ _primary_registry_entry.upstream_model_id)
-          - _small_zdr_aliases | length >= 2
-          - _small_zdr_aliases | difference(llm_router_zdr_entry_point_names) | length == 0
-          - _small_zdr_alias_mismatches | length == 0
-          - _fallback_chain | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
-          - _live_primary_names == [llm_router_primary_model]
-          - _live_primary_rows | selectattr('litellm_params.complexity_router_config', 'defined') | list | length == 0
-          - _config.model_list | selectattr('litellm_params.complexity_router_config', 'defined') | list | length == 0
-          - _uncapped | length == 0
-          - _wrong_input_cap | length == 0
-          - _wrong_output_cap | length == 0
-          - _wrong_mode | length == 0
-          - _wrong_retry | length == 0
-          - _wrong_timeout | length == 0
-          - _missing_prices | length == 0
-          - _monthly_total | round(2) == 6.66
-          # REVIEWED EDIT 2026-09-02. This pair used to assert that a
-          # routing_group declared cost-based-routing over the final-resort
-          # group. That mechanism is PROHIBITED now: declaring it for one group
-          # registers LiteLLM's lowest-cost logging handler process-wide, and
-          # that handler raises on every success event from any deployment it
-          # does not manage, leaving the request's span half-closed.
-          #
-          # The policy the tripwire guards is unchanged — real prices, cheaper
-          # final-resort model first. It is now asserted directly: the key must
-          # be ABSENT (so reintroducing the mechanism trips this), and the two
-          # final-resort deployments must appear in ascending input price, read
-          # from their own litellm_params rather than restated as literals.
-          - "'routing_groups' not in _config.router_settings"
-          - _final_resort | length > 0
-          - _final_resort | length == _registry_final_resort | length
-          - >-
-            _final_resort | map(attribute='litellm_params.input_cost_per_token')
-            | map('float') | list | sort
-            == _final_resort | map(attribute='litellm_params.input_cost_per_token')
-               | map('float') | list
-        fail_msg: >-
-          Hermes cloud policy drifted: chain={{ _fallback_chain }},
-          cloud_count={{ _cloud_models | length }}, monthly={{ _monthly_total }},
-          uncapped={{ _uncapped }}.
-        success_msg: >-
-          The primary capability has ordered provider groups, zero
-          ordinary or rate-limit retries, and bounded rate/concurrency controls.
-      vars:
-        _primary_deployments: >-
-          {{ _config.model_list
-             | selectattr('model_name', 'equalto', llm_router_primary_model)
-             | list }}
-        _live_primary_rows: >-
-          {{ llm_router_live_role_model_info_fixture
-             | selectattr('model_name', 'equalto', llm_router_primary_model)
-             | list }}
-        _live_primary_names: "{{ _live_primary_rows | map(attribute='model_name') | list | sort }}"
-        _primary_registry_entry: >-
-          {{ llm_router_registry_enabled
-             | selectattr('serving_role', 'defined')
-             | selectattr('serving_role', 'equalto', 'primary') | first }}
-        # Class order and rung names are derived from the registry.
-        _local_groups: >-
-          {{ llm_router_d1_rungs_by_class['local'] }}
-        _expected_full_chain: "{{ llm_router_d1_ladder_groups }}"
-        _expected_chain: >-
-          {{ llm_router_d1_ladder_groups
-             | reject('equalto', hermes_brain_model)
-             | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
-        _expected_zdr_entry_chain: >-
-          {{ _expected_chain
-             | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
-        _expected_zdr_alias_chain: >-
-          {{ llm_router_d1_ladder_groups
-             | reject('equalto', llm_router_small_model)
-             | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
-        _small_zdr_aliases: >-
-          {{ llm_router_model_group_aliases | dict2items
-             | selectattr('value', 'equalto', llm_router_small_model)
-             | map(attribute='key')
-             | reject('in', llm_router_local_only_fail_fast_names)
-             | reject('in', llm_router_cross_modality_fail_fast_names) | list }}
-        _fallbacks_by_key: >-
-          {{ dict(_config.router_settings.fallbacks
-                  | map('dict2items') | flatten | map(attribute='key')
-                  | zip(_config.router_settings.fallbacks
-                       | map('dict2items') | flatten | map(attribute='value'))) }}
-        _small_zdr_alias_mismatches: >-
-          {%- set ns = namespace(names=[]) -%}
-          {%- for alias in _small_zdr_aliases -%}
-          {%- if _fallbacks_by_key.get(alias, []) != _expected_zdr_alias_chain -%}
-          {%- set ns.names = ns.names + [alias] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.names }}
-        _fallback_chain: >-
-          {{ _config.router_settings.fallbacks | map('dict2items') | flatten
-             | selectattr('key', 'equalto', hermes_brain_model)
-             | map(attribute='value') | first }}
-        _final_resort: >-
-          {{ _config.model_list
-             | selectattr('litellm_params.input_cost_per_token', 'defined')
-             | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter')
-             | list }}
-        _cloud_models: >-
-          {{ _config.model_list
-             | selectattr('model_name', 'match', '^hermes-cloud-')
-             | selectattr('litellm_params.input_cost_per_token', 'defined')
-             | rejectattr('litellm_params.input_cost_per_token', 'in', [0, '0', '0.0']) | list }}
-        # Paid credentialed hermes-cloud registry entries, counted from the registry.
-        _registry_paid_cloud: >-
-          {{ llm_router_hermes_cloud_models_credentialed
-             | selectattr('input_cost_per_token', 'defined')
-             | rejectattr('input_cost_per_token', 'in', [0, '0', '0.0'])
-             | map(attribute='client_model_id') | select('match', '^hermes-cloud-') | list }}
-        _registry_final_resort: >-
-          {{ llm_router_hermes_cloud_models_credentialed
-             | selectattr('route_group', 'defined')
-             | selectattr('route_group', 'equalto', 'hermes-cloud-openrouter') | list }}
-        _cloud_retry_groups: >-
-          {{ _config.router_settings.model_group_retry_policy.keys() | list | sort }}
-        _nonzero_cloud_retry_groups: >-
-          {%- set ns = namespace(groups=[]) -%}
-          {%- for group, policy in _config.router_settings.model_group_retry_policy.items() -%}
-          {%- if policy.RateLimitErrorRetries | int != 0 -%}
-          {%- set ns.groups = ns.groups + [group] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.groups }}
-        _uncapped: >-
-          {{ _cloud_models
-             | rejectattr('litellm_params.rpm', 'defined')
-             | map(attribute='model_name') | list }}
-        _wrong_input_cap: >-
-          {{ _cloud_models
-             | rejectattr('model_info.max_input_tokens', 'equalto', 131072)
-             | map(attribute='model_name') | list }}
-        _wrong_output_cap: >-
-          {{ _cloud_models
-             | rejectattr('model_info.max_tokens', 'equalto', 8192)
-             | map(attribute='model_name') | list }}
-        _wrong_mode: >-
-          {{ _cloud_models
-             | rejectattr('model_info.mode', 'equalto', 'chat')
-             | map(attribute='model_name') | list }}
-        # Zero, except inside a multi-member group, which retries onto its
-        # next member (llm_router_cloud_group_retries).
-        _wrong_retry: >-
-          {{ (_cloud_models | rejectattr('model_name', 'in', llm_router_multi_member_cloud_groups)
-              | rejectattr('litellm_params.num_retries', 'equalto', 0) | list
-              + _cloud_models | selectattr('model_name', 'in', llm_router_multi_member_cloud_groups)
-              | rejectattr('litellm_params.num_retries', 'equalto', llm_router_cloud_group_retries | int) | list)
-             | map(attribute='model_name') | list }}
-        _wrong_timeout: >-
-          {{ _cloud_models
-             | rejectattr('litellm_params.timeout', 'equalto', 2400)
-             | map(attribute='model_name') | list }}
-        _missing_prices: >-
-          {{ (_cloud_models
-              | rejectattr('litellm_params.input_cost_per_token', 'defined')
-              | map(attribute='model_name') | list)
-             + (_cloud_models
-                | rejectattr('litellm_params.output_cost_per_token', 'defined')
-                | map(attribute='model_name') | list) }}
-        _monthly_total: >-
-          {{ _cloud_models | selectattr('litellm_params.max_budget', 'defined')
-             | map(attribute='litellm_params.max_budget') | map('float') | sum }}
+    - name: Assert Hermes cloud operational policy
+      ansible.builtin.import_tasks: tasks/assert_hermes_cloud_value.yml
