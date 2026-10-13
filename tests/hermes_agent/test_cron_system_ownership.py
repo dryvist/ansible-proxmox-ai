@@ -15,6 +15,7 @@ ROLE = REPO_ROOT / "roles" / "hermes_agent"
 DEFAULTS = role_defaults(ROLE)
 SPLUNK_JOBS = {
     "anomaly-hunt",
+    "llm-stats-hourly",
     "router-capacity-digest",
     "splunk-deepdive",
     "splunk-error-digest",

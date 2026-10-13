@@ -42,6 +42,7 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 | `splunk-security` | `22 */6 * * *` | Splunk findings (paused, wall clock) |
 | `splunk-parsing` | `37 2 * * *` | Splunk findings |
 | `splunk-deepdive` | `11 3 * * *` | Splunk findings |
+| `llm-stats-hourly` | `54 * * * *` | Splunk findings |
 | `github-triage` | `26 */6 * * *` | Agent home |
 | `bot-pr-triage` | `43 */6 * * *` | Agent home |
 | `review` | `0 */8 * * *` | Agent home (paused, wall clock) |
@@ -56,6 +57,14 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 | `fleet-health` | `3 10 * * 1` (weekly) | Agent home |
 | `docs-sync` | `13 8 * * 1` (weekly) | Agent home |
 | `self-audit` | `29 3,15 * * *` | Agent home |
+
+`llm-stats-hourly` is open-ended. It finds its own sources, posts every hour,
+and keeps what it learns in the Splunk bank under the `llm-stats:` key prefix.
+With `hermes_agent_slack_reaction_triggers` on, a reaction on any bot post
+reaches the agent as the turn text `reaction:added:<emoji>`, and a thread reply
+continues the post's session. The job's prompt treats both as feedback and
+saves them to `llm-stats:feedback`. Reactions need the Slack app's
+`reactions:read` scope and the `reaction_added` and `reaction_removed` events.
 
 Every job is additionally **capability-gated**: all require the Slack bot
 token, app token and home channel; the `splunk-*` jobs also require
