@@ -9,7 +9,7 @@ import jinja2
 import yaml
 
 ROLE_DIR = Path(__file__).resolve().parents[2] / "roles/langfuse_docker"
-DEFAULTS_FILE = ROLE_DIR / "defaults/main.yml"
+DEFAULTS_DIR = ROLE_DIR / "defaults/main"
 OVERRIDE_TEMPLATE = ROLE_DIR / "templates/clickhouse-system-logs.xml.j2"
 COMPOSE_TEMPLATE = ROLE_DIR / "templates/docker-compose.yml.j2"
 OVERRIDE_MOUNT = (
@@ -19,7 +19,9 @@ OVERRIDE_MOUNT = (
 
 
 def _render_override() -> ET.Element:
-    defaults = yaml.safe_load(DEFAULTS_FILE.read_text(encoding="utf-8"))
+    defaults: dict = {}
+    for path in sorted(DEFAULTS_DIR.glob("*.yml")):
+        defaults.update(yaml.safe_load(path.read_text(encoding="utf-8")))
     rendered = jinja2.Template(
         OVERRIDE_TEMPLATE.read_text(encoding="utf-8")
     ).render(**defaults)
