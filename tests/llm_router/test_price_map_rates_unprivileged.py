@@ -29,8 +29,14 @@ def test_controller_price_map_block_disables_privilege_escalation() -> None:
         if "block" in task and task.get("delegate_to") == "localhost"
     )
 
-    assert controller_block.get("become") is False
+    # The inventory sets the ansible_become variable, which outranks the become
+    # keyword, so the block must override the variable.
+    assert controller_block.get("vars", {}).get("ansible_become") is False
     nested_tasks = _tasks_within(
         [controller_block.get(key, []) for key in ("block", "rescue", "always")]
     )
     assert all(task.get("become") is not True for task in nested_tasks)
+    assert all(
+        task.get("vars", {}).get("ansible_become") is not True
+        for task in nested_tasks
+    )
