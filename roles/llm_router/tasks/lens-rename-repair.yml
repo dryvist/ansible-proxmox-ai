@@ -1,0 +1,76 @@
+---
+# LiteLLM 1.105.0 renames its Engine tables to Lens in the startup migration
+# 20261001100000_rename_lens (ALTER TABLE ... RENAME). The schema push runs
+# first and, being non-destructive, creates the empty Lens tables beside the old
+# Engine tables, so the migration then fails with "relation already exists"
+# (Prisma P3009) and the proxy cannot start on any pool member.
+#
+# This step runs after the push and before the restart. While the migration is
+# not applied it drops the Lens tables the push created, only when every one of
+# them is empty, and marks a failed attempt rolled back, so the startup
+# migration renames the old tables with their rows. Idempotent. A Lens table
+# that holds rows stops the converge with a clear message and nothing is
+# dropped or changed. Remove it once every pool member has applied the
+# migration.
+# Runs through `prisma db execute` under the same DATABASE_URL as the push; the
+# SQL goes in on stdin and no_log covers the argv that carries the URL.
+- name: Reconcile the push-created Lens tables ahead of the rename migration
+  ansible.builtin.command:
+    argv: >-
+      {{ llm_router_prisma_prefix + [
+        llm_router_venv ~ '/bin/prisma', 'db', 'execute', '--stdin',
+        '--schema', llm_router_site_packages ~ '/litellm/proxy/schema.prisma'] }}
+    stdin: |
+      DO $$
+      DECLARE
+        v_migration CONSTANT text := '20261001100000_rename_lens';
+        v_old text[] := ARRAY['LiteLLM_Engine', 'LiteLLM_EngineRun', 'LiteLLM_EngineWorker'];
+        v_new text[] := ARRAY['LiteLLM_Lens', 'LiteLLM_LensRun', 'LiteLLM_LensWorker'];
+        v_rows bigint;
+        i int;
+      BEGIN
+        -- Two statements: PL/pgSQL resolves every table in one expression at
+        -- plan time, so a fresh database has to return before the second one.
+        IF to_regclass('_prisma_migrations') IS NULL THEN
+          RETURN;
+        END IF;
+        IF EXISTS (SELECT 1 FROM _prisma_migrations
+                   WHERE migration_name = v_migration AND finished_at IS NOT NULL) THEN
+          RETURN;
+        END IF;
+        FOR i IN 1..3 LOOP
+          IF to_regclass(format('%I', v_old[i])) IS NOT NULL
+             AND to_regclass(format('%I', v_new[i])) IS NOT NULL THEN
+            EXECUTE format('SELECT count(*) FROM %I', v_new[i]) INTO v_rows;
+            IF v_rows > 0 THEN
+              RAISE EXCEPTION '% holds % rows beside %; resolve by hand, nothing was dropped',
+                v_new[i], v_rows, v_old[i];
+            END IF;
+          END IF;
+        END LOOP;
+        FOR i IN REVERSE 3..1 LOOP
+          IF to_regclass(format('%I', v_old[i])) IS NOT NULL
+             AND to_regclass(format('%I', v_new[i])) IS NOT NULL THEN
+            EXECUTE format('DROP TABLE %I', v_new[i]);
+          END IF;
+        END LOOP;
+        UPDATE _prisma_migrations SET rolled_back_at = now()
+         WHERE migration_name = v_migration
+           AND finished_at IS NULL AND rolled_back_at IS NULL;
+      END $$;
+    chdir: /tmp
+  register: llm_router_lens_repair
+  failed_when: false
+  # No signal whether it dropped anything; the restart that follows applies the
+  # migration, and the schema push above already reports and restarts on change.
+  changed_when: false
+  no_log: true
+
+- name: Stop on a failed Lens table reconcile, showing the redacted output
+  ansible.builtin.include_tasks: fail-schema-push.yml
+  vars:
+    failed_step: prisma db execute (Lens table reconcile)
+    failed_result: "{{ llm_router_lens_repair }}"
+  when:
+    - not ansible_check_mode
+    - llm_router_lens_repair.rc != 0
