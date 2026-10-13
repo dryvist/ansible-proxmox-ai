@@ -111,3 +111,106 @@
 
     - name: Assert Hermes cloud operational policy
       ansible.builtin.import_tasks: tasks/assert_hermes_cloud_value.yml
+
+    - name: Select the offline pinned price-map fixture without a ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_price_map_rates_file: "{{ playbook_dir }}/fixtures/model_prices_needed_rows.json"
+        llm_router_chatgpt_auth_file_present: false
+
+    - name: Re-evaluate Hermes cloud deployments without the fixture login
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
+    - name: Resolve fixture accounting rates with the real controller task
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/price-map-rates.yml"
+
+    - name: Assert ChatGPT prices are available independently of node login state
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _chatgpt_cloud_rate_ids | difference(llm_router_price_rates.keys() | list) | length == 0
+      vars:
+        _chatgpt_cloud_rate_ids: >-
+          {{ llm_router_hermes_cloud_models | selectattr('provider', 'equalto', 'chatgpt')
+             | map(attribute='client_model_id') | list }}
+
+    - name: Model a logged-in router before rendering its ChatGPT deployments
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Re-evaluate Hermes cloud deployments with the fixture login
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
+    - name: Share the controller projection with the localhost render fixture
+      ansible.builtin.set_fact:
+        llm_router_price_rates: "{{ hostvars['localhost'].llm_router_price_rates }}"
+
+    - name: Render the config with pinned fixture rates
+      ansible.builtin.set_fact:
+        _rates_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Assert pinned rates, prefix stripping, and no-rate behavior render correctly
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gemini | length == 1
+          - >-
+            _gemini[0].litellm_params.input_cost_per_token ==
+            _fixture_rates[_gemini[0].litellm_params.model].input_cost_per_token
+          - >-
+            _gemini[0].litellm_params.output_cost_per_token ==
+            _fixture_rates[_gemini[0].litellm_params.model].output_cost_per_token
+          - _openrouter_cloud | length == 4
+          - >-
+            _openrouter_cloud | map(attribute='litellm_params.model')
+            | select('match', '^openrouter/') | list | length == 4
+          - >-
+            (_openrouter_cloud
+             | rejectattr('litellm_params.input_cost_per_token', 'defined')
+             | list | length) == 0
+          - >-
+            _codex_api.litellm_params.input_cost_per_token ==
+            _fixture_rates[_codex_api.litellm_params.model.split('/', 1)[1]].input_cost_per_token
+          - >-
+            _codex_api.litellm_params.output_cost_per_token ==
+            _fixture_rates[_codex_api.litellm_params.model.split('/', 1)[1]].output_cost_per_token
+          - >-
+            _codex_subscription.litellm_params.input_cost_per_token ==
+            _fixture_rates[_codex_subscription.litellm_params.model.split('/', 1)[1]].input_cost_per_token
+          - >-
+            _codex_ci.litellm_params.input_cost_per_token ==
+            _fixture_rates[_codex_ci.litellm_params.model.split('/', 1)[1]].input_cost_per_token
+          - "'input_cost_per_token' not in _alibaba.litellm_params"
+          - "'output_cost_per_token' not in _alibaba.litellm_params"
+          - "'input_cost_per_token' not in _free_openrouter.litellm_params"
+          - "'output_cost_per_token' not in _free_openrouter.litellm_params"
+        fail_msg: "The price-map projection did not render rates or omit the expected no-rate rows."
+      vars:
+        _fixture_rates: "{{ lookup('file', playbook_dir ~ '/fixtures/model_prices_needed_rows.json') | from_json }}"
+        _gemini: >-
+          {{ _rates_config.model_list
+             | selectattr('model_name', 'equalto', 'hermes-cloud-gemini-routine') | list }}
+        _openrouter_cloud: >-
+          {{ _rates_config.model_list
+             | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter') | list }}
+        _codex_api: >-
+          {{ _rates_config.model_list
+             | selectattr('model_name', 'equalto', 'codex-api') | first }}
+        _codex_subscription: >-
+          {{ _rates_config.model_list
+             | selectattr('model_name', 'equalto', 'codex-subscription') | first }}
+        _codex_ci: >-
+          {{ _rates_config.model_list
+             | selectattr('model_name', 'equalto', 'codex-ci') | first }}
+        _alibaba: >-
+          {{ _rates_config.model_list
+             | selectattr('litellm_params.model', 'search', '^dashscope/') | first }}
+        _free_openrouter: >-
+          {% set free_model = llm_router_openrouter_models
+             | selectattr('in_free_route', 'defined') | first %}
+          {{ _rates_config.model_list
+             | selectattr('litellm_params.model', 'equalto',
+                 free_model.litellm_model_name
+                 | default(free_model.provider ~ '/' ~ free_model.upstream_model_id))
+             | first }}
