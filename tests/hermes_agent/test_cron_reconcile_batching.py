@@ -70,7 +70,17 @@ def test_unowned_job_with_nothing_installed_makes_no_remote_call():
 def test_jobs_never_run_cron_list_and_the_batch_runs_it_per_home():
     per_job = [t for t in _load("reconcile_direct_cron.yml") if "cron list" in str(t)]
     assert per_job == []
-    batch = next(t for t in _load("cron_reconcile.yml") if t.get("block"))["block"]
+    reconcile = _load("cron_reconcile.yml")
+    batch_include = next(
+        i for i, task in enumerate(reconcile)
+        if task.get("ansible.builtin.include_tasks") == "cron_reconcile_direct_batch.yml"
+    )
+    direct_loop = next(
+        i for i, task in enumerate(reconcile)
+        if task.get("name") == "Reconcile the agentic direct-deliver digest crons"
+    )
+    assert batch_include < direct_loop
+    batch = _load("cron_reconcile_direct_batch.yml")[0]["block"]
     listing = [t for t in batch if "cron list --all" in str(t)]
     assert len(listing) == 1 and "hermes_home" in listing[0]["loop"]
     assert sum("grep" in str(t) for t in batch) == 1
