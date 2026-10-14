@@ -1,0 +1,81 @@
+---
+- name: Resolve mapped environment markers in the router settings baseline
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_redis_host: redis.example.invalid
+    llm_router_model_group_aliases: {}
+    llm_router_role_deployments: []
+    _llm_router_role_params: {}
+    _llm_router_role_model_info: {}
+    _llm_router_model_rows: []
+    _llm_router_drift_expected_keys: []
+    _llm_router_drift_live_keys: []
+    _router_config: |
+      router_settings:
+        redis_host: os.environ/LLM_ROUTER_REDIS_HOST
+        redis_password: os.environ/LLM_ROUTER_REDIS_PASSWORD
+        routing_strategy: simple-shuffle
+        extra_marker: os.environ/OTHER
+    _llm_router_drift_rendered_config:
+      content: "{{ _router_config | b64encode }}"
+  tasks:
+    - name: Load the role drift defaults
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/76-drift.yml"
+
+    - name: Use the production router settings baseline projection
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-expected-router-settings.yml"
+
+    - name: Resolve mapped markers and preserve excluded or unmapped settings
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_router_settings_baseline.redis_host == 'redis.example.invalid'
+          - "'redis_password' not in _llm_router_drift_router_settings_baseline"
+          - _llm_router_drift_router_settings_baseline.extra_marker == 'os.environ/OTHER'
+          - _llm_router_drift_router_settings_baseline.routing_strategy == 'simple-shuffle'
+
+    - name: Compare the live resolved host with the rendered baseline
+      ansible.builtin.set_fact:
+        _llm_router_drift_expected_settings:
+          - name: router setting
+            git_file: roles/llm_router/templates/config.yaml.j2
+            expected: "{{ _llm_router_drift_router_settings_baseline }}"
+            live:
+              redis_host: "{{ llm_router_redis_host }}"
+              routing_strategy: simple-shuffle
+              extra_marker: os.environ/OTHER
+              routing_groups: []
+
+    - name: Use the production settings comparator for a matching host
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
+
+    - name: Keep a matching resolved host free of drift messages
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_messages == []
+
+    - name: Compare a changed live host with the rendered baseline
+      ansible.builtin.set_fact:
+        _llm_router_drift_expected_settings:
+          - name: router setting
+            git_file: roles/llm_router/templates/config.yaml.j2
+            expected: "{{ _llm_router_drift_router_settings_baseline }}"
+            live:
+              redis_host: different
+              routing_strategy: simple-shuffle
+              extra_marker: os.environ/OTHER
+              routing_groups: []
+
+    - name: Use the production settings comparator for a changed host
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
+
+    - name: Report one drift message for a changed live host
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_messages | length == 1
+          - _llm_router_drift_messages[0].item == 'router setting redis_host'
