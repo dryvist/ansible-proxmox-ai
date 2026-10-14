@@ -7,11 +7,22 @@
   ansible.builtin.set_fact:
     _llm_router_drift_expected_keys: >-
       {%- set ns = namespace(keys=[], workstation_aliases=(
-        _llm_router_workstation_virtual_keys | default([]) | map(attribute='alias') | list)) -%}
+        _llm_router_workstation_virtual_keys | default([]) | map(attribute='alias') | list),
+        registered_mcp_servers=llm_router_mcp_hermes_object_permission.mcp_servers) -%}
       {%- set referenced_settings = llm_router_review_key_router_settings -%}
       {%- for key in llm_router_virtual_keys -%}
       {%- if (key.value | default('', true) | string | length) > 0 -%}
       {%- set daily = key.daily_budget | default(0) | float -%}
+      {%- set object_permission = key.object_permission
+        | default(llm_router_mcp_default_object_permission) -%}
+      {%- if object_permission.mcp_servers is defined -%}
+      {%- set registered_key_mcp_servers = object_permission.mcp_servers
+        | select('in', ns.registered_mcp_servers) | list -%}
+      {%- set object_permission = object_permission | combine({
+        'mcp_servers': (registered_key_mcp_servers
+          if registered_key_mcp_servers | length > 0
+          else llm_router_mcp_default_object_permission.mcp_servers)}) -%}
+      {%- endif -%}
       {%- set flags = {
         'models': key.models | default([], true),
         'allowed_routes': key.allowed_routes | default([], true),
@@ -28,8 +39,7 @@
           | default([], true) | list + (key.tags | default([]) | list))
           | reject('match', '^([&!])?sensitivity:') | unique | list
           + [key.sensitivity_tag | default('&sensitivity:sensitive')],
-        'object_permission': key.object_permission
-          | default(llm_router_mcp_default_object_permission)
+        'object_permission': object_permission
       } -%}
       {%- set git_file = llm_router_drift_workstation_key_git_file
         if key.alias in ns.workstation_aliases else llm_router_drift_key_git_file -%}
