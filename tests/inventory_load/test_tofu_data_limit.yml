@@ -1,0 +1,38 @@
+---
+- name: Verify tofu_data propagation follows --limit
+  hosts: localhost
+  gather_facts: false
+  vars: { ansible_become: false, ansible_python_interpreter: auto_silent }
+  tasks:
+    - name: Add dynamic test hosts
+      ansible.builtin.add_host: { name: "{{ item }}", groups: tofu_limit_test_hosts }
+      loop: [fixture-a, fixture-b, fixture-c]
+    - name: Extract the production propagation task
+      ansible.builtin.set_fact:
+        _propagation_task_yaml: >-
+          {{ (lookup('ansible.builtin.file', playbook_dir ~
+                    '/../../inventory/load_tofu.yml') | from_yaml | first).tasks
+             | selectattr('name', 'equalto',
+                          'Propagate tofu_data to all inventory hosts')
+             | first | to_nice_yaml }}
+    - name: Create a temporary task file
+      ansible.builtin.tempfile: { state: file, suffix: .yml }
+      register: _propagation_task_file
+    - name: Write the production task
+      ansible.builtin.copy:
+        dest: "{{ _propagation_task_file.path }}"
+        content: "{{ '- ' ~ (_propagation_task_yaml | trim | indent(2)) }}"
+        mode: '0600'
+    - name: Run the production propagation task
+      ansible.builtin.include_tasks: "{{ _propagation_task_file.path }}"
+      vars: { tofu_data: { test_marker: p5-tofu-limit } }
+    - name: Remove the temporary task file
+      ansible.builtin.file: { path: "{{ _propagation_task_file.path }}", state: absent }
+    - name: Assert propagation is limited and carries the expected data
+      ansible.builtin.assert:
+        quiet: true
+        that: >-
+          (hostvars[item].tofu_data is defined) == (item in expected_tofu_data_hosts)
+          and (item not in expected_tofu_data_hosts or
+               hostvars[item].tofu_data.test_marker == 'p5-tofu-limit')
+      loop: "{{ groups['all'] + ['localhost'] }}"

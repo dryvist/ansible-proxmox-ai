@@ -101,14 +101,22 @@
     - name: Add AI LXC containers to inventory
       ansible.builtin.import_tasks: load_tofu/add_lxc_hosts.yml
 
-    # Push tofu_data onto every dynamically-added host so roles can access
-    # tofu_data.constants.* directly without hostvars['localhost'] indirection.
+    # Propagate after add_host makes dynamic hosts visible. Use limit-matched
+    # hosts, falling back to all hosts, so roles can read tofu_data directly.
     - name: Propagate tofu_data to all inventory hosts
+      vars:
+        _tofu_data_selected_hosts: >-
+          {{ (query('ansible.builtin.inventory_hostnames', ansible_limit, errors='ignore')
+              | reject('equalto', 'localhost') | list)
+             if ansible_limit is defined and ansible_limit | length > 0 else [] }}
       ansible.builtin.set_fact:
         tofu_data: "{{ tofu_data }}"
       delegate_to: "{{ item }}"
       delegate_facts: true
-      loop: "{{ groups['all'] | reject('equalto', 'localhost') | list }}"
+      loop: >-
+        {{ ((_tofu_data_selected_hosts
+             or (groups['all'] | reject('equalto', 'localhost') | list)) | list)
+           + ['localhost'] }}
       when: tofu_data is defined
 
     # add_host CANNOT set a host var literally named `hostname`: it is an alias
