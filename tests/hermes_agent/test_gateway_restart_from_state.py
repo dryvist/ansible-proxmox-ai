@@ -1,81 +1,69 @@
-"""A gateway older than its deployed inputs is restarted even when no task changed this run.
+"""A gateway older than its inputs is restarted even when no task changed this run.
 
 A handler fires only for a task that reported changed in the current run, so a
 run killed before the flush leaves the files in place and its re-run notifies
-nothing. The finalize probe compares the deployed inputs with the gateway's
-start time instead.
+nothing. The restart handler stamps a marker and finalize compares it with the
+files the gateway reads.
 """
 from __future__ import annotations
 
-import os
-import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 from jinja2 import Environment
 
-TASKS = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent" / "tasks"
-STARTED = datetime(2026, 10, 14, 2, 0, 0, tzinfo=timezone.utc)
-BEFORE, AFTER = STARTED.timestamp() - 3600, STARTED.timestamp() + 3600
+ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
+ENV = Environment()
+PROBE = "Restart a gateway whose inputs are newer than its last restart"
+FLUSH = "Flush handlers so config/unit changes apply before verification"
+
+
+def _tasks() -> list[dict]:
+    return yaml.safe_load((ROLE / "tasks" / "finalize.yml").read_text())
 
 
 def _probe() -> dict:
-    tasks = yaml.safe_load((TASKS / "finalize.yml").read_text())
-    return next(t for t in tasks if t["name"].startswith("Find deployed gateway inputs"))
+    return next(t for t in _tasks() if t["name"] == PROBE)
 
 
-def _touch(path: Path, when: float) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("x")
-    os.utime(path, (when, when))
+def _expr(template: str):
+    return ENV.compile_expression(template.strip().removeprefix("{{").removesuffix("}}"))
 
 
-def _run(tmp_path: Path, files: dict[str, float], started: str = "Wed 2026-10-14 02:00:00 UTC") -> str:
-    home, install, bin_dir = tmp_path / "home", tmp_path / "lib", tmp_path / "bin"
-    unit, drain = tmp_path / "gateway.service", tmp_path / "drain"
-    for rel, when in files.items():
-        _touch(tmp_path / rel, when)
-    bin_dir.mkdir()
-    (bin_dir / "systemctl").write_text(f"#!/bin/sh\necho '{started}'\n")
-    (bin_dir / "systemctl").chmod(0o755)
-    script = Environment().from_string(_probe()["ansible.builtin.shell"]).render(
-        hermes_agent_hermes_home=home,
-        hermes_agent_install_dir=install,
-        hermes_agent_cron_drain_restart_script=drain,
-    ).replace("/etc/systemd/system/hermes-gateway.service", str(unit))
-    result = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, check=True,
-        env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
-    )
-    return result.stdout.strip()
+def _changed(marker: float | None, inputs: list[float | None]) -> bool:
+    """Evaluate the probe's own `vars` and `changed_when` for one set of mtimes."""
+    stat = lambda mtime: {"stat": {"exists": mtime is not None, "mtime": mtime}}  # noqa: E731
+    ctx = {"hermes_agent_gateway_inputs": {"results": [stat(marker), *map(stat, inputs)]}}
+    for name, template in _probe()["vars"].items():
+        ctx[name] = _expr(template)(**ctx)
+    return bool(ENV.compile_expression(_probe()["changed_when"])(**ctx))
 
 
 def test_probe_notifies_the_gateway_restart_before_the_flush():
-    tasks = yaml.safe_load((TASKS / "finalize.yml").read_text())
-    names = [t["name"] for t in tasks]
-    assert names.index(_probe()["name"]) < names.index(
-        "Flush handlers so config/unit changes apply before verification"
-    )
+    names = [t["name"] for t in _tasks()]
+    assert names.index(PROBE) < names.index(FLUSH)
     assert _probe()["notify"] == "Restart hermes-gateway"
 
 
-def test_a_config_newer_than_the_gateway_is_reported(tmp_path):
-    assert _run(tmp_path, {"home/config.yaml": AFTER, "home/.env": BEFORE}).endswith("config.yaml")
+def test_the_restart_handler_stamps_the_marker_the_probe_reads():
+    handlers = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
+    stamp = next(h for h in handlers if h["name"] == "Record the gateway restart")
+    assert stamp["listen"] == "Restart hermes-gateway"
+    assert stamp["ansible.builtin.file"]["path"] == "{{ hermes_agent_gateway_restart_marker }}"
+    assert stamp["ansible.builtin.file"]["state"] == "touch"
 
 
-def test_a_patched_source_file_newer_than_the_gateway_is_reported(tmp_path):
-    assert _run(tmp_path, {"lib/cron/scheduler.py": AFTER}).endswith("scheduler.py")
+def test_an_input_newer_than_the_marker_restarts_the_gateway():
+    assert _changed(100.0, [90.0, 101.5, 80.0])
 
 
-def test_inputs_older_than_the_gateway_report_nothing(tmp_path):
-    files = {"home/config.yaml": BEFORE, "home/.env": BEFORE, "lib/run_agent.py": BEFORE}
-    assert _run(tmp_path, files) == ""
+def test_inputs_older_than_the_marker_restart_nothing():
+    assert not _changed(100.0, [90.0, 99.9, 80.0])
 
 
-def test_a_lazy_dependency_installed_into_the_venv_is_ignored(tmp_path):
-    assert _run(tmp_path, {"lib/venv/lib/site.py": AFTER, "lib/run_agent.py": BEFORE}) == ""
+def test_no_marker_restarts_the_gateway():
+    assert _changed(None, [90.0, 99.9, 80.0])
 
 
-def test_a_gateway_that_never_started_reports_nothing(tmp_path):
-    assert _run(tmp_path, {"home/config.yaml": AFTER}, started="") == ""
+def test_an_absent_input_is_ignored():
+    assert not _changed(100.0, [90.0, None, None])
