@@ -14,11 +14,25 @@ pytest.
 """
 import re
 from pathlib import Path
+
+from jinja2 import Environment
+import yaml
+
 from _role_files import role_defaults, role_tasks_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULTS_PATH = REPO_ROOT / "roles" / "hermes_agent"
 TASKS_PATH = REPO_ROOT / "roles" / "hermes_agent"
+TASK_FILE = TASKS_PATH / "tasks" / "cron_reconcile.yml"
+ENV = Environment(trim_blocks=False)
+ENV.filters["bool"] = bool
+ENV.filters["regex_escape"] = re.escape
+ENV.filters["regex_replace"] = lambda value, pattern, replacement: re.sub(
+    pattern, replacement, value
+)
+ENV.filters["regex_search"] = lambda value, pattern: (
+    match.group(0) if (match := re.search(pattern, value)) else None
+)
 
 
 def load_defaults():
@@ -86,6 +100,74 @@ def test_unmanaged_splunk_auto_ssh_burst_is_retired_if_present():
         "cron pause {{ hermes_agent_retired_splunk_auto_ssh_burst_cron_name }}"
         in " ".join(tasks.split())
     )
+
+
+def _retired_burst_pause_calls(store_boards):
+    tasks = yaml.safe_load(TASK_FILE.read_text())
+    list_task = next(
+        task for task in tasks
+        if task.get("name") == "List active Hermes crons across configured stores (for retired jobs)"
+    )
+    pause_task = next(
+        task for task in tasks
+        if task.get("name") == "Pause the retired unmanaged Splunk burst cron (disable-don't-delete)"
+    )
+    defaults = load_defaults()
+    context = {
+        "hermes_agent_hermes_home": "/home/hermes/.hermes",
+        "hermes_agent_profiles": [{"name": "splunk-admin"}, {"name": "orchestrator"}],
+        "hermes_agent_bin": "/usr/local/bin/hermes",
+        "hermes_agent_retire_splunk_auto_ssh_burst": True,
+        "hermes_agent_retired_splunk_auto_ssh_burst_cron_name":
+            defaults["hermes_agent_retired_splunk_auto_ssh_burst_cron_name"],
+    }
+    homes = ENV.compile_expression(list_task["loop"].strip()[2:-2].strip())(**context)
+    results = []
+    for home in homes:
+        assert ENV.from_string(list_task["environment"]["HERMES_HOME"]).render(
+            {**context, "item": home}
+        ) == home
+        results.append({"item": home, "stdout": store_boards.get(home, "")})
+
+    context["hermes_agent_retired_cron_store_lists"] = {"results": results}
+    pause_items = ENV.compile_expression(
+        pause_task["loop"].strip()[2:-2].strip()
+    )(**context)
+    calls = []
+    assert pause_task["changed_when"] is True
+    for pause_item in pause_items:
+        task_context = {**context, "item": pause_item}
+        conditions = pause_task["when"]
+        for condition in conditions:
+            result = ENV.compile_expression(str(condition))(**task_context)
+            assert isinstance(result, bool), f"condition returned {type(result).__name__}: {condition}"
+            if not result:
+                break
+        else:
+            command = ENV.from_string(pause_task["ansible.builtin.command"]).render(task_context)
+            home = ENV.from_string(pause_task["environment"]["HERMES_HOME"]).render(task_context)
+            calls.append((command, home))
+    return calls
+
+
+def test_unmanaged_burst_in_named_profile_store_is_paused_there():
+    profile_home = "/home/hermes/.hermes/profiles/splunk-admin"
+    calls = _retired_burst_pause_calls({
+        profile_home: "ID: 1 [active]\nName: splunk-auto-ssh-burst\n",
+    })
+
+    assert calls == [
+        ("/usr/local/bin/hermes cron pause splunk-auto-ssh-burst", profile_home)
+    ]
+
+
+def test_unmanaged_burst_is_not_paused_when_no_store_lists_exact_name():
+    calls = _retired_burst_pause_calls({
+        "/home/hermes/.hermes": "ID: 1 [active]\nName: splunk-auto-ssh-burst-followup\n",
+        "/home/hermes/.hermes/profiles/splunk-admin": "ID: 2 [active]\nName: another-job\n",
+    })
+
+    assert calls == []
 
 
 # test_a_retirement_that_names_a_card_leaves_that_card_able_to_run DELETED
