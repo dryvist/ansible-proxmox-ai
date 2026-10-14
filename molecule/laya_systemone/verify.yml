@@ -1,0 +1,51 @@
+---
+- name: Verify rendered Laya service files
+  hosts: all
+  gather_facts: true
+  vars:
+    laya_systemone_render_only: true
+    laya_systemone_env_dir: "{{ playbook_dir }}/../../.task-tmp/laya-systemone/etc"
+    laya_systemone_env_file: "{{ laya_systemone_env_dir }}/laya.env"
+  tasks:
+    - name: Inspect the Laya bearer key file and service unit
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ playbook_dir }}/../../.task-tmp/laya-systemone/etc/laya.env"
+        - "{{ playbook_dir }}/../../.task-tmp/laya-systemone/systemd/laya-systemone.service"
+      register: laya_systemone_rendered_files
+
+    - name: Read the rendered Laya files without displaying their contents
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ playbook_dir }}/../../.task-tmp/laya-systemone/etc/laya.env"
+        - "{{ playbook_dir }}/../../.task-tmp/laya-systemone/systemd/laya-systemone.service"
+      register: laya_systemone_rendered_content
+      no_log: true
+
+    - name: Verify the key file is root-only and the unit reads it
+      ansible.builtin.assert:
+        that:
+          - laya_systemone_rendered_files.results[0].stat.mode == '0600'
+          - >-
+            laya_systemone_rendered_files.results[0].stat.pw_name == 'root'
+            or (laya_systemone_render_only | bool
+                and laya_systemone_rendered_files.results[0].stat.pw_name
+                    == ansible_facts.user_id)
+          - laya_systemone_rendered_files.results[1].stat.mode == '0644'
+          - >-
+            'LAYA_API_KEY=fixture-token-123' in
+            (laya_systemone_rendered_content.results[0].content | b64decode)
+          - >-
+            'EnvironmentFile=' ~ laya_systemone_env_file in
+            (laya_systemone_rendered_content.results[1].content | b64decode)
+          - "'Environment=LAYA_DEVICE=cuda' in (laya_systemone_rendered_content.results[1].content | b64decode)"
+          - "'Environment=LAYA_PRELOAD=1' in (laya_systemone_rendered_content.results[1].content | b64decode)"
+          - "'Environment=LAYA_MODELS=english' in (laya_systemone_rendered_content.results[1].content | b64decode)"
+          - >-
+            'Environment=LAYA_REVISION=55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851' in
+            (laya_systemone_rendered_content.results[1].content | b64decode)
+          - "'LAYA_JEV_STRICT' not in (laya_systemone_rendered_content.results[1].content | b64decode)"
+          - "'fixture-token-123' not in (laya_systemone_rendered_content.results[1].content | b64decode)"
+      no_log: true
