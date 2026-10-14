@@ -1,5 +1,6 @@
 ---
 # Arize Phoenix (LLM tracing + evals) via Docker Compose in an LXC.
+# Services: postgres, postgres-exporter, phoenix.
 # Rendered by ansible-proxmox-ai/roles/phoenix_docker — do not edit by hand.
 #
 # Postgres bind-mounts its data under {{ phoenix_docker_data_dir }} (durable,
@@ -37,6 +38,25 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+
+  {{ phoenix_docker_postgres_exporter_service }}:
+    image: {{ phoenix_docker_postgres_exporter_image }}
+    restart: {{ phoenix_docker_restart_policy }}
+    logging: *phoenix_docker_logging
+    depends_on:
+      {{ phoenix_docker_postgres_service }}:
+        condition: service_healthy
+    ports:
+      - "{{ phoenix_docker_postgres_exporter_port }}:{{ phoenix_docker_postgres_exporter_internal_port }}"
+    command:
+{% for collector in phoenix_docker_postgres_exporter_collectors %}
+      - {{ collector }}
+{% endfor %}
+    environment:
+      DATA_SOURCE_URI: "{{ phoenix_docker_postgres_service }}:{{ phoenix_docker_postgres_internal_port }}/{{ phoenix_docker_postgres_db }}?sslmode=disable"
+      DATA_SOURCE_USER: {{ phoenix_docker_postgres_user }}
+      # Reuses the application's database login.
+      DATA_SOURCE_PASS: "{{ phoenix_docker_postgres_password }}"
 
   phoenix:
     image: {{ phoenix_docker_image }}
