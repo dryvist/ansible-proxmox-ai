@@ -6,6 +6,9 @@
          | selectattr('entry.servable', 'defined')
          | selectattr('entry.servable') | list }}
 
+# llm-models.d/ is pure data and contains no host, port, or URL literals. Probe URLs
+# come from the router role's capability projection (`params.api_base`), the single
+# source, so targets are never listed by hand here.
 - name: Derive active servable tiers and their projected API bases
   ansible.builtin.set_fact:
     fabric_watchdog_registry_tiers: >-
@@ -20,6 +23,8 @@
       {%- endfor -%}
       {{ ns.urls }}
 
+# A servable tier with no derivable URL fails loudly instead of being silently
+# skipped, so a newly advertised tier cannot go unmonitored.
 - name: Assert every active servable tier has a projected API base
   ansible.builtin.assert:
     quiet: true
@@ -33,6 +38,10 @@
          | difference(fabric_watchdog_tier_urls.keys() | list) | join(', ') }}
       with no derivable api_base in _llm_router_capability_member_params.
 
+# This is a plain GET of the OpenAI-compatible `/models` listing with no
+# Authorization header. It never invokes a model, so it costs nothing on the
+# contended single-concurrency slot; 401 means the backend answered at the HTTP
+# layer and counts as UP like the existing llm-front-door target.
 - name: Build reachability targets for every active servable path
   ansible.builtin.set_fact:
     fabric_watchdog_targets: >-
