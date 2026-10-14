@@ -4,6 +4,30 @@
   when: hermes_agent_syslog_route_enabled | bool
   tags: hermes_agent_logging
 
+# A handler fires only for a task that reported changed in THIS run, so a run
+# killed before the flush loses every pending restart and its re-run finds the
+# files already in place and notifies nothing. The restart is also derived from
+# state: any deployed input newer than the running gateway needs one. The venv
+# is outside the scan because the gateway installs lazy dependencies into it.
+- name: Find deployed gateway inputs newer than the running gateway
+  ansible.builtin.shell: |
+    set -u
+    started=$(systemctl show hermes-gateway --property=ActiveEnterTimestamp --value)
+    [ -n "$started" ] || exit 0
+    since="@$(date -d "$started" +%s)"
+    find {{ hermes_agent_hermes_home }}/.env {{ hermes_agent_hermes_home }}/config.yaml \
+      /etc/systemd/system/hermes-gateway.service {{ hermes_agent_cron_drain_restart_script }} \
+      -newermt "$since" -print -quit 2>/dev/null || true
+    find {{ hermes_agent_install_dir }} -path {{ hermes_agent_install_dir }}/venv -prune \
+      -o -name '*.py' -newermt "$since" -print -quit 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  register: hermes_agent_gateway_stale_inputs
+  changed_when: hermes_agent_gateway_stale_inputs.stdout | trim | length > 0
+  # Read-only; a check run needs the live value to preview the restart.
+  check_mode: false
+  notify: Restart hermes-gateway
+
 - name: Flush handlers so config/unit changes apply before verification
   ansible.builtin.meta: flush_handlers
 
