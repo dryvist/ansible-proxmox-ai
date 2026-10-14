@@ -81,6 +81,7 @@ def test_seed_queries_survive_the_cron_prompt_delivery_path() -> None:
         hermes_agent_direct_deliver="slack:stats",
         hermes_agent_prompts_path="/prompts",
     )
+    assert len(SEED_QUERIES) == 6
     for query in SEED_QUERIES:
         assert query in delivered
 
@@ -122,12 +123,39 @@ def test_prompt_uses_real_memory_tools_and_caps_all_tool_calls() -> None:
 
 def test_prompt_makes_the_report_the_final_response_and_saves_feedback_per_turn() -> None:
     prompt = DEFAULTS["hermes_agent_llm_stats_hourly_cron_prompt"]
+    opening, remainder = prompt.split("\n\n", 1)
+    memory = remainder.split("\n\nMEMORY.", 1)[1].split("\n\nTOOL CALLS.", 1)[0]
+    order = (
+        "first make one `hindsight_recall` call at the start",
+        "then finish all splunk queries",
+        "then make one `hindsight_retain` call",
+    )
+    no_report_with_tool_call = (
+        "Never write report text in an assistant turn that also contains a tool call; "
+        "text written next to a tool call is not delivered."
+    )
+    report_after_tools = (
+        "After the `hindsight_retain` result returns, or after completing the recall/retain "
+        "error handling below, the very next message is the complete report in Slack mrkdwn "
+        "and the last message of the run."
+    )
+    no_short_or_status_final = (
+        "Never end with a status line, a memory confirmation or a pointer to an earlier "
+        "message; a final message shorter than the report is a failed run."
+    )
+    for section in (opening, memory):
+        positions = tuple(section.lower().index(phrase) for phrase in order)
+        assert positions == tuple(sorted(positions))
+        assert no_report_with_tool_call in section
+        assert report_after_tools in section
+        assert no_short_or_status_final in section
+
     assert "cron platform posts this run's final response to the Slack channel automatically" in prompt
     assert "that final response IS the report" in prompt
     assert "Never call a send or post tool" in prompt
-    assert "never end with a status line" in prompt
+    assert "Never end with a status line" in prompt
     assert "`hindsight_retain` call before writing the final response" in prompt
-    assert "the final response (the report) is the last thing this run produces" in prompt.lower()
+    assert "and the last message of the run" in prompt.lower()
 
     feedback = prompt.split("FEEDBACK.", 1)[1].split("FORMAT.", 1)[0]
     assert "Make ONE `hindsight_retain` call" in feedback
