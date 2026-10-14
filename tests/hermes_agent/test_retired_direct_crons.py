@@ -23,7 +23,7 @@ from _role_files import role_defaults, role_tasks_text
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULTS_PATH = REPO_ROOT / "roles" / "hermes_agent"
 TASKS_PATH = REPO_ROOT / "roles" / "hermes_agent"
-TASK_FILE = TASKS_PATH / "tasks" / "cron_reconcile.yml"
+TASK_FILE = TASKS_PATH / "tasks" / "cron_reconcile_retired_pauses.yml"
 ENV = Environment(trim_blocks=False)
 ENV.filters["bool"] = bool
 ENV.filters["regex_escape"] = re.escape
