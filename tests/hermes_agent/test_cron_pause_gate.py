@@ -26,7 +26,12 @@ def _pause_runs(snapshot: dict[str, str], *, name: str, home: str) -> bool:
         "hermes_agent_direct_cron_lists": snapshot,
         "item": {"name": name, "hermes_home": home},
     }
-    return all(bool(ENV.compile_expression(str(condition))(**context)) for condition in conditions)
+    results = []
+    for condition in conditions:
+        result = ENV.compile_expression(str(condition))(**context)
+        assert isinstance(result, bool), f"condition returned {type(result).__name__}: {condition}"
+        results.append(result)
+    return all(results)
 
 
 def test_already_paused_disabled_job_makes_no_pause_call():
@@ -42,3 +47,14 @@ def test_active_disabled_job_still_makes_a_pause_call():
 def test_missing_disabled_job_makes_no_pause_call():
     board = "ID: 1 [active]\nName: another-job\n"
     assert not _pause_runs({"home-a": board}, name="disabled-job", home="home-a")
+
+
+def test_every_condition_is_a_real_boolean():
+    paused_board = "ID: 1 [paused]\nName: disabled-job\n"
+    active_board = "ID: 1 [active]\nName: disabled-job\n"
+    missing_name_board = "ID: 1 [active]\nName: another-job\n"
+
+    assert not _pause_runs({"home-a": paused_board}, name="disabled-job", home="home-a")
+    assert _pause_runs({"home-a": active_board}, name="disabled-job", home="home-a")
+    assert not _pause_runs({"home-a": missing_name_board}, name="disabled-job", home="home-a")
+    assert not _pause_runs({}, name="disabled-job", home="home-a")
