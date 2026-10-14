@@ -34,7 +34,12 @@ def test_job_is_a_splunk_profile_job_delivered_to_the_splunk_channel() -> None:
 
 
 def test_job_runs_hourly_off_the_board_digest_tick() -> None:
+    job = _direct_job(NAME_VAR)
     schedule = DEFAULTS["hermes_agent_llm_stats_hourly_cron_schedule"]
+    assert job["schedule"] == "{{ hermes_agent_llm_stats_hourly_cron_schedule }}"
+    assert schedule == "54 * * * *"
+    assert job["system"] == "splunk"
+    assert "model" not in job
     assert re.fullmatch(r"[0-5]?\d \* \* \* \*", schedule)
     digest_ticks = range(0, 60, int(DEFAULTS["hermes_agent_kanban_digest_interval_minutes"]))
     assert int(schedule.split()[0]) not in digest_ticks
@@ -56,6 +61,18 @@ def test_prompt_budgets_queries_and_report_time() -> None:
     assert 'Include one "Gaps:" line naming unavailable current metrics' in prompt
     assert "within 15 minutes" in prompt
     assert "Stop querying by minute 10" in prompt
+
+
+def test_prompt_uses_real_memory_tools_and_caps_all_tool_calls() -> None:
+    prompt = DEFAULTS["hermes_agent_llm_stats_hourly_cron_prompt"]
+    assert "hindsight_recall" in prompt
+    assert "hindsight_retain" in prompt
+    assert "Do not use the built-in `memory` tool" in prompt
+    assert "Do not use `execute_code`, `terminal` or file-search tools" in prompt
+    assert "at most 25 tool calls in total" in prompt
+    assert "At call 20, stop gathering and post" in prompt
+    assert "Call each tool directly, one tool per call" in prompt
+    assert "Do not use `tool_call` batching" in prompt
 
 
 def test_prompt_names_no_endpoint_or_channel_id() -> None:
