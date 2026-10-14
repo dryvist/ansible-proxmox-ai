@@ -4,6 +4,33 @@
   when: hermes_agent_syslog_route_enabled | bool
   tags: hermes_agent_logging
 
+# A handler fires only for a task that reported changed in THIS run, so a run
+# killed before the flush loses every pending restart and its re-run finds the
+# files in place and notifies nothing. The restart handler stamps a marker; an
+# input newer than it, or no marker, means the last restart never covered it.
+# shortcut: patched source files are not compared, upgrade if a code-only
+# patch ever ships without a config, env or unit change.
+- name: Stat the gateway restart marker and the files the gateway reads
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ hermes_agent_gateway_restart_marker }}"
+    - "{{ hermes_agent_hermes_home }}/.env"
+    - "{{ hermes_agent_hermes_home }}/config.yaml"
+    - /etc/systemd/system/hermes-gateway.service
+  register: hermes_agent_gateway_inputs
+
+- name: Restart a gateway whose inputs are newer than its last restart
+  ansible.builtin.debug:
+    msg: The gateway has not restarted since its inputs last changed.
+  vars:
+    marker: "{{ hermes_agent_gateway_inputs.results[0].stat }}"
+    newest_input: >-
+      {{ (hermes_agent_gateway_inputs.results[1:] | selectattr('stat.exists')
+          | map(attribute='stat.mtime') | list + [0]) | max }}
+  changed_when: not marker.exists or newest_input | float > marker.mtime
+  notify: Restart hermes-gateway
+
 - name: Flush handlers so config/unit changes apply before verification
   ansible.builtin.meta: flush_handlers
 
