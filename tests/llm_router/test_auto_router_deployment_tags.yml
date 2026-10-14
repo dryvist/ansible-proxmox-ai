@@ -41,6 +41,7 @@
     hermes_brain_model: medium
     hermes_goal_judge_model: judge
     hindsight_retain_model: qwen3-4b
+    llm_router_opencode_zdr_as_of: '2026-10-13'
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -51,15 +52,21 @@
         name: llm_router
         tasks_from: registry.yml
 
-    - name: Render the fully credentialed config
+    - name: Capture the rendered config bytes
       ansible.builtin.set_fact:
-        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _config_yaml: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+
+    - name: Parse the rendered config
+      ansible.builtin.set_fact:
+        _config: "{{ _config_yaml | from_yaml }}"
 
     - name: Capability aliases do not create duplicate model-list deployments
       ansible.builtin.assert:
         quiet: true
         that:
           - llm_router_model_group_aliases.auto == llm_router_primary_model
+          - _config_yaml | hash('sha256') == '4d226af98161af7493689f1cdd2904aca6bcd16e23b2f886cf20107dab7ee541'
+          - llm_router_auto_router_model | length == 0
           - llm_router_model_group_aliases[_hermes_default_alias] == llm_router_primary_model
           - _medium_deployments | length > 0
           - _medium_orders | unique | length == _medium_orders | length

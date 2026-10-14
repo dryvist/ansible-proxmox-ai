@@ -89,7 +89,13 @@ llm_router_hermes_router_ids: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-router')
      | selectattr('context_window', 'defined') | rejectattr('context_window', 'none')
      | map(attribute='client_model_id') | list }}
-llm_router_auto_router_model: ""
+llm_router_classify_enabled: "{{ groups['llm_classify'] | default([]) | length > 0 }}"
+llm_router_auto_router_model: "{{ 'auto-router' if llm_router_classify_enabled | bool else '' }}"
+llm_router_auto_router_classifier_model: english
+llm_router_complexity_router_alias: >-
+  {%- set _entry = llm_router_registry_enabled
+       | selectattr('complexity_router_alias', 'defined') | first -%}
+  {{ _entry.complexity_router_alias }}
 
 # OpenRouter candidates for long-context requests and the retained legacy
 # fallback. Only an explicit zero_data_retention assertion qualifies; a missing
@@ -128,7 +134,9 @@ llm_router_alias_pairs: >-
   {{ ns.pairs }}
 llm_router_model_group_aliases: >-
   {{ dict(llm_router_alias_pairs | map(attribute=1)
-          | zip(llm_router_alias_pairs | map(attribute=0))) }}
+          | zip(llm_router_alias_pairs | map(attribute=0)))
+     | combine({llm_router_complexity_router_alias: llm_router_auto_router_model}
+               if llm_router_auto_router_model | length > 0 else {}) }}
 
 
 # Background health checks send REAL test requests to every deployment — on the

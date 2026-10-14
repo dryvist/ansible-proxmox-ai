@@ -37,11 +37,12 @@ contains a `:free` rung.
 
 ## Hermes local-first value routing
 
-`hermes-default` is the only LiteLLM `auto_router/complexity_router`
-deployment. Its local heuristic sends SIMPLE/MEDIUM requests to the resident
-routine model and COMPLEX/REASONING requests to the resident primary;
-classification performs no provider call. If local serving fails, the original
-`hermes-default` request uses one credential-gated, ordered provider chain.
+`auto` is the only LiteLLM `auto_router/complexity_router` deployment when a
+local classifier is configured. Laya classifies the request; SIMPLE goes to
+`small`, and MEDIUM, COMPLEX, REASONING, or a classifier failure goes to
+`medium`. `default`, `hermes-default`, and the other aliases continue to point
+to their direct model groups. If local serving fails, the original typed request
+uses its credential-gated, ordered provider chain.
 Alibaba and Gemini routine and agentic deployments are separate provider
 groups in that chain; OpenRouter remains the final gateway-diverse group.
 

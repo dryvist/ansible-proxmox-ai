@@ -83,6 +83,24 @@ def test_success_record_has_expected_fields(module):
     }
 
 
+def test_route_records_only_the_requested_name_and_native_tier(module):
+    kwargs = {
+        "standard_logging_object": {
+            "model_group": "medium",
+            "model": "qwen-review",
+            "status": "success",
+            "metadata": {"routing_decision": {"tier": "SIMPLE"}},
+        },
+        "litellm_params": {
+            "proxy_server_request": {"body": {"model": "caller-model-fixture", "messages": [{"content": "private"}]}}
+        },
+    }
+    record = module["build_record"](kwargs, None, 100.0, 101.0)
+    assert record["requested_model"] == "caller-model-fixture"
+    assert record["route_tier"] == "SIMPLE"
+    assert "messages" not in record
+
+
 def test_failure_record_carries_error_class(module):
     payload = {
         "model_group": "medium",

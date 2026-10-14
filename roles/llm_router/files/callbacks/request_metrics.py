@@ -77,6 +77,15 @@ def build_record(kwargs, response_obj, start_time, end_time):
         "call_id": payload.get("litellm_call_id") or payload.get("id"),
         "trace_id": payload.get("trace_id"),
     }
+    proxy_request = (kwargs.get("litellm_params") or {}).get("proxy_server_request") or {}
+    request_body = proxy_request.get("body") or {}
+    requested_model = request_body.get("model")
+    if isinstance(requested_model, str) and requested_model:
+        record["requested_model"] = requested_model
+    routing_decision = metadata.get("routing_decision") or {}
+    route_tier = routing_decision.get("tier")
+    if isinstance(route_tier, str) and route_tier:
+        record["route_tier"] = route_tier
     # Emit only the explicit contract, never arbitrary metadata or credentials.
     contract = metadata.get("requester_metadata") or {}
     safe_fields = (

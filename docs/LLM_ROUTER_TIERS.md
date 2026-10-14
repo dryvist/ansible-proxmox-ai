@@ -9,7 +9,7 @@ a physical ID or a stable role from `llm_router_model_group_aliases`.
 | `qwen3-4b`, `embeddings` | `llm-light` (CPU), plus `llm-fast` (GPU) when `llm_router_llm_fast_enabled` | none |
 | Disabled `gpu-*` candidates | first `llm_gpu_group` host from tofu tag `llm-gpu`; set by the router group vars once a host exists | none |
 | OpenRouter allowlisted ids | OpenRouter (paid-SaaS egress) | one provider key |
-| `hermes-default` | local complexity router with credential-gated provider fallbacks | one key per API provider |
+| `auto` (when `llm_classify` is non-empty) | Laya: SIMPLE to `small`; all other tiers or failures to `medium` | one local classifier key |
 
 Each light model id is registered as a CPU `llm-light` deployment, and as a second
 same-`model_name` GPU `llm-fast` deployment **only when `llm_router_llm_fast_enabled`
@@ -29,10 +29,10 @@ host, and only the active profile (`llm_active_profile`) is projected.
 before the router play. While the switch is off, `judge` and `subagent` resolve
 to the current routine and fast GPU tiers. While it is on, the medium deployment
 is rung 1 of `judge`, `subagent`, `recorder`, `review-local`, `review-private`
-and `review-oss`, and of the complexity router's simple and medium tiers. Each
-role keeps its previous rungs behind it, in the same order. The simple and
-medium tiers keep only their external rungs behind the medium deployment, since
-their previous local target is not part of their fallback continuation. The
+and `review-oss`. When the classifier group is present, `auto` routes SIMPLE
+requests to `small` and its other tiers to `medium`. Each role keeps its previous
+rungs behind it, in the same order. The `auto` request keeps the direct `medium`
+fallback continuation. The
 existing `best`, `lead`, and `long` aliases keep their current targets. Each
 rendered profile carries zero
 token cost and advertises `max_input_tokens` equal to its registry

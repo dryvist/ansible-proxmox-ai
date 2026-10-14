@@ -21,6 +21,17 @@
 - name: Verify registry-declared serving endpoints
   ansible.builtin.import_tasks: verify-servable.yml
 
+- name: Require the local complexity-router targets when classification is enabled
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_auto_router_small_target in llm_router_rendered_capability_names
+      - llm_router_primary_model in llm_router_rendered_capability_names
+    fail_msg: >-
+      The local complexity router requires its small and medium model groups
+      to be present in the rendered capability set.
+  when: llm_router_classify_enabled | bool
+
 # The contract inputs below are lazy Jinja projections of the registry and
 # role defaults. Several assertions traverse the same projections in nested
 # loops, so materialize the shared inputs once per router before validating
@@ -66,11 +77,10 @@
     {{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml
   vars:
     openbao_secrets_assert_context: the LiteLLM env file
-    openbao_secrets_assert_names:
-      - llm_router_master_key
-      - llm_router_llm_large_bearer
-      - llm_router_mcp_zammad_url
-      - llm_router_mcp_zammad_http_token
+    openbao_secrets_assert_names: >-
+      {{ ['llm_router_master_key', 'llm_router_llm_large_bearer',
+          'llm_router_mcp_zammad_url', 'llm_router_mcp_zammad_http_token']
+         + (['llm_router_laya_api_key'] if llm_router_classify_enabled | bool else []) }}
 
 - name: Settle the optional Slack MCP server
   ansible.builtin.import_tasks: mcp-slack.yml

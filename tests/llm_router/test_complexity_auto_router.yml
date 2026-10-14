@@ -1,0 +1,182 @@
+---
+- name: Verify the inventory-gated local complexity router
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    ai_orchestration_otel_endpoint: http://localhost:4318
+    llm_router_opencode_zdr_as_of: '2026-10-13'
+  tasks:
+    - name: Add a synthetic classifier guest
+      ansible.builtin.add_host:
+        name: llm-classify-fixture
+        groups: llm_classify
+        ansible_connection: local
+        laya_systemone_port: 8123
+
+    - name: Load role defaults and registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Add a fake classifier key to the local fixture secrets
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets: "{{ bao_local_llm_secrets | combine({'laya_api_key': 'fixture-laya-key'}) }}"
+
+    - name: Capture the pre-classifier alias and key scopes
+      ansible.builtin.set_fact:
+        llm_router_classify_enabled: false
+        llm_router_auto_router_model: ""
+        llm_router_vllm_precheck_passed: true
+
+    - name: Save legacy aliases and allowed model groups
+      ansible.builtin.set_fact:
+        _legacy_aliases: "{{ llm_router_model_group_aliases }}"
+        _legacy_virtual_keys: "{{ llm_router_virtual_keys }}"
+
+    - name: Enable the inventory-gated classifier projections
+      ansible.builtin.set_fact:
+        llm_router_classify_enabled: true
+        llm_router_auto_router_model: auto-router
+
+    - name: Render the active proxy config and router environment
+      ansible.builtin.set_fact:
+        _config_yaml: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+        _router_env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+
+    - name: Parse the active proxy config
+      ansible.builtin.set_fact:
+        _config: "{{ _config_yaml | from_yaml }}"
+
+    - name: Resolve the virtual router and direct local targets
+      ansible.builtin.set_fact:
+        _auto_router: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', 'auto-router') | first }}
+        _complexity_rows: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.complexity_router_config', 'defined') | list }}
+        _small_rows: "{{ _config.model_list | selectattr('model_name', 'equalto', 'small') | list }}"
+        _medium_rows: "{{ _config.model_list | selectattr('model_name', 'equalto', 'medium') | list }}"
+        _fallback_auto: >-
+          {{ _config.router_settings.fallbacks
+             | selectattr(llm_router_complexity_router_alias, 'defined')
+             | map(attribute=llm_router_complexity_router_alias) | first }}
+        _fallback_medium: >-
+          {{ _config.router_settings.fallbacks
+             | selectattr('medium', 'defined') | map(attribute='medium') | first }}
+        _context_auto: >-
+          {{ _config.router_settings.context_window_fallbacks | default([])
+             | selectattr(llm_router_complexity_router_alias, 'defined')
+             | map(attribute=llm_router_complexity_router_alias) | first | default([]) }}
+        _context_medium: >-
+          {{ _config.router_settings.context_window_fallbacks | default([])
+             | selectattr('medium', 'defined') | map(attribute='medium') | first | default([]) }}
+
+    - name: Confirm only auto reaches the native local complexity router
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (llm_router_registry_enabled
+             | selectattr('complexity_router_alias', 'defined') | list | length) == 1
+          - >-
+            llm_router_complexity_router_alias in
+            (llm_router_registry_enabled
+             | selectattr('complexity_router_alias', 'defined')
+             | map(attribute='stable_aliases') | first)
+          - llm_router_model_group_aliases.auto == 'auto-router'
+          - llm_router_model_group_aliases.get(llm_router_complexity_router_alias) == 'auto-router'
+          - llm_router_model_group_aliases.default == llm_router_primary_model
+          - llm_router_model_group_aliases['hermes-default'] == llm_router_primary_model
+          - llm_router_model_group_aliases.coding == llm_router_primary_model
+          - "'medium' not in llm_router_model_group_aliases"
+          - (llm_router_model_group_aliases | dict2items
+             | rejectattr('key', 'equalto', llm_router_complexity_router_alias) | items2dict)
+            == (_legacy_aliases | dict2items
+                | rejectattr('key', 'equalto', llm_router_complexity_router_alias) | items2dict)
+          - (llm_router_model_group_aliases | dict2items
+             | selectattr('key', 'in', llm_router_model_group_aliases.values()) | list | length) == 0
+          - (llm_router_model_group_aliases | dict2items
+             | selectattr('value', 'equalto', 'auto-router')
+             | rejectattr('key', 'equalto', llm_router_complexity_router_alias) | list | length) == 0
+          - _complexity_rows | length == 1
+          - _complexity_rows[0].model_name == 'auto-router'
+          - _auto_router.litellm_params.model == 'auto_router/complexity_router'
+          - _auto_router.litellm_params.complexity_router_default_model == 'medium'
+          - _auto_router.litellm_params.complexity_router_config.tiers == _expected_tiers
+          - _auto_router.litellm_params.complexity_router_config.classifier_type == 'jev'
+          - _auto_router.litellm_params.complexity_router_config.jev_classifier_config.model == 'english'
+          - >-
+            _auto_router.litellm_params.complexity_router_config.jev_classifier_config.api_base
+            == 'http://llm-classify-fixture.example.test:8123'
+          - >-
+            _auto_router.litellm_params.complexity_router_config.jev_classifier_config.api_key
+            == 'os.environ/LLM_LAYA_API_KEY'
+          - _auto_router.litellm_params.complexity_router_config.jev_classifier_config.timeout_ms | int == 5000
+          - _auto_router.litellm_params.complexity_router_config.jev_classifier_config.circuit_breaker_enabled | bool
+          - >-
+            _auto_router.litellm_params.complexity_router_config.jev_classifier_config.circuit_breaker_cooldown_seconds
+            | int == 30
+          - _auto_router.litellm_params.complexity_router_config.classifier_fallback == 'default_model'
+          - _auto_router.litellm_params.complexity_router_config.classifier_context_window_size | int == 0
+          - >-
+            _auto_router.litellm_params.complexity_router_config.classifier_context_budget_chars
+            | int == 1500
+          - _auto_router.litellm_params.complexity_router_config.plan_mode_min_tier == 'MEDIUM'
+          - _small_rows | length > 0
+          - _medium_rows | length > 0
+          - _fallback_auto == _fallback_medium
+          - _context_auto == _context_medium
+          - "'LLM_LAYA_API_KEY=' in _router_env"
+        fail_msg: "The active auto router, targets, fallback, or key environment is inconsistent."
+      vars:
+        _expected_tiers:
+          SIMPLE: small
+          MEDIUM: medium
+          COMPLEX: medium
+          REASONING: medium
+
+    - name: Check each declared key against its legacy access matrix
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            (llm_router_complexity_router_alias not in _legacy_key.models
+             or llm_router_primary_model not in _legacy_key.models)
+            or ['auto-router', 'small', 'medium', 'typesafe/english']
+               | difference(item.models) | length == 0
+          - >-
+            (llm_router_complexity_router_alias in _legacy_key.models
+             and llm_router_primary_model in _legacy_key.models)
+            or ('auto-router' not in item.models
+                and 'typesafe/english' not in item.models)
+          - >-
+            llm_router_complexity_router_alias in _legacy_key.models
+            or llm_router_auto_router_small_target in _legacy_key.models
+            or llm_router_auto_router_small_target not in item.models
+          - >-
+            llm_router_primary_model in _legacy_key.models
+            or llm_router_primary_model not in item.models
+          - >-
+            (item.models | difference(_legacy_key.models)
+             | intersect(_hosted_groups) | length) == 0
+          - >-
+            (item.models | difference(_legacy_key.models)
+             | difference(['auto-router', 'small', 'medium', 'typesafe/english'])
+             | length) == 0
+        fail_msg: "Key {{ item.alias }} gained an unintended model group."
+      loop: "{{ llm_router_virtual_keys }}"
+      loop_control:
+        label: "{{ item.alias }}"
+      vars:
+        _legacy_key: >-
+          {{ _legacy_virtual_keys | selectattr('alias', 'equalto', item.alias) | first }}
+        _hosted_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
