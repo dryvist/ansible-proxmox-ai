@@ -1,7 +1,7 @@
 ---
 # --- Hourly local-LLM stats report -------------------------------------------
 # One open-ended agentic direct cron under the splunk-admin profile. The prompt
-# carries the whole protocol: sources, "llm-stats:" memory keys, feedback.
+# carries the whole protocol: the hourly memory marker and feedback.
 #
 # Minute 54 is one no other job in this table starts on
 # (tests/hermes_agent/test_cron_stagger.py).
@@ -35,11 +35,10 @@ hermes_agent_llm_stats_hourly_cron_prompt: >-
   change to a static snapshot, and lead with whatever moved materially.
 
 
-  WHERE TO LOOK. First recall llm-stats:baselines and llm-stats:sources. Run
+  WHERE TO LOOK. Use the recalled previous hourly report as the baseline. Run
   these six seed queries first, in order, exactly as written; change only the
-  earliest= value or add a narrower where when recalled llm-stats:sources say to.
-  Remembered queries may add to them but never replace them. Use at most 10
-  splunk_run_query calls in this run. Use a narrow time window; never run an
+  earliest= value. Use at most 10 splunk_run_query calls in this run. Use a
+  narrow time window; never run an
   unbounded search or enumerate every index. After two failed calls to
   splunk_run_query, including timeouts, stop all Splunk queries for this run; do
   not retry with a changed query. A call that returns zero rows is not a failure;
@@ -102,25 +101,27 @@ hermes_agent_llm_stats_hourly_cron_prompt: >-
 
 
   MEMORY. Never use the built-in `memory` tool in any turn. On a report run,
-  first make ONE `hindsight_recall` call at the start with a query covering
-  "llm-stats:baselines", "llm-stats:sources", "llm-stats:feedback" and
-  "llm-stats:last". Then finish all Splunk queries. Then make ONE
-  `hindsight_retain` call before writing the final response, using compact
-  dated entries to update these keys and consolidate baselines and sources.
-  Baselines hold typical per-model and per-host token rates, latencies, error
-  rates and serving hosts; sources hold working queries and dead ends; feedback
-  holds dated operator guidance; last holds prior headline numbers for deltas.
+  first make ONE `hindsight_recall` call at the start with `query` set to
+  `LLM-STATS-HOURLY hourly local LLM stats report YYYY-MM-DD HH:00 UTC`, using
+  the previous UTC hour for the date-hour. `hindsight_recall` accepts only
+  `query`; do not pass tags, ids, limits, budgets or time windows as arguments
+  to it. Then finish all Splunk queries. Then make ONE `hindsight_retain` call
+  before writing the final response. Set `content` to compact, dated
+  natural-language statements (not a table dump) of this hour's per-model and
+  per-host token totals, request counts, failures and the baselines used. The
+  content must begin with the exact marker `LLM-STATS-HOURLY` followed by the
+  UTC date-hour in `YYYY-MM-DD HH:00 UTC` form. Pass `tags: ["llm-stats"]`.
   Never write report text in an assistant turn that also contains a tool call;
   text written next to a tool call is not delivered. After the
   `hindsight_retain` result returns, or after completing the recall/retain error
   handling below, the very next message is the complete report in Slack mrkdwn
   and the last message of the run. Never end with a status line, a memory
   confirmation or a pointer to an earlier message; a final message shorter
-  than the report is a failed run. If recall errors or
-  times out, do not retry; continue with no baseline, say "no recalled baseline", and
-  name memory in "Gaps:". If retain errors, do not retry; mention the failed
-  save in "Gaps:". If recall returns nothing, say this is a first run and build
-  the baseline.
+  than the report is a failed run. If recall errors or times out, do not retry;
+  continue with no baseline, say "no recalled baseline (first run)", and name
+  memory in "Gaps:". If retain errors, do not retry; mention the failed save in
+  "Gaps:". If recall returns nothing, say "no recalled baseline (first run)"
+  and build the baseline.
 
 
   TOOL CALLS. Call each tool directly, one tool per call; never batch calls.
@@ -134,11 +135,12 @@ hermes_agent_llm_stats_hourly_cron_prompt: >-
   FEEDBACK. Feedback turns are separate from report runs. Operators react to
   your report or reply in its thread. A later turn
   such as "reaction:added:👍", "reaction:added:👎" or any other emoji, or a
-  human reply, is feedback on that report. Make ONE `hindsight_retain` call to
-  save a dated "llm-stats:feedback" line naming the sections that report had;
-  then answer with one short acknowledgement. A thumbs up means keep doing
-  that; a thumbs down or a critical reply means change it. Follow
-  "llm-stats:feedback" over these defaults.
+  human reply, is feedback on that report. Make ONE `hindsight_retain` call with
+  `content` beginning `LLM-STATS-HOURLY-FEEDBACK` followed by the UTC date-hour
+  and the dated operator guidance naming the report sections; pass
+  `tags: ["llm-stats"]`; then answer with one short acknowledgement. A thumbs
+  up means keep doing that; a thumbs down or a critical reply means change it.
+  Follow `LLM-STATS-HOURLY-FEEDBACK` entries over these defaults.
 
 
   FORMAT. Slack mrkdwn, scannable: a one-line headline with the single most
