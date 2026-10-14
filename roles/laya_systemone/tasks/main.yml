@@ -1,0 +1,61 @@
+---
+- name: Install shared NVIDIA guest prerequisites
+  ansible.builtin.include_role:
+    name: nvidia_gpu_guest
+
+- name: Create the Laya virtual environment
+  ansible.builtin.command:
+    argv:
+      - "{{ nvidia_gpu_guest_uv_bin }}"
+      - venv
+      - --python
+      - "{{ laya_systemone_python }}"
+      - "{{ laya_systemone_venv }}"
+    creates: "{{ laya_systemone_venv }}/bin/python"
+  become: true
+  become_user: "{{ laya_systemone_user }}"
+  environment: "{{ nvidia_gpu_guest_uv_environment }}"
+
+- name: Install the pinned Laya HTTP server with a driver-compatible CUDA torch wheel
+  ansible.builtin.command:
+    argv:
+      - "{{ nvidia_gpu_guest_uv_bin }}"
+      - pip
+      - install
+      - --python
+      - "{{ laya_systemone_venv }}/bin/python"
+      - --torch-backend=auto
+      - "laya[serve]=={{ laya_systemone_version }}"
+  become: true
+  become_user: "{{ laya_systemone_user }}"
+  environment: "{{ nvidia_gpu_guest_uv_environment }}"
+  register: laya_systemone_install
+  when: not ansible_check_mode
+  changed_when: >-
+    'Installed' in laya_systemone_install.stderr or
+    'Prepared' in laya_systemone_install.stderr or
+    'Uninstalled' in laya_systemone_install.stderr
+  notify: Restart Laya systemd service
+
+- name: Render the Laya service environment and systemd unit
+  ansible.builtin.include_tasks: render-unit.yml
+
+- name: Apply pending Laya service changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure the Laya service is enabled and running
+  ansible.builtin.systemd:
+    name: laya-systemone.service
+    state: started
+    enabled: true
+    daemon_reload: true
+  no_log: true
+
+- name: Wait for Laya health to return successfully
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ laya_systemone_port }}/health"
+    status_code: 200
+  register: laya_systemone_health
+  retries: "{{ laya_systemone_health_retries }}"
+  delay: "{{ laya_systemone_health_delay }}"
+  until: laya_systemone_health.status | default(0) == 200
