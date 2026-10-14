@@ -82,6 +82,31 @@ def test_actual_scope_step_dispatches_full_or_focused(
     assert all(set(shard) == {"name", "playbooks"} for shard in shards)
 
 
+@pytest.mark.parametrize(("job_name", "preserved_conditions"), [
+    ("data-contract", [
+        "always()",
+        "needs.contract-scope.result == 'success'",
+        "needs.contract-scope.outputs.full_suite == 'true'",
+        "github.event_name != 'push'",
+    ]),
+    ("molecule", [
+        "github.event_name == 'pull_request'",
+        "github.event.pull_request.base.ref == 'main'",
+        "needs.ci.outputs.molecule == 'true'",
+        "needs.ci.outputs.molecule_scenarios != '[]'",
+    ]),
+])
+def test_tiny_shared_output_gates_local_heavy_jobs_without_dropping_existing_conditions(
+    job_name: str, preserved_conditions: list[str],
+) -> None:
+    job = yaml.safe_load(CI_GATE.read_text())["jobs"][job_name]
+    needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
+    assert "ci" in needs
+    assert "needs.ci.outputs.tiny != 'true'" in job["if"]
+    for condition in preserved_conditions:
+        assert condition in job["if"]
+
+
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
     ("pull_request", "refs/pull/1/merge", "main", False),
     ("pull_request", "refs/pull/1/merge", "develop", True),
