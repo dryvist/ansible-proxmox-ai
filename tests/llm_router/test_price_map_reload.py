@@ -9,6 +9,8 @@ from urllib.parse import quote
 
 import jinja2
 import yaml
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles/llm_router"
@@ -23,9 +25,11 @@ SOURCE_FIELDS = {
     "etag",
     "model_count",
 }
+RUNNING_VERSION_FIELDS = {"litellm_version"}
 REGISTERED_FIELDS = {
     "llm_router_model_cost_map_schedule_status": SCHEDULE_FIELDS,
     "llm_router_model_cost_map_source_status": SOURCE_FIELDS,
+    "llm_router_running_litellm_version_status": RUNNING_VERSION_FIELDS,
 }
 
 
@@ -79,7 +83,7 @@ def _debug_task_is_safe(task_text: str) -> bool:
         return False
     for variable, allowed_fields in REGISTERED_FIELDS.items():
         field_pattern = "|".join(re.escape(field) for field in allowed_fields)
-        field_reference = re.compile(rf"{re.escape(variable)}\.json\.(?:{field_pattern})\b")
+        field_reference = re.compile(rf"{re.escape(variable)}\.(?:json\.(?:{field_pattern})|stdout)\b")
         for occurrence in re.finditer(re.escape(variable), task_text):
             if field_reference.match(task_text, occurrence.start()) is None:
                 return False
@@ -179,6 +183,66 @@ def test_source_status_read_is_per_router_and_outside_run_once_blocks():
     assert source_read_index > next(
         index for index, task in enumerate(tasks) if task.get("name") == "Verify this member serves the rendered model list"
     )
+
+
+def test_running_litellm_version_is_reported_without_secrets():
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    version_read = next(
+        task for task in tasks if task.get("name") == "Read this router's running LiteLLM version"
+    )
+    version_report = next(
+        task for task in tasks if task.get("name") == "Report this router's running LiteLLM version"
+    )
+    uri = version_read["ansible.builtin.uri"]
+    message = version_report["ansible.builtin.debug"]["msg"]
+
+    assert uri["url"].endswith("/health/readiness/details")
+    assert uri["headers"]["Authorization"] == "Bearer {{ llm_router_master_key }}"
+    assert uri["status_code"] == 200
+    assert uri["timeout"] == "{{ llm_router_seed_request_timeout }}"
+    assert version_read["register"] == "llm_router_running_litellm_version_status"
+    assert version_read["changed_when"] is False
+    assert version_read["failed_when"] is False
+    assert version_read["check_mode"] is False
+    assert version_read["no_log"] is True
+    assert type(message) is dict
+    assert set(message) == {"running_litellm_version", "pinned_litellm_version"}
+    assert _debug_task_is_safe(yaml.safe_dump(version_report))
+    assert ".json.litellm_version" in message["running_litellm_version"]
+    assert "| default('absent')" in message["running_litellm_version"]
+    assert "llm_router_pip_packages" in message["pinned_litellm_version"]
+    assert "split('==')" in message["pinned_litellm_version"]
+
+    for task in (version_read, version_report):
+        index = tasks.index(task)
+        assert task.get("run_once") is not True
+        assert not any("block" in parent and parent.get("run_once") for parent in tasks[:index + 1])
+
+
+def test_running_version_report_renders_with_the_real_templar():
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    message = next(
+        task for task in tasks if task.get("name") == "Report this router's running LiteLLM version"
+    )["ansible.builtin.debug"]["msg"]
+    packages = yaml.safe_load((ROLE_ROOT / "defaults/main/00-identity.yml").read_text(encoding="utf-8"))[
+        "llm_router_pip_packages"
+    ]
+    pin = next(package for package in packages if package.startswith("litellm[proxy]==")).split("==")[1]
+
+    def render(status: dict) -> dict:
+        templar = Templar(loader=DataLoader())
+        templar.available_variables = {
+            "llm_router_pip_packages": packages,
+            "llm_router_running_litellm_version_status": status,
+        }
+        return {key: templar.template(trust_as_template(value)) for key, value in message.items()}
+
+    assert render({"status": 200, "json": {"litellm_version": pin}}) == {
+        "running_litellm_version": pin,
+        "pinned_litellm_version": pin,
+    }
+    # A failed read (no json) must still render, never fail the converge.
+    assert render({"status": -1})["running_litellm_version"] == "absent"
 
 
 def test_schedule_task_is_imported_after_database_consumer_seeds():
