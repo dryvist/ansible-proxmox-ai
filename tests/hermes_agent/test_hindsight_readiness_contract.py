@@ -4,7 +4,8 @@ Hindsight's plugin can try a lazy pip install when its client is absent, but
 Hermes's uv venv has neither pip nor ensurepip. The role, not a guest-side
 operator command, owns that dependency. These tests also pin the intended
 topology: agents share one external Hindsight service while each identity has
-its own bank; profiles inside an agent deliberately share that bank.
+its own bank; profiles inside an agent deliberately share that bank unless a
+profile entry sets memory_bank_id.
 """
 
 from __future__ import annotations
@@ -33,7 +34,11 @@ def _verify_task(name: str) -> dict:
 
 
 def _render_hindsight_config(
-    agent_id: str, *, mode: str = "local_external", include_api_key: bool = True
+    agent_id: str,
+    *,
+    mode: str = "local_external",
+    include_api_key: bool = True,
+    profile_bank_id: str | None = None,
 ) -> dict:
     source = (ROLE_ROOT / "templates" / "hindsight-config.json.j2").read_text()
     env = Environment(autoescape=False, undefined=StrictUndefined)
@@ -56,6 +61,8 @@ def _render_hindsight_config(
     }
     if not include_api_key:
         context.pop("hermes_agent_memory_api_key")
+    if profile_bank_id is not None:
+        context["hermes_agent_profile_memory_bank_id"] = profile_bank_id
     rendered = env.from_string(source).render(**context)
     return json.loads(rendered)
 
@@ -99,6 +106,11 @@ def test_agents_share_hindsight_service_but_not_memory_banks() -> None:
     assert hermes["bank_id"] == "hermes"
     assert donna["bank_id"] == "donna"
     assert hermes["bank_id"] != donna["bank_id"]
+
+
+def test_a_profile_bank_overrides_the_agent_bank_only_when_set() -> None:
+    assert _render_hindsight_config("hermes")["bank_id"] == "hermes"
+    assert _render_hindsight_config("hermes", profile_bank_id="hermes-splunk")["bank_id"] == "hermes-splunk"
 
 
 def test_hindsight_config_enables_current_turn_recall_in_both_modes() -> None:

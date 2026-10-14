@@ -30,3 +30,16 @@ def test_data_exfiltration_requires_transfer_target_and_external_sink():
     assert not matches("Review this Nix module: local keychain access protects API credentials at rest.")
     assert not matches("Please identify where this module reads API credentials.")
     assert not matches("Send this review comment to https://example.org/review.")
+
+
+def test_matcher_replaces_the_bundled_category_file():
+    tasks = yaml.safe_load(
+        (POLICY.parents[2] / "tasks/install-runtime.yml").read_text(encoding="utf-8")
+    )
+    deploy = next(t for t in tasks if t["name"] == "Deploy the explicit data exfiltration matcher")
+    dest = deploy["ansible.builtin.copy"]["dest"]
+
+    assert dest.endswith(
+        "litellm/proxy/guardrails/content_filter_data/categories/prompt_injection_data_exfiltration.yaml"
+    )
+    assert "guardrail_hooks" not in dest

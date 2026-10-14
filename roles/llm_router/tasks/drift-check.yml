@@ -168,16 +168,29 @@
     - name: Compare sanitized live state with the Git baselines
       ansible.builtin.import_tasks: drift-compare.yml
 
+    - name: Group sanitized drift findings into bounded per-file messages
+      ansible.builtin.set_fact:
+        _llm_router_drift_batches: >-
+          {{ _llm_router_drift_messages | drift_notification_batches }}
+      no_log: true
+
+    - name: Fail visibly when a sanitized drift finding exceeds the alert limit
+      ansible.builtin.fail:
+        msg: >-
+          One or more sanitized router drift findings exceed the 3500-byte
+          notification limit; no drift alert was sent.
+      when: _llm_router_drift_batches.oversized | length > 0
+
     - name: Require the configured router alert path when drift exists
       ansible.builtin.fail:
         msg: >-
-          Router drift was found for {{ _llm_router_drift_messages | map(attribute='item') | join('; ') }}
+          Router drift was found for {{ _llm_router_drift_batches.messages | map(attribute='item') | join('; ') }}
           but llm_router_alert_webhook_url is empty.
       when:
-        - _llm_router_drift_messages | length > 0
+        - _llm_router_drift_batches.messages | length > 0
         - llm_router_alert_webhook_url | default('') | trim | length == 0
 
-    - name: Send one alert-path notification per drifted item
+    - name: Send bounded per-file alert-path notifications for router drift
       ansible.builtin.uri:
         url: "{{ llm_router_alert_webhook_url ~ '?template=yes&message=%7B%7B.text%7D%7D' }}"
         method: POST
@@ -188,8 +201,8 @@
           text: "{{ item.text }}"
         status_code: [200, 201, 202]
         timeout: "{{ llm_router_seed_request_timeout }}"
-      loop: "{{ _llm_router_drift_messages }}"
+      loop: "{{ _llm_router_drift_batches.messages }}"
       loop_control:
         label: "{{ item.item }}"
-      when: _llm_router_drift_messages | length > 0
+      when: _llm_router_drift_batches.messages | length > 0
       no_log: true

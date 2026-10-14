@@ -47,7 +47,10 @@ from _registry_retype_scan import REPO_ROOT, _Permissive, _literals, registry_va
 
 def test_zdr_true_registry_entries_name_the_provider_source() -> None:
     """An explicit ZDR claim must carry its source next to the field."""
-    source_comment = "OpenRouter request-level `zdr: true` (provider routing)"
+    source_comments = (
+        "OpenRouter request-level `zdr: true` (provider routing)",
+        "OpenCode Go 0-day retention contract",
+    )
     registry_files = sorted((REPO_ROOT / "llm-models.d").glob("*.yml"))
     assert registry_files
     for path in registry_files:
@@ -55,13 +58,17 @@ def test_zdr_true_registry_entries_name_the_provider_source() -> None:
         for index, line in enumerate(lines):
             if re.match(r"^\s*zero_data_retention:\s*true\s*$", line):
                 nearby = lines[max(0, index - 2) : index]
-                assert any(source_comment in candidate for candidate in nearby), (
+                assert any(
+                    source_comment in candidate
+                    for candidate in nearby
+                    for source_comment in source_comments
+                ), (
                     f"{path.relative_to(REPO_ROOT)}:{index + 1} has no provider source comment"
                 )
 
 
-def test_virtual_key_tags_are_create_only() -> None:
-    """Routing tags seed on create; the required sensitivity class also reconciles."""
+def test_virtual_key_settings_reconcile_only_when_referenced() -> None:
+    """Key settings seed on create and reconcile only for keys naming a settings entry."""
     seed_file = REPO_ROOT / "roles/llm_router/tasks/seed-keys.yml"
     tasks = yaml.load(seed_file.read_text(), Loader=_Permissive)
     by_name = {task.get("name"): task for task in tasks}
@@ -78,7 +85,9 @@ def test_virtual_key_tags_are_create_only() -> None:
     reconcile_expr = compute["ansible.builtin.set_fact"]["_llm_router_key_updates"]
     assert "item.tags" not in reconcile_expr
     assert "_sensitivity_tag" in reconcile_expr
-    assert "router_settings" not in reconcile_expr
+    assert "llm_router_review_key_router_settings[_k.router_settings_ref]" in reconcile_expr
+    assert "_router_settings_changed" in reconcile_expr
+    assert "combine({'router_settings': _router_settings_target})" in reconcile_expr
 
     update = policy_by_name["Reconcile caller policy for live keys that changed"]
     assert update["ansible.builtin.uri"]["body"] == "{{ item.body }}"

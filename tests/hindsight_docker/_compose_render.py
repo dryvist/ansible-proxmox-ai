@@ -7,6 +7,7 @@ tests itself, only imported by the ones that need it).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import jinja2
@@ -57,6 +58,7 @@ DEFAULT_CONTEXT = {
     "hindsight_docker_retain_max_completion_tokens": ROLE_DEFAULTS[
         "hindsight_docker_retain_max_completion_tokens"
     ],
+    "hindsight_docker_llm_extra_body": ROLE_DEFAULTS["hindsight_docker_llm_extra_body"],
     "hindsight_docker_worker_max_retries": ROLE_DEFAULTS[
         "hindsight_docker_worker_max_retries"
     ],
@@ -106,6 +108,7 @@ def render(
     )
     env.filters["string"] = str
     env.filters["lower"] = str.lower
+    env.filters["to_json"] = json.dumps
     template = env.from_string(TEMPLATE_PATH.read_text())
     render_context = {**DEFAULT_CONTEXT, **(context or {})}
     if not include_api_key:

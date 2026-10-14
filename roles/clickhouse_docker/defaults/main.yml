@@ -1,10 +1,7 @@
 ---
-# Dedicated ClickHouse server — Docker Compose in its own LXC. Replaces the
-# ClickHouse container that used to live inside the Langfuse compose stack
-# (roles/langfuse_docker): this role runs ClickHouse standalone so Langfuse
-# and every read-only downstream consumer (Grafana, HyperDX, Splunk) talk to
-# one shared server instead of each getting its own copy. All literals live
-# here; the template references vars only (DRY).
+# Dedicated ClickHouse server — Docker Compose in its own LXC. It configures
+# the application database and read-only access for downstream consumers.
+# All literals live here; the template references vars only (DRY).
 #
 # The OpenTelemetry collector and its OTEL tables are a deliberate follow-up
 # — this role deploys the ClickHouse server only.
@@ -35,12 +32,24 @@ clickhouse_docker_service: clickhouse
 clickhouse_docker_restart_policy: unless-stopped
 
 # =============================================================================
-# Persistent state (bind-mounted to /opt/clickhouse — durable, snapshotted).
+# Persistent state (durable, snapshotted).
 # =============================================================================
 clickhouse_docker_data_dir: /opt/clickhouse
 clickhouse_docker_ch_data_dir: "{{ clickhouse_docker_data_dir }}/data"
 clickhouse_docker_ch_logs_dir: "{{ clickhouse_docker_data_dir }}/logs"
 clickhouse_docker_users_d_dir: "{{ clickhouse_docker_data_dir }}/users.d"
+clickhouse_docker_config_d_dir: "{{ clickhouse_docker_data_dir }}/config.d"
+clickhouse_docker_ch_backups_dir: "{{ clickhouse_docker_ch_data_dir }}/backups"
+clickhouse_docker_timezone: UTC
+clickhouse_docker_log_level: information
+clickhouse_docker_system_log_ttl_days: 30
+clickhouse_docker_system_log_ttl_tables:
+  - text_log
+  - query_log
+  - trace_log
+  - part_log
+  - metric_log
+  - asynchronous_metric_log
 
 # ClickHouse runs as uid/gid 101 (the image's `clickhouse` user). Because the
 # service pins `user: 101:101`, the bind-mounted host dirs must be pre-owned
@@ -55,10 +64,17 @@ clickhouse_docker_directories:
   - path: "{{ clickhouse_docker_ch_data_dir }}"
     owner: "{{ clickhouse_docker_uid }}"
     group: "{{ clickhouse_docker_uid }}"
+  - path: "{{ clickhouse_docker_ch_backups_dir }}"
+    owner: "{{ clickhouse_docker_uid }}"
+    group: "{{ clickhouse_docker_uid }}"
+    mode: "0750"
   - path: "{{ clickhouse_docker_ch_logs_dir }}"
     owner: "{{ clickhouse_docker_uid }}"
     group: "{{ clickhouse_docker_uid }}"
   - path: "{{ clickhouse_docker_users_d_dir }}"
+    owner: "{{ clickhouse_docker_uid }}"
+    group: "{{ clickhouse_docker_uid }}"
+  - path: "{{ clickhouse_docker_config_d_dir }}"
     owner: root
     group: root
 
@@ -90,6 +106,11 @@ clickhouse_docker_native_port: >-
      ['constants']['service_ports']['clickhouse_native']
      | mandatory(_clickhouse_docker_native_port_err) }}
 
+# ToFu publishes this service port when available; 9363 is the role default.
+clickhouse_docker_prometheus_port: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['clickhouse_metrics']
+     | default(9363) }}
+
 # The guest's own FQDN, read from the published inventory rather than built
 # from parts. `container_ip` is the tofu contract's field for it: DHCP-first
 # guests (this one is) carry their resolvable FQDN there (see
@@ -110,10 +131,11 @@ clickhouse_docker_http_endpoint: "http://{{ clickhouse_docker_host }}:{{ clickho
 # =============================================================================
 # Databases and users
 # =============================================================================
-# A dedicated database for Langfuse — never `default` (see the lockdown note
-# below: the `default` user is disabled, and `default` the database is not
-# used by anyone). Three read-only users cover the downstream consumers.
-clickhouse_docker_database: langfuse
+# The default user remains disabled independently of the application database.
+# The application user comes from the image entrypoint (defined in users.xml,
+# full rights, not grantable). Three read-only users cover the downstream
+# consumers.
+clickhouse_docker_database: default
 clickhouse_docker_app_user: langfuse
 clickhouse_docker_readonly_users:
   - grafana
@@ -127,12 +149,10 @@ clickhouse_docker_readonly_users:
 # secrets-external/ mount reserved for internet-reachable services) and never
 # falls back to `lookup('env', ...)`.
 #
-# The `clickhouse` domain's AppRole/policy do not exist yet — they are
-# provisioned in ansible-proxmox-apps' roles/openbao, a separate repo, and
-# are blocked on an unrelated fix there. Until that lands, `bao_clickhouse_secrets`
-# resolves to an empty dict and every mandatory() below fails the play. That
-# is intended: a converge that rendered an empty ClickHouse credential would
-# overwrite a working one, so failing closed here is correct, not a defect.
+# The `clickhouse` domain remains optional until its AppRole and policy are
+# provisioned in ansible-proxmox-apps' roles/openbao. Without its credential,
+# `bao_clickhouse_secrets` resolves to an empty dict and mandatory() fails the
+# play rather than rendering an empty credential.
 clickhouse_docker_app_password: >-
   {{ (bao_clickhouse_secrets | default({})).APP_PASSWORD
      | mandatory('APP_PASSWORD must be set in the environment') }}

@@ -39,13 +39,14 @@ CONSUMERS = [
 ]
 
 
-# llm_router's model lists are projections of the llm-models.d registry, which a
-# plain render cannot evaluate. The endpoint line does not depend on which models
-# are listed, so they render empty rather than re-deriving the registry here.
+# Derived defaults a plain render cannot evaluate: llm_router's model lists
+# (projections of the llm-models.d registry) and agentgateway's roster key map.
+# The endpoint line depends on neither, so they render empty.
 REGISTRY_PROJECTIONS = {
     "llm_router_openrouter_models": [],
     "llm_router_opencode_models": [],
     "llm_router_hermes_cloud_models_credentialed": [],
+    "agentgateway_docker_roster_keys": {},
 }
 
 

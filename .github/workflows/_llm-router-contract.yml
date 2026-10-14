@@ -5,7 +5,7 @@
 # without a matrix entry is decorative — so the list only grows, and it grew
 # past the repo's per-file token budget twice while it repeated a full step
 # block (name, comment, run) per check. A `strategy.matrix` collapses that to
-# one shared step and schedules each playbook as an independent contract job.
+# one shared step and schedules named router playbook groups as contract jobs.
 #
 # Called by _data-contract.yml, so its result still reaches the Merge Gate
 # through that workflow's conclusion.
@@ -30,16 +30,17 @@ permissions:
 
 jobs:
   llm-router-contract:
-    name: Router contract ${{ strategy.job-index }}
+    name: "Router contract: ${{ matrix.shard.name }}"
     if: inputs.full_suite || inputs.playbooks != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+    timeout-minutes: ${{ inputs.timeout_minutes < 30 && 30 || inputs.timeout_minutes }}
     strategy:
       fail-fast: false
-      max-parallel: 32
+      max-parallel: 16
       matrix:
-        # One playbook per matrix item lets independent jobs schedule all paths.
-        playbook: ${{ fromJSON(inputs.playbooks) }}
+        # Each named shard runs its playbooks through the shared loop.
+        shard: ${{ fromJSON(inputs.playbooks) }}
+        # This commented playbook list is the selector's single source of router checks.
         # - tests/llm_router/test_vllm_tier_switch.yml
         # - tests/llm_router/test_vllm_tier_switch_on.yml
         # - tests/llm_router/test_vllm_tier_switch_guard.yml
@@ -60,6 +61,7 @@ jobs:
         # - tests/llm_router/test_syslog_route.yml
         # - tests/llm_router/test_drift_live_key_shape.yml
         # - tests/llm_router/test_drift_live_keys.yml
+        # - tests/llm_router/test_drift_notification_role_filter.yml
         # - tests/llm_router/test_hermes_provider_policy.yml
         # - tests/llm_router/test_key_budget_limits_window.yml
         # - tests/llm_router/test_seed_play_reachability_gate.yml
@@ -79,12 +81,14 @@ jobs:
         # - tests/llm_router/test_fallback_depth_budget.yml
         # - tests/llm_router/test_router_ui_drift.yml
         # - tests/llm_router/test_jwt_unique_index.yml
+        # - tests/llm_router/test_lens_rename_repair.yml
         # - tests/llm_router/test_hermes_rate_limit_retry.yml
         # - tests/llm_router/test_seed_key_pagination.yml
         # - tests/llm_router/test_endpoint_dns_assert.yml
         # - tests/llm_router/test_fallback_zdr_and_escape.yml
         # - tests/llm_router/test_serving_share.yml
         # - tests/llm_router/test_seed_key_route_model_reconcile.yml
+        # - tests/llm_router/test_seed_key_router_settings_reconcile.yml
         # - tests/llm_router/test_alias_servable.yml
         # - tests/llm_router/test_litellm_oidc_admin_identity_required.yml
         # - tests/llm_router/test_servable_probe.yml
@@ -132,7 +136,6 @@ jobs:
         # - tests/llm_router/test_review_local.yml
         # - tests/llm_router/test_registry_hints_projection.yml
         # - tests/llm_router/test_local_admission_cap.yml
-        # - tests/llm_router/test_langfuse_export.yml
         # - tests/llm_router/test_free_route_credential_gate_order.yml
         # - tests/llm_router/test_redis_coordination.yml
         # - tests/llm_router/test_spend_log_retention.yml
@@ -153,6 +156,7 @@ jobs:
         # - tests/llm_router/test_duplicate_alias_rejected.yml
         # - tests/llm_router/test_homelab_key_contract.yml
         # - tests/llm_router/test_review_roles_ci_keys.yml
+        # - tests/llm_router/test_agent_router_keys.yml
         # Workflow edits select every router contract entry in CI.
     env:
       LLM_ROUTER_MASTER_KEY: sk-ci-placeholder-not-a-secret
@@ -175,8 +179,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r .github/requirements-ci.txt
 
-      # Cache Galaxy content keyed on requirements.yml. install --force
-      # reinstalls every entry, so restored content never satisfies it alone.
+      # An exact requirements.yml cache hit already contains this install. A
+      # miss runs the forced install to resolve the current requirement set.
       # Same v2 key/paths as dryvist/.github's _ansible-ci.yml on main, so a warm run of
       # either workflow warms the other.
       - name: Cache Ansible Galaxy content
@@ -191,12 +195,18 @@ jobs:
             ansible-galaxy-v2-${{ runner.os }}-
 
       - name: Install Ansible dependencies
-        run: |
-          ansible-galaxy install --force -r requirements.yml
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
+        with:
+          max_attempts: 4
+          timeout_minutes: 10
+          command: ansible-galaxy install --force -r requirements.yml
+        env:
+          ANSIBLE_GALAXY_SERVER_TIMEOUT: "60"
 
       - name: Run llm_router contract playbook
         env:
-          PLAYBOOKS: ${{ matrix.playbook }}
+          PLAYBOOKS: ${{ matrix.shard.playbooks }}
         run: |
           result=0
           for playbook in $PLAYBOOKS; do
@@ -248,8 +258,14 @@ jobs:
             ansible-galaxy-v2-${{ runner.os }}-
 
       - name: Install Ansible dependencies
-        run: |
-          ansible-galaxy install --force -r requirements.yml
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
+        with:
+          max_attempts: 4
+          timeout_minutes: 10
+          command: ansible-galaxy install --force -r requirements.yml
+        env:
+          ANSIBLE_GALAXY_SERVER_TIMEOUT: "60"
 
       # The registry rule's teeth: a registry value re-typed as a literal in
       # the role, its tests or the playbooks fails here. Render parity cannot

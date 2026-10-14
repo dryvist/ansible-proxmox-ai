@@ -1,0 +1,127 @@
+---
+# LiteLLM 1.105.0 renames its Engine tables to Lens in the startup migration
+# 20261001100000_rename_lens. The schema push creates the empty Lens tables
+# first, so the rename fails with "relation already exists" and every start
+# after that fails on the recorded migration. The role reconciles that ahead of
+# the restart. Pinned here:
+#   - the step runs after the push and before anything restarts the proxy, under
+#     no_log, with failure deferred to the redacted-failure include;
+#   - the SQL touches only the migration named above and the three Lens tables;
+#   - it drops only tables the push created: each one must be empty and sit
+#     beside its Engine table, and the Engine tables are never dropped or edited;
+#   - it marks the failed attempt rolled back, never finished, so LiteLLM's own
+#     migration still runs;
+#   - a fresh database (no migration ledger yet) and an applied migration are
+#     both a no-op, and a Lens table that holds rows stops the converge with a
+#     message and drops nothing;
+#   - a failure goes through the redacted include with no secret in it.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_lens_rename_repair.yml -i localhost, -c local
+- name: The Lens rename repair is ordered, narrow and fail-closed
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_db_password: "s3cr3t-P@ss/word"
+    _tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/lens-rename-repair.yml') | from_yaml }}"
+    _push_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/schema-push.yml') | from_yaml }}"
+    _repair_step: Reconcile the push-created Lens tables ahead of the rename migration
+    _repair_task: "{{ _tasks | selectattr('name', 'equalto', _repair_step) | first }}"
+    _include_task: "{{ _push_tasks | selectattr('name', 'equalto', _repair_include) | first }}"
+    _tables:
+      - LiteLLM_Engine
+      - LiteLLM_EngineRun
+      - LiteLLM_EngineWorker
+      - LiteLLM_Lens
+      - LiteLLM_LensRun
+      - LiteLLM_LensWorker
+    _repair_include: Reconcile the Lens tables the push created ahead of the rename migration
+    _push_step: Sync the proxy schema into the database
+    _push_failure_step: Stop on a failed schema push, showing the redacted output
+    _push_names: "{{ _push_tasks | map(attribute='name') | list }}"
+    _sql: "{{ _repair_task['ansible.builtin.command'].stdin }}"
+    _sql_lower: "{{ _sql | lower }}"
+  tasks:
+    - name: The step runs after the push and its failure check, before the restart
+      ansible.builtin.assert:
+        that:
+          - _push_names.index(_push_step) < _push_names.index(_push_failure_step)
+          - _push_names.index(_push_failure_step) < _push_names.index(_repair_include)
+          - _push_names[-1] == _repair_include
+          - _include_task['ansible.builtin.include_tasks'] == 'lens-rename-repair.yml'
+          - _repair_task.no_log is true
+          - _repair_task.failed_when is false
+          - _repair_task.changed_when is false
+        quiet: true
+
+    - name: The SQL names the migration and only the three table pairs
+      ansible.builtin.assert:
+        that:
+          - "'20261001100000_rename_lens' in _sql"
+          - _sql | regex_findall('LiteLLM_[A-Za-z]+') | unique | sort == _tables
+        quiet: true
+
+    # Two separate guards, in this order: PL/pgSQL resolves every table in one
+    # expression at plan time, so folding them into one `or` fails on a database
+    # without the migration ledger.
+    - name: A fresh database and an applied migration return before any change
+      ansible.builtin.assert:
+        that:
+          - _sql_lower is search('if to_regclass\\(._prisma_migrations.\\) is null then\\s+return;')
+          - >-
+            _sql_lower is search('if exists \\(select 1 from _prisma_migrations\\s+where migration_name
+            = v_migration and finished_at is not null\\) then\\s+return;')
+          - _sql_lower.index('is null then') < _sql_lower.index('finished_at is not null')
+          - _sql_lower.index('finished_at is not null') < _sql_lower.index('drop table')
+        quiet: true
+
+    - name: It drops only a Lens table that is empty and sits beside its Engine table
+      ansible.builtin.assert:
+        that:
+          - _sql_lower.count('drop table') == 1
+          - _sql_lower is search('execute format\\(.drop table %i., v_new\\[i\\]\\)')
+          - _sql_lower is search('execute format\\(.select count\\(\\*\\) from %i., v_new\\[i\\]\\) into v_rows')
+          - _sql_lower is search('if v_rows > 0 then\\s+raise exception')
+          - "'nothing was dropped' in _sql_lower"
+          - _sql_lower.index('if v_rows > 0 then') < _sql_lower.index('drop table')
+          # A pair counts only when both tables exist, so a fresh database drops nothing.
+          - _sql_lower.count('to_regclass(format(') == 4
+          # The Engine tables are never the target of a change.
+          - _sql_lower is not search('drop table[^;]*v_old')
+          - _sql_lower is not search('(delete from|truncate|alter table|insert into|cascade|accept-data-loss)')
+        quiet: true
+
+    - name: It marks the failed attempt rolled back and never finished
+      ansible.builtin.assert:
+        that:
+          - _sql_lower.count('update _prisma_migrations') == 1
+          - "'set rolled_back_at = now()' in _sql_lower"
+          - "'finished_at is null and rolled_back_at is null' in _sql_lower"
+          - _sql_lower is not search('set[^;]*finished_at\\s*=')
+        quiet: true
+
+    - name: A failed reconcile goes through the redacted include
+      block:
+        - name: Include the failure task
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/fail-schema-push.yml"
+          vars:
+            failed_step: prisma db execute (Lens table reconcile)
+            failed_result:
+              rc: 1
+              stdout: ""
+              stderr: >-
+                ERROR: LiteLLM_Lens holds 3 rows beside LiteLLM_Engine; resolve by hand,
+                nothing was dropped. url postgresql://llm:s3cr3t-P%40ss%2Fword@db:5432/litellm
+        - name: Unreachable - the failure task must fail
+          ansible.builtin.fail:
+            msg: fail-schema-push.yml did not fail
+      rescue:
+        - name: The message is clear and carries no secret
+          ansible.builtin.assert:
+            that:
+              - "'Lens table reconcile' in ansible_failed_result.msg"
+              - "'nothing was dropped' in ansible_failed_result.msg"
+              - "'did not fail' not in ansible_failed_result.msg"
+              - ansible_failed_result.msg is not search('postgresql://|s3cr3t|P@ss')
+            quiet: true

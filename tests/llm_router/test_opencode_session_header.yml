@@ -8,7 +8,7 @@
 # composition, and seeding OPENCODE_API_KEY there would shift what all of
 # them see. This test owns its own minimal, OpenCode-only fixture instead,
 # the same shape test_opencode_only_entry_points.yml already uses.
-- name: Verify OpenCode Go deployments carry the required session header
+- name: Verify OpenCode deployments carry their configured session header
   hosts: localhost
   gather_facts: false
   vars:
@@ -63,11 +63,13 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: Both registered OpenCode upstreams actually rendered, with no retired free routes
+    - name: Every registered OpenCode deployment renders, with no retired free routes
       ansible.builtin.assert:
         quiet: true
         that:
-          - _standalone_opencode | length == 2
+          - _standalone_opencode | length == llm_router_opencode_models | length
+          - _go_deployments | length == 2
+          - _go_api_mismatches | length == 0
           - _retired_free_routes | length == 0
       vars:
         _standalone_opencode: >-
@@ -76,29 +78,63 @@
                           | map(attribute='client_model_id') | list) | list }}
         _retired_free_routes: >-
           {{ _config.model_list | selectattr('model_name', 'in', ['free', 'free-zdrless']) | list }}
+        _go_deployments: >-
+          {{ _standalone_opencode
+             | selectattr('model_name', 'match', '^go-') | list }}
+        _go_api_mismatches: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for d in _go_deployments -%}
+          {%- set m = llm_router_opencode_models
+                | selectattr('client_model_id', 'equalto', d.model_name) | first -%}
+          {%- if d.litellm_params.api_base != llm_router_opencode_base_url
+                or d.litellm_params.model != (m.provider ~ '/' ~ m.upstream_model_id)
+                or not (d.litellm_params.use_chat_completions_api | bool) -%}
+          {%- set ns.bad = ns.bad + [d.model_name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
 
-    - name: Every OpenCode deployment carries a non-empty x-opencode-session header
+    - name: Every OpenCode deployment carries its per-deployment x-opencode-session value
       ansible.builtin.assert:
         quiet: true
         that:
-          - _missing_standalone | length == 0
+          - _header_mismatches | length == 0
+          - _go_deployments | length == 2
+          - _go_api_mismatches | length == 0
         fail_msg: >-
           OpenCode Go requires x-opencode-session on every request. Standalone
-          deployments with no usable header: {{ _missing_standalone }}.
+          deployments with an unexpected value: {{ _header_mismatches }}.
           Fix: model-list-opencode.yaml.j2 (litellm_params.extra_headers).
         success_msg: >-
           All {{ _standalone_opencode | length }} OpenCode deployments carry
-          x-opencode-session.
+          the configured x-opencode-session value.
       vars:
         _standalone_opencode: >-
           {{ _config.model_list
              | selectattr('model_name', 'in', llm_router_opencode_models
                           | map(attribute='client_model_id') | list) | list }}
-        _missing_standalone: >-
+        _header_mismatches: >-
           {%- set ns = namespace(bad=[]) -%}
           {%- for d in _standalone_opencode -%}
           {%- set _hdr = (d.litellm_params.extra_headers | default({})).get('x-opencode-session', '') -%}
-          {%- if _hdr | length == 0 -%}
+          {%- set _expected = llm_router_opencode_session_prefix ~ '-'
+                ~ (d.model_name | regex_replace('/', '-')) -%}
+          {%- if _hdr != _expected -%}
+          {%- set ns.bad = ns.bad + [d.model_name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+        _go_deployments: >-
+          {{ _standalone_opencode
+             | selectattr('model_name', 'match', '^go-') | list }}
+        _go_api_mismatches: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for d in _go_deployments -%}
+          {%- set m = llm_router_opencode_models
+                | selectattr('client_model_id', 'equalto', d.model_name) | first -%}
+          {%- if d.litellm_params.api_base != llm_router_opencode_base_url
+                or d.litellm_params.model != (m.provider ~ '/' ~ m.upstream_model_id)
+                or not (d.litellm_params.use_chat_completions_api | bool) -%}
           {%- set ns.bad = ns.bad + [d.model_name] -%}
           {%- endif -%}
           {%- endfor -%}

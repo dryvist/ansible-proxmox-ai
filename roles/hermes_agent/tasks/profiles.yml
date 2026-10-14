@@ -33,21 +33,6 @@
   vars:
     hermes_agent_profile: "{{ item }}"
 
-# This profile's own per-profile router key
-# (hermes_<name>_llm_router_key) is not seeded on every fleet yet — loud so
-# a converge running a profile on the shared master key is visible, not
-# silent.
-- name: "Warn if the router key is not seeded yet for profile {{ item.name }}"
-  ansible.builtin.debug:
-    msg: >-
-      hermes_{{ item.name | replace('-', '_') }}_llm_router_key is not in
-      bao_apps_secrets — profile {{ item.name }} falls back to the shared
-      HERMES_AGENT_MODEL_API_KEY. Seed it in ansible-proxmox-apps
-      for per-profile spend attribution.
-  when: >-
-    (bao_apps_secrets.get('hermes_' ~ (item.name | replace('-', '_')) ~ '_llm_router_key', '')
-     | default('', true)) == ''
-
 - name: "Deploy profile secrets (.env) for {{ item.name }}"
   ansible.builtin.template:
     src: hermes-env-profile.j2
@@ -61,13 +46,14 @@
 
 # Memory: the same standalone Hindsight service as the default profile
 # (hermes_agent_memory_api_url), local_external mode. bank_id_template is
-# deliberately UNSET (matches the default profile), so every profile shares
-# this agent's identity-derived bank_id. Memory is explicitly NOT part of the
+# deliberately UNSET (matches the default profile), so a profile uses the static
+# bank_id written to its own hindsight/config.json: this agent's identity-derived
+# bank_id unless the profile entry sets `memory_bank_id`. Memory is explicitly NOT part of the
 # profile isolation boundary (verified against the pinned hindsight plugin
 # source: a blank bank_id_template falls back to static bank_id). Different
 # agents receive different static bank IDs through hermes_agent_id; profiles
-# within one agent share their bank so daily-summary can read a moved card's
-# findings without losing continuity.
+# without `memory_bank_id` share their agent's bank so daily-summary can read a
+# moved card's findings without losing continuity.
 - name: "Ensure the hindsight config dir exists for profile {{ item.name }}"
   ansible.builtin.file:
     path: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/hindsight"
@@ -84,29 +70,35 @@
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0640"
+  vars:
+    hermes_agent_profile_memory_bank_id: "{{ item.memory_bank_id | default(hermes_agent_memory_bank_id) }}"
   when: hermes_agent_memory_provider == 'hindsight'
 
-# SOUL.md = the shared autonomous-base persona (same content every profile
-# gets) plus this profile's own addendum, appended. The lazy first cut per
-# the profiles plan: role-local templates/soul-<name>.md.j2, concatenated at
-# render time; move into the nix-hermes bundle once the content stabilizes.
+# SOUL.md = the shared bundle persona plus this profile's addendum. Profile
+# addenda come from the bundle except the orchestrator's own role-local
+# template; its Kanban lifecycle addendum also comes from the bundle.
 - name: "Deploy composed SOUL.md (shared base + addendum) for profile {{ item.name }}"
   ansible.builtin.copy:
     content: >-
       {{ (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/SOUL.md')
           ~ "\n\n" ~
-          lookup('ansible.builtin.template', role_path ~ '/templates/' ~ item.soul_addendum_file)
-          ~ "\n\n" ~
-          lookup('ansible.builtin.template', role_path ~ '/templates/soul-kanban-lifecycle.md.j2')) }}
+          (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/soul/profiles/' ~ item.name ~ '.md')
+           if item.soul_addendum_bundle | default(false)
+           else lookup('ansible.builtin.template', role_path ~ '/templates/' ~ item.soul_addendum_file))
+          ~ ("\n\n" ~ lookup(
+              'ansible.builtin.file',
+              hermes_agent_bundle_path ~ '/soul/profiles/' ~ item.soul_addendum_bundle_extra_file
+            ) if item.soul_addendum_bundle_extra_file is defined else "")) }}
     dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/SOUL.md"
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0644"
   when: hermes_agent_soul_managed | bool
 
-# Only the skills this profile is scoped to reach — a card's --skill only
-# resolves what its assignee actually has materialized under its own
-# skills/dryvist/ dir.
+# Only the bundle skills this profile is scoped to reach — a card's --skill
+# only resolves what its assignee actually has materialized under its own
+# skills/dryvist/ dir. Only dryvist/* skills ship in the bundle; the role-local
+# Hermes API skill and research/llm-wiki are copied by their own tasks below.
 - name: "Deploy the scoped dryvist skills for profile {{ item.name }}"
   ansible.builtin.copy:
     src: "{{ hermes_agent_bundle_path }}/skills/{{ hermes_agent_profile_skill }}/"
@@ -115,10 +107,21 @@
     group: "{{ hermes_agent_user }}"
     mode: "0640"
     directory_mode: "0750"
+  when: hermes_agent_profile_skill.startswith('dryvist/')
   loop: "{{ item.skills }}"
   loop_control:
     loop_var: hermes_agent_profile_skill
     label: "{{ hermes_agent_profile_skill }}"
+
+- name: "Deploy the Hermes GitHub issue API skill for profile {{ item.name }}"
+  ansible.builtin.copy:
+    src: github-issues-api/
+    dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/skills/hermes_agent/github-issues-api/"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    directory_mode: "0750"
+  when: "'hermes_agent/github-issues-api' in item.skills"
 
 # research/llm-wiki ships from the hermes-agent install itself
 # (hermes_agent_install_dir), not the nix-hermes dryvist bundle above, so it

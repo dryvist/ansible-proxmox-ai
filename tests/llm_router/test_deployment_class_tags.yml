@@ -153,22 +153,23 @@
           {%- set ns = namespace(rows=[]) -%}
           {%- for d in _deployment_rows -%}
           {%- set _tags = d.litellm_params.tags | default([]) -%}
-          {%- set _matches = namespace(entries=[]) -%}
+          {%- set _matches = namespace(count=0, non_zdr=0) -%}
           {%- for m in llm_router_registry_enabled -%}
           {%- set _litellm_model = m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) -%}
           {%- if d.litellm_params.model == _litellm_model -%}
-          {%- set _matches.entries = _matches.entries + [m] -%}
+          {%- set _matches.count = _matches.count + 1 -%}
+          {%- if not llm_router_registry_zdr_by_model[m.client_model_id] -%}
+          {%- set _matches.non_zdr = _matches.non_zdr + 1 -%}
+          {%- endif -%}
           {%- endif -%}
           {%- endfor -%}
           {%- if 'zdr' in _tags and 'local' not in _tags
-                and (_matches.entries | length == 0 or (_matches.entries | selectattr('zero_data_retention', 'defined')
-                    | selectattr('zero_data_retention') | list | length != _matches.entries | length)) -%}
+                and (_matches.count == 0 or _matches.non_zdr > 0) -%}
           {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (_tags | string)] -%}
           {%- elif 'local' in _tags and 'zdr' not in _tags -%}
           {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (_tags | string)] -%}
-          {%- elif _matches.entries | length > 0 and 'local' not in _tags
-                and (_matches.entries | selectattr('zero_data_retention', 'defined')
-                    | selectattr('zero_data_retention') | list | length != _matches.entries | length)
+          {%- elif _matches.count > 0 and 'local' not in _tags
+                and _matches.non_zdr > 0
                 and 'retains' not in _tags -%}
           {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (_tags | string)] -%}
           {%- endif -%}

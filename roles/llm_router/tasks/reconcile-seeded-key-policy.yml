@@ -12,6 +12,10 @@
 # defaults to authoritative, so retired names are removed and new
 # registry-derived names reach existing keys on the next converge.
 #
+# A seed entry that names a settings entry with `router_settings_ref` has those
+# router settings (its own fallback map) replaced in every mode; entries
+# without a reference keep whatever settings they were created with.
+#
 # In rebuild mode routes are replaced outright with the seed value, and only
 # for a key that declares allowed_routes at all. Object permissions are always
 # replaced with the seeded value.
@@ -36,10 +40,17 @@
       {%- set _live_models = (llm_router_existing_keys.json['keys'] | default([])
               | selectattr('key_alias', 'equalto', _k.alias)
               | map(attribute='models', default=[]) | first | default([], true)) -%}
+      {%- set _live_router_settings = (llm_router_existing_keys.json['keys'] | default([])
+              | selectattr('key_alias', 'equalto', _k.alias)
+              | map(attribute='router_settings', default={}) | first | default({}, true)) -%}
       {%- set _authoritative = _k.models_authoritative | default(true) -%}
+      {%- set _router_settings_target = (llm_router_review_key_router_settings[_k.router_settings_ref]
+            if _k.router_settings_ref is defined else {}) -%}
       {%- set _models_target = _k.models if _authoritative else ((_live_models + _k.models) | unique | list) -%}
       {%- set _models_changed = ((_live_models | sort) != (_models_target | sort))
             if _authoritative else (_k.models | difference(_live_models) | length > 0) -%}
+      {%- set _router_settings_changed = (_router_settings_target | length > 0)
+            and _live_router_settings != _router_settings_target -%}
       {%- set _routes_changed = (_k.allowed_routes is defined) and (_live_routes != _k.allowed_routes) -%}
       {%- set _live_metadata = (llm_router_existing_keys.json['keys'] | default([])
               | selectattr('key_alias', 'equalto', _k.alias)
@@ -71,8 +82,12 @@
       {%- set _permission_changed = _live_permission != _permission_target -%}
       {%- set _rebuild_fields_changed = (_models_changed or _routes_changed or _metadata_changed) -%}
       {%- if _permission_changed or _trace_changed or _sensitivity_changed or (_authoritative and _models_changed)
+            or _router_settings_changed
             or (llm_router_seed_mode == 'rebuild' and _rebuild_fields_changed) -%}
       {%- set _body = {'key': _k.value, 'object_permission': _permission_target} -%}
+      {%- if _router_settings_changed -%}
+      {%- set _body = _body | combine({'router_settings': _router_settings_target}) -%}
+      {%- endif -%}
       {%- if _trace_changed or _sensitivity_changed -%}
       {%- set _initial_metadata_target = _trace_target | combine({'tags': _desired_tags}, recursive=true) -%}
       {%- set _initial_live_metadata = _live_metadata | combine(_initial_metadata_target, recursive=true) -%}

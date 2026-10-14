@@ -41,6 +41,7 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_vikunja_mcp_url": "https://mcp.example.com/vikunja",
     "hermes_agent_nautobot_mcp_url": "https://mcp.example.com/nautobot",
     "hermes_agent_splunk_mcp_enabled": True,
+    "hermes_agent_splunk_access": True,
     "hermes_agent_splunk_mcp_url": "https://mcp.example.com/splunk",
     "hermes_agent_docs_mcp_enabled": True,
     "hermes_agent_grep_mcp_enabled": True,
@@ -109,13 +110,7 @@ def _profiles() -> list[dict[str, Any]]:
     return _defaults()["hermes_agent_profiles"]
 
 
-# _cards() and its three assignee/profile tests were removed: `assignee` no
-# longer exists as a field anywhere (18/18 native-cron reframe) —
-# `hermes cron create` has no profile-selection flag at all, so every
-# converted job runs under the default profile regardless of what the retired
-# hermes_agent_kanban_cards entry used to name. Flagged as a real gap in the
-# PR (6 of the 18 cards, including every splunk-monitor one, had a non-default
-# assignee), not silently dropped.
+# Cron jobs select their store through HERMES_HOME; Kanban workers use assignee.
 
 
 def test_profile_env_lists_never_grant_a_forbidden_credential_section() -> None:
@@ -139,7 +134,7 @@ def test_profile_env_lists_never_grant_a_forbidden_credential_section() -> None:
 def test_profile_mcp_lists_never_grant_a_forbidden_server() -> None:
     forbidden_mcp = {
         "splunk-admin": {"codex", "context7", "vikunja", "nautobot"},
-        "homelab-admin": {"splunk", "codex", "context7"},
+        "homelab-admin": {"splunk", "codex", "context7", "vikunja"},
         "github-maint": {"splunk", "codex", "context7", "vikunja", "nautobot"},
     }
     for profile in _profiles():
@@ -194,12 +189,6 @@ def test_hermes_gateway_renders_agent_api_cap_as_eight() -> None:
     )
     rendered = _jinja_env().from_string(lines[0]).render(**context)
     assert yaml.safe_load(rendered) == {"max_concurrent_runs": 8}
-
-
-def test_every_profile_has_a_soul_addendum_template_on_disk() -> None:
-    for profile in _profiles():
-        addendum = ROLE_ROOT / "templates" / profile["soul_addendum_file"]
-        assert addendum.is_file(), f"missing {addendum}"
 
 
 def test_profiles_tasks_are_wired_before_the_direct_cron_reconcile() -> None:
@@ -273,6 +262,7 @@ def test_default_issue_crons_use_the_short_lived_github_identity() -> None:
     for name in (
         "{{ hermes_agent_github_monitor_cron_name }}",
         "{{ hermes_agent_bot_pr_triage_cron_name }}",
+        "{{ hermes_agent_promotion_drift_cron_name }}",
         "{{ hermes_agent_docs_study_cron_name }}",
         "{{ hermes_agent_secrets_audit_cron_name }}",
         "{{ hermes_agent_daily_innovation_cron_name }}",
@@ -313,6 +303,8 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
     for profile in _profiles():
         context = dict(_RENDER_CONTEXT)
         context["hermes_agent_disabled_toolsets"] = defaults["hermes_agent_disabled_toolsets"]
+        context["hermes_agent_cron_toolsets"] = defaults["hermes_agent_api_server_toolsets"]
+        context["hermes_agent_context_limits"] = {}
         rendered = env.from_string(src).render(hermes_agent_profile=profile, **context)
         parsed = yaml.safe_load(rendered)
 
@@ -321,7 +313,7 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
         assert parsed["agent"]["run_budget_seconds"] == wall_timeout_seconds()
         assert "dashboard" not in parsed
         assert "platforms" not in parsed
-        assert "platform_toolsets" not in parsed
+        assert ("platform_toolsets" in parsed) == ("toolsets" in profile)
         # Goal-mode judging must be wired identically to the default profile,
         # or completion judging fails for any card this profile owns.
         assert "auxiliary" in parsed

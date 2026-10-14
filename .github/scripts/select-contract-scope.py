@@ -13,6 +13,11 @@ import sys
 from pathlib import Path
 from typing import TypedDict
 
+# runpy loaders do not put the script directory on sys.path, so add it before the sibling import.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from router_shards import RouterShard, router_shard_target, router_shards
+
 ANSIBLE_TESTS = {
     "tests/repo_guards/test_env_guards_actually_fire.yml",
     "tests/openbao_secrets/test_optional_paths_are_gated.yml",
@@ -102,7 +107,7 @@ TEST_SCOPES.update({"llm_router", "llm_model_campaign", "inventory_load", "repo_
 class Selection(TypedDict):
     pytest_targets: list[str]
     ansible_tests: list[str]
-    llm_router_playbooks: list[str]
+    llm_router_playbooks: list[RouterShard]
     run_inventory: bool
     run_selector_checks: bool
 
@@ -112,7 +117,7 @@ def llm_router_matrix() -> list[list[str]]:
     in_matrix = False
     entries: list[list[str]] = []
     for line in workflow.splitlines():
-        if re.match(r"\s*playbook:", line):
+        if re.match(r"\s*shard:", line):
             in_matrix = True
             continue
         if in_matrix:
@@ -147,7 +152,7 @@ def full_selection() -> Selection:
     return {
         "pytest_targets": ["tests/"],
         "ansible_tests": sorted(ANSIBLE_TESTS),
-        "llm_router_playbooks": [" ".join(entry) for entry in llm_router_matrix()],
+        "llm_router_playbooks": router_shards(llm_router_matrix()),
         "run_inventory": True,
         "run_selector_checks": True,
     }
@@ -260,6 +265,23 @@ def select(paths: list[str]) -> Selection:
             role_scope("hermes_agent")
         elif path == "renovate.json":
             run_selector_checks = True
+        elif path.startswith("inventory/group_vars/hermes_agent_group/"):
+            # Hermes-only vars: the role, the inventory load, and every test that loads the file.
+            role_scope("hermes_agent")
+            run_inventory = True
+            for reader in sorted(test.as_posix() for test in Path("tests").rglob("*")
+                                 if test.suffix in {".py", ".yml", ".yaml"}
+                                 and not test.name.startswith("test_contract_scope")
+                                 and Path(path).name in test.read_text(errors="ignore")):
+                if reader in matrix_by_test:
+                    router_tests.add(" ".join(matrix_by_test[reader]))
+                elif reader.endswith(".py"):
+                    pytest_targets.add(reader)
+                elif reader in ANSIBLE_TESTS:
+                    ansible_tests.add(reader)
+                else:
+                    warn_unmapped(reader)
+                    route_full = True  # a reader with no contract entry: run the full suite
         elif path.startswith(("inventory/", "group_vars/", "host_vars/", "playbooks/")) or path == "requirements.yml":
             route_full = True  # every role and router playbook reads these files
         elif path == ".github/workflows/_llm-router-contract.yml":
@@ -281,8 +303,8 @@ def select(paths: list[str]) -> Selection:
     return {
         "pytest_targets": sorted(pytest_targets),
         "ansible_tests": sorted(ansible_tests),
-        "llm_router_playbooks": [" ".join(entry) for entry in matrix
-                                 if " ".join(entry) in router_tests],
+        "llm_router_playbooks": router_shards(
+            [entry for entry in matrix if " ".join(entry) in router_tests], router_shard_target(matrix)),
         "run_inventory": run_inventory,
         "run_selector_checks": run_selector_checks,
     }

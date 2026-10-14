@@ -30,7 +30,8 @@ Required on every entry:
                     where it currently equals client_model_id: the two are
                     independent naming decisions, and collapsing them is how a
                     rename upstream silently becomes a rename for callers.
-  provider          LiteLLM provider prefix — `openai` (local OpenAI-compatible
+  provider          LiteLLM provider prefix — `hosted_vllm` (vLLM-compatible
+                    GPU backends), `openai` (other local OpenAI-compatible
                     backends, and the provider's own API), `auto_router`,
                     `dashscope`, `gemini`, `openrouter`, or `chatgpt` (the
                     subscription over OAuth; no key field resolves for it —
@@ -57,9 +58,20 @@ Optional:
                       `enabled: false`; the registry/render parity test
                       enforces that it is absent from every rendered route.
   subscription        true marks a flat-rate rung with no per-token price that
-                      is NOT free (the chatgpt/ rung): it joins neither the
-                      free nor the paid segment. Ladder order is derived from
-                      the deployment class, not this flag alone.
+                      is NOT free. On `hermes-cloud`, it must agree with
+                      `price_class: subscription` and joins the subscription
+                      segment. The marker records provider identity; routing
+                      reads `price_class`.
+  price_class         `free` | `paid` | `subscription`. Required on every
+                      `hermes-cloud` entry with `route_group`, including
+                      disabled entries. It defines routing segments without
+                      depending on whether an accounting rate is present. The
+                      `subscription` marker, when present, must agree with
+                      this value; missing or unknown classes fail an assertion.
+  route_rank          Integer order within a `hermes-cloud` route group.
+                      Required with `price_class`; use gaps of ten for
+                      insertions. The existing `order` field orders deployments
+                      of the same capability and does not order route members.
   review_private_only true keeps a credentialed deployment out of shared
                       fallback ladders and broad key scopes; only the
                       review-private role can widen its CI key to that group.
@@ -117,12 +129,16 @@ Optional:
                       failover deployment when the role has a standby backend
                       URL configured.
   input_cost_per_token / output_cost_per_token
-                      Real USD/token list prices used by cost routing and spend
-                      accounting. Never alter these to encode preference. OMIT
-                      them on a flat-rate subscription tier rather than writing
-                      0: the marginal price there is not a number, and a
-                      literal zero would report the tier as free in spend
-                      accounting and rank it alongside genuinely free rungs.
+                      Optional accounting metadata projected from LiteLLM's
+                      `model_prices_and_context_window.json` at the package's
+                      pinned tag. The controller fetches it at converge time;
+                      HTTPS egress to `raw.githubusercontent.com` is required,
+                      or set `llm_router_price_map_rates_file` to a local JSON
+                      snapshot. These fields are not routing facts and must
+                      not be typed into the registry. Route preference uses
+                      `route_rank`; price class uses `price_class`. Missing or
+                      zero upstream rates are omitted rather than rendered as
+                      zero.
   credential_env      One provider-level environment variable:
                       `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
                       `DASHSCOPE_API_KEY`, or `OPENCODE_API_KEY`. REQUIRED,
@@ -144,9 +160,9 @@ Optional:
   monthly_budget      Deployment-level monthly USD ceiling, backed by Redis.
   max_budget          Optional deployment-level USD ceiling, backed by Redis.
                       Pair with budget_duration for a non-monthly period.
-                      For a flat-rate subscription this can use a documented
-                      token-price estimate to cap shared quota; the estimate
-                      is not provider billing.
+                      A flat-rate subscription can retain this ceiling without
+                      token rates; usage-based enforcement depends on available
+                      accounting metadata and is not provider billing.
   budget_duration     LiteLLM period for max_budget (for example `1d`).
   rpm / tpm           Per-deployment request and token ceilings. Omitted
                       values use the tier default; subscription-specific

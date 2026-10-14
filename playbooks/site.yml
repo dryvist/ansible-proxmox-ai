@@ -12,23 +12,16 @@
 
 # =============================================================================
 # Phase 0: OpenBao resource-domain secrets pre-fetch
-# Reads each resource domain's KV subtree (its own least-privilege AppRole)
-# into a `bao_<domain>_secrets` fact — local-llm for the LLM/RAG stack, apps
-# for the Hindsight memory-service credentials (apps/hindsight) — so every
-# consumer role can resolve its secrets bao-first with an env fallback. Runs
-# once on the controller
-# and publishes to every AI group; it SKIPS CLEANLY when BAO_ADDR or the
-# domain's role_id/secret_id envs are unset.
+# Reads each resource domain's KV subtree into a `bao_<domain>_secrets` fact.
+# It runs once on the controller and publishes values to managed-secret hosts
+# and clickhouse_group. It skips when BAO_ADDR or domain credentials are unset.
 #
-# tags: always — the pre-fetch must precede ANY consumer role, so a scoped
-# run (`--tags llm_router`) still gets its secrets without having to remember
-# a `--tags openbao_secrets,llm_router` pairing (the trap the upstream apps
-# repo still has). The fetch is a handful of controller-side API reads, so
-# running it on every scoped converge is cheap.
+# The `always` tag makes prefetched values available to scoped role runs.
+# Controller-side reads complete before consumer roles run.
 # =============================================================================
 
 - name: Pre-fetch resource-domain secrets from OpenBao
-  hosts: managed_secrets_group
+  hosts: managed_secrets_group:clickhouse_group
   gather_facts: false
   tags: always
   tasks:
@@ -51,6 +44,7 @@
         # same guests, no new identity to provision for the successor role.
         bao_agent_guest_secrets: "{{ openbao_secrets_by_domain['ai-runner'] | default({}) }}"
         bao_hermes_secrets: "{{ openbao_secrets_by_domain['hermes'] | default({}) }}"
+        bao_clickhouse_secrets: "{{ openbao_secrets_by_domain['clickhouse'] | default({}) }}"
         # The whole map, so an identity-keyed consumer can select its OWN
         # domain by name (hermes_agent_bao, keyed on hermes_agent_id) instead
         # of needing a new binding line here per agent. Written from the
@@ -266,6 +260,28 @@
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: langgraph_docker
+
+- name: Configure dedicated ClickHouse
+  hosts: clickhouse_group
+  become: true
+  gather_facts: false
+  tags:
+    - clickhouse_docker
+    - ai-orchestration
+  tasks:
+    - name: Converge clickhouse_docker (isolated — failure does not abort downstream plays)
+      when: bao_clickhouse_secrets | default({}) | length > 0
+      block:
+        - name: Gather facts
+          ansible.builtin.include_tasks: tasks/gather_facts.yml
+        - name: Include clickhouse_docker role
+          ansible.builtin.include_role:
+            name: clickhouse_docker
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: clickhouse_docker
 
 - name: Configure agent-exec runtime (CrewAI + LangChain)
   hosts: agent_exec_group

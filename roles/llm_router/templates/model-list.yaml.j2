@@ -2,6 +2,14 @@
    config.yaml.j2, which owns the surrounding settings blocks. Split out so
    each file stays inside the repo's per-file token budget. #}
 {% from 'model-list-tags.yaml.j2' import deployment_tags with context %}
+{% macro repr_safe_yaml_float(value) -%}
+{%- set rendered = value | float | to_json -%}
+{%- if 'e' in rendered and '.' not in rendered.split('e')[0] -%}
+{{ rendered.split('e')[0] }}.0e{{ rendered.split('e')[1] }}
+{%- else -%}
+{{ rendered }}
+{%- endif -%}
+{%- endmacro %}
 {# Delegation hints — projected VERBATIM from the registry entry so a consumer
    choosing a tier reads speed/quality/best_for from /model/info rather than
    from a model name written into a skill. Flow style on one line: the shape is
@@ -153,10 +161,17 @@ model_list:
 {% if m.api_base is defined %}
       api_base: {{ m.api_base }}
 {% endif %}
-      # Defaults to 0: a genuinely free preset (hermes-cloud-free) has no
-      # per-token price, and 0 is its real price, not a placeholder.
-      input_cost_per_token: {{ m.input_cost_per_token | default(0) }}
-      output_cost_per_token: {{ m.output_cost_per_token | default(0) }}
+{% set _price_rates = (llm_router_price_rates | default({})).get(m.client_model_id, {}) %}
+{% if _price_rates.input is defined %}
+      input_cost_per_token: {{ repr_safe_yaml_float(_price_rates.input) }}
+{% elif m.input_cost_per_token is defined %}
+      input_cost_per_token: {{ m.input_cost_per_token }}
+{% endif %}
+{% if _price_rates.output is defined %}
+      output_cost_per_token: {{ repr_safe_yaml_float(_price_rates.output) }}
+{% elif m.output_cost_per_token is defined %}
+      output_cost_per_token: {{ m.output_cost_per_token }}
+{% endif %}
       max_tokens: {{ m.max_output_tokens }}
       rpm: {{ m.rpm | default(llm_router_hermes_cloud_rpm) }}
       tpm: {{ m.tpm | default(llm_router_hermes_cloud_tpm) }}

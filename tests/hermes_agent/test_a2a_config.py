@@ -84,6 +84,20 @@ def _slack_fragment(**context: object) -> str:
     )
 
 
+def test_default_slack_config_routes_reactions_on_bot_posts() -> None:
+    defaults = role_defaults(ROLE_ROOT)
+    slack = yaml.safe_load(
+        _slack_fragment(
+            _slack_on=True,
+            hermes_agent_slack_rich_blocks=defaults["hermes_agent_slack_rich_blocks"],
+            hermes_agent_slack_reaction_triggers=defaults["hermes_agent_slack_reaction_triggers"],
+            hermes_agent_slack_reply_in_thread=True,
+            hermes_agent_slack_cron_continuable_surface="thread",
+        )
+    )["platforms"]["slack"]
+    assert slack["extra"] == {"reaction_triggers": True}
+
+
 def test_defaults_leave_existing_gateway_and_slack_config_byte_unchanged() -> None:
     defaults = role_defaults(ROLE_ROOT)
     assert defaults["hermes_agent_a2a_inbound_enabled"] is False
@@ -122,30 +136,31 @@ def test_defaults_leave_existing_gateway_and_slack_config_byte_unchanged() -> No
         slack_config = _slack_fragment(
             _slack_on=True,
             hermes_agent_slack_rich_blocks=False,
+            hermes_agent_slack_reaction_triggers=False,
             hermes_agent_slack_reply_in_thread=True,
             hermes_agent_slack_cron_continuable_surface="thread",
         )
         assert slack_config == LEGACY_SLACK_CONFIG
 
-    # The existing Slack allowlist remains byte-equivalent with no peers.
+    # Slack inherits the base Cron list, which no longer includes Kanban.
     toolsets = defaults["hermes_agent_slack_toolsets"]
     rendered_toolsets = _environment().from_string(str(toolsets)).render(
-        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"] + ["kanban"],
+        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_a2a_peers=[],
     )
-    legacy_slack_toolsets = (
-        defaults["hermes_agent_api_server_toolsets"] + ["kanban", "clarify"]
-    )
-    assert yaml.safe_load(rendered_toolsets) == legacy_slack_toolsets
+    expected_slack_toolsets = defaults["hermes_agent_api_server_toolsets"] + ["clarify"]
+    assert yaml.safe_load(rendered_toolsets) == expected_slack_toolsets
     policy = yaml.safe_load(_toolsets_fragment(
-        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"] + ["kanban"],
+        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_api_server_key="",
         hermes_agent_api_server_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_slack_bot_token="fixture-slack-token",
-        hermes_agent_slack_toolsets=legacy_slack_toolsets,
+        hermes_agent_slack_toolsets=expected_slack_toolsets,
         hermes_agent_a2a_peers=[],
     ))
-    assert policy["platform_toolsets"]["slack"] == legacy_slack_toolsets
+    assert policy["platform_toolsets"]["slack"] == expected_slack_toolsets
+    assert "kanban" not in policy["platform_toolsets"]["cron"]
+    assert "kanban" not in policy["platform_toolsets"]["slack"]
 
 
 def test_enabled_a2a_renders_authenticated_inbound_peer_and_slack_config() -> None:
@@ -191,13 +206,13 @@ def test_enabled_a2a_renders_authenticated_inbound_peer_and_slack_config() -> No
     slack_toolsets_expression = _environment().from_string(
         str(defaults["hermes_agent_slack_toolsets"])
     ).render(
-        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"] + ["kanban"],
+        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_a2a_peers=peers,
     )
     slack_toolsets = yaml.safe_load(slack_toolsets_expression)
     assert "a2a" in slack_toolsets
     policy = yaml.safe_load(_toolsets_fragment(
-        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"] + ["kanban"],
+        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_api_server_key="",
         hermes_agent_api_server_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_slack_bot_token="fixture-slack-token",

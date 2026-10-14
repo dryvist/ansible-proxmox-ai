@@ -28,6 +28,7 @@
       hermes_splunk_admin_llm_router_key: sk-fixture-hermes-splunk-admin
       hermes_homelab_admin_llm_router_key: sk-fixture-hermes-homelab-admin
       hermes_github_maint_llm_router_key: sk-fixture-hermes-github-maint
+      hermes_orchestrator_llm_router_key: sk-fixture-hermes-orchestrator
       hermes_private_llm_router_key: sk-fixture-hermes-private
       donna_llm_router_key: sk-fixture-donna
     ai_default_model: "{{ llm_router_primary_model }}"
@@ -48,14 +49,8 @@
         file: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
         name: _cron_inventory
 
-    - name: Load Hermes profile names for the rendered key list
-      ansible.builtin.include_vars:
-        file: "{{ _hermes_agent_role_dir }}/defaults/main/150-fleet-health-profiles.yml"
-        name: _hermes_agent_profile_defaults
-
-    - name: Set the Hermes profiles used by the router consumer defaults
-      ansible.builtin.set_fact:
-        hermes_agent_profiles: "{{ _hermes_agent_profile_defaults.hermes_agent_profiles }}"
+    - name: Load the Hermes profile names the router consumer defaults use
+      ansible.builtin.import_tasks: "{{ playbook_dir }}/../../playbooks/tasks/load_hermes_profiles.yml"
 
     - name: Load the cron model role defaults
       ansible.builtin.include_vars:
@@ -124,12 +119,15 @@
              | selectattr('route_group', 'defined')
              | map(attribute='route_group') | unique | list }}
         _asserted_zdr_cloud_names: >-
-          {{ llm_router_registry_enabled
-             | rejectattr('tier', 'in', llm_router_local_registry_tiers)
-             | selectattr('zero_data_retention', 'defined')
-             | selectattr('zero_data_retention', 'truthy')
-             | selectattr('route_group', 'defined')
-             | map(attribute='route_group') | unique | list }}
+          {%- set ns = namespace(names=[]) -%}
+          {%- for m in llm_router_registry_enabled
+                if m.tier not in llm_router_local_registry_tiers
+                and llm_router_registry_zdr_by_model[m.client_model_id] -%}
+          {%- set ns.names = ns.names + [m.client_model_id]
+                + ([m.route_group] if m.route_group is defined else [])
+                + ([m.fallback_group] if m.fallback_group is defined else []) -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
 
     - name: Assert the original key retains the full ladder
       ansible.builtin.assert:

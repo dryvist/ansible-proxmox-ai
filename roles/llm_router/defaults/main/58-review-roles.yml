@@ -147,3 +147,71 @@ llm_router_entry_point_fallback_overrides: >-
   {{ {llm_router_review_aliases.local: llm_router_review_local_chain,
       llm_router_review_aliases.oss: llm_router_review_oss_chain,
       llm_router_review_aliases.private: llm_router_review_private_chain} }}
+
+# The rendered fallback map is shared with explicitly scoped virtual keys.
+# Keeping its entries here lets a key replace one entry without rebuilding the
+# global list or changing the order in which the config template writes it.
+llm_router_fallback_map: >-
+  {%- set ns = namespace(map={}) -%}
+  {%- set _default_chain = llm_router_hermes_default_fallback_chain -%}
+  {%- set _modality_names = llm_router_cross_modality_fail_fast_names -%}
+  {%- set _local_names = llm_router_local_only_fail_fast_names -%}
+  {%- set _overrides = llm_router_entry_point_fallback_overrides -%}
+  {%- set _aliases = llm_router_model_group_aliases -%}
+  {%- set _zdr_names = llm_router_zdr_entry_point_names -%}
+  {%- set _zdr_terminal = llm_router_zdr_unasserted_terminal_rungs -%}
+  {%- if _default_chain | length > 0 -%}
+  {%- set _own = llm_router_hermes_own_fallback_by_group -%}
+  {%- for _group in _default_chain -%}
+  {%- set _discard = ns.map.update({_group: _own[_group]}) -%}
+  {%- endfor -%}
+  {%- for _name in _modality_names -%}
+  {%- set _discard = ns.map.update({_name: []}) -%}
+  {%- endfor -%}
+  {%- for _name in _local_names -%}
+  {%- set _discard = ns.map.update({_name: []}) -%}
+  {%- endfor -%}
+  {%- for _name, _chain in llm_router_local_only_chains.items() -%}
+  {%- set _discard = ns.map.update({_name: _chain}) -%}
+  {%- endfor -%}
+  {%- if llm_router_context_window_wider_groups | length > 0
+        or _overrides | length > 0 -%}
+  {%- for _name in llm_router_entry_point_names -%}
+  {%- if _name not in _default_chain
+        and _name not in _modality_names
+        and _name not in _local_names -%}
+  {%- set _target = _aliases.get(_name, _name) -%}
+  {%- set _chain = _overrides.get(
+    _name, _default_chain | reject('equalto', _name) | reject('equalto', _target) | list) -%}
+  {%- if _name in _zdr_names and _name not in _overrides -%}
+  {%- set _chain = _chain | reject('in', _zdr_terminal) | list -%}
+  {%- endif -%}
+  {%- set _discard = ns.map.update({_name: _chain}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- endif -%}
+  {%- endif -%}
+  {{ ns.map }}
+
+# Each scoped CI key gets the complete shared map, with only its primary
+# capability entry replaced by that key's declared review chain.
+llm_router_review_key_fallbacks: >-
+  {%- set ns = namespace(private=[], oss=[]) -%}
+  {%- set _primary = llm_router_primary_model -%}
+  {%- set _private = llm_router_review_private_chain -%}
+  {%- set _oss = llm_router_review_oss_chain -%}
+  {%- for _name, _chain in llm_router_fallback_map.items() -%}
+  {%- set _private_chain = _private if _name == _primary else _chain -%}
+  {%- set _oss_chain = _oss if _name == _primary else _chain -%}
+  {%- set _discard = ns.private.append({_name: _private_chain}) -%}
+  {%- set _discard = ns.oss.append({_name: _oss_chain}) -%}
+  {%- endfor -%}
+  {{ {'private': ns.private, 'oss': ns.oss} }}
+
+llm_router_review_key_router_settings: >-
+  {%- set _fallbacks = llm_router_review_key_fallbacks -%}
+  {%- set _aliases = llm_router_model_group_aliases -%}
+  {{ {
+    'private': {'model_group_alias': _aliases, 'fallbacks': _fallbacks.private},
+    'oss': {'model_group_alias': _aliases, 'fallbacks': _fallbacks.oss},
+  } }}

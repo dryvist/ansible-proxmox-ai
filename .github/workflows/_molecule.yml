@@ -87,8 +87,7 @@ jobs:
             netaddr \
             ansible-lint
 
-      # Cache Galaxy content keyed on requirements.yml; the install verifies
-      # restored dependencies and installs any that are missing.
+      # Exact-key hits match requirements.yml; misses and partial restores run the forced install.
       # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
       # either workflow warms the other.
       - name: Cache Ansible Galaxy content
@@ -101,7 +100,14 @@ jobs:
           key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
 
       - name: Install Ansible collections
-        run: ansible-galaxy install --force -r requirements.yml
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
+        with:
+          max_attempts: 4
+          timeout_minutes: 10
+          command: ansible-galaxy install --force -r requirements.yml
+        env:
+          ANSIBLE_GALAXY_SERVER_TIMEOUT: "60"
 
       # agent_guest's converge play does `nix eval` delegate_to: localhost
       # (roles/agent_guest/tasks/policy.yml) — it evaluates the pinned

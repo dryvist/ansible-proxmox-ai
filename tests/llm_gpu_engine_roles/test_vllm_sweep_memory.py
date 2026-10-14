@@ -14,11 +14,12 @@ PROFILE_FILE = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 GIB = 2**30
 GPU_MEMORY_GIB = 96
 # Sanitized from the production vLLM unit's non-default-args journal output on
-# 2026-10-07; paths, host and address are intentionally omitted.
+# 2026-10-07, with utilization lowered to share the card with the small guest;
+# paths, host and address are intentionally omitted.
 TARGET_MEDIUM_A_ARGS = {
     "max_model_len": 196608,
     "max_num_seqs": 8,
-    "gpu_memory_utilization": 0.88,
+    "gpu_memory_utilization": 0.85,
     "linear_backend": "b12x",
 }
 

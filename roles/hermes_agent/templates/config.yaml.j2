@@ -1,4 +1,6 @@
 {{ ansible_managed | comment }}
+{% import 'config-context-limits.yaml.j2' as context_limits %}
+{% import 'config-monitoring.yaml.j2' as monitoring %}
 # Hermes Agent runtime config (managed by Ansible; the daemon owns app updates).
 # Brain = the LiteLLM router (OpenAI-compatible front door at https://llm.<sub>/v1;
 # it routes the model alias to whichever backend serves it). Memory = Hindsight
@@ -34,15 +36,20 @@ model:
   # Resolved from .env at runtime (the LiteLLM router master key).
   api_key: '${HERMES_AGENT_MODEL_API_KEY}'
 
+{{ context_limits.top_level(hermes_agent_context_limits) }}
+
 memory:
   provider: {{ hermes_agent_memory_provider }}
   memory_enabled: true
   user_profile_enabled: true
+{{ context_limits.memory(hermes_agent_context_limits) }}
 
 # Minimum level for agent.log (hermes_logging.py; default INFO if unset).
 # See hermes_agent_log_level in defaults/main.yml for the rationale/volume note.
 logging:
   level: {{ hermes_agent_log_level }}
+
+{{ monitoring.gateway_health_metrics(hermes_agent_otel_endpoint, hermes_agent_gateway_health_metrics_interval_seconds) }}
 
 # Cap the agentic loop — a runaway must not pin the GPU all night (Agy's budget).
 agent:
@@ -55,6 +62,7 @@ agent:
   # regardless of any per-platform or per-job allowlist (upstream layers this
   # on top — see defaults/main.yml for the policy rationale).
   disabled_toolsets: {{ hermes_agent_disabled_toolsets | to_json }}
+{{ context_limits.tool_output_tools_delegation(hermes_agent_context_limits) }}
 
 # Local execution backend (the LXC is the blast-radius boundary).
 terminal:
@@ -73,6 +81,7 @@ terminal:
 # are obsolete; web_extract is the supported path.
 web:
   backend: ddgs
+{{ context_limits.web(hermes_agent_context_limits) }}
 {% if hermes_agent_firecrawl_enabled | bool %}
   extract_backend: firecrawl
 {% endif %}
@@ -117,6 +126,7 @@ compression:
   enabled: {{ hermes_agent_context_compression_enabled | to_json }}
   threshold: {{ hermes_agent_context_compression_threshold }}
   summary_model: {{ hermes_agent_compression_model }}
+{{ context_limits.compression(hermes_agent_context_limits) }}
 
 {% if hermes_agent_kanban_goal_mode | bool %}
 # Goal-mode verdict calls use the same stable consumer alias as the primary,
@@ -132,21 +142,7 @@ auxiliary:
     api_key: '${HERMES_AGENT_MODEL_API_KEY}'
     api_mode: {{ hermes_agent_model_api_mode }}
 {% endif %}
-# Session lifetime bound (SessionResetPolicy). PIN the upstream default
-# explicitly: "both" = daily reset at at_hour local time OR idle_minutes of
-# inactivity, whichever first. Bounded sessions are the proactive guard against
-# unbounded history growth and against carrying corrupted compression
-# bookkeeping forward — the 2026-07-20 splunk-* cron crash loop (INC-17089:
-# IndexError in _find_latest_context_summary from a stale compression window)
-# persisted precisely because bloated sessions outlived the incident that
-# corrupted them. NOTE (upstream gap, tracked in nix-hermes): cron-scheduler
-# sessions currently bypass this gateway-side reset guard; the policy is pinned
-# here so the fix inherits the declared bound the moment upstream honors it.
-session_reset:
-  mode: both
-  at_hour: {{ hermes_agent_session_reset_at_hour }}
-  idle_minutes: {{ hermes_agent_session_reset_idle_minutes }}
-  notify: true
+{% include 'config-session-reset.yaml.j2' %}
 
 plugins:
   enabled:
@@ -167,11 +163,12 @@ cron:
 # `kanban` toolset (see platform_toolsets) — cards, not this block, start work.
 kanban:
   dispatch_in_gateway: true
+  orchestrator_profile: {{ hermes_agent_kanban_orchestrator_profile }}
   # Fallback assignee profile for ready cards that carry no explicit assignee.
   # The v0.18.0 dispatcher only spawns workers for ASSIGNED cards; without this
   # every card is skipped_unassigned and the board never starts work. Read by
   # the gateway dispatcher (gateway/kanban_watchers.py: kanban.default_assignee).
-  default_assignee: default
+  default_assignee: {{ hermes_agent_kanban_orchestrator_profile }}
   dispatch_interval_seconds: 60
   max_in_progress: {{ hermes_agent_kanban_max_in_progress }}
   max_in_progress_per_profile: {{ hermes_agent_kanban_max_in_progress_per_profile }}
@@ -181,23 +178,28 @@ kanban:
 
 {% set _api_server_on = hermes_agent_api_server_key | length > 0 %}
 {% set _a2a_inbound_on = hermes_agent_a2a_inbound_enabled | bool %}
-{% if _api_server_on or _a2a_inbound_on %}{% if _api_server_on %}
+{% if _api_server_on or _a2a_inbound_on %}
+{% if _api_server_on %}
 # Inbound job-submission API queue hardening. The platform itself is enabled by
 # key presence via the .env bridge (API_SERVER_* in hermes-env.j2); this caps
 # in-flight agent runs across all its agent-serving endpoints. Over-cap
 # submissions are refused up front (429 + Retry-After) instead of stacking
 # prefills on the single shared serving deployment — see defaults/main.yml
 # for the measured-envelope rationale behind the value.
-{% endif %}gateway:
+{% endif %}
+gateway:
 {% if _api_server_on %}
   api_server:
     max_concurrent_runs: {{ hermes_agent_api_max_concurrent_runs }}
-{% endif %}{% if _a2a_inbound_on %}  platforms:
+{% endif %}
+{% if _a2a_inbound_on %}
+  platforms:
     a2a:
       enabled: true
       extra:
         port: {{ hermes_agent_a2a_inbound_port }}
-{% endif %}{% endif %}
+{% endif %}
+{% endif %}
 
 # H-17 per-platform tool policy, enforced by the runner's toolset resolution
 # (never the prompt). Each list is the NATIVE-toolset envelope for that
@@ -235,12 +237,15 @@ platforms:
   slack:
     reply_in_thread: {{ hermes_agent_slack_reply_in_thread | to_json }}
     cron_continuable_surface: {{ hermes_agent_slack_cron_continuable_surface }}
-{% if hermes_agent_slack_rich_blocks | bool %}    extra:
-      rich_blocks: true
+{% if hermes_agent_slack_reaction_triggers | bool or hermes_agent_slack_rich_blocks | bool %}    extra:
+{% if hermes_agent_slack_reaction_triggers | bool %}      reaction_triggers: true
+{% endif %}
+{% if hermes_agent_slack_rich_blocks | bool %}      rich_blocks: true
+{% endif %}
 {% endif %}{% endif %}
 {% include 'config-webhook.yaml.j2' %}
 {% endif %}
-{% set _mcp_splunk = (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
+{% set _mcp_splunk = (hermes_agent_splunk_access | bool) and (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
 {# Context7's hosted MCP serves unauthenticated requests (verified: keyless
    `initialize` returns 200); a key only raises the shared rate limit. So this
    entry renders whenever enabled — the API-key header is added only when a key

@@ -1,0 +1,70 @@
+---
+- name: Require a database for the model cost map reload schedule
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_db_host | default('') | trim | length > 0
+    fail_msg: >-
+      LiteLLM model cost map reload requires a database-backed proxy;
+      llm_router_db_host is empty.
+
+- name: Read the model cost map reload schedule
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/schedule/model_cost_map_reload/status"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_model_cost_map_schedule_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require a readable model cost map reload schedule status
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_model_cost_map_schedule_status.status | default(0) == 200
+      - llm_router_model_cost_map_schedule_status.json.interval_hours is defined
+    fail_msg: >-
+      Could not read the LiteLLM model cost map reload schedule. Confirm the
+      proxy admin API and its database connection are available.
+
+- name: Report the model cost map reload schedule status
+  ansible.builtin.debug:
+    msg:
+      interval_hours: "{{ llm_router_model_cost_map_schedule_status.json.interval_hours | default('absent') }}"
+      last_run: "{{ llm_router_model_cost_map_schedule_status.json.last_run | default('absent') }}"
+
+- name: Set the model cost map reload interval when it differs
+  ansible.builtin.uri:
+    url: >-
+      {{ 'http://127.0.0.1:' ~ llm_router_api_port
+         ~ '/schedule/model_cost_map_reload?hours='
+         ~ (llm_router_price_map_reload_hours | int) }}
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_model_cost_map_schedule_update
+  when: >-
+    llm_router_model_cost_map_schedule_status.json.interval_hours
+    | default(0, true) | int != llm_router_price_map_reload_hours | int
+  changed_when: llm_router_model_cost_map_schedule_update.status | default(0) == 200
+  failed_when: false
+  no_log: true
+
+- name: Require the model cost map reload interval to be stored
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_model_cost_map_schedule_update.status | default(200) == 200
+      - >-
+        llm_router_model_cost_map_schedule_update.json.interval_hours
+        | default(0, true) | int == llm_router_price_map_reload_hours | int
+    fail_msg: >-
+      LiteLLM did not store the model cost map reload interval. A reachable
+      database-backed proxy is required for this schedule.
+  when: not (llm_router_model_cost_map_schedule_update.skipped | default(false) | bool)

@@ -67,6 +67,10 @@
 # hermes user's plain $HOME, one level above the actual profile home. Pinned
 # to the same value already used for the HERMES_HOME env var below, so a
 # profile-scoped job's tools land in its own profile home.
+# Upstream `tools.cronjob_tools.cronjob` accepts per-job `enabled_toolsets`,
+# but the `hermes cron create` CLI omits that field. Use the same native tool
+# handler only for jobs that declare a per-job allowlist, preserving the
+# normal CLI path for every other direct Cron job.
 - name: "Direct cron | Build create argv for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_argv: >-
@@ -82,21 +86,45 @@
             '--workdir', item.hermes_home | default(hermes_agent_hermes_home)]
          + (['--failure-deliver', hermes_agent_cron_failure_deliver]
             if (hermes_agent_cron_failure_deliver | length > 0) else []) }}
+    hermes_agent_direct_cronjob_argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - >-
+        import json,sys; from tools.cronjob_tools import cronjob;
+        result=json.loads(cronjob(**json.load(sys.stdin)));
+        print(json.dumps(result)); sys.exit(0 if result.get('success') else 1)
+    hermes_agent_direct_cronjob_spec:
+      action: create
+      schedule: "{{ item.schedule }}"
+      prompt: "{{ hermes_agent_direct_prompt }}"
+      name: "{{ item.name }}"
+      deliver: "{{ hermes_agent_direct_deliver }}"
+      skill: "{{ item.skill | default('') }}"
+      script: "{{ item.script | default('') }}"
+      model: "{{ hermes_agent_direct_model }}"
+      provider: >-
+        {{ hermes_agent_direct_model_provider
+           if hermes_agent_direct_model | length > 0 else '' }}
+      failure_deliver: "{{ hermes_agent_cron_failure_deliver }}"
+      workdir: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+      enabled_toolsets: "{{ item.enabled_toolsets | default([]) }}"
   when: hermes_agent_direct_wanted | bool
 
 # Deliberately NOT gated on hermes_agent_direct_wanted: the removal task below
 # needs to know whether an unwanted job is currently installed, and that is
-# exactly the case where the gate is false. Read-only either way.
-- name: "Direct cron | Look up {{ item.name }}"
-  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
-  environment:
-    HERMES_HOME: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_direct_cron_list
-  changed_when: false
-  check_mode: false
-  when: not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
+# exactly the case where the gate is false. The list comes from the single
+# `cron list` per HERMES_HOME that cron_reconcile.yml ran before the loop, so a
+# job costs no CLI process here.
+- name: "Direct cron | Take the installed job list for {{ item.name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_cron_list:
+      stdout: >-
+        {{ (hermes_agent_direct_cron_lists | default({}))
+           .get(item.hermes_home | default(hermes_agent_hermes_home), '') }}
+  failed_when: >-
+    not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
+    and (item.hermes_home | default(hermes_agent_hermes_home))
+        not in (hermes_agent_direct_cron_lists | default({}))
 
 # Withdraw a job this agent must not run. Without this, scoping a job to
 # another identity would only stop it being RE-created: an agent that already
@@ -128,7 +156,9 @@
   ansible.builtin.file:
     path: "{{ hermes_agent_managed_cron_state_dir }}/{{ item.name }}.sha256"
     state: absent
-  when: not (hermes_agent_direct_wanted | bool)
+  when:
+    - not (hermes_agent_direct_wanted | bool)
+    - item.name in (hermes_agent_direct_markers | default({}))
 
 # 'workdir' is IN the checksum, not just the create argv, so a guest
 # converged before --workdir was added sees this as drift and gets its
@@ -147,19 +177,20 @@
          | combine({'model': hermes_agent_direct_model}
                   if hermes_agent_direct_model | length > 0 else {})
          | combine({'model_provider': hermes_agent_direct_model_provider}
-                  if hermes_agent_direct_model | length > 0 else {}))
+                  if hermes_agent_direct_model | length > 0 else {})
+         | combine({'enabled_toolsets': item.enabled_toolsets}
+                  if item.enabled_toolsets is defined else {}))
          | to_json | hash('sha256') }}
   when: hermes_agent_direct_wanted | bool
 
-- name: "Direct cron | Check desired-state marker for {{ item.name }}"
-  ansible.builtin.copy:
-    content: "{{ hermes_agent_direct_checksum }}\n"
-    dest: "{{ hermes_agent_managed_cron_state_dir }}/{{ item.name }}.sha256"
-    owner: "{{ hermes_agent_user }}"
-    group: "{{ hermes_agent_user }}"
-    mode: "0640"
-  check_mode: true
-  register: hermes_agent_direct_marker_probe
+# Compared against the markers cron_reconcile.yml read in one command, so an
+# unchanged job costs no file probe. A missing marker reads as ''.
+- name: "Direct cron | Compare the desired-state marker for {{ item.name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_marker_probe:
+      changed: >-
+        {{ (hermes_agent_direct_markers | default({})).get(item.name, '')
+           != hermes_agent_direct_checksum }}
   when: hermes_agent_direct_wanted | bool
 
 # A changed marker on an EXISTING job means schedule/prompt/skill/model/provider/
@@ -196,10 +227,29 @@
   changed_when: true
   when:
     - hermes_agent_direct_wanted | bool
+    - item.enabled_toolsets is not defined
     - >-
       item.name not in (hermes_agent_direct_cron_list.stdout | default(''))
       or hermes_agent_direct_marker_probe.changed | bool
 
+- name: "Direct cron | Create with job-scoped toolsets: {{ item.name }}"
+  ansible.builtin.command:
+    argv: "{{ hermes_agent_direct_cronjob_argv }}"
+    stdin: "{{ hermes_agent_direct_cronjob_spec | to_json }}"
+  environment:
+    HERMES_HOME: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - hermes_agent_direct_wanted | bool
+    - item.enabled_toolsets is defined
+    - >-
+      item.name not in (hermes_agent_direct_cron_list.stdout | default(''))
+      or hermes_agent_direct_marker_probe.changed | bool
+
+# Only when the marker is missing or stale: a matching marker is already the
+# desired state, so an unchanged job makes no remote call at all.
 - name: "Direct cron | Record desired state for {{ item.name }}"
   ansible.builtin.copy:
     content: "{{ hermes_agent_direct_checksum }}\n"
@@ -207,4 +257,6 @@
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0640"
-  when: hermes_agent_direct_wanted | bool
+  when:
+    - hermes_agent_direct_wanted | bool
+    - hermes_agent_direct_marker_probe.changed | bool

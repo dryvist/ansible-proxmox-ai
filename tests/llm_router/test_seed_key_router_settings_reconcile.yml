@@ -1,0 +1,98 @@
+---
+# Contract test for the router settings reference in
+# reconcile-seeded-key-policy.yml: a seed entry that names a settings entry
+# (router_settings_ref) has those router settings replaced on its live key in
+# every seed mode. An entry without a reference keeps the settings it was
+# created with, so an operator's edit to its filtering survives a converge.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_seed_key_router_settings_reconcile.yml -i localhost, -c local
+
+- name: A key naming a router settings entry is reconciled, an unreferenced key is not
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _policy_file: "{{ playbook_dir }}/../../roles/llm_router/tasks/reconcile-seeded-key-policy.yml"
+    _diff_task_name: "Compute the key policy update each live key still needs, if any"
+    llm_router_mcp_default_object_permission:
+      mcp_servers: [no-mcp-servers]
+    llm_router_review_key_router_settings:
+      fixture: {fallbacks: [{fixture-small: [fixture-large]}]}
+    llm_router_virtual_keys:
+      - alias: referenced-stale
+        value: "sk-{{ 'a' * 20 }}"
+        models: [fixture-small]
+        models_authoritative: false
+        router_settings_ref: fixture
+      - alias: referenced-current
+        value: "sk-{{ 'b' * 20 }}"
+        models: [fixture-small]
+        models_authoritative: false
+        router_settings_ref: fixture
+      - alias: unreferenced
+        value: "sk-{{ 'c' * 20 }}"
+        models: [fixture-small]
+        models_authoritative: false
+        router_settings: {fallbacks: [{fixture-small: [fixture-embed]}]}
+    # Every field except router_settings already matches the seed, so the
+    # settings are the only thing that can make a key need an update.
+    llm_router_existing_keys:
+      json:
+        keys:
+          - key_alias: referenced-stale
+            models: [fixture-small]
+            metadata: {app: referenced-stale, tier: local, tags: ['&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+            router_settings: {fallbacks: [{fixture-small: [fixture-embed]}]}
+          - key_alias: referenced-current
+            models: [fixture-small]
+            metadata: {app: referenced-current, tier: local, tags: ['&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+            router_settings: {fallbacks: [{fixture-small: [fixture-large]}]}
+          - key_alias: unreferenced
+            models: [fixture-small]
+            metadata: {app: unreferenced, tier: local, tags: ['&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+            router_settings: {fallbacks: [{fixture-small: [fixture-large]}]}
+    # Hand-set, not extracted: the live-alias helper has its own coverage in
+    # test_seed_key_live_aliases.yml.
+    _llm_router_live_key_aliases: [referenced-stale, referenced-current, unreferenced]
+  tasks:
+    - name: Persist the real, committed diff expression as a renderable template
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _diff_template_file
+
+    - name: Write the extracted expression to the temp template
+      ansible.builtin.copy:
+        dest: "{{ _diff_template_file.path }}"
+        content: >-
+          {{ (lookup('ansible.builtin.file', _policy_file) | from_yaml
+              | selectattr('name', 'equalto', _diff_task_name) | first)
+             ['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
+        mode: "0600"
+
+    - name: Render the expression in the default seed mode
+      ansible.builtin.set_fact:
+        _updates_initial: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
+      vars:
+        llm_router_seed_mode: initial
+
+    - name: Render the expression in rebuild mode
+      ansible.builtin.set_fact:
+        _updates_rebuild: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
+      vars:
+        llm_router_seed_mode: rebuild
+
+    - name: Only the stale referenced key is updated, and only with its router settings
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.value | map(attribute='alias') | list == ['referenced-stale']
+          - item.value[0].body.router_settings == llm_router_review_key_router_settings.fixture
+          - item.value[0].body.key == llm_router_virtual_keys[0].value
+        fail_msg: "{{ item.key }} mode updates: {{ item.value }}"
+      loop: "{{ {'initial': _updates_initial, 'rebuild': _updates_rebuild} | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"

@@ -123,9 +123,9 @@ address; in `psql`, `\set estate_suffix ...` and write it as `:'estate_suffix'`.
 
 ```sql
 -- Which tier carried the work, for the week just reported. Tier is derived
--- from the address first and the provider second: every local backend is
--- OpenAI-compatible, so custom_llm_provider alone labels the estate's own
--- models 'openai' and the split reads as fully remote.
+-- from the address first and the provider second. Local traffic can use
+-- different provider handlers (`openai` or `hosted_vllm`), so provider alone
+-- splits local models across provider buckets.
 SELECT
   CASE WHEN api_base LIKE '%' || :estate_suffix || '%' THEN 'local'
        ELSE COALESCE(NULLIF(custom_llm_provider, ''), 'unknown') END AS tier,

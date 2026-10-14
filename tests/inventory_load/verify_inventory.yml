@@ -23,10 +23,13 @@
           - "'qdrant' in groups['qdrant_group']"
           - "'llamaindex' in groups['llamaindex_group']"
           - "'llm-router-1' in groups['llm_router_group']"
-          - "'llm-fast' in groups['llm_fast_group']"
+          - "'llm-light' in groups['llm_fast_group']"
           - "'hermes-agent' in groups['hermes_agent_group']"
           - "'open-webui' in groups['open_webui_group']"
           - "'langfuse' in groups['langfuse_group']"
+          - "'clickhouse' in groups['clickhouse_group']"
+          - hostvars['clickhouse'].clickhouse_docker_ch_data_dir == '/var/lib/clickhouse'
+          - hostvars['clickhouse'].clickhouse_docker_database == 'default'
           - "'phoenix' in groups['phoenix_group']"
           - "'agentgateway' in groups['agentgateway_group']"
           - groups['hermes_agent_group'] | sort == ['hermes-agent']
@@ -35,6 +38,9 @@
           - "'squid' in groups['squid_group']"
           - "'hermes-ui' in groups['hermes_ui_group']"
           - "'llm-vllm-1' in groups['nvidia_gpu_group']"
+          # The pinned small GPU guest serves through the llm_vllm_group play only.
+          - "'llm-gpu-small-1' in groups['llm_vllm_group']"
+          - "'llm-gpu-small-1' not in groups['llm_fast_group']"
           # Every container in the loaded tofu inventory is added to lxc_containers.
           - tofu_data.containers | length > 0
           - groups['lxc_containers'] | length == tofu_data.containers | length
@@ -71,8 +77,8 @@
           - hostvars['qdrant'].tofu_data is defined
           - hostvars['qdrant'].tofu_data.constants.vector_db_ports.qdrant_http == '6333'
           - hostvars['qdrant'].tofu_data.domain == 'example.com'
-          - hostvars['llm-fast'].tofu_data.cache_proxy_urls.apt_cache | length == 2
-          - hostvars['llm-fast'].tofu_data.cache_proxy_urls.apt_cache[0] == 'http://cache-a.example.com:3142'
+          - hostvars['llm-light'].tofu_data.cache_proxy_urls.apt_cache | length == 2
+          - hostvars['llm-light'].tofu_data.cache_proxy_urls.apt_cache[0] == 'http://cache-a.example.com:3142'
         fail_msg: "tofu_data was not propagated to dynamically-added hosts"
 
     - name: Assert the hostname fact and derived connection vars
@@ -83,6 +89,7 @@
           - hostvars['hermes-agent'].ai_agents == {}
           - hostvars['hermes-agent'].ai_agent_by_container == {}
           - hostvars['hermes-agent'].ai_agent_owner == {}
+          - hostvars['hermes-agent'].ai_agent_gateway_key_fields == {}
           # ssh-override guest: direct ssh to its own FQDN, not the node
           - hostvars['hermes-agent'].ansible_host == 'hermes-agent.example.com'
           - hostvars['hermes-agent'].ansible_connection == 'ssh'
@@ -118,7 +125,7 @@
     - name: Assert the tofu-published models mount path fact
       ansible.builtin.assert:
         that:
-          - hostvars['llm-fast'].container_models_mount_path == '/var/lib/llm'
+          - hostvars['llm-light'].container_models_mount_path == '/var/lib/llm'
           - hostvars['qdrant'].container_models_mount_path == ''
         fail_msg: >-
           container_models_mount_path must carry tofu's published
@@ -174,3 +181,4 @@
           - hostvars['hermes-agent'].hermes_agent_identity == 'hermes'
           - hostvars['squid'].ai_agent_by_container['squid'] == 'roster-test'
           - hostvars['squid'].ai_agent_owner['fixture-system'] == 'roster-test'
+          - hostvars['squid'].ai_agent_gateway_key_fields['roster-test'] == 'roster_test_agentgateway_key'

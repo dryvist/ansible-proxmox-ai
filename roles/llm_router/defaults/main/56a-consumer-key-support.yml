@@ -18,6 +18,15 @@ _llm_router_hermes_profile_names: >-
 _llm_router_consumer_classes_all: [sub, local, paid-zdr, free, retains]
 _llm_router_consumer_classes_standard: [sub, local, paid-zdr, free]
 _llm_router_consumer_classes_zdr: [sub, local, paid-zdr]
+_llm_router_sandbox_agent_excluded_groups: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for m in llm_router_registry_enabled
+        if m.client_model_id.startswith('codex-') -%}
+  {%- set ns.names = ns.names + [m.client_model_id]
+        + ([m.route_group] if m.route_group is defined else [])
+        + ([m.fallback_group] if m.fallback_group is defined else []) -%}
+  {%- endfor -%}
+  {{ ns.names | unique | list }}
 _llm_router_trusted_hub_servers:
   - context7
   - grep
@@ -38,6 +47,12 @@ _llm_router_hermes_profile_object_permissions:
     mcp_servers: [docs, vikunja_ro, nautobot]
   github-maint:
     mcp_servers: [grep, docs]
+  orchestrator:
+    mcp_servers: [docs, vikunja]
+_llm_router_zdr_overlay:
+  tags: ['&zdr', '!free', '!retains']
+  router_settings:
+    enable_tag_filtering: true
 
 _llm_router_hermes_profile_keys: >-
   {%- set _items = [] -%}
@@ -61,10 +76,51 @@ _llm_router_hermes_profile_keys: >-
         'daily_budget': _llm_router_hermes_profile_daily_budget,
       } -%}
   {%- if hermes_agent_identity | default('hermes') == 'donna' -%}
-  {%- set _profile = _profile | combine({'allowed_classes': _llm_router_consumer_classes_zdr,
-        'tags': ['&zdr', '!free', '!retains'],
-        'router_settings': {'enable_tag_filtering': true}}) -%}
+  {%- set _profile = _profile | combine(
+        _llm_router_zdr_overlay | combine(
+          {'allowed_classes': _llm_router_consumer_classes_zdr}), recursive=true) -%}
   {%- endif -%}
   {%- set _discard = _items.append(_profile) -%}
+  {%- endfor -%}
+  {{ _items }}
+
+# Roster agents use the hub servers; the shared key projection removes slugs
+# owned by another roster agent.
+_llm_router_agent_keys: >-
+  {%- set _items = [] -%}
+  {%- set _agents = ai_agents | default({}) -%}
+  {%- set _scopes = {
+        'all': {'classes': _llm_router_consumer_classes_all,
+                'groups': llm_router_d1_all_key_groups},
+        'standard': {'classes': _llm_router_consumer_classes_standard,
+                     'groups': llm_router_d1_standard_key_groups},
+        'zdr': {'classes': _llm_router_consumer_classes_zdr,
+                'groups': llm_router_d1_zdr_key_groups},
+      } -%}
+  {%- set _domain = (openbao_secrets_by_domain | default({}, true))
+        .get('llm-router-agent-keys', {}) -%}
+  {%- set _base_models = [llm_router_small_model, llm_router_primary_model,
+        llm_router_large_model] -%}
+  {%- for _name, _agent in _agents.items() -%}
+  {%- set _scope = _scopes[_agent.router_key_class] -%}
+  {%- set _field = (_name | replace('-', '_')) ~ '_llm_router_key' -%}
+  {%- set _value = _domain.get(_field) or undef(
+        'Router key missing for roster agent ' ~ _name) -%}
+  {%- set _zdr = _agent.router_key_class == 'zdr' -%}
+  {%- set _key = {
+        'alias': _name,
+        'value': _value,
+        'enabled': true,
+        'allowed_classes': _scope.classes,
+        'models': _base_models + _scope.groups
+                   + ([llm_router_review_aliases.local] if _zdr else []),
+        'models_authoritative': true,
+        'object_permission': {'mcp_servers': _llm_router_trusted_hub_servers},
+        'daily_budget': _llm_router_hermes_profile_daily_budget,
+      } -%}
+  {%- if _zdr -%}
+  {%- set _key = _key | combine(_llm_router_zdr_overlay, recursive=true) -%}
+  {%- endif -%}
+  {%- set _ = _items.append(_key) -%}
   {%- endfor -%}
   {{ _items }}

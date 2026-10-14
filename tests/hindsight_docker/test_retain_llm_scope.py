@@ -118,6 +118,14 @@ def test_defaults_carry_no_master_key_fallback() -> None:
     assert "mandatory(" in defaults
 
 
+def test_llm_requests_switch_thinking_off_for_the_base_and_retain_scopes() -> None:
+    rendered = render()
+    expected = {"chat_template_kwargs": {"enable_thinking": False}}
+    for key in ("HINDSIGHT_API_LLM_EXTRA_BODY", "HINDSIGHT_API_RETAIN_LLM_EXTRA_BODY"):
+        value = env_line(rendered, key).split(":", 1)[1].strip()
+        assert json.loads(yaml.safe_load(value)) == expected
+
+
 if __name__ == "__main__":
     import sys
 

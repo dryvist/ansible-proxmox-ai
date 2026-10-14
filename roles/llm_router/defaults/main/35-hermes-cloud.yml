@@ -16,13 +16,25 @@ llm_router_hermes_cloud_monthly_budget_period: 1mo
 
 # Credentialed projection is the only enabled cloud inventory. Registry order
 # owns provider preference, and one key is shared by all models for a provider.
+# Members of one route group follow their explicit registry rank, at the
+# position of the group's first registry entry.
 llm_router_hermes_cloud_models_credentialed: >-
-  {%- set ns = namespace(models=[]) -%}
+  {%- set ns = namespace(credentialed=[], models=[], groups=[]) -%}
   {%- for m in llm_router_hermes_cloud_models -%}
   {%- set key = llm_router_resolved_credentials.get(m.credential_env, '') -%}
   {%- if (key | length > 0)
         or (m.provider == 'chatgpt' and (llm_router_chatgpt_auth_file_present | default(false) | bool)) -%}
+  {%- set ns.credentialed = ns.credentialed + [m] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- for m in ns.credentialed -%}
+  {%- if m.route_group is not defined -%}
   {%- set ns.models = ns.models + [m] -%}
+  {%- elif m.route_group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [m.route_group] -%}
+  {%- set ns.models = ns.models + (ns.credentialed | selectattr('route_group', 'defined')
+        | selectattr('route_group', 'equalto', m.route_group)
+        | sort(attribute='route_rank') | list) -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.models }}

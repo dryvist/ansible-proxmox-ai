@@ -15,10 +15,11 @@
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/../../roles/langfuse_docker/defaults/main.yml"
+        dir: "{{ playbook_dir }}/../../roles/langfuse_docker/defaults/main"
 
     - name: Set fixture values for secrets and external configuration
       ansible.builtin.set_fact:
+        langfuse_docker_clickhouse_endpoint: embedded
         langfuse_docker_postgres_password: fixture-postgres
         langfuse_docker_clickhouse_password: fixture-clickhouse
         langfuse_docker_redis_auth: fixture-redis
@@ -42,6 +43,90 @@
     - name: Render the Compose document with evaluator reconciliation off
       ansible.builtin.set_fact:
         _rendered_off: "{{ lookup('template', _template) | from_yaml }}"
+
+    - name: The default keeps the embedded ClickHouse service and its dependencies
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered_off.services['clickhouse'].image == langfuse_docker_clickhouse_image
+          - _rendered_off.services['clickhouse'].environment.CLICKHOUSE_DB == 'default'
+          - _rendered_off.services['clickhouse'].environment.CLICKHOUSE_USER == 'clickhouse'
+          - _rendered_off.services['clickhouse'].environment.CLICKHOUSE_PASSWORD == 'fixture-clickhouse'
+          - >-
+            _rendered_off.services['clickhouse'].volumes[0]
+            == '/opt/langfuse/clickhouse/data:/var/lib/clickhouse'
+          - >-
+            _rendered_off.services['clickhouse'].volumes[1]
+            == '/opt/langfuse/clickhouse/logs:/var/log/clickhouse-server'
+          - >-
+            _rendered_off.services['clickhouse'].volumes[2]
+            == '/opt/langfuse/clickhouse/config/system_logs.xml:/etc/clickhouse-server/config.d/system_logs.xml:ro'
+          - _rendered_off.services['langfuse-worker'].depends_on.clickhouse.condition == 'service_healthy'
+          - _rendered_off.services['langfuse-web'].depends_on.clickhouse.condition == 'service_healthy'
+          - _rendered_off.services['langfuse-worker'].environment.CLICKHOUSE_URL == 'http://clickhouse:8123'
+          - >-
+            _rendered_off.services['langfuse-worker'].environment.CLICKHOUSE_MIGRATION_URL
+            == 'clickhouse://clickhouse:9000'
+          - _rendered_off.services['langfuse-worker'].environment.CLICKHOUSE_USER == 'clickhouse'
+          - _rendered_off.services['langfuse-worker'].environment.CLICKHOUSE_DB is not defined
+
+    - name: Add a placeholder ClickHouse guest to the test inventory
+      ansible.builtin.add_host:
+        name: clickhouse
+        container_ip: clickhouse.example.invalid
+
+    - name: Set the published ClickHouse service ports and OpenBao credential fixture
+      ansible.builtin.set_fact:
+        tofu_data:
+          constants:
+            service_ports:
+              clickhouse_http: "8123"
+              clickhouse_native: "9000"
+        bao_clickhouse_secrets:
+          APP_PASSWORD: fixture-clickhouse-external
+
+    - name: Load the Langfuse inventory secret projection
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/langfuse_group.yml"
+
+    - name: Select the external ClickHouse endpoint
+      ansible.builtin.set_fact:
+        langfuse_docker_clickhouse_endpoint: external
+
+    - name: Render the external ClickHouse endpoint
+      ansible.builtin.set_fact:
+        _rendered_external: "{{ lookup('template', _template) | from_yaml }}"
+
+    - name: External ClickHouse omits its service and routes both processes to the published guest
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'clickhouse' not in _rendered_external.services"
+          - "'clickhouse' not in _rendered_external.services['langfuse-worker'].depends_on"
+          - "'clickhouse' not in _rendered_external.services['langfuse-web'].depends_on"
+          - "'/opt/langfuse/clickhouse' not in (_rendered_external | to_yaml)"
+          - >-
+            _rendered_external.services['langfuse-worker'].environment.CLICKHOUSE_URL
+            == 'http://clickhouse.example.invalid:8123'
+          - >-
+            _rendered_external.services['langfuse-worker'].environment.CLICKHOUSE_MIGRATION_URL
+            == 'clickhouse://clickhouse.example.invalid:9000'
+          - >-
+            _rendered_external.services['langfuse-web'].environment.CLICKHOUSE_URL
+            == 'http://clickhouse.example.invalid:8123'
+          - >-
+            _rendered_external.services['langfuse-web'].environment.CLICKHOUSE_MIGRATION_URL
+            == 'clickhouse://clickhouse.example.invalid:9000'
+          - _rendered_external.services['langfuse-worker'].environment.CLICKHOUSE_USER == 'langfuse'
+          - >-
+            _rendered_external.services['langfuse-worker'].environment.CLICKHOUSE_PASSWORD
+            == 'fixture-clickhouse-external'
+          - _rendered_external.services['langfuse-worker'].environment.CLICKHOUSE_DB == 'default'
+          - _rendered_external.services['langfuse-worker'].environment.CLICKHOUSE_CLUSTER_ENABLED == 'false'
+          - _rendered_external.services['langfuse-web'].environment.CLICKHOUSE_USER == 'langfuse'
+          - _rendered_external.services['langfuse-web'].environment.CLICKHOUSE_PASSWORD == 'fixture-clickhouse-external'
+          - _rendered_external.services['langfuse-web'].environment.CLICKHOUSE_DB == 'default'
+          - _rendered_external.services['langfuse-web'].environment.CLICKHOUSE_CLUSTER_ENABLED == 'false'
 
     - name: Neither web nor worker receives a dispatcher while reconciliation is off
       ansible.builtin.assert:
@@ -93,21 +178,22 @@
         fail_msg: "{{ item }} must skip the per-event ClickHouse read during ingestion."
       loop: [langfuse-worker, langfuse-web]
 
-    - name: The object-storage client gets 100 read and 100 write sockets
+    - name: The object-storage client gets 50 read and 50 write sockets
       ansible.builtin.assert:
         quiet: true
         that:
-          - _rendered_off.services[item].environment.LANGFUSE_S3_CONCURRENT_READS == '100'
-          - _rendered_off.services[item].environment.LANGFUSE_S3_CONCURRENT_WRITES == '100'
+          - _rendered_off.services[item].environment.LANGFUSE_S3_CONCURRENT_READS == '50'
+          - _rendered_off.services[item].environment.LANGFUSE_S3_CONCURRENT_WRITES == '50'
         fail_msg: "{{ item }} must carry the object-storage socket limits."
       loop: [langfuse-worker, langfuse-web]
 
-    - name: The worker processes 40 ingestion and 10 OTel jobs at once
+    - name: The worker processes 20 ingestion and 5 OTel jobs at once
       ansible.builtin.assert:
         quiet: true
         that:
-          - _worker_env.LANGFUSE_INGESTION_QUEUE_PROCESSING_CONCURRENCY == '40'
-          - _worker_env.LANGFUSE_OTEL_INGESTION_QUEUE_PROCESSING_CONCURRENCY == '10'
+          - _worker_env.LANGFUSE_INGESTION_QUEUE_PROCESSING_CONCURRENCY == '20'
+          - _worker_env.LANGFUSE_OTEL_INGESTION_QUEUE_PROCESSING_CONCURRENCY == '5'
+          - _worker_env.LANGFUSE_ENABLE_REDIS_SEEN_EVENT_CACHE == 'true'
         fail_msg: The worker must carry the queue concurrency settings.
       vars:
         _worker_env: "{{ _rendered_off.services['langfuse-worker'].environment }}"

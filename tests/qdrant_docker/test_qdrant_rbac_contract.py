@@ -48,7 +48,13 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _defaults(role: str) -> dict[str, Any]:
-    return _load_yaml(ROLES / role / "defaults" / "main.yml")
+    """The role's defaults: main.yml, or every file of a defaults/main/ directory in name order."""
+    base = ROLES / role / "defaults"
+    files = sorted((base / "main").glob("*.yml")) if (base / "main").is_dir() else [base / "main.yml"]
+    merged: dict[str, Any] = {}
+    for path in files:
+        merged.update(_load_yaml(path))
+    return merged
 
 
 def _resolve(value: Any, context: dict[str, Any]) -> Any:
