@@ -87,7 +87,7 @@ def _debug_task_is_safe(task_text: str) -> bool:
         return False
     for variable, allowed_fields in REGISTERED_FIELDS.items():
         field_pattern = "|".join(re.escape(field) for field in allowed_fields)
-        field_reference = re.compile(rf"{re.escape(variable)}\.(?:json\.(?:{field_pattern})|stdout)\b")
+        field_reference = re.compile(rf"{re.escape(variable)}\.json\.(?:{field_pattern})\b")
         for occurrence in re.finditer(re.escape(variable), task_text):
             if field_reference.match(task_text, occurrence.start()) is None:
                 return False
@@ -170,6 +170,7 @@ def test_schedule_and_source_status_are_reported_without_secrets():
 def test_debug_safety_check_rejects_unscoped_registered_values_and_secrets():
     assert not _debug_task_is_safe("{{ llm_router_model_cost_map_schedule_status }}")
     assert not _debug_task_is_safe("{{ llm_router_model_cost_map_schedule_status.json.unexpected }}")
+    assert not _debug_task_is_safe("{{ llm_router_model_cost_map_schedule_status.stdout }}")
     assert not _debug_task_is_safe("{{ llm_router_master_key }}")
     assert not _debug_task_is_safe("headers: {{ llm_router_model_cost_map_schedule_status.json.last_run }}")
 
