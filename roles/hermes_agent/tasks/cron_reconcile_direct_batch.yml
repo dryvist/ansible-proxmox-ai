@@ -41,6 +41,25 @@
         and 'No such file' not in hermes_agent_direct_marker_raw.stderr
       check_mode: false
 
+    - name: Direct cron | Check the marker directory once
+      ansible.builtin.stat:
+        path: "{{ hermes_agent_managed_cron_state_dir }}"
+      become: true
+      become_user: "{{ hermes_agent_user }}"
+      register: hermes_agent_direct_marker_directory
+      changed_when: false
+
+    - name: Direct cron | Read marker file sizes once
+      ansible.builtin.find:
+        paths: "{{ hermes_agent_managed_cron_state_dir }}"
+        patterns: "*.sha256"
+        file_type: file
+      become: true
+      become_user: "{{ hermes_agent_user }}"
+      register: hermes_agent_direct_marker_files
+      changed_when: false
+      when: hermes_agent_direct_marker_directory.stat.isdir | default(false)
+
     - name: Direct cron | Index the job lists by HERMES_HOME and the markers by job name
       ansible.builtin.set_fact:
         hermes_agent_direct_cron_lists: >-
@@ -51,3 +70,9 @@
         hermes_agent_direct_markers: >-
           {{ dict(hermes_agent_direct_marker_raw.stdout_lines | default([])
                   | map('basename') | map('split', '.sha256:')) }}
+        hermes_agent_direct_marker_sizes: >-
+          {{ dict((hermes_agent_direct_marker_files.files | default([]))
+                  | map(attribute='path') | map('basename')
+                  | map('regex_replace', '[.]sha256$', '')
+                  | zip((hermes_agent_direct_marker_files.files | default([]))
+                       | map(attribute='size'))) }}
