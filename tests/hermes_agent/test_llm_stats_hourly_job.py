@@ -22,6 +22,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
 DEFAULTS = role_defaults(ROLE)
 NAME_VAR = "hermes_agent_llm_stats_hourly_cron_name"
+PROMPT_VAR = "hermes_agent_llm_stats_hourly_cron_prompt"
+SEED_QUERIES = (
+    r"""| tstats count AS events latest(_time) AS last_epoch WHERE index=llm earliest=-24h BY sourcetype | eval last_seen=strftime(last_epoch,"%F %T"), age_min=floor((now()-last_epoch)/60) | fields sourcetype events last_seen age_min | sort 0 - events""",
+    r"""search index=llm sourcetype="litellm:proxy" earliest=-24h llm_request | dedup _raw | rex field=_raw "litellm\[\d+\]: (?<j>\{.*\})" | spath input=j | eval pt=tonumber(prompt_tokens), ct=tonumber(completion_tokens) | bin _time span=1h | stats sum(pt) AS prompt_tokens sum(ct) AS completion_tokens count AS requests BY _time model_group | sort 0 - _time model_group | eval hour=strftime(_time,"%m-%d %H:00") | fields hour model_group requests prompt_tokens completion_tokens""",
+    r"""search index=llm sourcetype="litellm:proxy" earliest=-24h llm_request | dedup _raw | rex field=_raw "litellm\[\d+\]: (?<j>\{.*\})" | spath input=j | eval pt=tonumber(prompt_tokens), ct=tonumber(completion_tokens), serving_host=if(isnull(api_base) OR api_base IN ("","null"),"(none)",replace(replace(api_base,"^https?://",""),"[:/].*$","")), ok=if(status="success",1,0), bad=1-ok | bin _time span=1h | stats sum(ok) AS success sum(bad) AS failure count AS requests sum(pt) AS prompt_tokens sum(ct) AS completion_tokens BY _time serving_host | eval failure_pct=floor(1000*failure/requests)/10, hour=strftime(_time,"%m-%d %H:00") | sort 0 - _time serving_host | fields hour serving_host requests success failure failure_pct prompt_tokens completion_tokens""",
+    r"""search index=llm sourcetype="litellm:proxy" earliest=-24h llm_request | dedup _raw | rex field=_raw "litellm\[\d+\]: (?<j>\{.*\})" | spath input=j | eval serving_host=if(isnull(api_base) OR api_base IN ("","null"),"(none)",replace(replace(api_base,"^https?://",""),"[:/].*$","")) | where error_class!="" | eval kind=case(error_class IN ("RateLimitError","RouterRateLimitError"),"429", error_class IN ("Timeout","ReadTimeout"),"timeout", true(),"other") | stats count AS errors BY serving_host kind error_class | sort 0 - errors""",
+    r"""search index=llm sourcetype="litellm:proxy" earliest=-1h llm_request | dedup _raw | rex field=_raw "litellm\[\d+\]: (?<j>\{.*\})" | spath input=j | where status="success" | eval serving_host=if(isnull(api_base) OR api_base IN ("","null"),"(none)",replace(replace(api_base,"^https?://",""),"[:/].*$","")) | stats count AS requests latest(_time) AS last_epoch BY model_group model serving_host | eval last_seen=strftime(last_epoch,"%T") | sort 0 - requests | fields model_group model serving_host requests last_seen""",
+    r"""search index=hermes earliest=-24h "API call #" | dedup _raw | rex field=_raw "^<\d+>\w+\s+\d+\s+[\d:]+\s+\S+\s+(?<profile>\S+)\s" | rex field=_raw "API call #(?<n>\d+): model=(?<model_group>\S+) provider=\S+ in=(?<tok_in>\d+) out=(?<tok_out>\d+)" | where isnotnull(n) | bin _time span=1h | stats count AS api_calls sum(tok_in) AS tokens_in sum(tok_out) AS tokens_out BY _time host profile model_group | eval hour=strftime(_time,"%m-%d %H:00") | sort 0 - _time host profile model_group | fields hour host profile model_group api_calls tokens_in tokens_out""",
+)
 
 
 def test_job_is_a_splunk_profile_job_delivered_to_the_splunk_channel() -> None:
@@ -51,6 +60,42 @@ def test_prompt_carries_the_memory_and_feedback_protocol() -> None:
         assert f"llm-stats:{key}" in prompt
     assert "reaction:added" in prompt
     assert '"Gaps:"' in prompt
+
+
+def test_seed_queries_survive_the_cron_prompt_delivery_path() -> None:
+    tasks = yaml.safe_load((ROLE / "tasks" / "reconcile_direct_cron.yml").read_text())
+    load_prompt = next(
+        task["ansible.builtin.set_fact"]["hermes_agent_direct_prompt"]
+        for task in tasks
+        if str(task.get("name", "")).startswith("Direct cron | Load prompt + append")
+    )
+    environment = Environment(autoescape=False)
+    environment.filters["regex_replace"] = lambda value, pattern, replacement="": re.sub(
+        pattern, replacement, value
+    )
+    environment.globals["lookup"] = lambda source, name, **kwargs: (
+        DEFAULTS[name] if source == "vars" else ""
+    )
+    delivered = environment.from_string(load_prompt).render(
+        item={"prompt_var": PROMPT_VAR},
+        hermes_agent_direct_deliver="slack:stats",
+        hermes_agent_prompts_path="/prompts",
+    )
+    for query in SEED_QUERIES:
+        assert query in delivered
+
+    build_argv = next(
+        task["ansible.builtin.set_fact"]["hermes_agent_direct_argv"]
+        for task in tasks
+        if str(task.get("name", "")).startswith("Direct cron | Build create argv")
+    )
+    create = next(
+        task["ansible.builtin.command"]
+        for task in tasks
+        if str(task.get("name", "")).startswith("Direct cron | Create {{ item.name }}")
+    )
+    assert "hermes_agent_direct_prompt" in build_argv
+    assert create["argv"] == "{{ hermes_agent_direct_argv }}"
 
 
 def test_prompt_budgets_queries_and_report_time() -> None:
@@ -93,7 +138,7 @@ def test_prompt_makes_the_report_the_final_response_and_saves_feedback_per_turn(
 
 def test_prompt_names_no_endpoint_or_channel_id() -> None:
     prompt = DEFAULTS["hermes_agent_llm_stats_hourly_cron_prompt"]
-    assert "http" not in prompt
+    assert not re.search(r"https?://[A-Za-z0-9.-]", prompt)
     assert not re.search(r"\bC[A-Z0-9]{8,}\b", prompt)
     assert not re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", prompt)
 
