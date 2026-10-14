@@ -1,0 +1,32 @@
+---
+# LiteLLM returns every router and UI setting, defaults included, and says
+# where each value came from in `source`. A live setting the Git baseline does
+# not declare is a user edit only when its source is neither `default` nor
+# `unset`; declared settings always compare. A response without `source` keeps
+# every setting.
+- name: Keep declared or user-sourced router settings
+  ansible.builtin.set_fact:
+    _llm_router_drift_live_router_settings: >-
+      {%- set values = _llm_router_drift_router_settings.json.current_values | default({}, true) -%}
+      {%- set source = _llm_router_drift_router_settings.json.source | default(none) -%}
+      {%- set ns = namespace(settings={}) -%}
+      {%- for setting in values | dict2items -%}
+      {%- if setting.key != 'redis_password'
+            and (setting.key in _llm_router_drift_router_settings_baseline or source is none
+              or source.get(setting.key) not in ['default', 'unset']) -%}
+      {%- set ns.settings = ns.settings | combine({setting.key: setting.value}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.settings }}
+    _llm_router_drift_live_ui_settings: >-
+      {%- set values = _llm_router_drift_ui_settings.json['values'] | default({}, true) -%}
+      {%- set source = _llm_router_drift_ui_settings.json.source | default(none) -%}
+      {%- set ns = namespace(settings={}) -%}
+      {%- for setting in values | dict2items -%}
+      {%- if setting.key in llm_router_ui_settings_baseline or source is none
+            or source.get(setting.key) not in ['default', 'unset'] -%}
+      {%- set ns.settings = ns.settings | combine({setting.key: setting.value}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.settings }}
+  no_log: true

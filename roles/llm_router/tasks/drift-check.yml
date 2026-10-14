@@ -107,60 +107,37 @@
     - name: Project the live key records
       ansible.builtin.import_tasks: drift-live-keys.yml
 
-    - name: Keep only seeded key aliases and flags from the Git baseline
-      ansible.builtin.set_fact:
-        _llm_router_drift_expected_keys: >-
-          {%- set ns = namespace(keys=[], workstation_aliases=(
-            _llm_router_workstation_virtual_keys | default([]) | map(attribute='alias') | list)) -%}
-          {%- for key in llm_router_virtual_keys -%}
-          {%- if (key.value | default('', true) | string | length) > 0 -%}
-          {%- set daily = key.daily_budget | default(0) | float -%}
-          {%- set flags = {
-            'models': key.models | default([], true),
-            'allowed_routes': key.allowed_routes | default([], true),
-            'max_budget': daily if daily > 0 else none,
-            'budget_duration': '24h' if daily > 0 else none,
-            'budget_limits': ([
-              {'budget_duration': '24h', 'max_budget': daily}
-            ] if daily > 0 else []),
-            'rpm_limit': key.rpm_limit | default(none),
-            'tpm_limit': key.tpm_limit | default(none),
-            'router_settings': key.router_settings | default({}, true),
-            'metadata_tags': ((key.metadata | default({})).get('tags', [])
-              | default([], true) | list + (key.tags | default([]) | list))
-              | reject('match', '^([&!])?sensitivity:') | unique | list
-              + [key.sensitivity_tag | default('&sensitivity:sensitive')],
-            'object_permission': key.object_permission
-              | default(llm_router_mcp_default_object_permission)
-          } -%}
-          {%- set git_file = llm_router_drift_workstation_key_git_file
-            if key.alias in ns.workstation_aliases else llm_router_drift_key_git_file -%}
-          {%- set ns.keys = ns.keys + [{'alias': key.alias, 'flags': flags, 'git_file': git_file}] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.keys }}
-      no_log: true
+    - name: Project the expected key records
+      ansible.builtin.import_tasks: drift-expected-keys.yml
 
-    - name: Build the rendered router and UI setting baselines
+    - name: Build the rendered router settings baseline
       ansible.builtin.set_fact:
-        _llm_router_drift_expected_settings: >-
+        _llm_router_drift_router_settings_baseline: >-
           {%- set config = _llm_router_drift_rendered_config.content | b64decode | from_yaml -%}
           {%- set router_settings = config.router_settings | default({}, true)
             | dict2items | rejectattr('key', 'equalto', 'redis_password') | items2dict
             | combine({'routing_groups': []}) -%}
+          {{ router_settings }}
+      no_log: true
+
+    - name: Filter live setting values by provenance
+      ansible.builtin.import_tasks: drift-live-settings.yml
+
+    - name: Build the rendered router and UI setting baselines
+      ansible.builtin.set_fact:
+        _llm_router_drift_expected_settings: >-
           {{ [
             {
               'name': 'router setting',
               'git_file': llm_router_drift_router_settings_git_file,
-              'expected': router_settings,
-              'live': (_llm_router_drift_router_settings.json.current_values | default({}, true)
-                | dict2items | rejectattr('key', 'equalto', 'redis_password') | items2dict)
+              'expected': _llm_router_drift_router_settings_baseline,
+              'live': _llm_router_drift_live_router_settings
             },
             {
               'name': 'UI setting',
               'git_file': llm_router_drift_ui_settings_git_file,
               'expected': llm_router_ui_settings_baseline,
-              'live': _llm_router_drift_ui_settings.json['values'] | default({}, true)
+              'live': _llm_router_drift_live_ui_settings
             }
           ] }}
       no_log: true
