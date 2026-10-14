@@ -173,6 +173,7 @@
       loop:
         - "{{ _role_dir }}/tasks/drift-check.yml"
         - "{{ _playbook }}"
+        - "{{ _role_dir }}/tasks/drift-live-settings.yml"
         - "{{ _role_dir }}/tasks/drift-expected-keys.yml"
       register: _sources
 
@@ -201,8 +202,10 @@
           to the existing alert URL.
       vars:
         _drift_text: >-
-          {{ [_sources.results[0].content, _sources.results[2].content]
-             | map('b64decode') | join('\n') }}
-        _playbook_text: "{{ _sources.results[1].content | b64decode }}"
+          {{ _sources.results | rejectattr('item', 'equalto', _playbook)
+             | map(attribute='content') | map('b64decode') | join('\n') }}
+        _playbook_text: >-
+          {{ _sources.results | selectattr('item', 'equalto', _playbook)
+             | map(attribute='content') | first | b64decode }}
         _seed_offset: "{{ _playbook_text.find('tasks_from: seed-consumers.yml') }}"
         _drift_offset: "{{ _playbook_text.find('tasks_from: drift-check.yml') }}"
