@@ -45,7 +45,17 @@ def test_prompt_carries_the_memory_and_feedback_protocol() -> None:
     for key in ("baselines", "sources", "feedback", "last"):
         assert f"llm-stats:{key}" in prompt
     assert "reaction:added" in prompt
-    assert "gaps" in prompt
+    assert '"Gaps:"' in prompt
+
+
+def test_prompt_budgets_queries_and_report_time() -> None:
+    prompt = DEFAULTS["hermes_agent_llm_stats_hourly_cron_prompt"]
+    assert "at most 10 splunk_run_query calls" in prompt
+    assert "After two failed calls to splunk_run_query, including timeouts, stop all Splunk queries" in prompt
+    assert 'Publish a partial report using recalled baselines, label them "recalled baseline,"' in prompt
+    assert 'Include one "Gaps:" line naming unavailable current metrics' in prompt
+    assert "within 15 minutes" in prompt
+    assert "Stop querying by minute 10" in prompt
 
 
 def test_prompt_names_no_endpoint_or_channel_id() -> None:
