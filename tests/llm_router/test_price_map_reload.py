@@ -26,10 +26,12 @@ SOURCE_FIELDS = {
     "model_count",
 }
 RUNNING_VERSION_FIELDS = {"litellm_version"}
+MODEL_INFO_FIELDS = {"data"}
 REGISTERED_FIELDS = {
     "llm_router_model_cost_map_schedule_status": SCHEDULE_FIELDS,
     "llm_router_model_cost_map_source_status": SOURCE_FIELDS,
     "llm_router_running_litellm_version_status": RUNNING_VERSION_FIELDS,
+    "llm_router_model_info_status": MODEL_INFO_FIELDS,
 }
 
 
@@ -243,6 +245,91 @@ def test_running_version_report_renders_with_the_real_templar():
     }
     # A failed read (no json) must still render, never fail the converge.
     assert render({"status": -1})["running_litellm_version"] == "absent"
+
+
+def test_model_info_report_is_read_only_and_whitelists_aggregates():
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    model_read = next(
+        task for task in tasks if task.get("name") == "Read this router's model info rows"
+    )
+    model_report = next(
+        task for task in tasks if task.get("name") == "Report this router's model rows by provider and price"
+    )
+    uri = model_read["ansible.builtin.uri"]
+    message = model_report["ansible.builtin.debug"]["msg"]
+
+    assert uri["url"].endswith("/model/info")
+    assert uri["headers"]["Authorization"] == "Bearer {{ llm_router_master_key }}"
+    assert uri["status_code"] == 200
+    assert uri["timeout"] == "{{ llm_router_seed_request_timeout }}"
+    assert model_read["register"] == "llm_router_model_info_status"
+    assert model_read["changed_when"] is False
+    assert model_read["failed_when"] is False
+    assert model_read["check_mode"] is False
+    assert model_read["no_log"] is True
+    assert set(message) == {
+        "model_rows",
+        "hosted_vllm_provider_rows",
+        "hosted_vllm_prefix_rows",
+        "priced_rows",
+        "hermes_cloud_rows",
+        "hermes_cloud_priced_rows",
+    }
+    assert _debug_task_is_safe(yaml.safe_dump(model_report))
+    assert all(".json.data" in value for value in message.values())
+    assert all("{%" not in value for value in message.values())
+
+
+def test_model_info_report_renders_with_the_real_templar():
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    message = next(
+        task for task in tasks if task.get("name") == "Report this router's model rows by provider and price"
+    )["ansible.builtin.debug"]["msg"]
+    cloud_route = "route" + "-cloud-fixture"
+    hermes_cloud_models = [{"route_group": cloud_route}]
+
+    def render(status: dict) -> dict:
+        templar = Templar(loader=DataLoader())
+        templar.available_variables = {
+            "llm_router_model_info_status": status,
+            "llm_router_hermes_cloud_models_credentialed": hermes_cloud_models,
+        }
+        return {key: templar.template(trust_as_template(value)) for key, value in message.items()}
+
+    rows = [
+        {
+            "model_name": "route" + "-gpu-fixture",
+            "litellm_params": {"model": "fixture"},
+            "model_info": {"litellm_provider": "hosted_vllm", "input_cost_per_token": 0.0},
+        },
+        {
+            "model_name": "route" + "-second-gpu-fixture",
+            "litellm_params": {"model": "hosted_vllm/fixture"},
+            "model_info": {"litellm_provider": "test-provider", "input_cost_per_token": None},
+        },
+        {
+            "model_name": cloud_route,
+            "litellm_params": {"model": "fixture-provider/fixture"},
+            "model_info": {"litellm_provider": "fixture-provider", "input_cost_per_token": 0.000001},
+        },
+    ]
+    assert render({"status": 200, "json": {"data": rows}}) == {
+        "model_rows": "3",
+        "hosted_vllm_provider_rows": "1",
+        "hosted_vllm_prefix_rows": "1",
+        "priced_rows": "1",
+        "hermes_cloud_rows": "1",
+        "hermes_cloud_priced_rows": "1",
+    }
+    assert render({"status": -1}) == {
+        "model_rows": "absent",
+        "hosted_vllm_provider_rows": "absent",
+        "hosted_vllm_prefix_rows": "absent",
+        "priced_rows": "absent",
+        "hermes_cloud_rows": "absent",
+        "hermes_cloud_priced_rows": "absent",
+    }
+    assert set(render({"status": 200, "json": {"data": []}}).values()) == {"absent"}
 
 
 def test_schedule_task_is_imported_after_database_consumer_seeds():
