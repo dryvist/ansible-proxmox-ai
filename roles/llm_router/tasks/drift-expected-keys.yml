@@ -1,10 +1,14 @@
 ---
-# Expected policy flags for each seeded key, projected from the Git baseline.
+# Expected policy flags per seeded key, from the Git key list. A key with a
+# router_settings_ref expects the referenced settings, the same map
+# reconcile-seeded-key-policy.yml writes live; any other key expects its own
+# router_settings.
 - name: Keep only seeded key aliases and flags from the Git baseline
   ansible.builtin.set_fact:
     _llm_router_drift_expected_keys: >-
       {%- set ns = namespace(keys=[], workstation_aliases=(
         _llm_router_workstation_virtual_keys | default([]) | map(attribute='alias') | list)) -%}
+      {%- set referenced_settings = llm_router_review_key_router_settings -%}
       {%- for key in llm_router_virtual_keys -%}
       {%- if (key.value | default('', true) | string | length) > 0 -%}
       {%- set daily = key.daily_budget | default(0) | float -%}
@@ -18,7 +22,8 @@
         ] if daily > 0 else []),
         'rpm_limit': key.rpm_limit | default(none),
         'tpm_limit': key.tpm_limit | default(none),
-        'router_settings': key.router_settings | default({}, true),
+        'router_settings': (referenced_settings[key.router_settings_ref]
+          if key.router_settings_ref is defined else key.router_settings | default({}, true)),
         'metadata_tags': ((key.metadata | default({})).get('tags', [])
           | default([], true) | list + (key.tags | default([]) | list))
           | reject('match', '^([&!])?sensitivity:') | unique | list
