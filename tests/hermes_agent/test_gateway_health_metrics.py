@@ -30,14 +30,20 @@ def test_gateway_config_exports_gateway_health_metrics_only() -> None:
     }
 
 
-def test_otlp_extra_is_installed_so_the_export_can_start() -> None:
-    # Without the extra the gateway logs "No module named 'opentelemetry.exporter'" and exports nothing.
-    installs = [t for t in role_tasks(ROLE_ROOT) if t.get("name") == "Install the OTLP export extra into the Hermes venv"]
+def test_otlp_packages_are_installed_so_the_export_can_start() -> None:
+    # Without them the gateway logs "No module named 'opentelemetry.exporter'" and exports nothing.
+    installs = [t for t in role_tasks(ROLE_ROOT) if t.get("name") == "Install the OTLP export packages into the Hermes venv"]
     assert len(installs) == 1
     task = installs[0]
-    assert "[otlp]" in task["ansible.builtin.command"]["cmd"]
+    cmd = task["ansible.builtin.command"]["cmd"]
+    version = "{{ hermes_agent_otlp_sdk_version }}"
+    assert f"opentelemetry-sdk=={version}" in cmd
+    assert f"opentelemetry-exporter-otlp-proto-http=={version}" in cmd
+    # An editable install is reinstalled by uv on every run, so it would restart the gateway every converge.
+    assert " -e " not in cmd
     assert "hermes_agent_otel_endpoint" in task["when"]
     assert task["notify"] == "Restart hermes-gateway"
+    assert role_defaults(ROLE_ROOT)["hermes_agent_otlp_sdk_version"]
 
 
 def test_profile_and_public_gateway_configs_do_not_export_it() -> None:
