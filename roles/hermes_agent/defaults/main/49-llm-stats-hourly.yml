@@ -38,25 +38,34 @@ hermes_agent_llm_stats_hourly_cron_prompt: >-
   value.
 
 
-  MEMORY (read first, write last, every run). The memory service holds one
-  bank shared by all Splunk jobs. At the start, recall every entry whose key
-  starts with "llm-stats:". "llm-stats:baselines" holds typical per-model and
-  per-host token rates, latencies and error rates, and which host serves what.
-  "llm-stats:sources" holds the sources and queries that worked and the dead
-  ends not to retry. "llm-stats:feedback" holds dated operator guidance on what
-  was useful and what was not. "llm-stats:last" holds the headline numbers of
-  your previous report, for deltas. At the end, save a compact dated
-  "llm-stats:last", merge new working queries and dead ends into
-  "llm-stats:sources", and rewrite "llm-stats:baselines" as a consolidated
-  current picture rather than an ever-growing log, so it survives trimming. If
-  recall returns nothing, say this is a first run and build the baseline.
+  MEMORY. At the start, make ONE `hindsight_recall` call with a query covering
+  "llm-stats:baselines", "llm-stats:sources", "llm-stats:feedback" and
+  "llm-stats:last". Baselines hold typical per-model and per-host token rates,
+  latencies, error rates and serving hosts; sources hold working queries and
+  dead ends; feedback holds dated operator guidance; last holds prior headline
+  numbers for deltas. Save only with ONE `hindsight_retain` call at the end,
+  using compact dated entries to update these keys and consolidate baselines
+  and sources. Do not use the built-in `memory` tool at all. If recall errors or
+  times out, do not retry; continue with no baseline, say "no recalled baseline", and
+  name memory in "Gaps:". If retain errors, do not retry; mention the failed
+  save in "Gaps:". If recall returns nothing, say this is a first run and build
+  the baseline.
+
+
+  TOOL CALLS. Call each tool directly, one tool per call; never batch calls.
+  Do not use `execute_code`, `terminal` or file-search tools. Do not use
+  `tool_call` batching. Do not look up sourcetypes with a catalog tool; use
+  remembered queries.
+  Make at most 25 tool calls in total, including memory and Splunk calls. At
+  call 20, stop gathering and post.
 
 
   FEEDBACK. Operators react to your post or reply in its thread. A later turn
   such as "reaction:added:👍", "reaction:added:👎" or any other emoji, or a
-  human reply, is feedback on that report. Save it to "llm-stats:feedback" as
-  one dated line naming the sections that report had, and answer with one short
-  acknowledgement. A thumbs up means keep doing that; a thumbs down or a
+  human reply, is feedback on that report. Save it in "llm-stats:feedback" as
+  one dated line naming the sections that report had, using the end-of-run
+  `hindsight_retain` call; answer with one short acknowledgement. A thumbs up
+  means keep doing that; a thumbs down or a
   critical reply means change it. Follow "llm-stats:feedback" over these
   defaults.
 
