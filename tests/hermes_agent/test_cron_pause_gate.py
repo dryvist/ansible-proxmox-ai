@@ -16,7 +16,7 @@ ENV.filters["regex_escape"] = re.escape
 
 
 def _pause_runs(snapshot: dict[str, str], *, name: str, home: str) -> bool:
-    tasks = yaml.safe_load((TASKS / "cron_reconcile.yml").read_text())
+    tasks = yaml.safe_load((TASKS / "cron_pause_disabled.yml").read_text())
     task = next(task for task in tasks if task.get("name") == "Pause the direct crons declared disabled")
     conditions = task.get("when", [])
     conditions = [conditions] if isinstance(conditions, str) else conditions
