@@ -33,6 +33,24 @@ def test_job_is_a_splunk_profile_job_delivered_to_the_splunk_channel() -> None:
     assert "hermes_agent_splunk_mcp_url" in job["enabled"]
 
 
+def test_only_stats_job_pins_a_model_beside_the_existing_override() -> None:
+    model_settings = {
+        job["name"]: (job["model"], job["model_provider"])
+        for job in DEFAULTS["hermes_agent_direct_cron_jobs"]
+        if "model" in job
+    }
+    assert model_settings == {
+        "{{ hermes_agent_bot_pr_triage_cron_name }}": (
+            "{{ hermes_agent_cron_model }}",
+            "{{ hermes_agent_cron_model_provider }}",
+        ),
+        "{{ hermes_agent_llm_stats_hourly_cron_name }}": (
+            "{{ hermes_brain_model }}",
+            "{{ hermes_agent_model_provider }}",
+        ),
+    }
+
+
 def test_job_runs_hourly_off_the_board_digest_tick() -> None:
     schedule = DEFAULTS["hermes_agent_llm_stats_hourly_cron_schedule"]
     assert re.fullmatch(r"[0-5]?\d \* \* \* \*", schedule)
