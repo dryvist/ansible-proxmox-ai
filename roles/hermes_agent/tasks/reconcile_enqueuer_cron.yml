@@ -46,14 +46,10 @@
 # fields" is still gated on active, so the resolved name is undefined here on an
 # agent that does not own the job.
 - name: "Enqueuer cron | Look up {{ item.name }}"
-  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
-  environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_enqueuer_cron_list
+  ansible.builtin.set_fact:
+    hermes_agent_enqueuer_cron_list:
+      stdout: "{{ (hermes_agent_direct_cron_lists | default({})).get(hermes_agent_hermes_home, '') }}"
   changed_when: false
-  check_mode: false
   when:
     - not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
     - >-
@@ -110,14 +106,14 @@
   when: hermes_agent_enqueuer_active | bool
 
 - name: "Enqueuer cron | Check desired-state marker for {{ hermes_agent_enqueuer_name }}"
-  ansible.builtin.copy:
-    content: "{{ hermes_agent_enqueuer_checksum }}\n"
-    dest: "{{ hermes_agent_managed_cron_state_dir }}/{{ hermes_agent_enqueuer_name }}.sha256"
-    owner: "{{ hermes_agent_user }}"
-    group: "{{ hermes_agent_user }}"
-    mode: "0640"
-  check_mode: true
-  register: hermes_agent_enqueuer_marker_probe
+  ansible.builtin.set_fact:
+    hermes_agent_enqueuer_marker_probe:
+      changed: >-
+        {{ (hermes_agent_direct_markers | default({})).get(hermes_agent_enqueuer_name, '')
+             != hermes_agent_enqueuer_checksum
+           or (hermes_agent_direct_marker_sizes | default({})).get(hermes_agent_enqueuer_name, 0) | int
+             != (hermes_agent_enqueuer_checksum | length + 1) }}
+  changed_when: hermes_agent_enqueuer_marker_probe.changed | bool
   when: hermes_agent_enqueuer_active | bool
 
 # A changed marker on an EXISTING job means schedule/selector/script drifted:
