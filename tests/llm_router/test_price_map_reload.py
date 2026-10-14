@@ -27,11 +27,13 @@ SOURCE_FIELDS = {
 }
 RUNNING_VERSION_FIELDS = {"litellm_version"}
 MODEL_INFO_FIELDS = {"data"}
+KEY_ALIASES_FIELDS = {"aliases", "total_count", "current_page", "total_pages", "size"}
 REGISTERED_FIELDS = {
     "llm_router_model_cost_map_schedule_status": SCHEDULE_FIELDS,
     "llm_router_model_cost_map_source_status": SOURCE_FIELDS,
     "llm_router_running_litellm_version_status": RUNNING_VERSION_FIELDS,
     "llm_router_model_info_status": MODEL_INFO_FIELDS,
+    "llm_router_key_aliases_status": KEY_ALIASES_FIELDS,
 }
 
 
@@ -330,6 +332,113 @@ def test_model_info_report_renders_with_the_real_templar():
         "hermes_cloud_priced_rows": "absent",
     }
     assert set(render({"status": 200, "json": {"data": []}}).values()) == {"absent"}
+
+
+def test_key_alias_report_is_read_only_and_whitelists_alias_names():
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/seed-consumers.yml").read_text(encoding="utf-8"))
+    alias_read = next(task for task in tasks if task.get("name") == "Read the router's live key alias listing")
+    alias_report = next(task for task in tasks if task.get("name") == "Report declared and live key aliases")
+    uri = alias_read["ansible.builtin.uri"]
+    message = alias_report["ansible.builtin.debug"]["msg"]
+
+    assert uri["url"].endswith("/key/aliases?page=1&size=100")
+    assert uri.get("method", "GET") == "GET"
+    assert uri["headers"]["Authorization"] == "Bearer {{ llm_router_master_key }}"
+    assert uri["status_code"] == 200
+    assert uri["timeout"] == "{{ llm_router_seed_request_timeout }}"
+    assert alias_read["register"] == "llm_router_key_aliases_status"
+    assert alias_read["changed_when"] is False
+    assert alias_read["failed_when"] is False
+    assert alias_read["check_mode"] is False
+    assert alias_read["no_log"] is True
+    assert set(message) == {
+        "declared_key_aliases",
+        "live_key_aliases",
+        "live_undeclared_aliases",
+        "declared_missing_aliases",
+        "listing_truncated",
+    }
+    assert "llm_router_virtual_keys" in message["declared_key_aliases"]
+    assert _debug_task_is_safe(yaml.safe_dump(alias_report))
+    assert all("{%" not in value for value in message.values())
+
+
+def test_key_alias_report_renders_with_the_real_templar():
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/seed-consumers.yml").read_text(encoding="utf-8"))
+    message = next(task for task in tasks if task.get("name") == "Report declared and live key aliases")[
+        "ansible.builtin.debug"
+    ]["msg"]
+    declared_alias = "declared" + "-fixture"
+    missing_alias = "missing" + "-fixture"
+    undeclared_alias = "live" + "-only-fixture"
+    virtual_keys = [
+        {"alias": declared_alias, "value": True},
+        {"alias": missing_alias, "value": True},
+    ]
+
+    def render(status: dict) -> dict:
+        templar = Templar(loader=DataLoader())
+        templar.available_variables = {
+            "llm_router_key_aliases_status": status,
+            "llm_router_virtual_keys": virtual_keys,
+        }
+        return {key: templar.template(trust_as_template(value)) for key, value in message.items()}
+
+    assert render(
+        {
+            "status": 200,
+            "json": {
+                "aliases": [declared_alias, undeclared_alias],
+                "total_count": 2,
+                "current_page": 1,
+                "total_pages": 1,
+                "size": 100,
+            },
+        }
+    ) == {
+        "declared_key_aliases": "2",
+        "live_key_aliases": "2",
+        "live_undeclared_aliases": f'["{undeclared_alias}"]',
+        "declared_missing_aliases": "1",
+        "listing_truncated": "false",
+    }
+    assert render({"status": -1}) == {
+        "declared_key_aliases": "2",
+        "live_key_aliases": "absent",
+        "live_undeclared_aliases": "absent",
+        "declared_missing_aliases": "absent",
+        "listing_truncated": "absent",
+    }
+    truncated = render(
+        {
+            "status": 200,
+            "json": {
+                "aliases": [undeclared_alias],
+                "total_count": 101,
+                "current_page": 1,
+                "total_pages": 2,
+                "size": 100,
+            },
+        }
+    )
+    assert truncated["live_undeclared_aliases"] == f'["{undeclared_alias}"]'
+    assert truncated["declared_missing_aliases"] == "absent"
+    assert truncated["listing_truncated"] == "true"
+    malformed = render(
+        {
+            "status": 200,
+            "json": {
+                "aliases": [{"alias": undeclared_alias}],
+                "total_count": 1,
+                "current_page": 1,
+                "total_pages": 1,
+                "size": 100,
+            },
+        }
+    )
+    assert malformed["live_key_aliases"] == "absent"
+    assert malformed["live_undeclared_aliases"] == "absent"
+    assert malformed["declared_missing_aliases"] == "absent"
 
 
 def test_schedule_task_is_imported_after_database_consumer_seeds():

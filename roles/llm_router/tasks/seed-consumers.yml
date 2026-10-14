@@ -60,3 +60,62 @@
 # the other consumer API writes in this run_once play.
 - name: Schedule the LiteLLM model cost map reload
   ansible.builtin.import_tasks: price-map-reload.yml
+
+# LiteLLM caps this listing at 100 aliases per page. Keep the first page
+# visible and report when its pagination metadata says the listing is partial.
+- name: Read the router's live key alias listing
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/aliases?page=1&size=100"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_key_aliases_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Report declared and live key aliases
+  ansible.builtin.debug:
+    msg:
+      declared_key_aliases: >-
+        {{ llm_router_virtual_keys | rejectattr('value', 'equalto', '')
+           | map(attribute='alias') | list | length | string }}
+      live_key_aliases: >-
+        {{ 'absent' if llm_router_key_aliases_status.json.aliases is not defined
+           or llm_router_key_aliases_status.json.aliases is not sequence
+           or llm_router_key_aliases_status.json.aliases is string
+           or llm_router_key_aliases_status.json.aliases is mapping
+           or llm_router_key_aliases_status.json.aliases | select('string') | list | length
+           != llm_router_key_aliases_status.json.aliases | length
+           else llm_router_key_aliases_status.json.total_count | default('absent') | string }}
+      live_undeclared_aliases: >-
+        {{ 'absent' if llm_router_key_aliases_status.json.aliases is not defined
+           or llm_router_key_aliases_status.json.aliases is not sequence
+           or llm_router_key_aliases_status.json.aliases is string
+           or llm_router_key_aliases_status.json.aliases is mapping
+           or llm_router_key_aliases_status.json.aliases | select('string') | list | length
+           != llm_router_key_aliases_status.json.aliases | length
+           else (llm_router_key_aliases_status.json.aliases
+           | difference(llm_router_virtual_keys | rejectattr('value', 'equalto', '')
+           | map(attribute='alias') | list) | list) | to_json }}
+      declared_missing_aliases: >-
+        {{ 'absent' if llm_router_key_aliases_status.json.aliases is not defined
+           or llm_router_key_aliases_status.json.aliases is not sequence
+           or llm_router_key_aliases_status.json.aliases is string
+           or llm_router_key_aliases_status.json.aliases is mapping
+           or llm_router_key_aliases_status.json.aliases | select('string') | list | length
+           != llm_router_key_aliases_status.json.aliases | length
+           or llm_router_key_aliases_status.json.total_pages is not defined
+           or llm_router_key_aliases_status.json.current_page is not defined
+           or llm_router_key_aliases_status.json.total_pages | int
+           > llm_router_key_aliases_status.json.current_page | int
+           else (llm_router_virtual_keys | rejectattr('value', 'equalto', '')
+           | map(attribute='alias') | list
+           | difference(llm_router_key_aliases_status.json.aliases) | list | length | string) }}
+      listing_truncated: >-
+        {{ 'absent' if llm_router_key_aliases_status.json.total_pages is not defined
+           or llm_router_key_aliases_status.json.current_page is not defined
+           else 'true' if llm_router_key_aliases_status.json.total_pages | int
+           > llm_router_key_aliases_status.json.current_page | int else 'false' }}
