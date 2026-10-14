@@ -67,12 +67,28 @@ def test_prompt_uses_real_memory_tools_and_caps_all_tool_calls() -> None:
     prompt = DEFAULTS["hermes_agent_llm_stats_hourly_cron_prompt"]
     assert "hindsight_recall" in prompt
     assert "hindsight_retain" in prompt
-    assert "Do not use the built-in `memory` tool" in prompt
+    assert "Never use the built-in `memory` tool in any turn" in prompt
     assert "Do not use `execute_code`, `terminal` or file-search tools" in prompt
     assert "at most 25 tool calls in total" in prompt
-    assert "At call 20, stop gathering and post" in prompt
+    assert "At call 20, stop gathering and prepare the final report" in prompt
     assert "Call each tool directly, one tool per call" in prompt
     assert "Do not use `tool_call` batching" in prompt
+
+
+def test_prompt_makes_the_report_the_final_response_and_saves_feedback_per_turn() -> None:
+    prompt = DEFAULTS["hermes_agent_llm_stats_hourly_cron_prompt"]
+    assert "cron platform posts this run's final response to the Slack channel automatically" in prompt
+    assert "that final response IS the report" in prompt
+    assert "Never call a send or post tool" in prompt
+    assert "never end with a status line" in prompt
+    assert "`hindsight_retain` call before writing the final response" in prompt
+    assert "the final response (the report) is the last thing this run produces" in prompt.lower()
+
+    feedback = prompt.split("FEEDBACK.", 1)[1].split("FORMAT.", 1)[0]
+    assert "Make ONE `hindsight_retain` call" in feedback
+    assert 'dated "llm-stats:feedback" line naming the sections that report had' in feedback
+    assert "then answer with one short acknowledgement" in feedback
+    assert "using the end-of-run `hindsight_retain` call" not in feedback
 
 
 def test_prompt_names_no_endpoint_or_channel_id() -> None:
