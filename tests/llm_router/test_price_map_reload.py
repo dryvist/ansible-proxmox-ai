@@ -63,7 +63,6 @@ def _render_env(price_map_url: str) -> str:
         "llm_router_db_host": "",
         "llm_router_oidc_enabled": False,
         "ai_orchestration_otel_endpoint": "http://otel.example/v1/traces",
-        "llm_router_langfuse_enabled": False,
         "llm_router_trace_environment": "test",
         "llm_router_log_level": "INFO",
         "llm_router_openrouter_models": [],
