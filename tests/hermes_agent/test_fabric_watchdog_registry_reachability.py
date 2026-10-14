@@ -1,87 +1,144 @@
-"""fabric_watchdog registry-derived reachability contract.
-
-Probe every serving tier llm-models.d/ advertises as `servable: true`, using
-the same debounced probe/alert mechanism fabric_watchdog already runs for the
-MCP fabric and LLM front door.
-
-Lives under tests/hermes_agent/ for the same reason as
-test_fabric_watchdog_debounce.py: fabric_watchdog runs on the Hermes guest.
-"""
+"""Task-level contract for fabric_watchdog's registry-derived LLM probes."""
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 
-from jinja2 import Environment
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TASKS = (REPO_ROOT / "roles" / "fabric_watchdog" / "tasks" / "main.yml").read_text()
+MAIN_TASKS = REPO_ROOT / "roles/fabric_watchdog/tasks/main.yml"
+PROBE_TASKS = REPO_ROOT / "roles/fabric_watchdog/tasks/probe-targets.yml"
+ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main"
 
-# The exact tiers-derivation expression from tasks/main.yml, pulled out and
-# evaluated directly — a string-presence check alone would not catch a subtly
-# wrong filter chain. Every filter here is a plain Jinja2 builtin, so it runs
-# without Ansible.
-TIERS_EXPR = (
-    "registry | selectattr('servable', 'defined') | selectattr('servable')"
-    " | map(attribute='tier') | unique | list"
-)
+LARGE_URL = "https://large.example.invalid/v1/models"
+LIGHT_URL = "https://light.example.invalid/v1/models"
+CPU_URL = "https://cpu.example.invalid/v1/models"
+VLLM_URL = "https://vllm.example.invalid/v1/models"
 
 
-def _tiers(registry: list[dict]) -> list[str]:
-    env = Environment()
-    return env.compile_expression(TIERS_EXPR)(registry=registry)
-
-
-def test_only_servable_entries_produce_a_tier() -> None:
+def run_task_contract(
+    tmp_path: Path,
+    *,
+    cpu_urls: list[str] | None = None,
+    vllm_enabled: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run the real projection defaults and watchdog task file with fixtures."""
+    cpu_urls = ["https://cpu.example.invalid/v1"] if cpu_urls is None else cpu_urls
     registry = [
-        {"tier": "local-large", "servable": True},
-        {"tier": "local-large", "servable": False},
-        {"tier": "local-large"},  # servable undefined entirely
+        {"client_model_id": "fixture-large", "tier": "local-large", "enabled": True,
+         "servable": True, "route_group": "large", "provider": "ollama",
+         "upstream_model_id": "fixture/large", "order": 1},
+        {"client_model_id": "fixture-light", "tier": "light", "enabled": True,
+         "servable": True, "route_group": "embed", "provider": "llama_cpp",
+         "upstream_model_id": "fixture/light", "order": 2},
+        {"client_model_id": "fixture-light-background", "tier": "light", "enabled": True,
+         "servable": False, "route_group": "embed", "provider": "llama_cpp",
+         "upstream_model_id": "fixture/light-background", "order": 3},
+        {"client_model_id": "fixture-cpu", "tier": "cpu-9b", "enabled": True,
+         "servable": True, "route_group": "small", "provider": "llama_cpp",
+         "upstream_model_id": "fixture/cpu", "order": 4},
+        {"client_model_id": "fixture-vllm", "tier": "vllm", "enabled": True,
+         "servable": True, "route_group": "small", "provider": "llama_cpp",
+         "upstream_model_id": "fixture/vllm", "order": 5},
     ]
-    assert _tiers(registry) == ["local-large"]
+    expected_urls = [LARGE_URL, LIGHT_URL]
+    if cpu_urls and cpu_urls[0]:
+        expected_urls.append(CPU_URL)
+    if vllm_enabled:
+        expected_urls.append(VLLM_URL)
+    variables = {
+        "llm_router_model_registry": registry,
+        "llm_router_cpu_pool_backend_urls_by_tier": {"cpu-9b": cpu_urls},
+        "llm_router_llm_vllm_enabled": vllm_enabled,
+        "llm_router_vllm_precheck_passed": True,
+        "llm_router_llm_large_base_url": "https://large.example.invalid/v1",
+        "llm_router_llm_light_base_url": "https://light.example.invalid/v1",
+        "llm_router_llm_vllm_base_url": "https://vllm.example.invalid/v1",
+        "llm_router_light_api_key": "fixture-key",
+        "llm_router_deployment_tags_by_entry": {
+            f"{entry['client_model_id']}|{entry['tier']}": [] for entry in registry
+        },
+        "llm_router_local_num_retries": 0,
+        "llm_router_local_stream_timeout_seconds": 20,
+        "llm_router_local_request_timeout_seconds": 20,
+        "expected_llm_urls": expected_urls,
+    }
+    playbook = tmp_path / "fabric-watchdog-probes.yml"
+    playbook.write_text(
+        yaml.safe_dump(
+            [{
+                "name": "Run fabric watchdog probe target contract",
+                "hosts": "localhost",
+                "gather_facts": False,
+                "tasks": [
+                    {"name": "Load the actual router role defaults",
+                     "ansible.builtin.include_vars": {"dir": str(ROUTER_DEFAULTS)}},
+                    {"name": "Set the initial probe target list",
+                     "ansible.builtin.set_fact": {"fabric_watchdog_targets": []}},
+                    {"name": "Run the real watchdog probe target tasks",
+                     "ansible.builtin.include_tasks": str(PROBE_TASKS)},
+                    {"name": "Assert the projected target URLs",
+                     "ansible.builtin.assert": {"that": [
+                         "fabric_watchdog_targets | map(attribute='url') | list == expected_llm_urls"
+                     ], "fail_msg": "actual={{ fabric_watchdog_targets | map(attribute='url') | list }} expected={{ expected_llm_urls }}"}},
+                ],
+            }],
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    inventory = tmp_path / "inventory.yml"
+    inventory.write_text(
+        yaml.safe_dump({"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}),
+        encoding="utf-8",
+    )
+    assert shutil.which("ansible-playbook"), "run this test inside the repository dev shell"
+    ansible_tmp = tmp_path / "ansible-tmp"
+    ansible_tmp.mkdir()
+    return subprocess.run(
+        [
+            "ansible-playbook", "-i", str(inventory),
+            "-e", json.dumps(variables), str(playbook),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(ansible_tmp), "ANSIBLE_NOCOLOR": "1"},
+    )
 
 
-def test_duplicate_tiers_collapse_to_one() -> None:
-    """Two servable models sharing a tier must not produce
-    two probes of the same URL."""
-    registry = [
-        {"tier": "local-large", "servable": True},
-        {"tier": "local-large", "servable": True},
-    ]
-    assert _tiers(registry) == ["local-large"]
+def test_main_includes_the_shared_projection_task_file() -> None:
+    tasks = yaml.safe_load(MAIN_TASKS.read_text(encoding="utf-8"))
+    assert any(
+        task.get("ansible.builtin.include_tasks") == "probe-targets.yml"
+        for task in tasks
+    )
 
 
-def test_registry_is_loaded_the_same_way_the_llm_router_converge_does() -> None:
-    assert "include_role:\n    name: llm_router\n    tasks_from: registry.yml" in TASKS
+def test_projection_defaults_are_loaded_for_the_hermes_play() -> None:
+    play = yaml.safe_load((REPO_ROOT / "playbooks/agents.yml").read_text(encoding="utf-8"))[0]
+    assert play["hosts"] == "hermes_agent_group"
+    assert any(
+        task.get("ansible.builtin.import_tasks") == "tasks/load_fabric_registry.yml"
+        for task in play["pre_tasks"]
+    )
+    loader = yaml.safe_load((REPO_ROOT / "playbooks/tasks/load_fabric_registry.yml").read_text(encoding="utf-8"))[0]
+    assert loader["ansible.builtin.include_role"] == {
+        "name": "llm_router", "tasks_from": "registry.yml", "public": True
+    }
+    assert (ROUTER_DEFAULTS / "55-role-projections.yml").is_file()
 
 
-def test_an_unmapped_tier_fails_loudly_rather_than_being_skipped() -> None:
-    assert "fabric_watchdog_known_tier_urls" in TASKS
-    assert "difference(fabric_watchdog_known_tier_urls.keys() | list) | length == 0" in TASKS
-    assert "with no probe URL registered" in TASKS
-
-
-def test_targets_are_appended_not_replaced() -> None:
-    """Must not drop the existing mcp-fabric / llm-front-door / hindsight
-    targets when adding the registry-derived ones."""
-    assert "fabric_watchdog_targets: >-" in TASKS
-    assert "{{ fabric_watchdog_targets + [{" in TASKS
-
-
-def test_probe_never_touches_the_contended_inference_slot() -> None:
-    """Must be a models-listing GET, never a completion call — the target
-    dict itself carries no completions URL, and 401 (no auth sent) is an
-    accepted UP code rather than something the probe tries to avoid."""
-    target_literal = TASKS.split("fabric_watchdog_targets + [{", 1)[1].split("}]", 1)[0]
-    assert "'/models'" in target_literal
-    assert "'ok_codes': '200 401'" in target_literal
-    for banned in ("/v1/chat/completions", "/v1/completions"):
-        assert banned not in target_literal
-
-
-if __name__ == "__main__":
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"ok  {name}")
-    print("all checks passed")
+def test_real_assertion_passes_with_all_three_new_tiers_active(tmp_path: Path) -> None:
+    result = run_task_contract(tmp_path)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "TASK [Assert every active servable tier has a projected API base]" in output
+    assert "TASK [Assert the projected target URLs]" in output

@@ -1,0 +1,41 @@
+---
+- name: Select active servable capability members
+  ansible.builtin.set_fact:
+    fabric_watchdog_servable_members: >-
+      {{ _llm_router_capability_member_params
+         | selectattr('entry.servable', 'defined')
+         | selectattr('entry.servable') | list }}
+
+- name: Derive active servable tiers and their projected API bases
+  ansible.builtin.set_fact:
+    fabric_watchdog_registry_tiers: >-
+      {{ fabric_watchdog_servable_members | map(attribute='entry.tier') | unique | list }}
+    fabric_watchdog_tier_urls: >-
+      {%- set ns = namespace(urls={}) -%}
+      {%- for member in fabric_watchdog_servable_members -%}
+      {%- if member.params.api_base is defined
+            and member.params.api_base | string | trim | length > 0 -%}
+      {%- set _ = ns.urls.update({member.entry.tier: member.params.api_base}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.urls }}
+
+- name: Assert every active servable tier has a projected API base
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        fabric_watchdog_registry_tiers
+        | difference(fabric_watchdog_tier_urls.keys() | list) | length == 0
+    fail_msg: >-
+      The active capability projection contains servable tier(s)
+      {{ fabric_watchdog_registry_tiers
+         | difference(fabric_watchdog_tier_urls.keys() | list) | join(', ') }}
+      with no derivable api_base in _llm_router_capability_member_params.
+
+- name: Build reachability targets for every active servable path
+  ansible.builtin.set_fact:
+    fabric_watchdog_targets: >-
+      {{ fabric_watchdog_targets + [{'name': 'llm-' ~ item,
+         'url': fabric_watchdog_tier_urls[item] ~ '/models', 'ok_codes': '200 401'}] }}
+  loop: "{{ fabric_watchdog_registry_tiers }}"

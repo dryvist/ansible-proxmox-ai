@@ -18,51 +18,8 @@
     # host that never runs llm_router itself.
     public: true
 
-- name: Derive the distinct advertised serving tiers
-  ansible.builtin.set_fact:
-    fabric_watchdog_registry_tiers: >-
-      {{ llm_router_model_registry
-         | selectattr('servable', 'defined') | selectattr('servable')
-         | map(attribute='tier') | unique | list }}
-
-# Maps each tier to its base URL. Deliberately a small, explicit table, not
-# itself derived: llm-models.d/ is pure data with NO host/port/URL literals
-# by design (its own header comment) — those live in the role, selected
-# symbolically by tier. A tier missing from this table fails the assert below
-# rather than being silently skipped, so a newly advertised
-# tier cannot go unmonitored.
-- name: Define the known tier to base-URL map
-  ansible.builtin.set_fact:
-    fabric_watchdog_known_tier_urls:
-      local-large: "{{ llm_router_llm_large_base_url }}"
-
-- name: Assert every advertised tier has a known probe URL
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - >-
-        fabric_watchdog_registry_tiers
-        | difference(fabric_watchdog_known_tier_urls.keys() | list) | length == 0
-    fail_msg: >-
-      llm-models.d/ advertises serving tier(s)
-      {{ fabric_watchdog_registry_tiers
-         | difference(fabric_watchdog_known_tier_urls.keys() | list) | join(', ') }}
-      with no probe URL registered in fabric_watchdog_known_tier_urls
-      (roles/fabric_watchdog/tasks/main.yml) — add one so this reachability
-      alarm covers it.
-
-# Reuses the SAME probe shape as the existing llm-front-door target: a plain
-# GET to the OpenAI-compatible /models listing endpoint, no Authorization
-# header. That endpoint never invokes a model, so this costs nothing on the
-# contended single-concurrency inference slot; 401 (auth required, nothing
-# sent) counts as UP exactly like the existing target, because it proves the
-# backend answered at the HTTP layer at all.
-- name: Build reachability targets for every advertised serving path
-  ansible.builtin.set_fact:
-    fabric_watchdog_targets: >-
-      {{ fabric_watchdog_targets + [{'name': 'llm-' ~ item,
-         'url': fabric_watchdog_known_tier_urls[item] ~ '/models', 'ok_codes': '200 401'}] }}
-  loop: "{{ fabric_watchdog_registry_tiers }}"
+- name: Derive and validate reachability targets from the active capability projection
+  ansible.builtin.include_tasks: probe-targets.yml
 
 - name: Create fabric-watchdog state directory
   ansible.builtin.file:
