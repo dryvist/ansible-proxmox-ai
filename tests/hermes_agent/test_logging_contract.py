@@ -14,6 +14,7 @@ def test_debug_logging_remains_enabled() -> None:
 
 def test_rsyslog_routes_unit_children_and_file_logs() -> None:
     assert "$!_SYSTEMD_UNIT startswith 'hermes-'" in RSYSLOG
+    assert "($programname == 'systemd' and $msg contains 'hermes-')" in RSYSLOG
     assert 'File="{{ hermes_agent_log_directory }}/*.log"' in RSYSLOG
     assert 'File="{{ hermes_agent_hermes_home }}/kanban/logs/*.log"' in RSYSLOG
     assert 'File="{{ hermes_agent_hermes_home }}/kanban/boards/*/logs/*.log"' in RSYSLOG
