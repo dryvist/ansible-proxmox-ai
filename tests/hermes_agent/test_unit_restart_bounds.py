@@ -127,13 +127,19 @@ def test_the_alert_unit_and_script_are_deployed_from_their_templates() -> None:
 
 
 @pytest.mark.parametrize("unit", LONG_RUNNING)
-def test_hitting_the_bound_sends_one_urgent_post_naming_the_unit(unit: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("result", "fail", "expected_posts"),
+    [("start-limit-hit", False, 1), ("exit-code", False, 0), ("", False, 1), ("", True, 1)],
+    ids=["start-limit-hit", "exit-code", "empty-result", "query-fails"],
+)
+def test_the_alert_result_gate(
+    unit: str, tmp_path: Path, result: str, fail: bool, expected_posts: int
+) -> None:
     """Start the alert the way systemd does for a unit that hit its bound.
 
     The failed unit's OnFailure= names an alert instance. The alert template's
-    ExecStart= runs the deployed script with that instance as argv[1]. The script
-    is rendered from its template and run under stub curl and logger, and it must
-    send exactly one urgent ntfy publish that names the unit.
+    ExecStart= runs the deployed script with that instance as argv[1]. The
+    stubbed systemd Result determines whether the urgent ntfy post is sent.
     """
     failed = unit.removesuffix(".j2")
     alert_unit = _directive(_section(_unit(unit), "Unit"), "OnFailure").replace("%n", failed)
@@ -145,6 +151,14 @@ def test_hitting_the_bound_sends_one_urgent_post_naming_the_unit(unit: str, tmp_
     assert script_path in deployed, f"ExecStart runs {script_path}, which no task installs"
 
     env = install_stubs(tmp_path)
+    systemctl = Path(env["PATH"].split(":", maxsplit=1)[0]) / "systemctl"
+    systemctl.write_text(
+        '#!/usr/bin/env bash\n[[ "${1:-}" == show ]] || exit 1\n'
+        '[[ "${SYSTEMCTL_FAIL:-0}" != 1 ]] || exit 1\n'
+        'printf \'%s\\n\' "${SYSTEMCTL_RESULT:-}"\n'
+    )
+    systemctl.chmod(0o755)
+    env.update(SYSTEMCTL_RESULT=result, SYSTEMCTL_FAIL="1" if fail else "0")
     context = {
         **defaults_of("hermes_agent"),
         "ansible_managed": "test render",
@@ -157,7 +171,9 @@ def test_hitting_the_bound_sends_one_urgent_post_naming_the_unit(unit: str, tmp_
     proc = run_script(script, script_args, env)
     assert proc.returncode == 0, proc.stderr
     posts = records(env, "posts.jsonl")
-    assert len(posts) == 1, f"{unit}: expected one ntfy publish, got {len(posts)}"
+    assert len(posts) == expected_posts, f"{unit}: expected {expected_posts} posts, got {len(posts)}"
+    if not posts:
+        return
     headers = headers_of(posts[0])
     assert headers["Priority"] == "urgent"
     assert posts[0]["url"] == NTFY_URL
