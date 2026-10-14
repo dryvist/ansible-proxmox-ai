@@ -7,7 +7,7 @@ logs stay off, so the export is metrics only.
 
 from __future__ import annotations
 
-from _role_files import role_defaults
+from _role_files import role_defaults, role_tasks
 from test_context_limits import ROLE_ROOT, _render
 
 
@@ -28,6 +28,16 @@ def test_gateway_config_exports_gateway_health_metrics_only() -> None:
         "warning_error_events_enabled": False,
         "export_interval_seconds": defaults["hermes_agent_gateway_health_metrics_interval_seconds"],
     }
+
+
+def test_otlp_extra_is_installed_so_the_export_can_start() -> None:
+    # Without the extra the gateway logs "No module named 'opentelemetry.exporter'" and exports nothing.
+    installs = [t for t in role_tasks(ROLE_ROOT) if t.get("name") == "Install the OTLP export extra into the Hermes venv"]
+    assert len(installs) == 1
+    task = installs[0]
+    assert "[otlp]" in task["ansible.builtin.command"]["cmd"]
+    assert "hermes_agent_otel_endpoint" in task["when"]
+    assert task["notify"] == "Restart hermes-gateway"
 
 
 def test_profile_and_public_gateway_configs_do_not_export_it() -> None:
