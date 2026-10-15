@@ -35,7 +35,6 @@ def test_auxiliary_tasks_are_pinned_to_the_router_in_both_configs() -> None:
         for task in expected_keys - {"goal_judge"}:
             route = auxiliary[task]
             assert route["provider"] == "custom", (template, task)
-            assert route["provider"] != "auto", (template, task)
             assert route["model"] == model["default"], (template, task)
             assert route["base_url"] == model["base_url"], (template, task)
             assert route["api_key"] == "${HERMES_AGENT_MODEL_API_KEY}", (template, task)
