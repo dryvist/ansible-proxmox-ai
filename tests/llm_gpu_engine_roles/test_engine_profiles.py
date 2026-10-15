@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NVIDIA_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 VLLM_ROOT = REPO_ROOT / "roles/vllm_serving"
 LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
+LEGACY_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
@@ -130,13 +131,17 @@ def test_named_profiles_carry_the_serving_contract():
         vllm_only <= profile.keys() for profile in profiles.values() if profile["engine"] == "vllm"
     )
     assert {name: profiles[name]["engine"] for name in ("small", "medium-a", "medium-b", "16gb", "max", "glm-flash")} == {
-        "small": "vllm",
+        "small": "llama_cpp",
         "medium-a": "vllm",
         "medium-b": "llama_cpp",
         "16gb": "llama_cpp",
         "max": "llama_cpp",
         "glm-flash": "llama_cpp",
     }
+    assert profiles["small"]["max_model_len"] == 8192
+    assert profiles["small"]["max_num_seqs"] == 4
+    assert profiles["small"]["flash_attention"] is True
+    assert profiles["small"]["gpu_layers"] == 99
     assert set(_registry_profiles()) == set(profiles)
     assert all(profile["enabled"] is True for profile in profiles.values())
     assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
@@ -180,12 +185,25 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     )
 
     profiles = _registry_profiles()
-    assert profiles["small"]["artifact_id"] == "qwen35-9b-nvfp4"
+    assert profiles["small"]["artifact_id"] == "qwen35-9b-q4-k-m"
     assert all(model["artifact"]["use"] == "serving" for model in profiles.values())
-    assert profiles["small"]["artifact"]["engines"] == ["vllm"]
-    small_artifact, small_defaults = profiles["small"]["artifact"], _profiles()["small"]
-    assert small_artifact.get("tool_call_parser", small_defaults["tool_call_parser"]) == "qwen3_xml"
-    assert small_artifact.get("reasoning_parser", small_defaults["reasoning_parser"]) == "qwen3"
+    assert profiles["small"]["artifact"]["engines"] == ["llama_cpp"]
+    small_artifact = profiles["small"]["artifact"]
+    assert small_artifact["revision"] == "3885219b6810b007914f3a7950a8d1b469d598a5"
+    assert small_artifact["include_globs"] == ["Qwen3.5-9B-Q4_K_M.gguf"]
+    assert small_artifact["format"] == "GGUF"
+    assert small_artifact["quantization"] == "Q4_K_M"
+    assert small_artifact["gguf_file"] == "Qwen3.5-9B-Q4_K_M.gguf"
+    assert small_artifact["serving_profile"] == "small"
+    assert small_artifact["model_store"] is True
+    assert small_artifact["model_store_profile"] == "small"
+    assert small_artifact["model_store_size_bytes"] == 5680522464
+    old_nvfp4 = next(
+        artifact for artifact in _artifacts() if artifact["artifact_id"] == "qwen35-9b-nvfp4"
+    )
+    assert old_nvfp4["use"] == "benchmark-only"
+    assert old_nvfp4["model_store"] is False
+    assert "serving_profile" not in old_nvfp4
     assert profiles["medium-a"]["artifact"]["engines"] == ["vllm"]
     assert profiles["medium-b"]["artifact"]["format"] == "GGUF"
     assert profiles["16gb"]["artifact"]["artifact_id"] == "qwen38-27b-ud-iq3-xxs"
@@ -234,18 +252,41 @@ def test_each_vllm_profile_renders_its_runtime_flags():
         assert "{{" not in exec_start
 
 
-def test_nvfp4_profiles_leave_quantization_to_the_checkpoint():
+def test_vllm_profiles_leave_quantization_to_the_checkpoint():
     profiles = _profiles()
-    small = _exec_start(_render("small", profiles["small"]))
     medium = _exec_start(_render("medium-a", profiles["medium-a"]))
     sweep = _exec_start(_render("qwen38-16k-4-auto", profiles["qwen38-16k-4-auto"]))
-    assert "--quantization" not in small
     assert "--quantization" not in medium
-    assert "--tool-call-parser qwen3_xml" in small
-    assert "--reasoning-parser qwen3" in small
     assert "--linear-backend b12x" in medium
     assert "--moe-backend b12x" not in medium
     assert "--kv-cache-dtype auto" in sweep
+
+
+def test_small_profile_renders_the_pinned_gguf_with_llama_cpp():
+    profile = _profiles()["small"]
+    artifact = _registry_profiles()["small"]["artifact"]
+    exec_start = _exec_start(_render("small", profile))
+
+    assert f"/cache/models/{artifact['hf_repo']}/{artifact['gguf_file']}" in exec_start
+    assert "--ctx-size 32768" in exec_start
+    assert "--parallel 4" in exec_start
+    assert "--n-gpu-layers 99" in exec_start
+    assert "--flash-attn on" in exec_start
+    assert "--jinja" in exec_start
+    assert "vllm serve" not in exec_start
+    assert "--tool-call-parser" not in exec_start
+
+
+def test_legacy_role_installs_vllm_and_its_toolchain_only_for_vllm_profiles():
+    tasks = yaml.safe_load((LEGACY_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    by_name = {task["name"]: task for task in tasks}
+    vllm_engine = "llm_profiles[llm_active_profile].engine == 'vllm'"
+
+    assert by_name["Install vLLM CUDA helper build prerequisites"]["when"] == vllm_engine
+    assert by_name["Install the CUDA toolkit for runtime kernel compilation"]["when"] == vllm_engine
+    assert by_name["Create the vLLM virtual environment"]["when"] == vllm_engine
+    assert vllm_engine in by_name["Install the pinned vLLM build with SM120 b12x kernels"]["when"]
+    assert vllm_engine in by_name["Put the vLLM and Hugging Face CLIs on the default PATH"]["when"]
 
 
 def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
