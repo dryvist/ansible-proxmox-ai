@@ -16,26 +16,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ROLE = REPO_ROOT / "roles" / "hindsight_bank_dr"
 HINDSIGHT_PLAYBOOK = REPO_ROOT / "playbooks" / "hindsight.yml"
 
-# Defaults whose YAML value is itself unrendered Jinja (env lookups, a
-# cross-role default) are dropped here -- plain jinja2.Environment has neither
-# Ansible's `lookup()` global nor its recursive default-templating pass, so
-# those need a literal stand-in from _EXTRA_CONTEXT below instead, or the
-# script templates would render the raw Jinja source as their own output (a
-# test-harness artifact, not a role bug).
+# Defaults whose YAML value is itself unrendered Jinja (env lookups) are
+# dropped here -- plain jinja2.Environment has neither Ansible's `lookup()`
+# global nor its recursive default-templating pass. The container name and API
+# port defaults are rendered explicitly in _render() with only variables that
+# are available to the bank/DR play.
+_ROLE_DEFAULTS = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
 DEFAULTS = {
     key: value
-    for key, value in yaml.safe_load((ROLE / "defaults" / "main.yml").read_text()).items()
+    for key, value in _ROLE_DEFAULTS.items()
     if not (isinstance(value, str) and "{{" in value)
 }
 
-# Literal stand-ins for every key dropped from DEFAULTS above, plus
-# cross-role vars (hindsight_docker's own defaults) and ansible_managed.
+# Literal stand-ins for values loaded by task/environment at runtime, plus
+# ansible_managed and the inventory-backed port source used by the play.
 _EXTRA_CONTEXT = {
-    "hindsight_docker_container_name": "hindsight",
-    "hindsight_docker_api_port": 8888,
     "ansible_managed": "Ansible managed",
-    "hindsight_bank_dr_container_name": "hindsight",
-    "hindsight_bank_dr_api_port": 8888,
+    "tofu_data": {"constants": {"memory_ports": {"hindsight_api": 8888}}},
     "hindsight_bank_dr_s3_endpoint": "http://127.0.0.1:9000",
     "hindsight_bank_dr_s3_region": "us-east-1",
     "hindsight_bank_dr_s3_access_key_id": "AKIAEXAMPLE",
@@ -43,10 +40,25 @@ _EXTRA_CONTEXT = {
 }
 
 
+def _environment() -> jinja2.Environment:
+    environment = jinja2.Environment()
+
+    def mandatory(value: object, message: str = "") -> object:
+        if isinstance(value, jinja2.Undefined):
+            raise ValueError(message or "required value is undefined")
+        return value
+
+    environment.filters["mandatory"] = mandatory
+    return environment
+
+
 def _render(name: str) -> str:
     template = (ROLE / "templates" / name).read_text()
     context = {**DEFAULTS, **_EXTRA_CONTEXT}
-    return jinja2.Environment().from_string(template).render(**context)
+    environment = _environment()
+    for key in ("hindsight_bank_dr_container_name", "hindsight_bank_dr_api_port"):
+        context[key] = environment.from_string(str(_ROLE_DEFAULTS[key])).render(**context)
+    return environment.from_string(template).render(**context)
 
 
 def _bash_syntax_ok(script: str) -> tuple[bool, str]:
@@ -62,6 +74,8 @@ def _bash_syntax_ok(script: str) -> tuple[bool, str]:
 def test_export_script_renders_valid_bash():
     script = _render("hindsight-bank-export.sh.j2")
     assert "{{" not in script and "{%" not in script, "unrendered Jinja left in the export script"
+    assert 'CONTAINER="hindsight"' in script
+    assert 'API_PORT="8888"' in script
     assert "set -euo pipefail" in script
     ok, stderr = _bash_syntax_ok(script)
     assert ok, f"export script fails bash -n:\n{stderr}"
@@ -70,6 +84,8 @@ def test_export_script_renders_valid_bash():
 def test_drill_script_renders_valid_bash():
     script = _render("hindsight-bank-dr-drill.sh.j2")
     assert "{{" not in script and "{%" not in script, "unrendered Jinja left in the drill script"
+    assert 'CONTAINER="hindsight"' in script
+    assert 'API_PORT="8888"' in script
     assert "set -euo pipefail" in script
     ok, stderr = _bash_syntax_ok(script)
     assert ok, f"drill script fails bash -n:\n{stderr}"

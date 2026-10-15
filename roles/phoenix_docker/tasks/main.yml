@@ -93,6 +93,10 @@
       - phoenix_docker_admin_secret
       - phoenix_docker_default_admin_initial_password
 
+- name: Prepare Phoenix pre-change database dump
+  ansible.builtin.import_tasks: predump.yml
+  tags: [phoenix_docker_predump]
+
 - name: Deploy Phoenix docker-compose template
   ansible.builtin.template:
     src: docker-compose.yml.j2
@@ -113,6 +117,14 @@
     | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
     | list | length > 0
   no_log: true
+
+# One-off app restart for a wedged span queue: -e phoenix_docker_restart=true
+- name: Restart the Phoenix app container on request
+  community.docker.docker_compose_v2:
+    project_src: "{{ phoenix_docker_data_dir }}"
+    services: [phoenix]
+    state: restarted
+  when: phoenix_docker_restart | default(false) | bool
 
 # =============================================================================
 # Health check
@@ -136,6 +148,7 @@
   delay: 10
   until: phoenix_docker_health.status == 200
   changed_when: false
+  when: not ansible_check_mode
 
 - name: Verify Phoenix Prometheus metrics endpoint responds
   ansible.builtin.uri:
@@ -147,4 +160,6 @@
   delay: 5
   until: phoenix_docker_metrics_health.status == 200
   changed_when: false
-  when: phoenix_docker_enable_prometheus | bool
+  when:
+    - not ansible_check_mode
+    - phoenix_docker_enable_prometheus | bool

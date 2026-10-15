@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.1.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.0.0...v2.1.0) (2026-10-14)
+
+
+### Features
+
+* **hermes_agent:** export gateway health metrics over OTLP ([#1444](https://github.com/dryvist/ansible-proxmox-ai/issues/1444)) ([d849e94](https://github.com/dryvist/ansible-proxmox-ai/commit/d849e94f0282e51df192be1069a2f618a0c88f09))
+* **phoenix_docker:** restart the app container on request ([#1449](https://github.com/dryvist/ansible-proxmox-ai/issues/1449)) ([0d1af36](https://github.com/dryvist/ansible-proxmox-ai/commit/0d1af36e1d27d6fd879d60846bc49c1365f09af4))
+
+
+### Bug Fixes
+
+* **clickhouse_docker:** stop granting to the entrypoint-defined app user ([#1441](https://github.com/dryvist/ansible-proxmox-ai/issues/1441)) ([8d81c58](https://github.com/dryvist/ansible-proxmox-ai/commit/8d81c58fbae0f4b110c7da5b5ed3943021558d34))
+* **hermes_agent:** install the pinned OTLP packages into the Hermes venv ([#1452](https://github.com/dryvist/ansible-proxmox-ai/issues/1452)) ([9891143](https://github.com/dryvist/ansible-proxmox-ai/commit/98911439651f7c8abd1f80186b26566be16c3fbd))
+* **hermes_agent:** restart a gateway older than its deployed inputs ([730ce30](https://github.com/dryvist/ansible-proxmox-ai/commit/730ce30993d1b73fdc2150ef493e9fea2de9fbb3))
+* **hermes_agent:** restart a gateway older than its deployed inputs ([#1450](https://github.com/dryvist/ansible-proxmox-ai/issues/1450)) ([3515a99](https://github.com/dryvist/ansible-proxmox-ai/commit/3515a991940cf15f4b0e5661174a1273cadf80eb))
+* **llm_router:** fetch the pinned price map during check runs ([19f3b69](https://github.com/dryvist/ansible-proxmox-ai/commit/19f3b697fdc8985b7283f11847a9235d3fe35f5e))
+* **llm_router:** fetch the pinned price map during check runs ([#1443](https://github.com/dryvist/ansible-proxmox-ai/issues/1443)) ([14fef09](https://github.com/dryvist/ansible-proxmox-ai/commit/14fef09d7487e052cdea9ab1fa48bd1e447d099e))
+* **llm_router:** remove the direct Langfuse callback ([#1442](https://github.com/dryvist/ansible-proxmox-ai/issues/1442)) ([4962f11](https://github.com/dryvist/ansible-proxmox-ai/commit/4962f11ec0c43f3c1cc121d01cdf6319dd6515f8))
+* **roles:** run read-only HTTP lookups during check runs ([#1445](https://github.com/dryvist/ansible-proxmox-ai/issues/1445)) ([abfb6ec](https://github.com/dryvist/ansible-proxmox-ai/commit/abfb6ecd4dde17f287abbca2d12f4ee244734dff))
+
 ## [2.0.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v1.2.0...v2.0.0) (2026-10-13)
 
 

@@ -27,10 +27,7 @@
     name:
       - ca-certificates
       - curl
-      # Triton (vLLM) compiles its CUDA helper module with the system C compiler on first use.
-      - gcc
       - gzip
-      - libc6-dev
       - libgomp1
       - python3-debian
       - sudo
@@ -40,6 +37,15 @@
     cache_valid_time: 3600
   environment: "{{ llamacpp_release_proxy_environment }}"
 
+- name: Install vLLM CUDA helper build prerequisites
+  ansible.builtin.apt:
+    name:
+      - gcc
+      - libc6-dev
+    state: present
+  when: llm_profiles[llm_active_profile].engine == 'vllm'
+  environment: "{{ llamacpp_release_proxy_environment }}"
+
 - name: Install NVIDIA userspace from the host module version
   ansible.builtin.include_role:
     name: nvidia_gpu_guest
@@ -47,6 +53,7 @@
 
 - name: Install the CUDA toolkit for runtime kernel compilation
   ansible.builtin.include_tasks: install-cuda-toolkit.yml
+  when: llm_profiles[llm_active_profile].engine == 'vllm'
 
 - name: Create GPU serving directories
   ansible.builtin.file:
@@ -119,6 +126,7 @@
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
   environment: "{{ llm_gpu_serving_uv_environment }}"
+  when: llm_profiles[llm_active_profile].engine == 'vllm'
 
 - name: Install the pinned vLLM build with SM120 b12x kernels
   ansible.builtin.command:
@@ -141,7 +149,9 @@
   become_user: "{{ llm_gpu_serving_user }}"
   environment: "{{ llm_gpu_serving_uv_environment }}"
   register: llm_gpu_serving_vllm_install
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - llm_profiles[llm_active_profile].engine == 'vllm'
   changed_when: >-
     'Installed' in llm_gpu_serving_vllm_install.stderr or
     'Prepared' in llm_gpu_serving_vllm_install.stderr or
@@ -162,6 +172,7 @@
       src: "{{ llm_gpu_serving_hf_bin }}"
   loop_control:
     label: "{{ item.name }}"
+  when: item.name != 'vllm' or llm_profiles[llm_active_profile].engine == 'vllm'
 
 - name: Inspect the llama.cpp server binary
   ansible.builtin.stat:

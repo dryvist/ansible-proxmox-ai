@@ -1,5 +1,5 @@
 ---
-# Pins the phoenix_docker render contract.
+# Pins the phoenix_docker render contract and pre-change database dump contract.
 #
 # Two things the compose template must hold at render time, offline:
 #   1. The Authelia OIDC env block appears iff a client secret is present.
@@ -35,6 +35,7 @@
         phoenix_docker_web_port: "36006"
         phoenix_docker_grpc_port: "34317"
         phoenix_docker_metrics_port: "39090"
+        phoenix_docker_postgres_exporter_port: "39187"
         phoenix_docker_postgres_password: fixture-postgres
         phoenix_docker_admin_secret: fixture-admin-secret
         phoenix_docker_default_admin_initial_password: fixture-admin-password
@@ -94,12 +95,36 @@
           - "'\"36006:6006\"' in _with_oidc"
           - "'\"34317:4317\"' in _with_oidc"
           - "'\"39090:9090\"' in _with_oidc"
-          - _with_oidc | regex_findall('^\\s+- \"\\d+:\\d+\"', multiline=true) | length == 3
+          - "'\"39187:9187\"' in _with_oidc"
+          - _with_oidc | regex_findall('^\\s+- \"\\d+:\\d+\"', multiline=true) | length == 4
         fail_msg: >-
           A published port in docker-compose.yml.j2 is not sourced from
           tofu_data.constants.service_ports.phoenix_* (ip-addressing rule).
+
+    - name: The database exporter service renders from the role defaults
+      vars:
+        _exporter_block: "{{ _with_oidc | regex_search('(?ms)^  postgres-exporter:.*?^  phoenix:') }}"
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _exporter_block | length > 0
+          - "'image: quay.io/prometheuscommunity/postgres-exporter:v' in _exporter_block"
+          - "'- --collector.long_running_transactions' in _exporter_block"
+          - "'DATA_SOURCE_URI: \"postgres:5432/phoenix?sslmode=disable\"' in _exporter_block"
+          - "'DATA_SOURCE_USER: phoenix' in _exporter_block"
+          - "'DATA_SOURCE_PASS: \"fixture-postgres\"' in _exporter_block"
+          - "'condition: service_healthy' in _exporter_block"
+          - "'healthcheck' not in _exporter_block"
+        fail_msg: >-
+          The postgres-exporter service no longer renders its pinned image,
+          collector flag, database connection from the role defaults, a
+          healthy-postgres dependency, or it gained a shell healthcheck its
+          image cannot run.
 
     - name: Remove the render directory
       ansible.builtin.file:
         path: "{{ _render_dir }}"
         state: absent
+
+    - name: Verify the Phoenix pre-change dump contract
+      ansible.builtin.include_tasks: tasks/predump_contract.yml

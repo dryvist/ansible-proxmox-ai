@@ -1,0 +1,171 @@
+---
+# Offline contract for roles/phoenix_docker/tasks/predump.yml: the pre-change database dump is
+# ordered before the compose deploy, runs only when the preview shows a change, and leaves a
+# root-owned 0600 custom-format .dump outside the database data directory.
+- name: Read the Phoenix role and predump sources for the offline contract
+  ansible.builtin.slurp:
+    src: "{{ item.path }}"
+  loop:
+    - path: "{{ playbook_dir }}/../../roles/phoenix_docker/tasks/main.yml"
+    - path: "{{ playbook_dir }}/../../roles/phoenix_docker/tasks/predump.yml"
+    - path: "{{ playbook_dir }}/../../roles/phoenix_docker/templates/docker-compose.yml.j2"
+    - path: "{{ playbook_dir }}/../../roles/phoenix_docker/defaults/main.yml"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: phoenix_docker_predump_sources
+
+# Jinja expressions are replaced by a literal so the task files parse as plain YAML.
+- name: Decode the Phoenix role and predump sources
+  ansible.builtin.set_fact:
+    phoenix_docker_main_tasks: >-
+      {{ phoenix_docker_predump_sources.results[0].content | b64decode
+         | regex_replace('(?s)\\{\\{.*?\\}\\}', 'fixture') | from_yaml }}
+    phoenix_docker_predump_tasks: >-
+      {{ phoenix_docker_predump_sources.results[1].content | b64decode
+         | regex_replace('(?s)\\{\\{.*?\\}\\}', 'fixture') | from_yaml }}
+    phoenix_docker_compose_source: "{{ phoenix_docker_predump_sources.results[2].content | b64decode }}"
+    phoenix_docker_defaults_source: "{{ phoenix_docker_predump_sources.results[3].content | b64decode }}"
+    phoenix_docker_predump_raw: "{{ phoenix_docker_predump_sources.results[1].content | b64decode }}"
+
+- name: Index the Phoenix tasks by name
+  ansible.builtin.set_fact:
+    phoenix_docker_main_task_names: "{{ phoenix_docker_main_tasks | map(attribute='name') | list }}"
+    phoenix_docker_predump_by_name: >-
+      {{ dict(phoenix_docker_predump_tasks | map(attribute='name')
+              | zip(phoenix_docker_predump_tasks)) }}
+
+- name: Index the dump block tasks by name
+  ansible.builtin.set_fact:
+    phoenix_docker_dump_block: "{{ phoenix_docker_predump_by_name['Take the Phoenix pre-change database dump'] }}"
+
+- name: Index the tasks inside the dump block by name
+  ansible.builtin.set_fact:
+    phoenix_docker_dump_task_names: "{{ phoenix_docker_dump_block.block | map(attribute='name') | list }}"
+    phoenix_docker_dump_by_name: >-
+      {{ dict(phoenix_docker_dump_block.block | map(attribute='name')
+              | zip(phoenix_docker_dump_block.block)) }}
+
+- name: Assert the predump import is tagged and ordered before compose deployment
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        phoenix_docker_main_task_names.index('Resolve generated Phoenix secrets into a fact')
+        < phoenix_docker_main_task_names.index('Prepare Phoenix pre-change database dump')
+      - >-
+        phoenix_docker_main_task_names.index('Prepare Phoenix pre-change database dump') + 1
+        == phoenix_docker_main_task_names.index('Deploy Phoenix docker-compose template')
+      - >-
+        phoenix_docker_main_tasks[phoenix_docker_main_task_names.index(
+        'Prepare Phoenix pre-change database dump')]['ansible.builtin.import_tasks']
+        == 'predump.yml'
+      - >-
+        phoenix_docker_main_tasks[phoenix_docker_main_task_names.index(
+        'Prepare Phoenix pre-change database dump')].tags == ['phoenix_docker_predump']
+    fail_msg: >-
+      The tagged static predump import must follow secret resolution and
+      immediately precede the Phoenix compose template deployment.
+
+- name: Assert the compose preview and guarded PostgreSQL start
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - phoenix_docker_predump_by_name['Preview the Phoenix compose file without writing it'].check_mode is true
+      - phoenix_docker_predump_by_name['Preview the Phoenix compose file without writing it'].diff is false
+      - "'phoenix_docker_predump_enabled | bool' in phoenix_docker_dump_block.when"
+      - "'phoenix_docker_postgres_version.stat.exists | default(false)' in phoenix_docker_dump_block.when"
+      - "'phoenix_docker_compose_preview.changed | default(false)' in phoenix_docker_dump_block.when"
+      - "'not ansible_check_mode' in phoenix_docker_dump_block.when"
+      - phoenix_docker_dump_by_name['Start only Phoenix PostgreSQL without recreating it for the dump']
+        ['community.docker.docker_compose_v2'].recreate == 'never'
+    fail_msg: The preview must never write, and every dump operation must sit behind the guarded block.
+
+- name: Assert detached start and the process-running gate
+  vars:
+    _start_task: "{{ phoenix_docker_dump_by_name['Start a detached custom-format Phoenix PostgreSQL dump'] }}"
+    _start_shell: "{{ _start_task['community.docker.docker_compose_v2_exec'].argv[2] }}"
+    _process_task: "{{ phoenix_docker_dump_by_name['Check whether Phoenix PostgreSQL is running pg_dump'] }}"
+    _process_shell: "{{ _process_task['community.docker.docker_compose_v2_exec'].argv[2] }}"
+    _still_running_task: "{{ phoenix_docker_dump_by_name['Stop while the Phoenix pre-change dump is still running'] }}"
+    _started_fail_task: "{{ phoenix_docker_dump_by_name['Stop after starting the Phoenix pre-change dump'] }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _start_task['community.docker.docker_compose_v2_exec'].detach is true
+      - "'pg_dump' in _start_shell"
+      - "'--format=custom' in _start_shell"
+      - "'&& touch' in _start_shell"
+      - "phoenix_docker_predump_raw | regex_search('&& touch .*phoenix_docker_predump_done_name') is not none"
+      - "'/proc/' in _process_shell"
+      - "'pg_dump' in _process_shell"
+      - _still_running_task['ansible.builtin.fail'].msg is search('still running')
+      - _started_fail_task['ansible.builtin.fail'].msg is search('was started')
+      - _started_fail_task['ansible.builtin.fail'].msg is search('NOT applied')
+      - >-
+        phoenix_docker_dump_by_name['Stop after starting the Phoenix pre-change dump']
+        ['ansible.builtin.fail'] is defined
+      - >-
+        phoenix_docker_dump_task_names.index('Stop after starting the Phoenix pre-change dump')
+        == phoenix_docker_dump_task_names.index('Start a detached custom-format Phoenix PostgreSQL dump') + 1
+    fail_msg: >-
+      The dump must start detached, mark completion only after pg_dump succeeds,
+      and stop the converge while work remains.
+
+- name: Assert completed dump validation and archival
+  vars:
+    _tasks: "{{ phoenix_docker_dump_by_name }}"
+    _copy_task: "{{ _tasks['Copy the Phoenix database dump out of the PostgreSQL data directory'] }}"
+    _restore_task: "{{ _tasks['Validate the completed Phoenix pre-change dump'] }}"
+    _dump_assert_task: "{{ _tasks['Assert the saved Phoenix database dump is a non-empty regular file'] }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'pg_restore' in _restore_task['community.docker.docker_compose_v2_exec'].argv"
+      - "'--list' in _restore_task['community.docker.docker_compose_v2_exec'].argv"
+      - _copy_task['ansible.builtin.copy'].mode == '0600'
+      - _copy_task['ansible.builtin.copy'].owner == 'root'
+      - >-
+        phoenix_docker_dump_by_name['Set the Phoenix database dump file name']
+        ['ansible.builtin.set_fact'].phoenix_docker_predump_filename is search('\\.dump$')
+      - >-
+        phoenix_docker_dump_by_name['Remove the temporary Phoenix database dump from PostgreSQL data']
+        ['ansible.builtin.file'].state == 'absent'
+      - >-
+        phoenix_docker_dump_by_name['Remove the completed Phoenix database dump marker']
+        ['ansible.builtin.file'].state == 'absent'
+      - >-
+        _dump_assert_task['ansible.builtin.assert'].that
+        | select('search', 'stat.size > 0') | list | length == 1
+    fail_msg: >-
+      The completed dump must pass pg_restore listing, be copied as a root-owned
+      0600 .dump file, have its temporary files removed, and be asserted non-empty.
+
+- name: Assert incomplete and legacy dump cleanup
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        phoenix_docker_dump_by_name['Find legacy Phoenix pre-change dump files']
+        ['ansible.builtin.find'].patterns is search('-2\\*\\.dump')
+      - >-
+        phoenix_docker_dump_by_name['Remove legacy Phoenix pre-change dump files']
+        ['ansible.builtin.file'].state == 'absent'
+      - >-
+        phoenix_docker_dump_by_name['Remove an incomplete Phoenix pre-change dump file']
+        ['ansible.builtin.file'].state == 'absent'
+      - "'phoenix_docker_predump_work_name:' in phoenix_docker_defaults_source"
+      - "'phoenix_docker_predump_done_name:' in phoenix_docker_defaults_source"
+    fail_msg: Stale partial and legacy dumps must be removed before a new dump starts.
+
+- name: Assert dump storage is a sibling outside the database data directory
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (phoenix_docker_dump_dir | regex_replace('/dumps$', ''))
+        == (phoenix_docker_postgres_data_dir | regex_replace('/postgres$', ''))
+      - not phoenix_docker_dump_dir.startswith(phoenix_docker_postgres_data_dir + '/')
+      - "'phoenix_docker_dump_dir' not in phoenix_docker_compose_source"
+    fail_msg: >-
+      The dump directory must be a sibling of PostgreSQL data and absent
+      from the compose template.

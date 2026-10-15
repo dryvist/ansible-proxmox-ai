@@ -1,25 +1,29 @@
 # llm_gpu_serving
 
-Legacy combined-engine role. It remains available for the existing guest until
-the replacement pair is accepted. New guests use `nvidia_gpu_guest` for shared
-NVIDIA userspace and cache setup, plus exactly one of `llamacpp_serving` or
-`vllm_serving`; the engine identity and the single Tofu selector determine the
-serving group and router profile.
+Combined-engine role for GPU guests that are not members of a declared
+replacement engine pair. When a pair is declared, its guests use
+`nvidia_gpu_guest` for shared NVIDIA userspace and cache setup, plus exactly one
+of `llamacpp_serving` or `vllm_serving`; the engine identity and Tofu selector
+determine the serving group and router profile.
 
-Deploys profile-based GPU inference with a pinned vLLM virtual environment and
-the CUDA release binary for llama.cpp. Each enabled profile receives its own
-systemd unit; the role keeps only `llm_active_profile` running and serving on
-the shared API listener.
+Deploys profile-based GPU inference with vLLM packages for vLLM profiles and a
+prebuilt CUDA release binary for llama.cpp profiles. Each enabled profile
+receives its own systemd unit; the role keeps only `llm_active_profile` running
+and serving on the shared API listener.
 
 ## Play
 
 `playbooks/llm-serving.yml` applies this role only to `llm_gpu_legacy_group`,
-which the inventory loader populates while no replacement engine pair is
+which the inventory loader populates from guests tagged `llm-gpu` (also added
+to `llm_gpu_group`) or `llm-gpu-small` while no replacement engine pair is
 declared. Once the pair exists, the loader selects one engine-specific serving
 group and routes `llm_gpu_group` to that same member. `playbooks/site.yml`
-imports the serving playbook before the router pool. The active profile is
-`llm_active_profile`, derived from the Tofu engine selector and the shared
-per-engine profile map; cache and origin paths come from the inventory's
+imports the serving playbook before the router pool. `llm_active_profile`
+defaults through the Tofu selector and shared profile map in
+`inventory/group_vars/all.yml`; a host variable in
+`inventory/host_vars/<inventory_hostname>.yml` overrides that selection. The
+small guest selects `small` there, while the unoverridden medium guest keeps the
+`medium-a` fallback. Cache and origin paths come from the inventory's
 `container_models_*` values. The guest carries no container engine: the
 EvalScope LiveCodeBench evaluator runs generated code in a local subprocess
 with a per-test timeout unless a recipe requests a Docker sandbox.
@@ -52,11 +56,12 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
   `nvidia-driver-cuda` for `nvidia-smi`) from the vendor apt repository, pinned
   to the host module version read from `/proc/driver/nvidia/version`. No kernel
   module or DKMS is installed. Debian guests only.
-- Installs a Renovate-pinned uv binary and creates a dedicated Python virtual environment.
+- Installs a Renovate-pinned uv binary and creates the vLLM virtual environment only when the active profile uses vLLM.
 - Installs the Renovate-pinned `hf` CLI with uv under the supplied model cache; uv's package, Python, and tool caches use that same directory.
-- Links `vllm` and `hf` into `/usr/local/bin` so campaign preflights find them without a venv path.
+- Installs the CUDA toolkit, C compiler and development headers only when the active profile uses vLLM.
+- Links `vllm` into `/usr/local/bin` for vLLM profiles and always links `hf` there for campaign preflights.
 - Installs the Renovate-pinned vLLM version and the Renovate-pinned `b12x`
-  package for SM120 kernel support in one uv command.
+  package for SM120 kernel support in one uv command for vLLM profiles.
 - Installs the Renovate-pinned llama.cpp CUDA assets from the shared
   `llamacpp_release` contract only when the recorded asset changes.
 - Seeds `model_store: true` artifacts from the base registry and NVFP4 sweep
@@ -91,8 +96,8 @@ registry links to those records by `artifact_id` and stays `enabled: false`,
 also contains the `16gb` llama.cpp candidate owned by `llamacpp_serving`; this
 legacy role indexes only its own five profile names.
 
-`small` and `medium-a` run vLLM (safetensors). `medium-b`, `max`, and
-`glm-flash` run llama.cpp (GGUF) from the installed release binary. A vLLM
+`small`, `medium-b`, `max`, and `glm-flash` run llama.cpp (GGUF) from the
+installed release binary; `medium-a` runs vLLM (safetensors). A vLLM
 profile carries its kernel backends, max model length, max sequences, GPU memory utilization,
 automatic tool-choice flag, parser defaults, and API port; the selected
 artifact supplies model-specific parsers when present. A llama.cpp profile

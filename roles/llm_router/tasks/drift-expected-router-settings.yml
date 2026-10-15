@@ -1,0 +1,19 @@
+---
+- name: Build the rendered router settings baseline
+  ansible.builtin.set_fact:
+    _llm_router_drift_router_settings_baseline: >-
+      {%- set config = _llm_router_drift_rendered_config.content | b64decode | from_yaml -%}
+      {%- set router_settings = config.router_settings | default({}, true)
+        | dict2items | rejectattr('key', 'equalto', 'redis_password') | items2dict
+        | combine({'routing_groups': []}) -%}
+      {%- set ns = namespace(settings={}) -%}
+      {%- for setting in router_settings | dict2items -%}
+      {%- set value = setting.value -%}
+      {%- if value is string and value is match('^os\\.environ/.+') -%}
+      {%- set env_name = value | regex_replace('^os\\.environ/', '') -%}
+      {%- set value = llm_router_drift_env_marker_values.get(env_name, value) -%}
+      {%- endif -%}
+      {%- set ns.settings = ns.settings | combine({setting.key: value}) -%}
+      {%- endfor -%}
+      {{ ns.settings }}
+  no_log: true

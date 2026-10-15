@@ -1,0 +1,133 @@
+---
+- name: List active Hermes crons across configured stores (for retired jobs)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron list"
+  environment:
+    HERMES_HOME: "{{ item }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  loop: >-
+    {{ [hermes_agent_hermes_home]
+       + (hermes_agent_profiles | map(attribute='name')
+          | map('regex_replace', '^', hermes_agent_hermes_home ~ '/profiles/')
+          | list) }}
+  register: hermes_agent_retired_cron_store_lists
+  changed_when: false
+  check_mode: false
+  when: not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
+
+- name: Pause the superseded v3 LLM digest cron (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_superseded_digest_cron_name }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - hermes_agent_splunk_status_digest_enabled | bool
+    - hermes_agent_superseded_digest_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
+
+# Same disable-don't-delete retirement for each agentic digest a script-fed job
+# replaces. A no-op once paused (error-triage was paused by hand to stop the
+# markup posts); making it declarative means a converge can never leave both the
+# agentic job and its replacement live.
+- name: Pause the superseded agentic triage crons (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ item.supersedes }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  loop: "{{ hermes_agent_triage_jobs }}"
+  loop_control:
+    label: "{{ item.supersedes }}"
+  when:
+    - hermes_agent_triage_enabled | bool
+    - item.supersedes in (hermes_agent_active_cron_list.stdout | default(''))
+
+# Retire the agentic anomaly hunt outright — no replacement, because its facts
+# are a strict subset of what splunk-status-digest already posts (see defaults).
+# The enabled:false in hermes_agent_direct_cron_jobs stops reconcile from
+# re-creating it; only this pause stops the cron that already exists on the host.
+- name: Pause the retired agentic anomaly-hunt cron (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_retired_anomaly_hunt_cron_name }}"
+  environment:
+    HERMES_HOME: "{{ item.item }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  loop: "{{ hermes_agent_retired_cron_store_lists.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - hermes_agent_retire_anomaly_hunt | bool
+    - >-
+      (item.stdout | default('')
+       | regex_search('(?m)^ *Name: +'
+         ~ (hermes_agent_retired_anomaly_hunt_cron_name | regex_escape)
+         ~ ' *$')) is not none
+
+# Retire the 6-hourly fabric-status cron: it fails the cadence rule (a cron earns
+# its place only as a daily-or-rarer report), and the hourly homelab-ai-fabric-status
+# job (now a hermes_agent_direct_cron_jobs entry, native-cron reframe) covers the
+# topic. enabled:false stops reconcile from re-creating this job; only this pause
+# stops the one already on the guest.
+- name: Pause the retired 6-hourly fabric-status cron (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_retired_fabric_status_cron_name }}"
+  environment:
+    HERMES_HOME: "{{ item.item }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  loop: "{{ hermes_agent_retired_cron_store_lists.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - hermes_agent_retire_fabric_status_v2 | bool
+    - >-
+      (item.stdout | default('')
+       | regex_search('(?m)^ *Name: +'
+         ~ (hermes_agent_retired_fabric_status_cron_name | regex_escape)
+         ~ ' *$')) is not none
+
+# Retire the daily splunk-parsing-quality-v2 cron: its fixed SPL queried the
+# proven stale/near-empty `index=network` (see the comment on its
+# hermes_agent_direct_cron_jobs entry), so it was confidently omitting real
+# data every run, with no memory dedup and no [SILENT] path. The
+# splunk-parsing kanban card replaces it 1-for-1 on the same daily cadence.
+- name: Pause the retired splunk-parsing-quality-v2 cron (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_retired_splunk_parsing_v2_cron_name }}"
+  environment:
+    HERMES_HOME: "{{ item.item }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  loop: "{{ hermes_agent_retired_cron_store_lists.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - hermes_agent_retire_splunk_parsing_v2 | bool
+    - >-
+      (item.stdout | default('')
+       | regex_search('(?m)^ *Name: +'
+         ~ (hermes_agent_retired_splunk_parsing_v2_cron_name | regex_escape)
+         ~ ' *$')) is not none
+
+- name: Pause the retired unmanaged Splunk burst cron (disable-don't-delete)
+  ansible.builtin.command: >-
+    {{ hermes_agent_bin }} cron pause
+    {{ hermes_agent_retired_splunk_auto_ssh_burst_cron_name }}
+  environment:
+    HERMES_HOME: "{{ item.item }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  loop: "{{ hermes_agent_retired_cron_store_lists.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - hermes_agent_retire_splunk_auto_ssh_burst | bool
+    - >-
+      (item.stdout | default('')
+       | regex_search('(?m)^ *Name: +'
+         ~ (hermes_agent_retired_splunk_auto_ssh_burst_cron_name | regex_escape)
+         ~ ' *$')) is not none

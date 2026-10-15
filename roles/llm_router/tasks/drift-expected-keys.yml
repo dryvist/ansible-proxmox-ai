@@ -1,0 +1,53 @@
+---
+# Expected policy flags per seeded key, from the Git key list. A key with a
+# router_settings_ref expects the referenced settings, the same map
+# reconcile-seeded-key-policy.yml writes live; any other key expects its own
+# router_settings.
+- name: Keep only seeded key aliases and flags from the Git baseline
+  ansible.builtin.set_fact:
+    _llm_router_drift_expected_keys: >-
+      {%- set ns = namespace(keys=[], workstation_aliases=(
+        _llm_router_workstation_virtual_keys | default([]) | map(attribute='alias') | list),
+        registered_mcp_servers=llm_router_mcp_hermes_object_permission.mcp_servers) -%}
+      {%- set referenced_settings = llm_router_review_key_router_settings -%}
+      {%- for key in llm_router_virtual_keys -%}
+      {%- if (key.value | default('', true) | string | length) > 0 -%}
+      {%- set daily = key.daily_budget | default(0) | float -%}
+      {%- set object_permission = key.object_permission
+        | default(llm_router_mcp_default_object_permission) -%}
+      {%- if object_permission.mcp_servers is defined -%}
+      {#- Keep registered server names and the explicit deny sentinel as
+          LiteLLM stores them. Other names are dropped, so an all-unregistered
+          grant projects to an empty list. -#}
+      {%- set registered_key_mcp_servers = object_permission.mcp_servers
+        | select('in', ns.registered_mcp_servers
+          + llm_router_mcp_default_object_permission.mcp_servers)
+        | unique | list -%}
+      {%- set object_permission = object_permission | combine({
+        'mcp_servers': registered_key_mcp_servers}) -%}
+      {%- endif -%}
+      {%- set flags = {
+        'models': key.models | default([], true),
+        'allowed_routes': key.allowed_routes | default([], true),
+        'max_budget': daily if daily > 0 else none,
+        'budget_duration': '24h' if daily > 0 else none,
+        'budget_limits': ([
+          {'budget_duration': '24h', 'max_budget': daily}
+        ] if daily > 0 else []),
+        'rpm_limit': key.rpm_limit | default(none),
+        'tpm_limit': key.tpm_limit | default(none),
+        'router_settings': (referenced_settings[key.router_settings_ref]
+          if key.router_settings_ref is defined else key.router_settings | default({}, true)),
+        'metadata_tags': ((key.metadata | default({})).get('tags', [])
+          | default([], true) | list + (key.tags | default([]) | list))
+          | reject('match', '^([&!])?sensitivity:') | unique | list
+          + [key.sensitivity_tag | default('&sensitivity:sensitive')],
+        'object_permission': object_permission
+      } -%}
+      {%- set git_file = llm_router_drift_workstation_key_git_file
+        if key.alias in ns.workstation_aliases else llm_router_drift_key_git_file -%}
+      {%- set ns.keys = ns.keys + [{'alias': key.alias, 'flags': flags, 'git_file': git_file}] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.keys }}
+  no_log: true

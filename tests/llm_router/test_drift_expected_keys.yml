@@ -1,0 +1,40 @@
+---
+# The expected-key projection resolves a referenced router settings map and keeps inline or empty ones.
+- name: Project expected key flags with referenced router settings
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_virtual_keys:
+      - alias: referenced-key
+        value: fixture-referenced-key
+        router_settings_ref: fixture-ref
+      - alias: inline-key
+        value: fixture-inline-key
+        router_settings:
+          routing_strategy: simple-shuffle
+      - alias: unconfigured-key
+        value: fixture-unconfigured-key
+    llm_router_review_key_router_settings:
+      fixture-ref:
+        fallbacks:
+          fixture-model: [fallback-model]
+    llm_router_drift_key_git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+    llm_router_drift_workstation_key_git_file: roles/llm_router/defaults/main/56b-workstation-keys.yml
+    _llm_router_workstation_virtual_keys: []
+    llm_router_mcp_default_object_permission: {}
+    llm_router_mcp_hermes_object_permission: {mcp_servers: []}
+  tasks:
+    - name: Use the production expected-key projection
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-expected-keys.yml"
+
+    - name: Resolve referenced settings and preserve inline or empty settings
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_expected_keys | length == 3
+          - >-
+            _llm_router_drift_expected_keys[0].flags.router_settings ==
+            {'fallbacks': {'fixture-model': ['fallback-model']}}
+          - "_llm_router_drift_expected_keys[1].flags.router_settings == {'routing_strategy': 'simple-shuffle'}"
+          - "_llm_router_drift_expected_keys[2].flags.router_settings == {}"

@@ -1,0 +1,37 @@
+---
+- name: Require a valid Laya bearer key
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_api_key is string
+      - laya_systemone_api_key | length > 0
+      - laya_systemone_api_key is match('^[A-Za-z0-9._~+/=-]+$')
+    fail_msg: LLM_LAYA_API_KEY must contain a non-empty bearer token.
+    quiet: true
+  no_log: true
+
+- name: Create the Laya environment directory
+  ansible.builtin.file:
+    path: "{{ laya_systemone_env_dir }}"
+    state: directory
+    owner: "{{ omit if laya_systemone_render_only | default(false) | bool else 'root' }}"
+    group: "{{ omit if laya_systemone_render_only | default(false) | bool else 'root' }}"
+    mode: "0750"
+
+- name: Write the Laya bearer key environment file
+  ansible.builtin.template:
+    src: laya-systemone.env.j2
+    dest: "{{ laya_systemone_env_file }}"
+    owner: "{{ omit if laya_systemone_render_only | default(false) | bool else 'root' }}"
+    group: "{{ omit if laya_systemone_render_only | default(false) | bool else 'root' }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart Laya systemd service
+
+- name: Render the Laya systemd unit
+  ansible.builtin.template:
+    src: laya-systemone.service.j2
+    dest: "{{ laya_systemone_unit_path }}"
+    owner: "{{ omit if laya_systemone_render_only | default(false) | bool else 'root' }}"
+    group: "{{ omit if laya_systemone_render_only | default(false) | bool else 'root' }}"
+    mode: "0644"
+  notify: Restart Laya systemd service

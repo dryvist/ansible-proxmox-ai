@@ -60,17 +60,20 @@ def test_a_withdrawal_task_exists_and_is_keyed_on_ownership():
         )
 
 
-def test_the_cron_listing_runs_for_unowned_jobs_too():
-    """The removal needs something to compare against."""
+def test_the_cron_snapshot_lookup_runs_for_unowned_jobs_too():
+    """The removal uses the shared listing even when this agent does not own it."""
     tasks = _tasks(ENQUEUER_PATH.read_text())
-    lookups = [(n, b) for n, b in tasks if "cron list --all" in b]
-    assert lookups, "no 'cron list --all' lookup task found"
+    lookups = [(n, b) for n, b in tasks if "Enqueuer cron | Look up" in n]
+    assert lookups, "no enqueuer cron snapshot lookup task found"
 
     name, body = lookups[0]
     when = body.split("when:")[-1]
     assert f"hermes_agent_id not in {OWNERSHIP_GATE}" in when, (
         f"{name!r} must also run when the job is unowned, otherwise the "
         "withdrawal task has no listing to test against and silently no-ops"
+    )
+    assert "hermes_agent_direct_cron_lists" in body, (
+        f"{name!r} must reuse the direct cron listing snapshot"
     )
     assert "changed_when: false" in body, f"{name!r} must stay read-only"
 
@@ -91,6 +94,6 @@ def test_the_defaults_comment_does_not_claim_enabled_false_removes():
 
 if __name__ == "__main__":
     test_a_withdrawal_task_exists_and_is_keyed_on_ownership()
-    test_the_cron_listing_runs_for_unowned_jobs_too()
+    test_the_cron_snapshot_lookup_runs_for_unowned_jobs_too()
     test_the_defaults_comment_does_not_claim_enabled_false_removes()
     print("ok")

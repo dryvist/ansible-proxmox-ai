@@ -1,0 +1,154 @@
+---
+- name: Compare registered MCP names and the explicit deny sentinel
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../../roles/llm_router/defaults/main/56a-consumer-key-support.yml"
+    - "{{ playbook_dir }}/../../roles/llm_router/defaults/main/80-mcp.yml"
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    bao_local_llm_secrets: {}
+    llm_router_mcp_slack_enabled: false
+    llm_router_virtual_keys:
+      - alias: claude-code
+        value: true
+        object_permission:
+          mcp_servers: "{{ _llm_router_trusted_hub_servers }}"
+          agents: [hermes-private, hermes-public]
+      - alias: codex
+        value: true
+        object_permission:
+          mcp_servers: "{{ _llm_router_trusted_hub_servers }}"
+          agents: [hermes-private, hermes-public]
+          mcp_tool_search_enabled: true
+      - alias: agy
+        value: true
+        object_permission:
+          mcp_servers: "{{ _llm_router_trusted_hub_servers }}"
+          agents: [hermes-private, hermes-public]
+          mcp_tool_search_enabled: true
+      - alias: slack-key
+        value: true
+        object_permission:
+          mcp_servers:
+            - "{{ llm_router_mcp_zammad_server_id }}"
+            - "{{ llm_router_mcp_slack_server_id }}"
+            - unregistered-server
+      - alias: hindsight
+        value: true
+        object_permission: "{{ llm_router_mcp_default_object_permission }}"
+      - alias: no-registered-mcp
+        value: true
+        object_permission:
+          mcp_servers: [context7]
+      - alias: sentinel-with-unregistered
+        value: true
+        object_permission:
+          mcp_servers: [no-mcp-servers, context7]
+    _llm_router_workstation_virtual_keys:
+      - alias: claude-code
+      - alias: codex
+      - alias: agy
+    llm_router_review_key_router_settings: {}
+    llm_router_drift_key_git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+    llm_router_drift_workstation_key_git_file: roles/llm_router/defaults/main/56b-workstation-keys.yml
+    _llm_router_drift_keys_page_1:
+      json:
+        keys:
+          - key_alias: claude-code
+            object_permission:
+              mcp_servers: [zammad, live-extra]
+              agents: [hermes-private, hermes-public]
+          - key_alias: codex
+            object_permission:
+              mcp_servers: [zammad, live-extra]
+              agents: [hermes-private, hermes-public]
+              mcp_tool_search_enabled: true
+          - key_alias: agy
+            object_permission:
+              mcp_servers: [zammad, live-extra]
+              agents: [hermes-private, hermes-public]
+              mcp_tool_search_enabled: true
+          - key_alias: slack-key
+            object_permission:
+              mcp_servers: [zammad]
+          - key_alias: hindsight
+            object_permission:
+              mcp_servers: [no-mcp-servers]
+          - key_alias: no-registered-mcp
+            object_permission:
+              mcp_servers: []
+          - key_alias: sentinel-with-unregistered
+            object_permission:
+              mcp_servers: [no-mcp-servers]
+    _llm_router_drift_expected_settings: []
+  tasks:
+    - name: Project live key flags
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-live-keys.yml"
+
+    - name: Project expected key flags with Slack disabled
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-expected-keys.yml"
+
+    - name: Keep registered names and the sentinel, preserving other grants
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_expected_keys[0].flags.object_permission.mcp_servers == ['zammad']
+          - _llm_router_drift_expected_keys[1].flags.object_permission.mcp_servers == ['zammad']
+          - _llm_router_drift_expected_keys[2].flags.object_permission.mcp_servers == ['zammad']
+          - _llm_router_drift_expected_keys[0].flags.object_permission.agents == ['hermes-private', 'hermes-public']
+          - _llm_router_drift_expected_keys[1].flags.object_permission.mcp_tool_search_enabled
+          - _llm_router_drift_expected_keys[3].flags.object_permission.mcp_servers == ['zammad']
+          - _llm_router_drift_expected_keys[4].flags.object_permission.mcp_servers == ['no-mcp-servers']
+          - _llm_router_drift_expected_keys[5].flags.object_permission.mcp_servers == []
+          - _llm_router_drift_expected_keys[6].flags.object_permission.mcp_servers == ['no-mcp-servers']
+
+    - name: Compare projected expected and live key flags
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
+
+    - name: Report live MCP names absent from the Git grant and preserve the sentinel
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            (_llm_router_drift_messages
+             | selectattr('item', 'search', '^key alias claude-code flags .*object_permission')
+             | list | length) == 1
+          - >-
+            (_llm_router_drift_messages
+             | selectattr('item', 'search', '^key alias codex flags .*object_permission')
+             | list | length) == 1
+          - >-
+            (_llm_router_drift_messages
+             | selectattr('item', 'search', '^key alias agy flags .*object_permission')
+             | list | length) == 1
+          - >-
+            (_llm_router_drift_messages
+             | selectattr('item', 'search', '^key alias hindsight flags .*object_permission')
+             | list | length) == 0
+          - >-
+            (_llm_router_drift_messages
+             | selectattr('item', 'search', '^key alias slack-key flags .*object_permission')
+             | list | length) == 0
+          - >-
+            (_llm_router_drift_messages
+             | selectattr('item', 'search', '^key alias no-registered-mcp flags .*object_permission')
+             | list | length) == 0
+          - >-
+            (_llm_router_drift_messages
+             | selectattr('item', 'search', '^key alias sentinel-with-unregistered flags .*object_permission')
+             | list | length) == 0
+
+    - name: Enable the optional Slack registration fact
+      ansible.builtin.set_fact:
+        llm_router_mcp_slack_enabled: true
+
+    - name: Project expected key flags with Slack enabled
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-expected-keys.yml"
+
+    - name: Include Slack only when its registration fact is enabled
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_expected_keys[0].flags.object_permission.mcp_servers == ['zammad']
+          - _llm_router_drift_expected_keys[3].flags.object_permission.mcp_servers == ['zammad', 'slack']

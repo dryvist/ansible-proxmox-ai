@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NVIDIA_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 VLLM_ROOT = REPO_ROOT / "roles/vllm_serving"
 LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
+LEGACY_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
@@ -130,7 +131,7 @@ def test_named_profiles_carry_the_serving_contract():
         vllm_only <= profile.keys() for profile in profiles.values() if profile["engine"] == "vllm"
     )
     assert {name: profiles[name]["engine"] for name in ("small", "medium-a", "medium-b", "16gb", "max", "glm-flash")} == {
-        "small": "vllm",
+        "small": "llama_cpp",
         "medium-a": "vllm",
         "medium-b": "llama_cpp",
         "16gb": "llama_cpp",
@@ -180,12 +181,9 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     )
 
     profiles = _registry_profiles()
-    assert profiles["small"]["artifact_id"] == "qwen35-9b-nvfp4"
+    assert profiles["small"]["artifact_id"] == "qwen35-9b-q4-k-m"
     assert all(model["artifact"]["use"] == "serving" for model in profiles.values())
-    assert profiles["small"]["artifact"]["engines"] == ["vllm"]
-    small_artifact, small_defaults = profiles["small"]["artifact"], _profiles()["small"]
-    assert small_artifact.get("tool_call_parser", small_defaults["tool_call_parser"]) == "qwen3_xml"
-    assert small_artifact.get("reasoning_parser", small_defaults["reasoning_parser"]) == "qwen3"
+    assert profiles["small"]["artifact"]["engines"] == ["llama_cpp"]
     assert profiles["medium-a"]["artifact"]["engines"] == ["vllm"]
     assert profiles["medium-b"]["artifact"]["format"] == "GGUF"
     assert profiles["16gb"]["artifact"]["artifact_id"] == "qwen38-27b-ud-iq3-xxs"
@@ -234,15 +232,11 @@ def test_each_vllm_profile_renders_its_runtime_flags():
         assert "{{" not in exec_start
 
 
-def test_nvfp4_profiles_leave_quantization_to_the_checkpoint():
+def test_vllm_profiles_leave_quantization_to_the_checkpoint():
     profiles = _profiles()
-    small = _exec_start(_render("small", profiles["small"]))
     medium = _exec_start(_render("medium-a", profiles["medium-a"]))
     sweep = _exec_start(_render("qwen38-16k-4-auto", profiles["qwen38-16k-4-auto"]))
-    assert "--quantization" not in small
     assert "--quantization" not in medium
-    assert "--tool-call-parser qwen3_xml" in small
-    assert "--reasoning-parser qwen3" in small
     assert "--linear-backend b12x" in medium
     assert "--moe-backend b12x" not in medium
     assert "--kv-cache-dtype auto" in sweep

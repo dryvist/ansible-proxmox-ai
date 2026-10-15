@@ -1,0 +1,217 @@
+---
+# Local-only keys and Hindsight must not reach incompatible hosted deployments.
+# The declared private CI tail is checked against its own allowed groups.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_local_class_keys_no_hosted_reach.yml -i localhost, -c local
+- name: Verify local-only and ZDR-only keys against hosted fallback groups
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # (i) Local-only scopes are declared in 56-static-virtual-keys.yml:32-43,102-122,140-163,188-197,
+    # 56a-target-keys.yml:108-138, and 56b-workstation-keys.yml:12-22.
+    # (ii) Hindsight's ZDR-only scope and tags are declared in 56-static-virtual-keys.yml:65-75.
+    _expected_local_or_zdr_aliases:
+      - github-actions-ci-fix
+      - github-actions-pr-review
+      - glance
+      - hindsight
+      - langgraph
+      - litellm-local
+      - litellm-local-workstation
+      - n8n
+      - opencode
+      - qwen-code
+      - zammad
+    # (iii) github-actions declares its private CI Luna tail in
+    # 56-static-virtual-keys.yml:123-137 and 58-review-roles.yml:121-143,196-216.
+    _declared_hosted_fallback_aliases:
+      - github-actions
+    _candidate_aliases: >-
+      {{ _expected_local_or_zdr_aliases + _declared_hosted_fallback_aliases }}
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the router render fixture
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/ladder_keys_fixture.yml"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Select the vLLM-off render
+      ansible.builtin.set_fact:
+        llm_router_llm_vllm_enabled: false
+        llm_router_vllm_precheck_passed: false
+
+    - name: Render config and effective key scopes without the vLLM rung
+      ansible.builtin.set_fact:
+        _config_vllm_off: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _keys_vllm_off: "{{ llm_router_virtual_keys }}"
+
+    - name: Select the vLLM-on render
+      ansible.builtin.set_fact:
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+
+    - name: Render config and effective key scopes with the vLLM rung
+      ansible.builtin.set_fact:
+        _config_vllm_on: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _keys_vllm_on: "{{ llm_router_virtual_keys }}"
+
+    - name: Pair each render with its effective key catalog
+      ansible.builtin.set_fact:
+        _render_cases:
+          - name: vLLM off
+            config: "{{ _config_vllm_off }}"
+            catalog: "{{ _keys_vllm_off }}"
+          - name: vLLM on
+            config: "{{ _config_vllm_on }}"
+            catalog: "{{ _keys_vllm_on }}"
+
+    - name: Trace fallback paths after key-model and sensitivity-tag gates
+      ansible.builtin.import_tasks: tasks/trace_tagged_hosted_reach.yml
+
+    - name: The local key catalog and hosted provider rungs are present in each render
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _local_class_keys | length > 0
+          - _hindsight_keys | length == 1
+          - _keys_without_scope | length == 0
+          - _keys_with_empty_scope | length == 0
+          - _hosted_names | length > 0
+          - _hosted_names | intersect(_rendered_names) | length > 0
+          - item.config.router_settings.enable_tag_filtering | bool
+          - _wrong_class_candidates | length == 0
+          - _unsupported_key_tags | length == 0
+        fail_msg: >-
+          {{ item.name }} render is missing local key scopes, Hindsight, or a rendered
+          hosted terminal rung: local={{ _local_class_keys | map(attribute='alias') | list }},
+          hindsight={{ _hindsight_keys | length }}, hosted={{ _hosted_names }}.
+        success_msg: >-
+          {{ item.name }} render includes {{ _local_class_keys | length }} local-class keys,
+          Hindsight, and hosted groups {{ _hosted_names }}.
+      vars:
+        _local_class_keys: >-
+          {{ item.catalog | selectattr('allowed_classes', 'defined')
+             | selectattr('allowed_classes', 'equalto', ['local']) | list }}
+        _hindsight_keys: "{{ item.catalog | selectattr('alias', 'equalto', 'hindsight') | list }}"
+        _keys_without_scope: >-
+          {{ (_local_class_keys + _hindsight_keys)
+             | rejectattr('models', 'defined') | list }}
+        _keys_with_empty_scope: >-
+          {{ (_local_class_keys + _hindsight_keys)
+             | selectattr('models', 'equalto', []) | list }}
+        _hosted_names: "{{ llm_router_external_terminal_rungs }}"
+        _rendered_names: "{{ item.config.model_list | map(attribute='model_name') | unique | list }}"
+        _candidate_keys: "{{ item.catalog | selectattr('alias', 'in', _candidate_aliases) | list }}"
+        _wrong_class_candidates: >-
+          {{ _candidate_keys
+             | rejectattr('allowed_classes', 'defined')
+             | list
+             + (_candidate_keys | selectattr('allowed_classes', 'defined')
+                | rejectattr('allowed_classes', 'equalto', ['local']) | list) }}
+        _unsupported_key_tags: >-
+          {%- set ns = namespace(tags=[]) -%}
+          {%- for key in _candidate_keys -%}
+          {%- for tag in key.tags | default([]) -%}
+          {%- if tag | length < 2 or not (tag.startswith('&') or tag.startswith('!')) -%}
+          {%- set ns.tags = ns.tags + [key.alias ~ ':' ~ tag] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.tags }}
+      loop: "{{ _render_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Local-only and ZDR-only keys have no tag-compatible hosted fallback path
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _hosted_reaches | length == 0
+        fail_msg: >-
+          {{ item.name }} render has local-only or ZDR-only key paths into hosted deployments:
+          {{ _hosted_reaches }}; blocked paths/hops (key, path, deployment tags, blocked layer):
+          {{ _blocked_hops }}
+        success_msg: >-
+          {{ item.name }} render has no hosted path for scoped keys after the key models
+          allowlist and sensitivity tag filter; blocked paths/hops (key, path, deployment tags,
+          blocked layer): {{ _blocked_hops }}.
+      vars:
+        # Hindsight may reach hosted deployments that pass its &zdr !free !retains
+        # tags; test_hindsight_key_zdr_isolation.yml owns that bound.
+        _hosted_reaches: >-
+          {{ _tagged_hosted_reaches_by_render[item.name].reaches
+             | selectattr('key', 'in', _expected_local_or_zdr_aliases)
+             | rejectattr('key', 'equalto', 'hindsight') | list }}
+        _blocked_hops: >-
+          {{ _tagged_hosted_reaches_by_render[item.name].blocked
+             | selectattr('key', 'in', _expected_local_or_zdr_aliases)
+             | rejectattr('key', 'equalto', 'hindsight') | list }}
+      loop: "{{ _render_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Each declared hosted-fallback key stays within its declared tail
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _class_iii_keys | length == _declared_hosted_fallback_aliases | length
+          - _wrong_class_iii_keys | length == 0
+          - _iii_without_hosted_groups | length == 0
+          - _undeclared_iii_reaches | length == 0
+        fail_msg: >-
+          {{ item.name }} render has undeclared hosted reach for class (iii) keys:
+          {{ _undeclared_iii_reaches }}; declared groups={{ _declared_hosted_groups_by_key }};
+          blocked paths/hops (key, path, deployment tags, blocked layer)={{ _iii_blocked_hops }}.
+        success_msg: >-
+          {{ item.name }} render limits class (iii) hosted reach to {{ _declared_hosted_groups_by_key }};
+          surviving paths={{ _iii_reaches }}; blocked paths/hops={{ _iii_blocked_hops }}.
+      vars:
+        _class_iii_keys: >-
+          {{ item.catalog | selectattr('alias', 'in', _declared_hosted_fallback_aliases) | list }}
+        _wrong_class_iii_keys: >-
+          {{ _class_iii_keys | rejectattr('allowed_classes', 'defined') | list
+             + (_class_iii_keys | selectattr('allowed_classes', 'defined')
+                | rejectattr('allowed_classes', 'equalto', ['local']) | list) }}
+        _declared_hosted_groups_by_key: >-
+          {%- set out = namespace(groups={}) -%}
+          {%- for alias in _declared_hosted_fallback_aliases -%}
+          {%- set key = item.catalog | selectattr('alias', 'equalto', alias) | first -%}
+          {%- set groups = key.models
+                | intersect(llm_router_external_terminal_rungs + llm_router_ci_luna_groups)
+                | unique | list -%}
+          {%- set _ = out.groups.update({alias: groups}) -%}
+          {%- endfor -%}
+          {{ out.groups }}
+        _iii_without_hosted_groups: >-
+          {%- set out = namespace(aliases=[]) -%}
+          {%- for alias, groups in _declared_hosted_groups_by_key.items() if groups | length == 0 -%}
+          {%- set out.aliases = out.aliases + [alias] -%}
+          {%- endfor -%}
+          {{ out.aliases }}
+        _undeclared_iii_reaches: >-
+          {%- set out = namespace(reaches=[]) -%}
+          {%- for reach in _tagged_hosted_reaches_by_render[item.name].reaches
+                | selectattr('key', 'in', _declared_hosted_fallback_aliases) | list -%}
+          {%- if reach.group not in _declared_hosted_groups_by_key[reach.key] -%}
+          {%- set out.reaches = out.reaches + [reach] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out.reaches }}
+        _iii_reaches: >-
+          {{ _tagged_hosted_reaches_by_render[item.name].reaches
+             | selectattr('key', 'in', _declared_hosted_fallback_aliases) | list }}
+        _iii_blocked_hops: >-
+          {{ _tagged_hosted_reaches_by_render[item.name].blocked
+             | selectattr('key', 'in', _declared_hosted_fallback_aliases) | list }}
+      loop: "{{ _render_cases }}"
+      loop_control:
+        label: "{{ item.name }}"

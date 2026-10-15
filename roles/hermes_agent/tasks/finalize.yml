@@ -4,6 +4,61 @@
   when: hermes_agent_syslog_route_enabled | bool
   tags: hermes_agent_logging
 
+# A handler fires only for a task that reported changed in THIS run, so a run
+# killed before the flush loses every pending restart and its re-run finds the
+# files in place and notifies nothing. The restart handler records the input
+# digest; a different digest, or no marker, means the last restart never
+# covered the current contents.
+# shortcut: patched source files are not compared, upgrade if a code-only
+# patch ever ships without a config, env or unit change.
+- name: Stat the gateway input files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ hermes_agent_hermes_home }}/.env"
+    - "{{ hermes_agent_hermes_home }}/config.yaml"
+    - /etc/systemd/system/hermes-gateway.service
+  register: hermes_agent_gateway_input_stats
+
+- name: Set the desired gateway input digest
+  ansible.builtin.set_fact:
+    hermes_agent_gateway_desired_digest: >-
+      {{
+        [
+          hermes_agent_gateway_input_stats.results[0].item ~ '=' ~
+            (hermes_agent_gateway_input_stats.results[0].stat.checksum | default('missing')),
+          hermes_agent_gateway_input_stats.results[1].item ~ '=' ~
+            (hermes_agent_gateway_input_stats.results[1].stat.checksum | default('missing')),
+          hermes_agent_gateway_input_stats.results[2].item ~ '=' ~
+            (hermes_agent_gateway_input_stats.results[2].stat.checksum | default('missing'))
+        ] | join('\n') | hash('sha256')
+      }}
+
+- name: Stat the gateway restart marker
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_gateway_restart_marker }}"
+  register: hermes_agent_gateway_marker_stat
+
+- name: Read the recorded gateway digest
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_gateway_restart_marker }}"
+  register: hermes_agent_gateway_marker_content
+  failed_when: false
+  check_mode: false
+  when: hermes_agent_gateway_marker_stat.stat.exists
+
+- name: Restart a gateway whose inputs differ from the recorded digest
+  ansible.builtin.debug:
+    msg: The gateway has not restarted since its inputs last changed.
+  vars:
+    recorded_digest: "{{ (hermes_agent_gateway_marker_content.content | default('') | b64decode).strip() }}"
+  changed_when: >-
+    not hermes_agent_gateway_marker_stat.stat.exists or
+    recorded_digest != hermes_agent_gateway_desired_digest
+  notify: Restart hermes-gateway
+
 - name: Flush handlers so config/unit changes apply before verification
   ansible.builtin.meta: flush_handlers
 

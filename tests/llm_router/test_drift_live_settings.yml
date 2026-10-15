@@ -1,0 +1,53 @@
+---
+# Live settings the Git baseline does not declare drop out when LiteLLM reports a default or unset source.
+- name: Filter router and UI setting defaults by provenance
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _router_fixture: "{{ playbook_dir }}/fixtures/router-settings-with-source.json"
+    _router_no_source_fixture: "{{ playbook_dir }}/fixtures/router-settings-no-source.json"
+    _ui_fixture: "{{ playbook_dir }}/fixtures/ui-settings-with-source.json"
+    _ui_no_source_fixture: "{{ playbook_dir }}/fixtures/ui-settings-no-source.json"
+    _llm_router_drift_router_settings:
+      json: "{{ lookup('ansible.builtin.file', _router_fixture) | from_json }}"
+    _llm_router_drift_ui_settings:
+      json: "{{ lookup('ansible.builtin.file', _ui_fixture) | from_json }}"
+    _llm_router_drift_router_settings_baseline:
+      routing_strategy: least-busy
+    llm_router_ui_settings_baseline:
+      enable_chat_ui: false
+  tasks:
+    - name: Use the production provenance filter
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-live-settings.yml"
+
+    - name: Keep declared defaults and database values while dropping untouched settings
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_live_router_settings.routing_strategy == 'simple-shuffle'
+          - _llm_router_drift_live_router_settings.db_added_limit == 17
+          - "'set_verbose' not in _llm_router_drift_live_router_settings"
+          - "'unset_setting' not in _llm_router_drift_live_router_settings"
+          - "'redis_password' not in _llm_router_drift_live_router_settings"
+          - _llm_router_drift_live_ui_settings.enable_chat_ui | bool
+          - _llm_router_drift_live_ui_settings.db_ui_limit == 7
+          - "'disable_custom_api_keys' not in _llm_router_drift_live_ui_settings"
+
+    - name: Load responses without provenance objects
+      ansible.builtin.set_fact:
+        _llm_router_drift_router_settings:
+          json: "{{ lookup('ansible.builtin.file', _router_no_source_fixture) | from_json }}"
+        _llm_router_drift_ui_settings:
+          json: "{{ lookup('ansible.builtin.file', _ui_no_source_fixture) | from_json }}"
+      no_log: true
+
+    - name: Use the production provenance filter for the response without source
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-live-settings.yml"
+
+    - name: Keep every value without provenance except the router password
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "_llm_router_drift_live_router_settings == {'no_source_value': 'kept', 'no_source_null': none}"
+          - "_llm_router_drift_live_ui_settings == {'no_source_value': 'kept', 'no_source_null': none}"

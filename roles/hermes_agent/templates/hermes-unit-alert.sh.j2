@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
 #
-# Fired by the OnFailure= of a long-running Hermes unit that hit its
-# StartLimitBurst — systemd has STOPPED restarting it, so the service is now
-# down and will stay down until someone acts. That is exactly the state that
-# used to be invisible: Restart=always with no start-rate limit meant a
-# config-broken unit looped every few seconds forever with no signal at all.
+# Fired by OnFailure= of a long-running Hermes unit, but pages only when
+# systemd reports Result=start-limit-hit. Empty or failed queries stay fail-open.
+# With no start-rate limit, a config-broken unit looped every few seconds
+# forever with no signal at all.
 #
 # Runs as root with no dependency on the hermes user, $HERMES_HOME, or .env,
 # deliberately independent of the stack that just broke — same reasoning as
@@ -14,6 +13,8 @@
 set -uo pipefail
 
 UNIT="${1:-unknown}"
+RESULT="$(systemctl show --property=Result --value "${UNIT}" 2>/dev/null || true)"
+[[ -z "${RESULT}" || "${RESULT}" == "start-limit-hit" ]] || exit 0
 NTFY_URL="{{ hermes_agent_brain_watchdog_ntfy_url }}"
 NTFY_TOKEN="{{ hermes_agent_ntfy_publish_token }}"
 HOST="$(hostname)"

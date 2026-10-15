@@ -1,12 +1,6 @@
 ---
-# Hindsight's memory content must never reach a retaining/free deployment.
-# The hindsight key is scoped to exactly the
-# inventory's hindsight_retain_model
-# (56-virtual-keys.yml) and that model's fallback + context_window_fallbacks
-# entries are both empty (config.yaml.j2), so this walks the RENDERED
-# fallback graph outward from the key's own declared scope and proves no
-# reachable model_group is unsafe for an &zdr key, including groups backed by
-# missing zero_data_retention fields.
+# The Hindsight key checks each fallback target against its model allowlist and
+# effective tags, then excludes free or retaining deployments.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_hindsight_key_zdr_isolation.yml -i localhost, -c local
@@ -51,10 +45,37 @@
         name: llm_router
         tasks_from: registry.yml
 
-    - name: Render the fully credentialed config
+    - name: Select the vLLM-off render
       ansible.builtin.set_fact:
-        _config: >-
+        llm_router_llm_vllm_enabled: false
+        llm_router_vllm_precheck_passed: false
+
+    - name: Render the fully credentialed config without the vLLM rung
+      ansible.builtin.set_fact:
+        _config_vllm_off: >-
           {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+        _keys_vllm_off: "{{ llm_router_virtual_keys }}"
+
+    - name: Select the vLLM-on render
+      ansible.builtin.set_fact:
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+
+    - name: Render the fully credentialed config with the vLLM rung
+      ansible.builtin.set_fact:
+        _config_vllm_on: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+        _keys_vllm_on: "{{ llm_router_virtual_keys }}"
+
+    - name: Pair each render with its effective key catalog
+      ansible.builtin.set_fact:
+        _render_cases:
+          - name: vLLM off
+            config: "{{ _config_vllm_off }}"
+            catalog: "{{ _keys_vllm_off }}"
+          - name: vLLM on
+            config: "{{ _config_vllm_on }}"
+            catalog: "{{ _keys_vllm_on }}"
 
     - name: The hindsight key is scoped to exactly the inventory's retain model
       ansible.builtin.assert:
@@ -62,60 +83,227 @@
         that:
           - _hindsight_key.models == [llm_router_small_capability_name]
           - "'&zdr' in _hindsight_key.tags"
+          - "'!free' in _hindsight_key.tags"
+          - "'!retains' in _hindsight_key.tags"
+          - _effective_key_tags | select('match', '^&sensitivity:') | list | length == 1
           - _hindsight_key.router_settings.enable_tag_filtering | bool
         fail_msg: >-
           Expected the hindsight key scoped to exactly [{{ hindsight_retain_model }}], got
-          {{ _hindsight_key.models }} tags={{ _hindsight_key.tags | default([]) }} —
+          {{ _hindsight_key.models }} tags={{ _effective_key_tags }} —
           a wider scope or missing key constraint can reach a retaining deployment.
-        success_msg: "hindsight key models: {{ _hindsight_key.models }}"
+        success_msg: >-
+          hindsight key models={{ _hindsight_key.models }} effective_tags={{ _effective_key_tags }}.
       vars:
-        _hindsight_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hindsight') | first }}"
+        _hindsight_key: "{{ item.catalog | selectattr('alias', 'equalto', 'hindsight') | first }}"
+        _effective_key_tags: >-
+          {{ (_hindsight_key.tags | default([]))
+             + [_hindsight_key.sensitivity_tag | default('&sensitivity:sensitive')] }}
+      loop: "{{ _render_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
 
-    - name: No group reachable from the hindsight key's own scope is retaining or free
+    - name: No tag-compatible hosted group reachable from Hindsight is retaining or free
       ansible.builtin.assert:
         quiet: true
         that:
           - _unsafe_group_names | length > 0
           - _reachable_unsafe | length == 0
         fail_msg: >-
-          The hindsight key can reach {{ _reachable_unsafe }} —
-          retaining/free group(s) — via the rendered fallback
-          graph {{ _reachable }}. Fix: config.yaml.j2's fallbacks /
-          context_window_fallbacks entries for {{ _hindsight_key.models }}
-          must not target a retaining/free group, directly or transitively.
+          The hindsight key can reach retaining/free deployment(s): {{ _reachable_unsafe }}.
+          Blocked paths/hops (key, path, deployment tags, blocked layer)={{ _blocked_hops }};
+          compatible hosted groups are {{ _reachable }}.
         success_msg: >-
           The hindsight key's scope ({{ _hindsight_key.models }}) reaches
-          only {{ _reachable }}, none of it retaining/free
-          ({{ _unsafe_group_names }}).
+          only tag-compatible hosted groups {{ _reachable }} via paths={{ _tagged_hosted_reaches }},
+          none of the deployments retaining/free ({{ _unsafe_group_names }}). Blocked paths/hops
+          (key, path, deployment tags, blocked layer)={{ _blocked_hops }}.
       vars:
-        _hindsight_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hindsight') | first }}"
+        _config: "{{ item.config }}"
+        _hindsight_key: "{{ item.catalog | selectattr('alias', 'equalto', 'hindsight') | first }}"
+        _key_models: "{{ _hindsight_key.models | default([]) | unique | list }}"
+        _effective_key_tags: >-
+          {{ (_hindsight_key.tags | default([]))
+             + [_hindsight_key.sensitivity_tag | default('&sensitivity:sensitive')] }}
+        _model_aliases: "{{ _config.router_settings.model_group_alias | default({}) }}"
         _unsafe_group_names: "{{ llm_router_zdr_unasserted_terminal_rungs }}"
         _fallbacks_by_key: >-
-          {{ dict(_config.router_settings.fallbacks
+          {{ dict(_config.router_settings.fallbacks | default([])
                   | map('dict2items') | flatten | map(attribute='key')
-                  | zip(_config.router_settings.fallbacks
+                  | zip(_config.router_settings.fallbacks | default([])
                         | map('dict2items') | flatten | map(attribute='value'))) }}
         _cwf_by_key: >-
           {{ dict((_config.router_settings.context_window_fallbacks | default([]))
                   | map('dict2items') | flatten | map(attribute='key')
                   | zip((_config.router_settings.context_window_fallbacks | default([]))
                         | map('dict2items') | flatten | map(attribute='value'))) }}
-        # BFS over both rendered fallback maps, starting from the key's own
-        # declared models. Bounded to the same 12-hop depth ceiling
-        # assert-fallback-chain.yml already caps the widest chain at.
-        _reachable: >-
-          {%- set ns = namespace(seen=_hindsight_key.models | list, frontier=_hindsight_key.models | list) -%}
+        # BFS checks each target against Hindsight's model list, effective tags,
+        # and at least one matching rendered deployment.
+        _graph_reaches: >-
+          {%- set ns = namespace(seen=[], frontier=[], paths=[], blocked=[]) -%}
+          {%- for start in _key_models -%}
+          {%- set ns.seen = ns.seen + [start] -%}
+          {%- set ns.frontier = ns.frontier + [{'name': start, 'path': [start]}] -%}
+          {%- if start in _hosted_names -%}
+          {%- set _ = ns.paths.append({
+                'key': _hindsight_key.alias, 'key_models': _key_models,
+                'key_tags': _effective_key_tags, 'group': start,
+                'path': [start], 'passed_layers': ['key models allowlist']}) -%}
+          {%- endif -%}
+          {%- endfor -%}
           {%- for _ in range(0, 12) -%}
-          {%- set _next = [] -%}
-          {%- for name in ns.frontier -%}
-          {%- for target in (_fallbacks_by_key[name] | default([])) + (_cwf_by_key[name] | default([])) -%}
+          {%- set next = namespace(nodes=[]) -%}
+          {%- for node in ns.frontier -%}
+          {%- for target in (_fallbacks_by_key.get(
+                node.name, _config.router_settings.default_fallbacks | default([])) | list)
+                + (_cwf_by_key.get(node.name, []) | list) -%}
           {%- if target not in ns.seen -%}
           {%- set ns.seen = ns.seen + [target] -%}
-          {%- set _next = _next + [target] -%}
+          {%- set path = node.path + [target] -%}
+          {%- set resolved_target = _model_aliases.get(target, target) -%}
+          {%- set model_access = namespace(allowed=(_key_models | length == 0
+                or '*' in _key_models or 'all-proxy-models' in _key_models
+                or 'all-team-models' in _key_models)) -%}
+          {%- for allowed_model in _key_models -%}
+          {%- if target == allowed_model or resolved_target == allowed_model -%}
+          {%- set model_access.allowed = true -%}
+          {%- elif '*' in allowed_model -%}
+          {%- set pattern = '^' ~ (allowed_model | replace('*', '.*')) ~ '$' -%}
+          {%- if target is match(pattern) or resolved_target is match(pattern) -%}
+          {%- set model_access.allowed = true -%}
+          {%- endif -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- set required_tags = _effective_key_tags | select('match', '^&.+$')
+                | map('regex_replace', '^&', '') | list -%}
+          {%- set excluded_tags = _effective_key_tags | select('match', '^!.+$')
+                | map('regex_replace', '^!', '') | list -%}
+          {%- set deployments = namespace(rows=[], compatible=[]) -%}
+          {%- for deployment in _config.model_list
+                | selectattr('model_name', 'equalto', resolved_target) | list -%}
+          {%- set deployment_tags = deployment.litellm_params.tags | default([]) -%}
+          {%- set _ = deployments.rows.append({'tags': deployment_tags}) -%}
+          {%- if required_tags | difference(deployment_tags) | length == 0
+                and excluded_tags | intersect(deployment_tags) | length == 0 -%}
+          {%- set _ = deployments.compatible.append({'tags': deployment_tags}) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- if _effective_key_tags | length == 0 -%}
+          {%- set defaults = namespace(rows=[]) -%}
+          {%- for deployment in deployments.compatible if 'default' in deployment.tags -%}
+          {%- set _ = defaults.rows.append(deployment) -%}
+          {%- endfor -%}
+          {%- if defaults.rows | length > 0 -%}
+          {%- set deployments.compatible = defaults.rows -%}
+          {%- endif -%}
+          {%- endif -%}
+          {%- if not model_access.allowed or deployments.compatible | length == 0 -%}
+          {%- set blocked_by = namespace(layers=[]) -%}
+          {%- if not model_access.allowed -%}
+          {%- set blocked_by.layers = blocked_by.layers + ['key models allowlist'] -%}
+          {%- endif -%}
+          {%- if deployments.compatible | length == 0 -%}
+          {%- set blocked_by.layers = blocked_by.layers + ['sensitivity tag filter'] -%}
+          {%- endif -%}
+          {%- set _ = ns.blocked.append({
+                'key': _hindsight_key.alias, 'key_models': _key_models,
+                'key_tags': _effective_key_tags, 'group': target,
+                'resolved_group': resolved_target, 'path': path,
+                'deployment_tags': deployments.rows | map(attribute='tags') | list,
+                'compatible_deployment_tags': deployments.compatible | map(attribute='tags') | list,
+                'blocked_by': blocked_by.layers}) -%}
+          {%- else -%}
+          {%- set next.nodes = next.nodes + [{'name': target, 'path': path}] -%}
+          {%- if resolved_target in _hosted_names -%}
+          {%- for deployment in deployments.compatible -%}
+          {%- set _ = ns.paths.append({
+                'key': _hindsight_key.alias, 'key_models': _key_models,
+                'key_tags': _effective_key_tags, 'group': resolved_target,
+                'path': path, 'deployment_tags': deployment.tags,
+                'passed_layers': ['key models allowlist', 'sensitivity tag filter']}) -%}
+          {%- endfor -%}
+          {%- endif -%}
+          {%- endif -%}
           {%- endif -%}
           {%- endfor -%}
           {%- endfor -%}
-          {%- set ns.frontier = _next -%}
+          {%- set ns.frontier = next.nodes -%}
           {%- endfor -%}
-          {{ ns.seen }}
-        _reachable_unsafe: "{{ _reachable | intersect(_unsafe_group_names) }}"
+          {{ {'paths': ns.paths, 'blocked': ns.blocked} }}
+        _tagged_hosted_reaches: >-
+          {%- set out = namespace(reaches=[]) -%}
+          {%- set required_tags = _effective_key_tags
+                | select('match', '^&.+$') | map('regex_replace', '^&', '') | list -%}
+          {%- set excluded_tags = _effective_key_tags
+                | select('match', '^!.+$') | map('regex_replace', '^!', '') | list -%}
+          {%- for reach in _graph_reaches.paths -%}
+          {%- set candidates = namespace(deployments=[]) -%}
+          {%- for deployment in _config.model_list
+                | selectattr('model_name', 'equalto', _model_aliases.get(reach.group, reach.group)) | list -%}
+          {%- set deployment_tags = deployment.litellm_params.tags | default([]) -%}
+          {%- if required_tags | difference(deployment_tags) | length == 0
+                and excluded_tags | intersect(deployment_tags) | length == 0 -%}
+          {%- set _ = candidates.deployments.append({'tags': deployment_tags}) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- if _effective_key_tags | length == 0 -%}
+          {%- set defaults = namespace(deployments=[]) -%}
+          {%- for deployment in candidates.deployments if 'default' in deployment.tags -%}
+          {%- set _ = defaults.deployments.append(deployment) -%}
+          {%- endfor -%}
+          {%- if defaults.deployments | length > 0 -%}
+          {%- set candidates.deployments = defaults.deployments -%}
+          {%- endif -%}
+          {%- endif -%}
+          {%- for deployment in candidates.deployments -%}
+          {%- set _ = out.reaches.append(reach | combine({
+                'deployment_tags': deployment.tags,
+                'passed_layers': ['key models allowlist', 'sensitivity tag filter']})) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ out.reaches }}
+        _tag_blocked_start_paths: >-
+          {%- set out = namespace(blocked=[]) -%}
+          {%- for reach in _graph_reaches.paths if reach.path | length == 1 -%}
+          {%- set required_tags = _effective_key_tags | select('match', '^&.+$')
+                | map('regex_replace', '^&', '') | list -%}
+          {%- set excluded_tags = _effective_key_tags | select('match', '^!.+$')
+                | map('regex_replace', '^!', '') | list -%}
+          {%- set deployments = namespace(rows=[], compatible=[]) -%}
+          {%- for deployment in _config.model_list
+                | selectattr('model_name', 'equalto', _model_aliases.get(reach.group, reach.group)) | list -%}
+          {%- set deployment_tags = deployment.litellm_params.tags | default([]) -%}
+          {%- set _ = deployments.rows.append({'tags': deployment_tags}) -%}
+          {%- if required_tags | difference(deployment_tags) | length == 0
+                and excluded_tags | intersect(deployment_tags) | length == 0 -%}
+          {%- set _ = deployments.compatible.append({'tags': deployment_tags}) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- if deployments.compatible | length == 0 -%}
+          {%- set _ = out.blocked.append({
+                'key': _hindsight_key.alias, 'key_models': _key_models,
+                'key_tags': _effective_key_tags, 'group': reach.group,
+                'resolved_group': _model_aliases.get(reach.group, reach.group),
+                'path': reach.path,
+                'deployment_tags': deployments.rows | map(attribute='tags') | list,
+                'compatible_deployment_tags': [],
+                'blocked_by': ['sensitivity tag filter']}) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out.blocked }}
+        # Hosted terminal rungs plus every retaining or free group: a group in either
+        # set is checked against the key tags, so a non-terminal unsafe group is
+        # never skipped.
+        _hosted_names: >-
+          {{ (llm_router_external_terminal_rungs + llm_router_zdr_unasserted_terminal_rungs)
+             | unique | list }}
+        _reachable: >-
+          {{ ((_graph_reaches.paths | rejectattr('group', 'in', _hosted_names)
+                | map(attribute='group') | list)
+              + (_tagged_hosted_reaches | map(attribute='group') | list)) | unique | list }}
+        _reachable_unsafe: >-
+          {{ _tagged_hosted_reaches | selectattr('group', 'in', _unsafe_group_names) | list }}
+        _blocked_hops: >-
+          {{ _graph_reaches.blocked + _tag_blocked_start_paths }}
+      loop: "{{ _render_cases }}"
+      loop_control:
+        label: "{{ item.name }}"

@@ -198,6 +198,83 @@
       etag: "{{ llm_router_model_cost_map_source_status.json.etag | default('absent') }}"
       model_count: "{{ llm_router_model_cost_map_source_status.json.model_count | default('absent') }}"
 
+- name: Read this router's running LiteLLM version
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/health/readiness/details"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_running_litellm_version_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Report this router's running LiteLLM version
+  ansible.builtin.debug:
+    msg:
+      running_litellm_version: >-
+        {{ llm_router_running_litellm_version_status.json.litellm_version
+        | default('absent') }}
+      pinned_litellm_version: >-
+        {{ llm_router_pip_packages
+        | select('match', '^litellm.proxy.==')
+        | first | split('==') | last }}
+
+- name: Read this router's model info rows
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/model/info"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_model_info_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Report this router's model rows by provider and price
+  ansible.builtin.debug:
+    msg:
+      model_rows: >-
+        {{ 'absent' if llm_router_model_info_status.json.data is not defined
+           or llm_router_model_info_status.json.data | length == 0
+           else llm_router_model_info_status.json.data | length | string }}
+      hosted_vllm_provider_rows: >-
+        {{ 'absent' if llm_router_model_info_status.json.data is not defined
+           or llm_router_model_info_status.json.data | length == 0
+           else llm_router_model_info_status.json.data
+           | map(attribute='model_info.litellm_provider', default='')
+           | select('equalto', 'hosted_vllm') | list | length | string }}
+      hosted_vllm_prefix_rows: >-
+        {{ 'absent' if llm_router_model_info_status.json.data is not defined
+           or llm_router_model_info_status.json.data | length == 0
+           else llm_router_model_info_status.json.data
+           | map(attribute='litellm_params.model', default='')
+           | select('match', '^hosted_vllm/') | list | length | string }}
+      priced_rows: >-
+        {{ 'absent' if llm_router_model_info_status.json.data is not defined
+           or llm_router_model_info_status.json.data | length == 0
+           else llm_router_model_info_status.json.data
+           | map(attribute='model_info.input_cost_per_token', default=0)
+           | select('number') | select('gt', 0) | list | length | string }}
+      hermes_cloud_rows: >-
+        {{ 'absent' if llm_router_model_info_status.json.data is not defined
+           or llm_router_model_info_status.json.data | length == 0
+           else llm_router_model_info_status.json.data
+           | selectattr('model_name', 'in', llm_router_hermes_cloud_models_credentialed
+           | map(attribute='route_group') | list) | list | length | string }}
+      hermes_cloud_priced_rows: >-
+        {{ 'absent' if llm_router_model_info_status.json.data is not defined
+           or llm_router_model_info_status.json.data | length == 0
+           else llm_router_model_info_status.json.data
+           | selectattr('model_name', 'in', llm_router_hermes_cloud_models_credentialed
+           | map(attribute='route_group') | list)
+           | map(attribute='model_info.input_cost_per_token', default=0)
+           | select('number') | select('gt', 0) | list | length | string }}
+
 # Virtual keys, their budgets, and caller-facing roles (seed-consumers.yml)
 # are NOT imported here: they write to the pool's SHARED database, so
 # running them once per serial:1 member repeated the same writes three
