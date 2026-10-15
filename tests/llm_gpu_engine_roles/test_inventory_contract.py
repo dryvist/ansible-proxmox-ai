@@ -87,6 +87,7 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
 
     assert add_host["name"] == "{{ item.key }}"
     assert host_vars["llm_active_profile"] == "small"
+    assert host_vars["llm_gpu_serving_model_cache_mount_path"] == "/var/lib/llm"
     groups = add_host["groups"]
     assert "'llm-gpu-small' in (item.value.tags | default([]))" in groups
     assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
