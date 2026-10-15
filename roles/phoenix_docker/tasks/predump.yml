@@ -1,0 +1,111 @@
+---
+- name: Check for an existing Phoenix PostgreSQL database
+  ansible.builtin.stat:
+    path: "{{ phoenix_docker_postgres_data_dir }}/PG_VERSION"
+  register: phoenix_docker_postgres_version
+  when: phoenix_docker_predump_enabled | bool
+
+- name: Preview the Phoenix compose file without writing it
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ phoenix_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"
+  check_mode: true
+  diff: false
+  register: phoenix_docker_compose_preview
+  no_log: true
+  when:
+    - phoenix_docker_predump_enabled | bool
+    - phoenix_docker_postgres_version.stat.exists | default(false)
+
+- name: Report the Phoenix dump that check mode would take
+  ansible.builtin.debug:
+    msg: A pre-change Phoenix database dump would be taken.
+  when:
+    - phoenix_docker_predump_enabled | bool
+    - phoenix_docker_postgres_version.stat.exists | default(false)
+    - phoenix_docker_compose_preview.changed | default(false)
+    - ansible_check_mode
+
+- name: Take the Phoenix pre-change database dump
+  when:
+    - phoenix_docker_predump_enabled | bool
+    - phoenix_docker_postgres_version.stat.exists | default(false)
+    - phoenix_docker_compose_preview.changed | default(false)
+    - not ansible_check_mode
+  block:
+    - name: Start only Phoenix PostgreSQL without recreating it for the dump
+      community.docker.docker_compose_v2:
+        project_src: "{{ phoenix_docker_data_dir }}"
+        services: ["{{ phoenix_docker_postgres_service }}"]
+        state: present
+        recreate: never
+        wait: true
+      no_log: true
+
+    - name: Create the Phoenix database dump directory
+      ansible.builtin.file:
+        path: "{{ phoenix_docker_dump_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Set the Phoenix database dump file name
+      ansible.builtin.set_fact:
+        phoenix_docker_predump_filename: >-
+          {{ phoenix_docker_dump_prefix }}-{{ ansible_date_time.iso8601_basic_short }}.dump
+
+    - name: Create a custom-format Phoenix PostgreSQL dump in the database container
+      community.docker.docker_compose_v2_exec:
+        project_src: "{{ phoenix_docker_data_dir }}"
+        service: "{{ phoenix_docker_postgres_service }}"
+        argv:
+          - pg_dump
+          - --format=custom
+          - --username
+          - "{{ phoenix_docker_postgres_user }}"
+          - --dbname
+          - "{{ phoenix_docker_postgres_db }}"
+          - --file
+          - "{{ phoenix_docker_dump_container_path }}/{{ phoenix_docker_predump_filename }}"
+      register: phoenix_docker_predump_exec
+      failed_when: phoenix_docker_predump_exec.rc != 0
+
+    - name: Copy the Phoenix database dump out of the PostgreSQL data directory
+      ansible.builtin.copy:
+        src: "{{ phoenix_docker_postgres_data_dir }}/{{ phoenix_docker_predump_filename }}"
+        dest: "{{ phoenix_docker_dump_dir }}/{{ phoenix_docker_predump_filename }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Remove the temporary Phoenix database dump from PostgreSQL data
+      ansible.builtin.file:
+        path: "{{ phoenix_docker_postgres_data_dir }}/{{ phoenix_docker_predump_filename }}"
+        state: absent
+
+    - name: Inspect the saved Phoenix database dump
+      ansible.builtin.stat:
+        path: "{{ phoenix_docker_dump_dir }}/{{ phoenix_docker_predump_filename }}"
+      register: phoenix_docker_predump_final_stat
+
+    - name: Assert the saved Phoenix database dump is a non-empty regular file
+      ansible.builtin.assert:
+        that:
+          - phoenix_docker_predump_final_stat.stat.exists
+          - phoenix_docker_predump_final_stat.stat.isreg
+          - phoenix_docker_predump_final_stat.stat.size > 0
+        fail_msg: >-
+          Phoenix database dump validation failed at
+          {{ phoenix_docker_dump_dir }}/{{ phoenix_docker_predump_filename }};
+          size={{ phoenix_docker_predump_final_stat.stat.size | default(0) }} bytes.
+
+    - name: Report the saved Phoenix database dump path and size
+      ansible.builtin.debug:
+        msg: >-
+          {{ phoenix_docker_dump_dir }}/{{ phoenix_docker_predump_filename }}
+          {{ phoenix_docker_predump_final_stat.stat.size }} bytes
