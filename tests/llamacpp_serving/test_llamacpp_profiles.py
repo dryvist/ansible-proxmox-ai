@@ -80,7 +80,7 @@ def _exec_start(unit: str) -> str:
 
 
 def test_every_gguf_profile_renders_a_llama_server_command_from_profile_and_registry_fields():
-    assert set(_llama_profiles()) == {"medium-b", "16gb", "max", "glm-flash"}
+    assert set(_llama_profiles()) == {"small", "medium-b", "16gb", "max", "glm-flash"}
     for name, profile in _llama_profiles().items():
         unit = _render(name, profile)
         exec_start = _exec_start(unit)
