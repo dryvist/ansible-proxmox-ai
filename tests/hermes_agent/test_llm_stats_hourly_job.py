@@ -56,8 +56,8 @@ def test_job_runs_hourly_off_the_board_digest_tick() -> None:
 
 def test_prompt_carries_the_memory_and_feedback_protocol() -> None:
     prompt = DEFAULTS["hermes_agent_llm_stats_hourly_cron_prompt"]
-    for key in ("baselines", "sources", "feedback", "last"):
-        assert f"llm-stats:{key}" in prompt
+    assert "LLM-STATS-HOURLY" in prompt
+    assert "LLM-STATS-HOURLY-FEEDBACK" in prompt
     assert "reaction:added" in prompt
     assert '"Gaps:"' in prompt
 
@@ -81,6 +81,18 @@ def test_seed_queries_survive_the_cron_prompt_delivery_path() -> None:
         hermes_agent_direct_deliver="slack:stats",
         hermes_agent_prompts_path="/prompts",
     )
+    assert "LLM-STATS-HOURLY" in delivered
+    assert "LLM-STATS-HOURLY-FEEDBACK" in delivered
+    assert delivered.count('`tags: ["llm-stats"]`') == 2
+    assert (
+        "first make ONE `hindsight_recall` call at the start with `query` set to "
+        "`LLM-STATS-HOURLY hourly local LLM stats report YYYY-MM-DD HH:00 UTC`, "
+        "using the previous UTC hour for the date-hour."
+    ) in delivered
+    assert (
+        "`hindsight_recall` accepts only `query`; do not pass tags, ids, limits, "
+        "budgets or time windows as arguments to it."
+    ) in delivered
     assert len(SEED_QUERIES) == 6
     for query in SEED_QUERIES:
         assert query in delivered
@@ -159,7 +171,8 @@ def test_prompt_makes_the_report_the_final_response_and_saves_feedback_per_turn(
 
     feedback = prompt.split("FEEDBACK.", 1)[1].split("FORMAT.", 1)[0]
     assert "Make ONE `hindsight_retain` call" in feedback
-    assert 'dated "llm-stats:feedback" line naming the sections that report had' in feedback
+    assert "`content` beginning `LLM-STATS-HOURLY-FEEDBACK`" in feedback
+    assert '`tags: ["llm-stats"]`' in feedback
     assert "then answer with one short acknowledgement" in feedback
     assert "using the end-of-run `hindsight_retain` call" not in feedback
 

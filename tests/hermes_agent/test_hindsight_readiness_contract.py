@@ -84,13 +84,27 @@ def test_hindsight_client_is_managed_in_the_hermes_uv_venv() -> None:
 
 def test_hindsight_readiness_probe_is_read_only_and_uses_rendered_agent_config() -> None:
     probe = _verify_task("Gate — Hindsight performs a read-only recall from this agent bank")
-    source = probe["ansible.builtin.command"]["argv"][2]
+    argv = probe["ansible.builtin.command"]["argv"]
+    defaults = role_defaults(ROLE_ROOT)
+    assert argv[:2] == ["timeout", "{{ hermes_agent_verify_hindsight_timeout }}"]
+    assert defaults["hermes_agent_verify_hindsight_timeout"] == "60s"
+    assert argv[2] == "{{ hermes_agent_venv_python }}"
+    assert argv[3] == "-c"
+    assert probe["retries"] == "{{ hermes_agent_verify_probe_retries }}"
+    assert probe["delay"] == "{{ hermes_agent_verify_probe_delay }}"
+    assert probe["until"] == "hermes_agent_hindsight_recall_probe.rc == 0"
+    assert probe["check_mode"] is False
+    assert probe["when"] == "hermes_agent_memory_provider == 'hindsight'"
+
+    source = argv[4]
 
     assert "from hindsight_client import Hindsight" in source
     assert "hindsight/config.json" in source
     assert "client.arecall(" in source
     assert 'api_key=config["api_key"]' in source
     assert "bank_id=config[\"bank_id\"]" in source
+    assert 'tags=["ansible-readiness-probe"]' in source
+    assert 'tags_match="any_strict"' in source
     assert "retain" not in source.lower()
 
 
