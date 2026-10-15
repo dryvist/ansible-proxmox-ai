@@ -201,7 +201,8 @@ def test_running_litellm_version_is_reported_without_secrets():
     uri = version_read["ansible.builtin.uri"]
     message = version_report["ansible.builtin.debug"]["msg"]
 
-    assert uri["url"].endswith("/health/readiness/details")
+    assert uri["url"].endswith("{{ llm_router_readiness_path }}/details")
+    assert uri["url"].endswith("/details")
     assert uri["headers"]["Authorization"] == "Bearer {{ llm_router_master_key }}"
     assert uri["status_code"] == 200
     assert uri["timeout"] == "{{ llm_router_seed_request_timeout }}"
