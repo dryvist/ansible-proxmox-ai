@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -175,7 +176,92 @@ def test_restart_marker_is_read_only_and_handler_writes_the_digest():
     handlers = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
     stamp = next(handler for handler in handlers if handler["name"] == "Record the gateway restart")
     copy = stamp["ansible.builtin.copy"]
-    assert copy["path"] == "{{ hermes_agent_gateway_restart_marker }}"
+    assert copy["dest"] == "{{ hermes_agent_gateway_restart_marker }}"
     assert copy["owner"] == "root"
     assert copy["group"] == "root"
     assert copy["mode"] == "0600"
+
+
+def test_gateway_marker_modules_execute_with_ansible_check_mode(tmp_path):
+    marker = tmp_path / "gateway-restart.marker"
+    marker.write_text("old digest\n")
+    inputs = [tmp_path / name for name in ("hermes.env", "config.yaml", "gateway.service")]
+    for path in inputs:
+        path.write_text("test input\n")
+
+    tasks = _tasks()
+    stat_inputs = next(task for task in tasks if task["name"] == "Stat the gateway input files")
+    stat_inputs["loop"] = [str(path) for path in inputs]
+    probe = next(task for task in tasks if task["name"] == PROBE)
+    probe.pop("notify")
+    play_tasks = [
+        task
+        for task in tasks
+        if task["name"]
+        in {
+            "Stat the gateway input files",
+            "Set the desired gateway input digest",
+            "Stat the gateway restart marker",
+            "Read the recorded gateway digest",
+            PROBE,
+        }
+    ]
+    handler = next(
+        handler
+        for handler in yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
+        if handler["name"] == "Record the gateway restart"
+    )
+    handler.pop("listen")
+    play_tasks.append(handler)
+
+    playbook = tmp_path / "gateway-marker.yml"
+    inventory = tmp_path / "inventory.yml"
+    inventory.write_text(
+        yaml.safe_dump({"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}})
+    )
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Validate gateway restart marker modules",
+                    "hosts": "localhost",
+                    "connection": "local",
+                    "gather_facts": False,
+                    "vars": {
+                        "hermes_agent_hermes_home": str(tmp_path),
+                        "hermes_agent_gateway_restart_marker": str(marker),
+                    },
+                    "tasks": play_tasks,
+                }
+            ],
+            sort_keys=False,
+        )
+    )
+    result = subprocess.run(
+        [
+            "ansible-playbook",
+            "--inventory",
+            str(inventory),
+            "--connection",
+            "local",
+            "--check",
+            str(playbook),
+        ],
+        cwd=ROLE.parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    for name in (
+        "Stat the gateway input files",
+        "Stat the gateway restart marker",
+        "Read the recorded gateway digest",
+        "Record the gateway restart",
+    ):
+        assert f"TASK [{name}]" in result.stdout
+    assert not any(
+        message in output.casefold()
+        for message in ("unsupported parameter", "missing required arguments", "unsupported parameters")
+    ), output
