@@ -158,3 +158,10 @@ def test_real_ansible_play_reconciles_bank_config_idempotently() -> None:
         checked = run(check=True)
         assert checked.returncode == 0, checked.stdout + checked.stderr
         assert not any(method == "PATCH" for method, _, _ in state.requests)
+
+        state.override = None
+        state.requests.clear()
+        pending = run(check=True)
+        assert pending.returncode == 0, pending.stdout + pending.stderr
+        assert "failed=0" in pending.stdout
+        assert not any(method == "PATCH" for method, _, _ in state.requests)
