@@ -1,5 +1,5 @@
 ---
-- name: Compare only MCP server names registered by the router
+- name: Compare registered MCP names and the explicit deny sentinel
   hosts: localhost
   gather_facts: false
   vars_files:
@@ -41,6 +41,10 @@
         value: true
         object_permission:
           mcp_servers: [context7]
+      - alias: sentinel-with-unregistered
+        value: true
+        object_permission:
+          mcp_servers: [no-mcp-servers, context7]
     _llm_router_workstation_virtual_keys:
       - alias: claude-code
       - alias: codex
@@ -73,6 +77,9 @@
               mcp_servers: [no-mcp-servers]
           - key_alias: no-registered-mcp
             object_permission:
+              mcp_servers: []
+          - key_alias: sentinel-with-unregistered
+            object_permission:
               mcp_servers: [no-mcp-servers]
     _llm_router_drift_expected_settings: []
   tasks:
@@ -82,7 +89,7 @@
     - name: Project expected key flags with Slack disabled
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-expected-keys.yml"
 
-    - name: Keep only registered MCP names and preserve other permission grants
+    - name: Keep registered names and the sentinel, preserving other grants
       ansible.builtin.assert:
         quiet: true
         that:
@@ -93,7 +100,8 @@
           - _llm_router_drift_expected_keys[1].flags.object_permission.mcp_tool_search_enabled
           - _llm_router_drift_expected_keys[3].flags.object_permission.mcp_servers == ['zammad']
           - _llm_router_drift_expected_keys[4].flags.object_permission.mcp_servers == ['no-mcp-servers']
-          - _llm_router_drift_expected_keys[5].flags.object_permission.mcp_servers == ['no-mcp-servers']
+          - _llm_router_drift_expected_keys[5].flags.object_permission.mcp_servers == []
+          - _llm_router_drift_expected_keys[6].flags.object_permission.mcp_servers == ['no-mcp-servers']
 
     - name: Compare projected expected and live key flags
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
@@ -125,6 +133,10 @@
           - >-
             (_llm_router_drift_messages
              | selectattr('item', 'search', '^key alias no-registered-mcp flags .*object_permission')
+             | list | length) == 0
+          - >-
+            (_llm_router_drift_messages
+             | selectattr('item', 'search', '^key alias sentinel-with-unregistered flags .*object_permission')
              | list | length) == 0
 
     - name: Enable the optional Slack registration fact
