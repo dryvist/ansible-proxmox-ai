@@ -76,6 +76,19 @@ def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
     assert profile(None, False) == "medium-a"
 
 
+def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostname():
+    host_vars = _load(REPO_ROOT / "inventory/host_vars/llm-blackwell-7-96GB-small.yml")
+    inventory_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
+    add_host = next(
+        task["ansible.builtin.add_host"]
+        for task in _walk(inventory_tasks)
+        if "ansible.builtin.add_host" in task
+    )
+
+    assert add_host["name"] == "{{ item.key }}"
+    assert host_vars["llm_active_profile"] == "small"
+
+
 def test_inventory_loader_assigns_selected_router_membership_and_retains_both_engine_identities():
     loader = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml")
     host_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")

@@ -83,6 +83,19 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     assert len(artifacts_by_id) == len(artifacts)
     assert all("upstream_model_id" not in entry for entry in entries)
 
+    small = next(entry for entry in entries if entry["profile"] == "small")
+    small_artifact = artifacts_by_id[small["artifact_id"]]
+    assert small["artifact_id"] == "qwen35-9b-q4-k-m"
+    assert small["enabled"] is False
+    assert small["servable"] is False
+    assert small["context_window"] == 6144
+    assert small["max_output_tokens"] == 2048
+    assert serving_profiles["small"]["engine"] == "llama_cpp"
+    assert serving_profiles["small"]["max_model_len"] == 8192
+    assert small_artifact["format"] == "GGUF"
+    assert small_artifact["engines"] == ["llama_cpp"]
+    assert small_artifact["gguf_file"] == "Qwen3.5-9B-Q4_K_M.gguf"
+
     for entry in entries:
         assert entry["provider"] == "hosted_vllm"
         assert entry["tier"] == "gpu"

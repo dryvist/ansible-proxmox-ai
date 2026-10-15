@@ -42,15 +42,17 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
         "16gb",
         "max",
     }
-    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 461_354_853_641
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 454_654_678_918
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")} == {
-        "qwen35-9b-nvfp4",
         "qwen38-27b-nvfp4",
         "qwen38-27b-ud-q4-k-m",
         "flash-next-iq3-s",
     }
+    model_store_ids = {artifact["artifact_id"] for artifact in model_store}
+    assert "qwen35-9b-q4-k-m" in model_store_ids
+    assert "qwen35-9b-nvfp4" not in model_store_ids
     repositories = {artifact["hf_repo"] for artifact in model_store}
     for repository in repositories:
         entries = [artifact for artifact in model_store if artifact["hf_repo"] == repository]
