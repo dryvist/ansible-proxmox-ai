@@ -34,6 +34,12 @@ def test_config_deploy_leaves_restart_to_input_digest():
     assert "{{ hermes_agent_hermes_home }}/config.yaml" in stat["loop"]
 
 
+def test_hermes_home_mode_matches_runtime_enforcement():
+    tasks = _tasks(ROLE / "tasks" / "venv_extras_and_users.yml")
+    hermes_home = next(task for task in tasks if task["name"] == "Ensure HERMES_HOME exists")
+    assert hermes_home["ansible.builtin.file"]["mode"] == "0700"
+
+
 def test_real_ansible_restart_decision_tracks_config_digest(tmp_path: Path):
     env_file = tmp_path / ".env"
     config_file = tmp_path / "config.yaml"
