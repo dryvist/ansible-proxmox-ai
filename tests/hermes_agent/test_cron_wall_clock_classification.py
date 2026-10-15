@@ -111,7 +111,7 @@ def test_the_anchor_is_re_emitted_so_no_branch_is_dropped() -> None:
     """The replacement consumes its anchor; failing to re-emit deletes it."""
     patched = _patched()
 
-    assert patched.count('if lower.startswith("script timed out"):') == 1
+    assert patched.count('if (lower.startswith("script timed out")):') == 1
     for branch in PROVIDER_BRANCHES:
         assert branch in patched
 
