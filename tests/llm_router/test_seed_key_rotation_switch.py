@@ -12,6 +12,7 @@ test_seed_key_live_aliases.yml's source-assertion style for this file.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +36,23 @@ def test_delete_task_deletes_by_alias_not_by_token() -> None:
 
 def test_delete_task_is_gated_on_a_non_empty_rotate_list() -> None:
     assert "when: (llm_router_rotate_key_aliases | default([]) | length) > 0" in SEED_KEYS_SOURCE
+
+
+def test_delete_task_treats_an_absent_alias_as_done() -> None:
+    delete_start = SEED_KEYS_SOURCE.index(
+        "- name: Delete the live key for every alias flagged for rotation"
+    )
+    delete_end = SEED_KEYS_SOURCE.index("\n- name:", delete_start + 1)
+    delete_task = SEED_KEYS_SOURCE[delete_start:delete_end]
+
+    assert "status_code: [200, 201, 404]" in delete_task
+    status_code_lists = re.findall(r"status_code:\s*\[([^\]]*)\]", delete_task)
+    assert status_code_lists == ["200, 201, 404"]
+    assert all(
+        code == 404 or not 400 <= code <= 599
+        for status_code_list in status_code_lists
+        for code in (int(value.strip()) for value in status_code_list.split(","))
+    )
 
 
 def test_keys_are_re_read_after_a_rotation_delete() -> None:
