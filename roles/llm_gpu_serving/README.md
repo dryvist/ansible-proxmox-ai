@@ -14,7 +14,8 @@ and serving on the shared API listener.
 ## Play
 
 `playbooks/llm-serving.yml` applies this role only to `llm_gpu_legacy_group`,
-which the inventory loader populates while no replacement engine pair is
+which the inventory loader populates from guests tagged `llm-gpu` (also added
+to `llm_gpu_group`) or `llm-gpu-small` while no replacement engine pair is
 declared. Once the pair exists, the loader selects one engine-specific serving
 group and routes `llm_gpu_group` to that same member. `playbooks/site.yml`
 imports the serving playbook before the router pool. `llm_active_profile`

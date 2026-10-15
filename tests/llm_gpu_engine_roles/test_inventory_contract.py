@@ -87,6 +87,9 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
 
     assert add_host["name"] == "{{ item.key }}"
     assert host_vars["llm_active_profile"] == "small"
+    groups = add_host["groups"]
+    assert "'llm-gpu-small' in (item.value.tags | default([]))" in groups
+    assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
 
 
 def test_inventory_loader_assigns_selected_router_membership_and_retains_both_engine_identities():
