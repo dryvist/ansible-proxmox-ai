@@ -239,3 +239,81 @@
     mode: "0640"
   notify: Restart hermes-gateway
   when: hermes_agent_memory_provider == 'hindsight'
+
+- name: Manage Splunk memory bank extraction mode
+  when:
+    - hermes_agent_splunk_memory_bank_id == 'hermes-splunk'
+    - hermes_agent_splunk_memory_retain_extraction_mode | default('') | length > 0
+    - hermes_agent_memory_api_url | default('') | length > 0
+    - hermes_agent_memory_api_key | default('') | length > 0
+  vars:
+    hermes_agent_splunk_memory_config_url: >-
+      {{ hermes_agent_memory_api_url }}{{ '/v1/default/banks/'
+      ~ hermes_agent_splunk_memory_bank_id }}/config
+  block:
+    - name: Read the Splunk memory bank configuration
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_splunk_memory_config_url }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ hermes_agent_memory_api_key }}"
+        status_code: 200
+        timeout: 30
+      register: hermes_agent_splunk_memory_bank_config
+      until: hermes_agent_splunk_memory_bank_config is succeeded
+      retries: 2
+      delay: 5
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: Set the Splunk memory bank extraction mode
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_splunk_memory_config_url }}"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ hermes_agent_memory_api_key }}"
+        body_format: json
+        body:
+          updates:
+            retain_extraction_mode: "{{ hermes_agent_splunk_memory_retain_extraction_mode }}"
+        status_code: 200
+        timeout: 30
+      when:
+        - not ansible_check_mode
+        - >-
+          hermes_agent_splunk_memory_bank_config.json.overrides.get('retain_extraction_mode')
+          != hermes_agent_splunk_memory_retain_extraction_mode
+      register: hermes_agent_splunk_memory_bank_patch
+      until: hermes_agent_splunk_memory_bank_patch is succeeded
+      retries: 2
+      delay: 5
+      changed_when: true
+      no_log: true
+
+    - name: Read back the Splunk memory bank extraction mode
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_splunk_memory_config_url }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ hermes_agent_memory_api_key }}"
+        status_code: 200
+        timeout: 30
+      register: hermes_agent_splunk_memory_bank_readback
+      until: hermes_agent_splunk_memory_bank_readback is succeeded
+      retries: 2
+      delay: 5
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: Assert the Splunk memory bank extraction mode
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            hermes_agent_splunk_memory_bank_readback.json.overrides.retain_extraction_mode
+            == hermes_agent_splunk_memory_retain_extraction_mode
+          - >-
+            hermes_agent_splunk_memory_bank_readback.json.config.retain_extraction_mode
+            == hermes_agent_splunk_memory_retain_extraction_mode
