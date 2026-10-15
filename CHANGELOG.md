@@ -1,5 +1,67 @@
 # Changelog
 
+## [2.2.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.1.0...v2.2.0) (2026-10-15)
+
+
+### Features
+
+* **hermes_agent:** forward systemd lifecycle lines for hermes units ([#1455](https://github.com/dryvist/ansible-proxmox-ai/issues/1455)) ([31bb456](https://github.com/dryvist/ansible-proxmox-ai/commit/31bb456b615244545c2d60205465ce6706974d93))
+* **hermes_agent:** pin auxiliary tasks to the router ([#1494](https://github.com/dryvist/ansible-proxmox-ai/issues/1494)) ([4c1ed71](https://github.com/dryvist/ansible-proxmox-ai/commit/4c1ed711c4be1165ed78171e1aec93f8ad32e6e2))
+* **hermes_agent:** set chunk-only retain extraction on the Splunk memory bank ([#1493](https://github.com/dryvist/ansible-proxmox-ai/issues/1493)) ([ece7948](https://github.com/dryvist/ansible-proxmox-ai/commit/ece7948cbb98a8cce82795faa66a42ad67742ea5))
+* **laya_systemone:** serve the English classifier ([#1451](https://github.com/dryvist/ansible-proxmox-ai/issues/1451)) ([a452287](https://github.com/dryvist/ansible-proxmox-ai/commit/a4522873bff107d24be2b0ad31b88ec96e930f9b))
+* **llm_gpu_serving:** serve the small profile with llama.cpp ([#1485](https://github.com/dryvist/ansible-proxmox-ai/issues/1485)) ([729b387](https://github.com/dryvist/ansible-proxmox-ai/commit/729b387c753364f5d084a8f97c21fab45a5f3cb2))
+* **llm_router:** read the router probe paths from the published inventory constants ([#1480](https://github.com/dryvist/ansible-proxmox-ai/issues/1480)) ([cf0b2bf](https://github.com/dryvist/ansible-proxmox-ai/commit/cf0b2bfc9c56580f338384c0419a573431367d18))
+* **llm-router:** report model rows and key aliases at converge ([#1461](https://github.com/dryvist/ansible-proxmox-ai/issues/1461)) ([2d2069a](https://github.com/dryvist/ansible-proxmox-ai/commit/2d2069a42c88ea2e0edcda6523a4ebadab9cf956))
+* **llm-router:** report the running LiteLLM version in the converge output ([#1454](https://github.com/dryvist/ansible-proxmox-ai/issues/1454)) ([ada45c0](https://github.com/dryvist/ansible-proxmox-ai/commit/ada45c09b803d52c679f86c315f52f75a4972348))
+* **phoenix_docker:** add the postgres exporter sidecar ([f9a1b89](https://github.com/dryvist/ansible-proxmox-ai/commit/f9a1b8963c7f8f3f57bdd1fd37ea1fce7b2778b2))
+* **phoenix_docker:** add the postgres exporter sidecar ([#1477](https://github.com/dryvist/ansible-proxmox-ai/issues/1477)) ([22b7e75](https://github.com/dryvist/ansible-proxmox-ai/commit/22b7e7597e3421117c3ad8bf5c46d286f43803d3))
+* **phoenix_docker:** dump the database before a compose change ([#1481](https://github.com/dryvist/ansible-proxmox-ai/issues/1481)) ([72cf154](https://github.com/dryvist/ansible-proxmox-ai/commit/72cf1546fa5a81fb26b2e996cf4c3eca340ea305))
+* **phoenix_docker:** run the pre-change database dump detached ([fb6174e](https://github.com/dryvist/ansible-proxmox-ai/commit/fb6174e9468c614ced9961573a70e65ea510e41f))
+* **phoenix_docker:** run the pre-change database dump detached ([#1487](https://github.com/dryvist/ansible-proxmox-ai/issues/1487)) ([167744d](https://github.com/dryvist/ansible-proxmox-ai/commit/167744d10d57a607d25503cf185f7d89cb75d87f))
+* **phoenix_docker:** update the Phoenix image to version-20.21.3 ([265fc97](https://github.com/dryvist/ansible-proxmox-ai/commit/265fc97d8819055a4ac948d2d2fbe3e6115ef5b3))
+* **phoenix_docker:** update the Phoenix image to version-20.21.3 ([#1469](https://github.com/dryvist/ansible-proxmox-ai/issues/1469)) ([1306a7f](https://github.com/dryvist/ansible-proxmox-ai/commit/1306a7fcca27f33e333662c131c76f43b1e6fb8d))
+
+
+### Bug Fixes
+
+* **fabric_watchdog:** derive tier probe targets from the capability projection ([#1472](https://github.com/dryvist/ansible-proxmox-ai/issues/1472)) ([ccea630](https://github.com/dryvist/ansible-proxmox-ai/commit/ccea630665d33610d9c53a132902c7a8ff0dfd1d))
+* **hermes_agent:** budget the llm-stats-hourly prompt ([#1459](https://github.com/dryvist/ansible-proxmox-ai/issues/1459)) ([080b5e1](https://github.com/dryvist/ansible-proxmox-ai/commit/080b5e184f7491883403f9cbd6a45e30cbd72525))
+* **hermes_agent:** cap each Hindsight recall gate attempt ([e3448bb](https://github.com/dryvist/ansible-proxmox-ai/commit/e3448bb4ff280f50c1b9463dc097a4a417dfbd1d))
+* **hermes_agent:** cap each Hindsight recall gate attempt ([#1486](https://github.com/dryvist/ansible-proxmox-ai/issues/1486)) ([72fcad6](https://github.com/dryvist/ansible-proxmox-ai/commit/72fcad60d3b2a66f622950ffbc28abea9554902b))
+* **hermes_agent:** leave gateway restarts to the input digest after the config deploy ([#1491](https://github.com/dryvist/ansible-proxmox-ai/issues/1491)) ([ef7fe28](https://github.com/dryvist/ansible-proxmox-ai/commit/ef7fe28784b628e2ad3d6bc0489df5fae599b070))
+* **hermes_agent:** make the cron-pause name-match condition a real boolean ([#1468](https://github.com/dryvist/ansible-proxmox-ai/issues/1468)) ([43af186](https://github.com/dryvist/ansible-proxmox-ai/commit/43af1869dd87cb6edb0556005577a8363c071b99))
+* **hermes_agent:** make the Hindsight prefetch and stop-classifier patches idempotent ([#1492](https://github.com/dryvist/ansible-proxmox-ai/issues/1492)) ([dca10d1](https://github.com/dryvist/ansible-proxmox-ai/commit/dca10d1831bdca5c47cca2b9ed0b98a93ced3782))
+* **hermes_agent:** make the stats cron final response the report ([#1470](https://github.com/dryvist/ansible-proxmox-ai/issues/1470)) ([19d4d54](https://github.com/dryvist/ansible-proxmox-ai/commit/19d4d54ea7ab618cbc5e918b00edfb1c242d827a))
+* **hermes_agent:** mark stats memory entries so the previous report is recalled ([67df4b4](https://github.com/dryvist/ansible-proxmox-ai/commit/67df4b41867f6ffe6eefb21c42dcc044aab5537b))
+* **hermes_agent:** mark stats memory entries so the previous report is recalled ([#1482](https://github.com/dryvist/ansible-proxmox-ai/issues/1482)) ([eb96452](https://github.com/dryvist/ansible-proxmox-ai/commit/eb96452d9486a979803a849c2e7b83e6433c5311))
+* **hermes_agent:** name the stats cron memory tools and cap its tool calls ([#1467](https://github.com/dryvist/ansible-proxmox-ai/issues/1467)) ([43dba4b](https://github.com/dryvist/ansible-proxmox-ai/commit/43dba4b91a920597d5e6e9f779d03f3a7a5494f7))
+* **hermes_agent:** page the unit alert only on start-limit-hit ([#1458](https://github.com/dryvist/ansible-proxmox-ai/issues/1458)) ([86b8467](https://github.com/dryvist/ansible-proxmox-ai/commit/86b84679ed0feb9835fa6281c81d53f0c228563b))
+* **hermes_agent:** pause retired crons in every profile store ([#1471](https://github.com/dryvist/ansible-proxmox-ai/issues/1471)) ([1b13b8d](https://github.com/dryvist/ansible-proxmox-ai/commit/1b13b8dd9c5a4ff18f55f935e305e4d6421dc3fd))
+* **hermes_agent:** report AppRole logins and the studio install as unchanged on repeat runs ([#1490](https://github.com/dryvist/ansible-proxmox-ai/issues/1490)) ([42a5627](https://github.com/dryvist/ansible-proxmox-ai/commit/42a5627fc4e75b2be4d28e3cb865078d329526b8))
+* **hermes_agent:** require the stats cron report to be the last message ([dd107ec](https://github.com/dryvist/ansible-proxmox-ai/commit/dd107ec8b6ca5981001ee18057ef37834ad46ff8))
+* **hermes_agent:** require the stats cron report to be the last message ([#1478](https://github.com/dryvist/ansible-proxmox-ai/issues/1478)) ([cef1fc3](https://github.com/dryvist/ansible-proxmox-ai/commit/cef1fc389d29b4769558349829640fa1b45dea9a))
+* **hermes_agent:** restart the gateway only when its input contents change ([267396c](https://github.com/dryvist/ansible-proxmox-ai/commit/267396cf90172e0398fdbf9e535e999efb4a9b91))
+* **hermes_agent:** restart the gateway only when its input contents change ([#1484](https://github.com/dryvist/ansible-proxmox-ai/issues/1484)) ([609187d](https://github.com/dryvist/ansible-proxmox-ai/commit/609187d47686e450a2c6203c92a9c43ac031b879))
+* **hermes_agent:** seed the stats cron with validated bounded queries ([#1475](https://github.com/dryvist/ansible-proxmox-ai/issues/1475)) ([926e56d](https://github.com/dryvist/ansible-proxmox-ai/commit/926e56da3690ed59c06259709cf6dea9a2fcb6d5))
+* **hermes_agent:** treat a skipped installer checkout as unchanged ([#1479](https://github.com/dryvist/ansible-proxmox-ai/issues/1479)) ([b5a7a3e](https://github.com/dryvist/ansible-proxmox-ai/commit/b5a7a3e5abea936107d01d81705f11df1d8c7f21))
+* **hermes_agent:** use dest for the restart marker copy ([a0feb75](https://github.com/dryvist/ansible-proxmox-ai/commit/a0feb75bd064cd86312a287d9d7aa3e763f5dba7))
+* **hindsight_bank_dr:** resolve the container name without the docker role defaults ([#1474](https://github.com/dryvist/ansible-proxmox-ai/issues/1474)) ([98db8a3](https://github.com/dryvist/ansible-proxmox-ai/commit/98db8a3ae0783cdaeb004a79fc44c90d813ce19b))
+* **inventory:** serve the small GPU guest through the legacy GPU serving play ([#1488](https://github.com/dryvist/ansible-proxmox-ai/issues/1488)) ([3f28abf](https://github.com/dryvist/ansible-proxmox-ai/commit/3f28abf9547085d5b1675c22bf70e4947ea848b8))
+* **llm_router:** compare only registered MCP server names in the key drift check ([#1460](https://github.com/dryvist/ansible-proxmox-ai/issues/1460)) ([0acd59f](https://github.com/dryvist/ansible-proxmox-ai/commit/0acd59f7994bdc3416b4d1374dd5e336b5933c64))
+* **llm_router:** project an all-unregistered MCP grant as LiteLLM stores it ([#1496](https://github.com/dryvist/ansible-proxmox-ai/issues/1496)) ([49e0318](https://github.com/dryvist/ansible-proxmox-ai/commit/49e0318db03e962f0a21ba4761687a7dafa3b14f))
+* **llm_router:** remove false positives from the router drift check ([#1457](https://github.com/dryvist/ansible-proxmox-ai/issues/1457)) ([#1457](https://github.com/dryvist/ansible-proxmox-ai/issues/1457)) ([3025964](https://github.com/dryvist/ansible-proxmox-ai/commit/3025964141d9b037ee8fbe3a82b98245a1ef0673))
+* **llm_router:** resolve environment markers in the drift settings baseline ([#1463](https://github.com/dryvist/ansible-proxmox-ai/issues/1463)) ([e448aae](https://github.com/dryvist/ansible-proxmox-ai/commit/e448aae96a6f00a07bc0dde3d51fe2d6a7eaaf42))
+* **llm_router:** treat an absent rotate alias as already deleted ([#1495](https://github.com/dryvist/ansible-proxmox-ai/issues/1495)) ([f5f8b37](https://github.com/dryvist/ansible-proxmox-ai/commit/f5f8b37ecbf7f7eb2fd05a5ce6cc2330553032aa))
+* **llm-gpu:** set the small GPU guest model cache mount path ([#1489](https://github.com/dryvist/ansible-proxmox-ai/issues/1489)) ([d37c103](https://github.com/dryvist/ansible-proxmox-ai/commit/d37c1039f543c89a15ae3bcdd9d3ea32d42c1de1))
+* **renovate:** track Phoenix version-prefixed image tags ([aad0c1f](https://github.com/dryvist/ansible-proxmox-ai/commit/aad0c1fa6549877155fc260538e319a920e362d5))
+
+
+### Performance
+
+* **hermes_agent:** gate disabled cron pauses with the collected cron list ([#1462](https://github.com/dryvist/ansible-proxmox-ai/issues/1462)) ([4ba761d](https://github.com/dryvist/ansible-proxmox-ai/commit/4ba761d6496888113238671be5d159317ffe1dcd))
+* **hermes_agent:** reuse the cron snapshots in the enqueuer reconcile ([#1464](https://github.com/dryvist/ansible-proxmox-ai/issues/1464)) ([088d118](https://github.com/dryvist/ansible-proxmox-ai/commit/088d118c510392bb1a22f19703f437936dd19bad))
+* **inventory:** limit tofu_data propagation to selected hosts ([#1465](https://github.com/dryvist/ansible-proxmox-ai/issues/1465)) ([33d4d22](https://github.com/dryvist/ansible-proxmox-ai/commit/33d4d226506ed729682a75cfdfbdf94ae9db5ad1))
+
 ## [2.1.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.0.0...v2.1.0) (2026-10-14)
 
 
