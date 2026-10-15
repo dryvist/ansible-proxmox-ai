@@ -120,6 +120,21 @@
         group: root
         mode: "0755"
 
+    - name: Check the installed hermes-studio package version
+      ansible.builtin.stat:
+        path: >-
+          {{ hermes_agent_bun_install_root ~ '/install/global/node_modules/'
+             ~ hermes_agent_studio_package ~ '/package.json' }}
+      register: hermes_agent_studio_package_stat
+
+    - name: Read the installed hermes-studio package metadata
+      ansible.builtin.slurp:
+        src: >-
+          {{ hermes_agent_bun_install_root ~ '/install/global/node_modules/'
+             ~ hermes_agent_studio_package ~ '/package.json' }}
+      register: hermes_agent_studio_package_json
+      when: hermes_agent_studio_package_stat.stat.exists
+
     # Version pinned explicitly rather than `latest`, so a converge cannot
     # silently move the UI. --trust runs the package's postinstalls
     # (agent-browser, protobufjs); bun blocks them by default and the CLI needs
@@ -131,10 +146,14 @@
           {{ hermes_agent_studio_package }}@{{ hermes_agent_studio_version }}
       environment:
         BUN_INSTALL: "{{ hermes_agent_bun_install_root }}"
+        BUN_INSTALL_GLOBAL_DIR: "{{ hermes_agent_bun_install_root }}/install/global"
       register: hermes_agent_studio_install
-      changed_when: >-
-        not ansible_check_mode
-        and 'installed' in hermes_agent_studio_install.stdout
+      when: >-
+        not hermes_agent_studio_package_stat.stat.exists
+        or (hermes_agent_studio_package_json.content | b64decode | from_json).version
+        != hermes_agent_studio_version
+      changed_when: not ansible_check_mode
+      notify: Restart hermes-studio
 
     - name: Create the hermes-studio state directory
       ansible.builtin.file:
