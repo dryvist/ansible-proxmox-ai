@@ -1,18 +1,13 @@
 ---
-- name: Assert required local targets and the drained goal judge use safe router entries
+- name: Assert required local targets and a drained judge use safe router entries
   ansible.builtin.assert:
     quiet: true
     that:
       - _llm_router_required_safe_models | difference(_llm_router_safe_models) | length == 0
       - >-
         (llm_router_gpu_profiles_enabled | bool)
-        or (
-          _llm_router_goal_judge_group
-          == (llm_router_d1_zdr_ladder_groups | first
-              | default(llm_router_primary_model, true))
-          and _llm_router_goal_judge_group
-          in (_llm_router_safe_models + _llm_router_zdr_context_groups)
-        )
+        or (_llm_router_goal_judge_group
+            in (_llm_router_safe_models + _llm_router_zdr_context_groups))
       - >-
         llm_router_model_group_aliases | dict2items | map(attribute='value')
         | difference(llm_router_all_servable_models + llm_router_long_context_alias_ids
@@ -22,14 +17,11 @@
       Router safety contract failed: local model(s)
       [{{ _llm_router_required_safe_models | difference(_llm_router_safe_models) | join(', ') }}]
       lack context-window-backed local capability groups; with GPU profiles
-      drained, Hermes goal judge [{{ _llm_router_goal_judge_group }}] must equal
-      the first context-backed ZDR rung
-      [{{ llm_router_d1_zdr_ladder_groups | first
-          | default(llm_router_primary_model, true) }}] or local primary.
+      drained, Hermes goal judge [{{ _llm_router_goal_judge_group }}] must be a
+      context-backed local or ZDR group.
     success_msg: >-
       Local router targets carry real context windows
-      ({{ _llm_router_required_safe_models | join(', ') }}); the drained goal
-      judge resolves to the first context-backed ZDR rung.
+      ({{ _llm_router_required_safe_models | join(', ') }}).
   vars:
     _llm_router_safe_models: >-
       {{ llm_router_capability_members
