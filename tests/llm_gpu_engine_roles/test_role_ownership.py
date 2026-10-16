@@ -54,6 +54,8 @@ def test_engine_roles_own_only_their_profiles_and_selectors():
                 "nemotron-super-2x4096",
                 "muse-glimmer-30b",
                 "nemotron-lightning-30b-a3b",
+                "qwen38-64k-8-fp8-mtp",
+                "flash-next-64k-8-fp8-mtp",
             },
         ),
         ("llamacpp_serving", "llama_cpp", {"small", "medium-b", "16gb", "max", "glm-flash"}),

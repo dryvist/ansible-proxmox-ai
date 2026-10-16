@@ -77,6 +77,8 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "nemotron-super-2x4096",
         "muse-glimmer-30b",
         "nemotron-lightning-30b-a3b",
+        "qwen38-64k-8-fp8-mtp",
+        "flash-next-64k-8-fp8-mtp",
     }
     assert len({entry["client_model_id"] for entry in entries}) == len(entries)
     assert all(entry["artifact_id"] in artifacts_by_id for entry in entries)
@@ -154,6 +156,8 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "nemotron-super-2x4096": 0,
         "muse-glimmer-30b": 0,
         "nemotron-lightning-30b-a3b": 0,
+        "qwen38-64k-8-fp8-mtp": 0,
+        "flash-next-64k-8-fp8-mtp": 0,
     }
     assert {entry["profile"]: entry.get("route_group") for entry in entries} == {
         "small": "small",

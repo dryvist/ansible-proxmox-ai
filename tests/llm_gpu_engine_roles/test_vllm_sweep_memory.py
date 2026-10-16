@@ -75,17 +75,20 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         assert entry["max_parallel_requests"] == 64
         assert entry["context_window"] + entry["max_output_tokens"] == profile["max_model_len"]
 
+        gpu_resident_size = artifact.get(
+            "gpu_resident_size_bytes", artifact["model_store_size_bytes"]
+        )
         dtype_scale = 0.5 if profile["kv_cache_dtype"] == "fp8" else 1.0
         assert profile["kv_cache_dtype"] in {"auto", "fp8"}
         pool_token_capacity = floor(
             (GPU_MEMORY_GIB * profile["gpu_memory_utilization"]
-             - artifact["model_store_size_bytes"] / GIB
+             - gpu_resident_size / GIB
              - profile["memory_screen_reserve_gib"])
             * GIB
             / (artifact["kv_cache_bytes_per_token_bf16"] * dtype_scale)
         )
         required_tokens = profile["max_model_len"]
-        if name.startswith("qwen38-262k-"):
+        if name.startswith("qwen38-262k-") or name.endswith("-mtp"):
             required_tokens *= profile["max_num_seqs"]
         kv_gib = (
             artifact["kv_cache_bytes_per_token_bf16"]
@@ -93,7 +96,7 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
             * dtype_scale
             / GIB
         )
-        checkpoint_gib = artifact["model_store_size_bytes"] / GIB
+        checkpoint_gib = gpu_resident_size / GIB
         reserve_gib = profile["memory_screen_reserve_gib"]
         estimated_gib = checkpoint_gib + kv_gib + reserve_gib
         budget_gib = GPU_MEMORY_GIB * profile["gpu_memory_utilization"]
@@ -116,6 +119,7 @@ def test_sweep_artifact_sizes_match_the_hugging_face_reads():
             "nemotron-super-120b-a12b-nvfp4",
             "muse-glimmer-30b-nvfp4",
             "nemotron-lightning-30b-a3b-nvfp4",
+            "flash-next-nvfp4-nvidia",
         )
     } == {
         "qwen38-27b-nvfp4": 21945291730,
@@ -123,4 +127,20 @@ def test_sweep_artifact_sizes_match_the_hugging_face_reads():
         "nemotron-super-120b-a12b-nvfp4": 80365684262,
         "muse-glimmer-30b-nvfp4": 24698226650,
         "nemotron-lightning-30b-a3b-nvfp4": 21583785438,
+        "flash-next-nvfp4-nvidia": 132734506847,
     }
+
+
+def test_nvfp4_mtp_profiles_enable_fp8_kv_and_mtp():
+    profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    for family in ("qwen38", "flash-next"):
+        profile = profiles[f"{family}-64k-8-fp8-mtp"]
+        assert profile["max_model_len"] == 65536
+        assert profile["max_num_seqs"] == 8
+        assert profile["kv_cache_dtype"] == "fp8"
+        assert profile["speculative_config"] == {"method": "mtp", "num_speculative_tokens": 3}
+        assert profile["quantization"] == "modelopt"
+
+    flash = profiles["flash-next-64k-8-fp8-mtp"]
+    assert flash["engram_config"] == {"cpu_offload": True}
+    assert flash["enable_flashinfer_autotune"] is False

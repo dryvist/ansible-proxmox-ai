@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import jinja2
@@ -70,6 +71,7 @@ def _render(profile_name: str, profile: dict) -> str:
     )
     env.filters["comment"] = _comment_filter
     env.filters["mandatory"] = lambda value, message="": value
+    env.filters["to_json"] = json.dumps
     resolved_profile = {
         **profile,
         "port": env.from_string(str(profile["port"])).render(nvidia_gpu_guest_api_port=10434),
