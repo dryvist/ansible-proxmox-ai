@@ -20,7 +20,9 @@ def test_role_pins_the_trusted_artifact_and_supported_batch_sizes():
 
     assert defaults["strata_serving_version"] == "296b59d2f73c8f04a805df29c2fa97655adace78"
     assert defaults["strata_serving_artifact_id"] == "flash-next-iq3-s"
-    assert defaults["strata_serving_trusted_repo"] == "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
+    assert defaults["strata_serving_trusted_repo"] == (
+        "{{ nvidia_gpu_guest_artifacts_by_id[strata_serving_artifact_id].hf_repo }}"
+    )
     assert defaults["strata_serving_context_tokens"] == 65536
     assert defaults["strata_serving_parallel"] in [1, 4, 8]
     assert defaults["strata_serving_request_lines"] == 1
