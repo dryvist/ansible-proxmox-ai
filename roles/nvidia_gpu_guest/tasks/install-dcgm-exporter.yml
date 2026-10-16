@@ -1,0 +1,57 @@
+---
+- name: Install the compatible pinned DCGM and exporter packages
+  ansible.builtin.apt:
+    name: "{{ nvidia_gpu_guest_dcgm_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    install_recommends: false
+    allow_downgrade: true
+    # The package units start only after our collector file and systemd override exist.
+    policy_rc_d: 101
+  environment: "{{ llamacpp_release_proxy_environment }}"
+  when: >-
+    not (ansible_check_mode and
+         (nvidia_gpu_guest_nvidia_repo | default({})).changed | default(false))
+
+- name: Create the DCGM exporter configuration directory
+  ansible.builtin.file:
+    path: "{{ nvidia_gpu_guest_dcgm_collector_csv_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the upstream default counters with fan speed enabled
+  ansible.builtin.copy:
+    src: dcgm-exporter-counters.csv
+    dest: "{{ nvidia_gpu_guest_dcgm_collector_csv_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart DCGM exporter
+
+- name: Install the DCGM exporter collector override
+  ansible.builtin.copy:
+    dest: "{{ nvidia_gpu_guest_dcgm_exporter_dropin_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=/usr/bin/dcgm-exporter --collectors {{ nvidia_gpu_guest_dcgm_collector_csv_path }}
+  notify: Restart DCGM exporter
+
+- name: Enable and start the DCGM host engine
+  ansible.builtin.systemd:
+    name: nvidia-dcgm.service
+    enabled: true
+    state: started
+
+- name: Enable and start the DCGM exporter
+  ansible.builtin.systemd:
+    name: nvidia-dcgm-exporter.service
+    daemon_reload: true
+    enabled: true
+    state: started
