@@ -25,6 +25,9 @@ DECLARED_CONFIGS = (
     "mlx/cross-card",
     "lm-eval/quick-intelligence",
     "lm-eval/gpqa-diamond",
+    "lm-eval/ruler",
+    "lm-eval/coding",
+    "lm-eval/reasoning",
     "evalscope/livecodebench",
 )
 EVALSCOPE_OPTIONS = (
@@ -115,6 +118,53 @@ def test_target_play_receives_the_pinned_config_revision():
     assert saved["ansible.builtin.set_fact"]["_llm_campaign_config_ref"] == "{{ _llm_campaign_benchmarks_ref }}"
 
 
+def test_authenticated_recipes_require_runtime_alias_and_key():
+    tasks = _controller_tasks()
+    runtime = _named(tasks, "Require runtime endpoint inputs for authenticated model recipes")
+    target = yaml.safe_load(TARGET_PLAYBOOK.read_text(encoding="utf-8"))[0]
+    endpoint = _named(target["pre_tasks"], "Verify the live endpoint advertises the selected registry model")
+    model_check = _named(target["pre_tasks"], "Require the live endpoint model ID to match the selected artifact")
+    set_prepared = _named(tasks, "Save the prepared campaign inputs for the inventory target play")
+
+    assert "serving_model is defined" in runtime["ansible.builtin.assert"]["that"]
+    assert "lookup('env', 'OPENAI_API_KEY') | length > 0" in runtime["ansible.builtin.assert"]["that"]
+    assert runtime["no_log"] is True
+    assert "Authorization" in endpoint["ansible.builtin.uri"]["headers"]
+    assert endpoint["no_log"] == "{{ _llm_campaign_uses_api_key }}"
+    assert model_check["no_log"] == "{{ _llm_campaign_uses_api_key }}"
+    assert "_llm_campaign_serving_model" in set_prepared["ansible.builtin.set_fact"]
+
+
+def test_model_card_context_marker_resolves_against_the_selected_artifact():
+    tasks = _controller_tasks()
+    parse = _named(tasks, "Parse positive concurrency and context values")
+    validate = _named(tasks, "Validate each survey list is canonical, positive, and unique")
+    resolve = _named(tasks, "Resolve the model-card context marker using the recipe output reservation")
+
+    assert "context_list.split" in parse["ansible.builtin.set_fact"]["_llm_campaign_context_tokens"]
+    assert any(
+        "model_card_max" in condition
+        for condition in validate["ansible.builtin.assert"]["that"]
+    )
+    resolved = resolve["ansible.builtin.set_fact"]["_llm_campaign_context_values"]
+    assert "context_window_tokens" in resolved
+    assert "output_tokens" in resolved
+    assert "model_card_max" in resolved
+
+
+def test_lm_eval_preflight_checks_the_selected_execution_node():
+    tasks = _load_tasks(TASKS / "llm-model-campaign-preflight-tool.yml")
+    probe = _named(tasks, "Inspect the installed lm-eval command surface")
+    code_guard = _named(tasks, "Require explicit lm-eval unsafe-code acknowledgement for code recipes")
+
+    assert "localhost" in probe["delegate_to"]
+    assert "--metadata" in _named(tasks, "Require every lm-eval option used by the selected recipe")["ansible.builtin.assert"]["that"][-1]
+    assert any(
+        "--confirm_run_unsafe_code" in condition
+        for condition in code_guard["ansible.builtin.assert"]["that"]
+    )
+
+
 def test_power_guard_and_result_writer_use_the_live_enforced_limit_fixture():
     output = POWER_LIMIT_FIXTURE.read_text(encoding="utf-8").strip()
     gpu = [value.strip() for value in output.split(",")]
@@ -176,8 +226,20 @@ def test_evalscope_preflight_checks_each_recipe_option_and_the_sandbox_engine():
 def test_lm_eval_results_are_found_below_the_per_model_directory():
     tasks = _load_tasks(TASKS / "llm-model-campaign-cell.yml")
     find = _named(tasks, "Find lm-eval result and sample files for its converter")
+    fetch = _named(tasks, "Fetch lm-eval result and sibling sample files for conversion")
 
     assert find["ansible.builtin.find"]["recurse"] is True
+    assert "localhost" in find["delegate_to"]
+    assert "_llm_campaign_run.run_on != 'controller'" in fetch["when"]
+
+
+def test_keyed_controller_commands_keep_runtime_credentials_out_of_task_output():
+    tasks = _load_tasks(TASKS / "llm-model-campaign-cell.yml")
+    command = _named(tasks, "Run the tool-native command from the selected recipe row")
+
+    assert "OPENAI_API_KEY" in command["environment"]
+    assert "HF_ALLOW_CODE_EVAL" in command["environment"]
+    assert command["no_log"] == "{{ _llm_campaign_run.api_key_env is defined }}"
 
 
 def test_conversion_renders_the_dimensions_file_and_passes_it_to_the_converter():
@@ -221,6 +283,7 @@ def _render_converter_argv(model: dict[str, Any]) -> list[str]:
         "_llm_campaign_converter_file": {"path": "/tmp/results.json"},
         "_llm_campaign_run": {"converter": {"kind": "throughput", "suite": "campaign"}},
         "_llm_campaign_model": model,
+        "_llm_campaign_serving_model": "runtime-model-alias",
         "_llm_campaign_port": 8000,
         "engine": "vllm",
         "_llm_campaign_concurrency_value": 4,
@@ -259,6 +322,7 @@ def _cell(**overrides: Any) -> dict[str, Any]:
             "revision": "0123456789abcdef0123456789abcdef01234567",
             "quantization": "ExampleQuant",
         },
+        "_llm_campaign_serving_model": "runtime-model-alias",
         "_llm_campaign_run": {"name": "example-row", "output_tokens": 256, "repetitions": 2},
         "_llm_campaign_concurrency_value": 4,
         "_llm_campaign_started_utc": {"stdout": "2026-10-05T22:10:00Z"},

@@ -6,6 +6,8 @@
   vars:
     _llm_campaign: "{{ hostvars['localhost']._llm_campaign_config }}"
     _llm_campaign_model: "{{ hostvars['localhost']._llm_campaign_model }}"
+    _llm_campaign_serving_model: "{{ hostvars['localhost']._llm_campaign_serving_model }}"
+    _llm_campaign_uses_api_key: "{{ hostvars['localhost']._llm_campaign_uses_api_key }}"
     _llm_campaign_checkout: "{{ hostvars['localhost']._llm_campaign_checkout }}"
     _llm_campaign_workdir: "{{ hostvars['localhost']._llm_campaign_workdir }}"
     _llm_campaign_contexts: "{{ hostvars['localhost']._llm_campaign_contexts }}"
@@ -110,24 +112,34 @@
       ansible.builtin.uri:
         url: "{{ _llm_campaign_endpoint_root }}/v1/models"
         method: GET
+        headers: >-
+          {{ {'Authorization': 'Bearer ' ~ lookup('env', 'OPENAI_API_KEY')}
+             if _llm_campaign_uses_api_key else {} }}
         status_code: 200
         return_content: true
       delegate_to: localhost
       vars:
         ansible_become: false
       register: _llm_campaign_models_response
+      no_log: "{{ _llm_campaign_uses_api_key }}"
 
     - name: Require the live endpoint model ID to match the selected artifact
       ansible.builtin.assert:
         that:
           - >-
             _llm_campaign_models_response.json.data
-            | selectattr('id', 'equalto', _llm_campaign_model.hf_repo)
+            | selectattr(
+                'id',
+                'equalto',
+                _llm_campaign_serving_model if _llm_campaign_uses_api_key
+                else _llm_campaign_model.hf_repo
+              )
             | list | length == 1
         fail_msg: >-
           The selected model artifact is not the exact model currently served
           by the inventory-backed endpoint.
         quiet: true
+      no_log: "{{ _llm_campaign_uses_api_key }}"
 
     - name: Inspect the selected serving profile's rendered service command
       ansible.builtin.command:

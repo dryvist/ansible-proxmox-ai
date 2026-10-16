@@ -37,15 +37,20 @@
 
 - name: Build the config-declared arguments from the current row parameters
   ansible.builtin.set_fact:
-    result_dir: "{{ _llm_campaign_cell_target_dir }}"
+    result_dir: >-
+      {{ _llm_campaign_cell_controller_dir
+         if _llm_campaign_run.run_on == 'controller' else _llm_campaign_cell_target_dir }}
     result_filename: "{{ _llm_campaign_cell_slug }}.json"
     result_path: "{{ _llm_campaign_cell_controller_dir }}/{{ _llm_campaign_cell_slug }}.json"
-    output_path: "{{ _llm_campaign_cell_target_dir }}"
+    output_path: >-
+      {{ _llm_campaign_cell_controller_dir
+         if _llm_campaign_run.run_on == 'controller' else _llm_campaign_cell_target_dir }}
     context: "{{ _llm_campaign_context_value }}"
     concurrency: "{{ _llm_campaign_concurrency_value }}"
     repetition: "{{ _llm_campaign_repetition_value }}"
     output_tokens: "{{ _llm_campaign_run.output_tokens }}"
     model_id: "{{ _llm_campaign_model.hf_repo }}"
+    serving_model: "{{ _llm_campaign_serving_model }}"
     context_window_tokens: "{{ _llm_campaign_model.context_window_tokens }}"
     artifact_path: "{{ _llm_campaign_artifact_path }}"
     benchmark_endpoint: "{{ _llm_campaign_endpoint_root }}/v1"
@@ -73,8 +78,12 @@
   delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
   vars:
     ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
+  environment:
+    OPENAI_API_KEY: "{{ lookup('env', 'OPENAI_API_KEY') if _llm_campaign_run.api_key_env is defined else omit }}"
+    HF_ALLOW_CODE_EVAL: "{{ '1' if _llm_campaign_run.code_eval | default(false) else omit }}"
   register: _llm_campaign_command_result
   changed_when: true
+  no_log: "{{ _llm_campaign_run.api_key_env is defined }}"
 
 - name: Record the cell finish in UTC
   ansible.builtin.command:
@@ -88,17 +97,27 @@
 - name: Preserve raw tool stdout beside the selected model cache
   ansible.builtin.copy:
     content: "{{ _llm_campaign_command_result.stdout }}\n"
-    dest: "{{ _llm_campaign_cell_target_dir }}/{{ _llm_campaign_cell_slug }}.stdout"
+    dest: >-
+      {{ (_llm_campaign_cell_controller_dir
+          if _llm_campaign_run.run_on == 'controller' else _llm_campaign_cell_target_dir)
+         }}/{{ _llm_campaign_cell_slug }}.stdout
     mode: "0640"
-  delegate_to: "{{ machine }}"
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+  vars:
+    ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
   when: _llm_campaign_run.capture_stdout | default(false)
 
 - name: Preserve raw tool stderr beside the selected model cache
   ansible.builtin.copy:
     content: "{{ _llm_campaign_command_result.stderr }}\n"
-    dest: "{{ _llm_campaign_cell_target_dir }}/{{ _llm_campaign_cell_slug }}.stderr"
+    dest: >-
+      {{ (_llm_campaign_cell_controller_dir
+          if _llm_campaign_run.run_on == 'controller' else _llm_campaign_cell_target_dir)
+         }}/{{ _llm_campaign_cell_slug }}.stderr
     mode: "0640"
-  delegate_to: "{{ machine }}"
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+  vars:
+    ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
   when: _llm_campaign_run.capture_stdout | default(false)
 
 - name: Preserve campaign and cell parameters beside the raw output
@@ -111,6 +130,7 @@
           'run_name': _llm_campaign_run.name,
           'artifact_id': _llm_campaign_model.artifact_id,
           'model_id': _llm_campaign_model.hf_repo,
+          'serving_model': _llm_campaign_serving_model,
           'engine': engine,
           'model_size': model_size,
           'context_tokens': _llm_campaign_context_value,
@@ -138,7 +158,7 @@
     patterns: [results_*.json, samples_*.jsonl]
     recurse: true
     file_type: file
-  delegate_to: "{{ machine }}"
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
   register: _llm_campaign_lmeval_files
   when:
     - _llm_campaign_run.converter is defined
@@ -155,6 +175,7 @@
   when:
     - _llm_campaign_run.converter is defined
     - _llm_campaign_run.converter.kind == 'lm-eval'
+    - _llm_campaign_run.run_on != 'controller'
 
 - name: Find local converter inputs for this cell
   ansible.builtin.find:
