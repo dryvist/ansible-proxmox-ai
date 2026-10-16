@@ -227,6 +227,7 @@ def _render_converter_argv(model: dict[str, Any]) -> list[str]:
         "_llm_campaign_converter_file": {"path": "/tmp/results.json"},
         "_llm_campaign_run": {"converter": {"kind": "throughput", "suite": "campaign"}},
         "_llm_campaign_model": model,
+        "_llm_campaign_serving_model": "example-org/example-model",
         "_llm_campaign_port": 8000,
         "engine": "vllm",
         "_llm_campaign_concurrency_value": 4,
