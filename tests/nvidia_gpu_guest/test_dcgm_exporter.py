@@ -13,7 +13,7 @@ def _load(path: Path):
 
 def test_exporter_uses_the_release_compatible_package_pair():
     defaults = _load(ROLE / "defaults/main/20-dcgm-exporter.yml")
-    assert defaults["nvidia_gpu_guest_dcgm_version"] == "4.7.0"
+    assert defaults["nvidia_gpu_guest_dcgm_version"] == "4.6.1"
     assert defaults["nvidia_gpu_guest_dcgm_exporter_version"] == "4.8.4"
     assert "renovate: datasource=github-releases depName=NVIDIA/DCGM" in (
         ROLE / "defaults/main/20-dcgm-exporter.yml"
