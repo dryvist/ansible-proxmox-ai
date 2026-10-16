@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import jinja2
@@ -70,6 +71,7 @@ def _render(profile_name: str, profile: dict) -> str:
     )
     env.filters["comment"] = _comment_filter
     env.filters["mandatory"] = lambda value, message="": value
+    env.filters["to_json"] = json.dumps
     resolved_profile = {
         **profile,
         "port": env.from_string(str(profile["port"])).render(nvidia_gpu_guest_api_port=10434),
@@ -225,6 +227,14 @@ def test_each_vllm_profile_renders_its_runtime_flags():
         assert f"--reasoning-parser {reasoning_parser}" in exec_start
         if "kv_cache_dtype" in profile:
             assert f"--kv-cache-dtype {profile['kv_cache_dtype']}" in exec_start
+        if "quantization" in profile:
+            assert f"--quantization {profile['quantization']}" in exec_start
+        if "speculative_config" in profile:
+            assert f"--speculative-config '{json.dumps(profile['speculative_config'])}'" in exec_start
+        if "engram_config" in profile:
+            assert f"--engram-config '{json.dumps(profile['engram_config'])}'" in exec_start
+        if profile.get("enable_flashinfer_autotune") is False:
+            assert "--no-enable-flashinfer-autotune" in exec_start
         if artifact.get("trust_remote_code"):
             assert "--trust-remote-code" in exec_start
         if plugin := artifact.get("reasoning_parser_plugin"):
