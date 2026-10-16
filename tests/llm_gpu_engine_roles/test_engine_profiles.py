@@ -112,6 +112,7 @@ def _render(profile_name: str, profile: dict) -> str:
             "vllm_serving_profile": resolved_profile,
             "vllm_serving_profile_registry_model": registry_model,
             "vllm_serving_profile_model_dir": f"/cache/models/{registry_model['artifact']['hf_repo']}",
+            "vllm_serving_request_timing_dir": "/opt/llm-gpu-serving/request-timing",
             "nvidia_gpu_guest_artifacts_by_id": {
                 artifact["artifact_id"]: artifact for artifact in _artifacts()
             },
@@ -235,6 +236,8 @@ def test_each_vllm_profile_renders_its_runtime_flags():
         reasoning_parser = artifact.get("reasoning_parser", profile["reasoning_parser"])
         assert f"vllm serve /cache/models/{registry_model_id}" in exec_start
         assert f"--served-model-name {registry_model_id}" in exec_start
+        assert "--enable-request-id-headers" in exec_start
+        assert "--middleware request_timing:RequestTimingMiddleware" in exec_start
         assert "--port 10434" in exec_start
         assert f"--max-model-len {profile['max_model_len']}" in exec_start
         assert f"--max-num-seqs {profile['max_num_seqs']}" in exec_start
@@ -259,6 +262,13 @@ def test_vllm_profiles_leave_quantization_to_the_checkpoint():
     assert "--linear-backend b12x" in medium
     assert "--moe-backend b12x" not in medium
     assert "--kv-cache-dtype auto" in sweep
+
+
+def test_llama_cpp_profiles_emit_jsonl_request_timings():
+    profiles = _profiles()
+    for name, profile in profiles.items():
+        if profile["engine"] == "llama_cpp":
+            assert "--log-jsonl" in _exec_start(_render(name, profile))
 
 
 def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
