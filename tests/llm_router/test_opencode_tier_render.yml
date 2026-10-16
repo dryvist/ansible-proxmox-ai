@@ -240,3 +240,33 @@
           {{ _config_after_expiry.model_list
              | selectattr('model_name', 'equalto', _expiring_model.client_model_id)
              | first }}
+
+    - name: Render Responses-only OpenCode models without the chat bridge
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _responses_models | length > 0
+          - _response_rows | length == _responses_models | length
+          - >-
+            _response_rows | selectattr('model_info.mode', 'equalto', 'responses')
+            | list | length == _response_rows | length
+          - _response_rows | selectattr('litellm_params.use_chat_completions_api', 'defined') | list | length == 0
+          - _chat_rows | length > 0
+          - _chat_rows | rejectattr('litellm_params.use_chat_completions_api', 'equalto', true) | list | length == 0
+        fail_msg: "OpenCode API modes do not match the registry projection."
+      vars:
+        _responses_models: >-
+          {{ llm_router_opencode_models
+             | selectattr('api_mode', 'defined')
+             | selectattr('api_mode', 'equalto', 'responses') | list }}
+        _response_rows: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _responses_models | map(attribute='client_model_id') | list)
+             | list }}
+        _chat_rows: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _chat_models | map(attribute='client_model_id') | list)
+             | list }}
+        _chat_models: >-
+          {{ llm_router_opencode_models
+             | rejectattr('api_mode', 'defined') | list }}
