@@ -72,6 +72,44 @@
           ansible.builtin.set_fact:
             llm_gpu_engine_convergence_failed: true
 
+- name: Configure the selected Strata engine guest
+  hosts: llm_gpu_serving_strata_group
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tags:
+    - llm_gpu_serving
+    - strata_serving
+    - llm
+    - ai
+  pre_tasks:
+    - name: Require the Strata GPU serving host to be in nvidia_gpu_group
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname in groups.get('nvidia_gpu_group', [])
+        fail_msg: >-
+          {{ inventory_hostname }} is in a GPU serving group but not in
+          nvidia_gpu_group. Tag the guest nvidia-gpu or remove it from the
+          serving group.
+        quiet: true
+  tasks:
+    - name: Converge strata_serving (isolated — failure does not abort downstream plays)
+      block:
+        - name: Gather facts
+          ansible.builtin.include_tasks: tasks/gather_facts.yml
+        - name: Include strata_serving role
+          ansible.builtin.include_role:
+            name: strata_serving
+      rescue:
+        - name: Record isolated failure for the final run gate
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: strata_serving
+        - name: Mark the selected GPU engine convergence as failed
+          ansible.builtin.set_fact:
+            llm_gpu_engine_convergence_failed: true
+
 - name: Configure the Laya classifier guest
   hosts: llm_classify
   become: true

@@ -69,10 +69,11 @@ def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
             llm_gpu_active_profiles_by_engine=profiles_by_engine,
         )
 
-    all_engines = {"llama_cpp", "vllm", "sglang"}
+    all_engines = {"llama_cpp", "vllm", "sglang", "strata"}
     assert profile("llama_cpp", all_engines) == "medium-b"
     assert profile("vllm", all_engines) == "medium-a"
     assert profile("sglang", all_engines) == profiles_by_engine["sglang"]
+    assert profile("strata", all_engines) == "medium-a"
     # Preserve the legacy profile if the selected engine guest is absent.
     assert profile("sglang", {"llama_cpp", "vllm"}) == "medium-a"
     assert profile(None, set()) == "medium-a"
@@ -104,10 +105,13 @@ def test_inventory_loader_assigns_selected_router_membership_and_retains_engine_
     assert "load_tofu_gpu_engine_set_present" in groups
     assert "load_tofu_gpu_engine_selector == 'llama_cpp'" in groups
     assert "load_tofu_gpu_engine_selector == 'vllm'" in groups
+    assert "load_tofu_gpu_engine_selector == 'strata'" in groups
     assert "llm_gpu_engine_llama_cpp_group" in groups
     assert "llm_gpu_engine_vllm_group" in groups
     assert "llm_gpu_engine_sglang_group" in groups
+    assert "llm_gpu_engine_strata_group" in groups
     assert "llm_gpu_serving_sglang_group" in groups
+    assert "llm_gpu_serving_strata_group" in groups
     assert "llm_gpu_legacy_group" in groups
     assert "value.llm_gpu_engine_identity" in yaml.safe_dump(loader + host_tasks)
     selector = next(task for task in loader if task.get("name") == "Resolve the selector and declared GPU engine members")
@@ -115,7 +119,7 @@ def test_inventory_loader_assigns_selected_router_membership_and_retains_engine_
     assert "nvidia_gpu_group" in groups
     assert "'nvidia-gpu'" in groups
     assert "selectattr('value.llm_gpu_engine_identity', 'defined')" in members
-    assert "selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm', 'sglang'])" in members
+    assert "selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm', 'sglang', 'strata'])" in members
     assert "llm_gpu_group" in groups
 
 
@@ -131,10 +135,11 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
             "llm_gpu_serving_llama_cpp_group",
             "llm_gpu_serving_vllm_group",
             "llm_gpu_serving_sglang_group",
+            "llm_gpu_serving_strata_group",
         }
     ]
 
-    assert len(gpu_plays) == 4
+    assert len(gpu_plays) == 5
     assert all(hosts.index(play["hosts"]) < router for play in gpu_plays)
     assert all("docker_engine" not in yaml.safe_dump(play) for play in gpu_plays)
 

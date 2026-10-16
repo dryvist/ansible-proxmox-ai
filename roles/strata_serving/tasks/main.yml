@@ -1,0 +1,194 @@
+---
+- name: Install shared NVIDIA guest prerequisites
+  ansible.builtin.include_role:
+    name: nvidia_gpu_guest
+
+- name: Load the shared profile and artifact registry
+  ansible.builtin.include_role:
+    name: nvidia_gpu_guest
+    tasks_from: load-registry.yml
+
+- name: Validate the Strata serving inputs
+  ansible.builtin.assert:
+    that:
+      - strata_serving_parallel | int in [1, 4, 8]
+      - strata_serving_context_tokens | int >= 6144
+      - nvidia_gpu_guest_model_origin_mount_path | length > 0
+      - nvidia_gpu_guest_model_origin_mount_read_only | bool
+    fail_msg: >-
+      Strata requires the trusted read-only model-store mount, at least 6144
+      context tokens, and a batch-slot setting of 1, 4, or 8.
+    quiet: true
+
+- name: Resolve the trusted Strata artifact from the registry
+  ansible.builtin.set_fact:
+    strata_serving_artifact: "{{ nvidia_gpu_guest_artifacts_by_id[strata_serving_artifact_id] }}"
+
+- name: Require the pinned GGUF artifact and engine declaration
+  ansible.builtin.assert:
+    that:
+      - strata_serving_artifact.hf_repo == strata_serving_trusted_repo
+      - strata_serving_artifact.format == 'GGUF'
+      - strata_serving_artifact.revision is match('^[0-9a-f]{40}$')
+      - strata_serving_artifact.model_store | bool
+      - "'strata' in strata_serving_artifact.engines"
+      - strata_serving_artifact.gguf_file is search('^IQ3_S/.+00001-of-00002[.]gguf$')
+    fail_msg: The Strata recipe must resolve to the trusted, pinned, model-store GGUF artifact.
+    quiet: true
+
+- name: Resolve the GGUF directory from the read-only model-store mount
+  ansible.builtin.set_fact:
+    strata_serving_gguf_dir: >-
+      {{ nvidia_gpu_guest_model_origin_mount_path
+         ~ '/' ~ strata_serving_artifact.hf_repo
+         ~ '/' ~ strata_serving_model_size }}
+
+- name: Find the GGUF shards in the registered model-store directory
+  ansible.builtin.find:
+    paths: "{{ strata_serving_gguf_dir }}"
+    patterns: "*.gguf"
+    recurse: false
+    file_type: file
+  register: strata_serving_gguf_files
+
+- name: Require both registered model shards before setup
+  ansible.builtin.assert:
+    that:
+      - strata_serving_gguf_files.matched == 2
+      - >-
+        strata_serving_gguf_files.files
+        | selectattr('path', 'search', 'Qwen3[.]8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002[.]gguf$')
+        | list | length == 1
+    fail_msg: The trusted IQ3_S GGUF directory must contain its two model shards.
+    quiet: true
+
+- name: Install the pinned Strata source
+  ansible.builtin.git:
+    repo: "{{ strata_serving_repo }}"
+    dest: "{{ strata_serving_source_dir }}"
+    version: "{{ strata_serving_version }}"
+    update: true
+    force: false
+  register: strata_serving_checkout
+
+- name: Ensure ownership on the Strata checkout
+  ansible.builtin.file:
+    path: "{{ strata_serving_source_dir }}"
+    state: directory
+    owner: "{{ nvidia_gpu_guest_user }}"
+    group: "{{ nvidia_gpu_guest_group }}"
+    recurse: true
+
+- name: Inspect the generated Strata configuration
+  ansible.builtin.stat:
+    path: "{{ strata_serving_config_file }}"
+  register: strata_serving_config_stat
+
+- name: Read the generated Strata configuration
+  ansible.builtin.slurp:
+    src: "{{ strata_serving_config_file }}"
+  register: strata_serving_config_slurp
+  when: strata_serving_config_stat.stat.exists
+
+- name: Parse the generated Strata configuration
+  ansible.builtin.set_fact:
+    strata_serving_config: "{{ strata_serving_config_slurp.content | b64decode | from_json }}"
+  when: strata_serving_config_stat.stat.exists
+
+- name: Prepare the selected Strata batch size and MTP configuration
+  ansible.builtin.command:
+    argv:
+      - ./setup.sh
+      - --setup
+      - --yes
+      - --family
+      - qwen
+      - --model
+      - "{{ strata_serving_model_size }}"
+      - --context
+      - "{{ strata_serving_context_tokens }}"
+      - --gguf-dir
+      - "{{ strata_serving_gguf_dir }}"
+      - --data-dir
+      - "{{ strata_serving_data_dir }}"
+      - --parallel
+      - "{{ strata_serving_parallel }}"
+      - --host
+      - "{{ strata_serving_listen_host }}"
+      - --port
+      - "{{ nvidia_gpu_guest_api_port }}"
+      - --no-browser
+      - --no-start
+  args:
+    chdir: "{{ strata_serving_source_dir }}"
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  environment:
+    STRATA_REQUEST_LINES: "{{ strata_serving_request_lines }}"
+  when: >-
+    strata_serving_checkout.changed
+    or not strata_serving_config_stat.stat.exists
+    or strata_serving_config.parallel | default(0) | int != strata_serving_parallel | int
+    or (strata_serving_config.args | default([]) | join(' ')
+        | regex_search('--max-context[ =]+([0-9]+)', '\\1')
+        | default(['0'], true) | first | int) < strata_serving_context_tokens | int
+    or '--mtp' not in strata_serving_config.args | default([])
+  changed_when: true
+  notify: Restart Strata server
+
+- name: Read the prepared Strata configuration
+  ansible.builtin.slurp:
+    src: "{{ strata_serving_config_file }}"
+  register: strata_serving_config_slurp_final
+
+- name: Parse and validate the prepared Strata configuration
+  ansible.builtin.set_fact:
+    strata_serving_config_final: >-
+      {{ strata_serving_config_slurp_final.content | b64decode | from_json }}
+
+- name: Require the selected batch slots, context, and MTP flag in Strata config
+  ansible.builtin.assert:
+    that:
+      - strata_serving_config_final.parallel | int == strata_serving_parallel | int
+      - >-
+        strata_serving_config_final.args | join(' ')
+        | regex_search('--max-context[ =]+([0-9]+)', '\\1')
+        | default(['0'], true) | first | int >= strata_serving_context_tokens | int
+      - "'--mtp' in strata_serving_config_final.args"
+    fail_msg: The generated Strata configuration must match the selected batch, context, and MTP requirements.
+    quiet: true
+
+- name: Install the Strata systemd unit
+  ansible.builtin.template:
+    src: strata-serving.service.j2
+    dest: "{{ nvidia_gpu_guest_systemd_dir }}/{{ strata_serving_unit }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Strata server
+
+- name: Activate the prepared Strata service
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the Strata health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ nvidia_gpu_guest_api_port }}/health"
+    status_code: 200
+  register: strata_serving_health
+  retries: "{{ nvidia_gpu_guest_health_retries }}"
+  delay: "{{ nvidia_gpu_guest_health_delay }}"
+  until: strata_serving_health.status == 200
+
+- name: Verify Prometheus metrics are exposed
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ nvidia_gpu_guest_api_port }}/metrics?format=prometheus"
+    status_code: 200
+    return_content: true
+  register: strata_serving_metrics
+
+- name: Require the Prometheus-compatible Strata metrics surface
+  ansible.builtin.assert:
+    that:
+      - strata_serving_metrics.content is search('vllm:num_requests_running')
+    fail_msg: Strata must expose its Prometheus metrics in the vLLM-compatible format.
+    quiet: true
