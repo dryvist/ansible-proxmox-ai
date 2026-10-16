@@ -1,0 +1,40 @@
+---
+- name: Create the SGLang virtual environment
+  ansible.builtin.command:
+    argv:
+      - "{{ nvidia_gpu_guest_uv_bin }}"
+      - venv
+      - --python
+      - "{{ nvidia_gpu_guest_python }}"
+      - "{{ nvidia_gpu_guest_venv }}"
+    creates: "{{ nvidia_gpu_guest_venv }}/bin/python"
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  environment: "{{ nvidia_gpu_guest_uv_environment }}"
+
+- name: Install the pinned SGLang release
+  ansible.builtin.command:
+    argv:
+      - "{{ nvidia_gpu_guest_uv_bin }}"
+      - pip
+      - install
+      - --python
+      - "{{ nvidia_gpu_guest_venv }}/bin/python"
+      - "sglang=={{ sglang_serving_version }}"
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  environment: "{{ nvidia_gpu_guest_uv_environment }}"
+  register: sglang_serving_install
+  changed_when: >-
+    'Installed' in sglang_serving_install.stderr or
+    'Prepared' in sglang_serving_install.stderr or
+    'Uninstalled' in sglang_serving_install.stderr
+  notify:
+    - Stop every other GPU serving profile before switching
+    - Start the active GPU serving profile
+
+- name: Put the Hugging Face CLI on the default PATH
+  ansible.builtin.file:
+    src: "{{ nvidia_gpu_guest_hf_bin }}"
+    dest: /usr/local/bin/hf
+    state: link

@@ -159,7 +159,8 @@ def test_named_profiles_carry_the_serving_contract():
         "max": "llama_cpp",
         "glm-flash": "llama_cpp",
     }
-    assert set(_registry_profiles()) == set(profiles)
+    # Registry equality across every engine lives in test_sglang_profiles.py.
+    assert set(profiles) <= set(_registry_profiles())
     assert all(profile["enabled"] is True for profile in profiles.values())
     assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
     assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
@@ -203,7 +204,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert profiles["small"]["artifact_id"] == "qwen35-9b-q4-k-m"
     assert all(model["artifact"]["use"] == "serving" for model in profiles.values())
     assert profiles["small"]["artifact"]["engines"] == ["llama_cpp"]
-    assert profiles["medium-a"]["artifact"]["engines"] == ["vllm"]
+    assert profiles["medium-a"]["artifact"]["engines"] == ["vllm", "sglang"]
     assert profiles["medium-b"]["artifact"]["format"] == "GGUF"
     assert profiles["16gb"]["artifact"]["artifact_id"] == "qwen38-27b-ud-iq3-xxs"
     assert profiles["16gb"]["artifact"]["format"] == "GGUF"
@@ -262,7 +263,7 @@ def test_vllm_profiles_leave_quantization_to_the_checkpoint():
 
 
 def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
-    for role_root in (VLLM_ROOT, LLAMACPP_ROOT):
+    for role_root in (VLLM_ROOT, REPO_ROOT / "roles/sglang_serving", LLAMACPP_ROOT):
         render_tasks = yaml.safe_load((role_root / "tasks/render-units.yml").read_text(encoding="utf-8"))
         main_tasks = yaml.safe_load((role_root / "tasks/main.yml").read_text(encoding="utf-8"))
         activate_tasks = yaml.safe_load((role_root / "tasks/activate.yml").read_text(encoding="utf-8"))

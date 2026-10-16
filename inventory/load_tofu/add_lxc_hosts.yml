@@ -79,29 +79,30 @@
     load_tofu_gpu_engine_members: >-
       {{ (tofu_data.containers | default({}) | dict2items)
          | selectattr('value.llm_gpu_engine_identity', 'defined')
-         | selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm']) | list }}
+         | selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm', 'sglang']) | list }}
 
-- name: Record whether the replacement engine pair is declared
+- name: Record whether replacement engine guests are declared
   ansible.builtin.set_fact:
-    load_tofu_gpu_engine_pair_present: >-
+    load_tofu_gpu_engine_set_present: >-
       {{ load_tofu_gpu_engine_members | length > 0 }}
 
 - name: Log the GPU engine inventory decision
   ansible.builtin.debug:
     msg: >-
       GPU selector={{ load_tofu_gpu_engine_selector }};
-      replacement_pair={{ 'present' if load_tofu_gpu_engine_pair_present else 'absent' }};
-      legacy_group={{ 'enabled' if not load_tofu_gpu_engine_pair_present else 'excluded' }}.
+      replacement_engines={{ 'present' if load_tofu_gpu_engine_set_present else 'absent' }};
+      legacy_group={{ 'enabled' if not load_tofu_gpu_engine_set_present else 'excluded' }}.
 
-- name: Validate the published GPU engine selector and pair before host projection
+- name: Validate the published GPU engine selector and set before host projection
   ansible.builtin.assert:
     that:
-      - load_tofu_gpu_engine_selector in ['llama_cpp', 'vllm']
-      - load_tofu_gpu_engine_members | length == 0 or load_tofu_gpu_engine_members | length == 2
+      - load_tofu_gpu_engine_selector in ['llama_cpp', 'vllm', 'sglang']
+      - load_tofu_gpu_engine_members | length == 0 or load_tofu_gpu_engine_members | length in [2, 3]
       - >-
         load_tofu_gpu_engine_members | length == 0 or
-        (load_tofu_gpu_engine_members | map(attribute='value.llm_gpu_engine_identity') | sort | list
-         == ['llama_cpp', 'vllm'])
+        (load_tofu_gpu_engine_members
+         | map(attribute='value.llm_gpu_engine_identity') | unique | list | length
+         == load_tofu_gpu_engine_members | length)
       - >-
         load_tofu_gpu_engine_members | length == 0 or
         (load_tofu_gpu_engine_members
@@ -113,8 +114,8 @@
          | selectattr('value.started', 'equalto', true) | list | length == 1)
     fail_msg: >-
       Published GPU engine inventory must have a supported selector and either
-      no replacement guests or exactly one llama_cpp and one vllm guest with
-      exactly one selector-matching guest marked started.
+      no replacement guests or two or three unique engine guests with exactly
+      one selector-matching guest marked started.
 
 - name: Add AI LXC containers to inventory
   ansible.builtin.import_tasks: add_lxc_host_inventory.yml

@@ -20,6 +20,7 @@ REGISTRY_FILES = (
 )
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
+SGLANG_DEFAULTS = REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml"
 
 
 def _entries() -> list[dict]:
@@ -35,7 +36,8 @@ def _entries() -> list[dict]:
 def _serving_profiles() -> dict:
     vllm = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))["vllm_serving_profiles"]
     llamacpp = yaml.safe_load(LLAMACPP_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
-    return {**vllm, **llamacpp}
+    sglang = yaml.safe_load(SGLANG_DEFAULTS.read_text(encoding="utf-8"))["sglang_serving_profiles"]
+    return {**vllm, **llamacpp, **sglang}
 
 
 def _render(models: list[dict]) -> list[dict]:
