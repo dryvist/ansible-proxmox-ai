@@ -1,10 +1,10 @@
 # llm_gpu_serving
 
 Combined-engine role for GPU guests that are not members of a declared
-replacement engine pair. When a pair is declared, its guests use
+replacement engine set. When the set is declared, its guests use
 `nvidia_gpu_guest` for shared NVIDIA userspace and cache setup, plus exactly one
-of `llamacpp_serving` or `vllm_serving`; the engine identity and Tofu selector
-determine the serving group and router profile.
+of `llamacpp_serving`, `vllm_serving`, or `sglang_serving`; the engine identity
+and Tofu selector determine the serving group and router profile.
 
 Deploys profile-based GPU inference with vLLM packages for vLLM profiles and a
 prebuilt CUDA release binary for llama.cpp profiles. Each enabled profile
@@ -15,8 +15,8 @@ and serving on the shared API listener.
 
 `playbooks/llm-serving.yml` applies this role only to `llm_gpu_legacy_group`,
 which the inventory loader populates from guests tagged `llm-gpu` (also added
-to `llm_gpu_group`) or `llm-gpu-small` while no replacement engine pair is
-declared. Once the pair exists, the loader selects one engine-specific serving
+to `llm_gpu_group`) or `llm-gpu-small` while no replacement engine set is
+declared. Once the set exists, the loader selects one engine-specific serving
 group and routes `llm_gpu_group` to that same member. `playbooks/site.yml`
 imports the serving playbook before the router pool. `llm_active_profile`
 defaults through the Tofu selector and shared profile map in

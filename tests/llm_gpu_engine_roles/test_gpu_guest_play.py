@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NVIDIA_ROLE_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 LLAMACPP_ROLE_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 VLLM_ROLE_ROOT = REPO_ROOT / "roles/vllm_serving"
+SGLANG_ROLE_ROOT = REPO_ROOT / "roles/sglang_serving"
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
 GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
@@ -44,6 +45,7 @@ def _engine_plays() -> dict[str, dict]:
     hosts = {
         "llm_gpu_serving_llama_cpp_group": "llamacpp_serving",
         "llm_gpu_serving_vllm_group": "vllm_serving",
+        "llm_gpu_serving_sglang_group": "sglang_serving",
     }
     plays = {
         _host_group(play): play
@@ -68,6 +70,7 @@ def test_serving_plays_apply_each_engine_role_to_one_guest_at_a_time() -> None:
     expected_roles = {
         "llm_gpu_serving_llama_cpp_group": "llamacpp_serving",
         "llm_gpu_serving_vllm_group": "vllm_serving",
+        "llm_gpu_serving_sglang_group": "sglang_serving",
     }
 
     for host_group, play in _engine_plays().items():
@@ -117,10 +120,15 @@ def test_profile_comes_from_the_shared_selector_not_a_new_variable() -> None:
             llm_gpu_active_profiles_by_engine=all_vars["llm_gpu_active_profiles_by_engine"],
         )
 
-    engine_groups = {"llm_gpu_engine_llama_cpp_group": ["llama"], "llm_gpu_engine_vllm_group": ["vllm"]}
+    engine_groups = {
+        "llm_gpu_engine_llama_cpp_group": ["llama"],
+        "llm_gpu_engine_vllm_group": ["vllm"],
+        "llm_gpu_engine_sglang_group": ["sglang"],
+    }
     assert render_profile("llama_cpp", {}) == "medium-a"
     assert render_profile("llama_cpp", engine_groups) == "medium-b"
     assert render_profile("vllm", engine_groups) == "medium-a"
+    assert render_profile("sglang", engine_groups) == all_vars["llm_gpu_active_profiles_by_engine"]["sglang"]
 
 
 def test_no_play_gives_the_gpu_guest_a_container_engine() -> None:
@@ -133,16 +141,22 @@ def test_no_play_gives_the_gpu_guest_a_container_engine() -> None:
     assert "docker_engine" not in yaml.safe_dump(site_imports[0])
     assert "docker_engine" not in yaml.safe_dump(_load(LLAMACPP_ROLE_ROOT / "tasks/main.yml"))
     assert "docker_engine" not in yaml.safe_dump(_load(VLLM_ROLE_ROOT / "tasks/main.yml"))
+    assert "docker_engine" not in yaml.safe_dump(_load(SGLANG_ROLE_ROOT / "tasks/main.yml"))
 
 
-def test_both_engine_roles_depend_on_the_shared_nvidia_guest_role() -> None:
-    for role_root in (LLAMACPP_ROLE_ROOT, VLLM_ROLE_ROOT):
+def test_engine_roles_depend_on_the_shared_nvidia_guest_role() -> None:
+    for role_root in (LLAMACPP_ROLE_ROOT, VLLM_ROLE_ROOT, SGLANG_ROLE_ROOT):
         includes = [
             task["ansible.builtin.include_role"]["name"]
             for task in _walk(_load(role_root / "tasks/main.yml"))
             if "ansible.builtin.include_role" in task
         ]
         assert includes == ["nvidia_gpu_guest", "nvidia_gpu_guest"]
+
+    context = _load(NVIDIA_ROLE_ROOT / "defaults/main/10-engine-context.yml")
+    assert "sglang_serving_engine" in context["nvidia_gpu_guest_engine"]
+    assert "sglang_serving_profiles" in context["nvidia_gpu_guest_profiles"]
+    assert "sglang_serving_active_profile" in context["nvidia_gpu_guest_active_profile"]
 
 
 def test_legacy_gpu_serving_role_uses_the_shared_userspace_installer() -> None:

@@ -49,31 +49,33 @@ def test_site_reaches_the_serving_playbook_without_a_tag_filter():
 
 def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
     all_vars = _load(REPO_ROOT / "inventory/group_vars/all.yml")
-    assert all_vars["llm_gpu_active_profiles_by_engine"] == {
-        "llama_cpp": "medium-b",
-        "vllm": "medium-a",
-    }
+    profiles_by_engine = all_vars["llm_gpu_active_profiles_by_engine"]
+    assert profiles_by_engine["llama_cpp"] == "medium-b"
+    assert profiles_by_engine["vllm"] == "medium-a"
+    sglang_profiles = _load(REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml")[
+        "sglang_serving_profiles"
+    ]
+    assert sglang_profiles[profiles_by_engine["sglang"]]["engine"] == "sglang"
 
     template = jinja2.Environment().from_string(all_vars["llm_active_profile"])
 
-    def profile(engine: str | None, pair_present: bool) -> str:
+    def profile(engine: str | None, present_engines: set[str]) -> str:
         data = {} if engine is None else {"llm_gpu_engine": engine}
         hostvars = {"localhost": {"tofu_data": data}}
-        groups = {
-            "llm_gpu_engine_llama_cpp_group": ["llama-guest"] if pair_present else [],
-            "llm_gpu_engine_vllm_group": ["vllm-guest"] if pair_present else [],
-        }
+        groups = {f"llm_gpu_engine_{name}_group": [name] for name in present_engines}
         return template.render(
             hostvars=hostvars,
             groups=groups,
-            llm_gpu_active_profiles_by_engine=all_vars["llm_gpu_active_profiles_by_engine"],
+            llm_gpu_active_profiles_by_engine=profiles_by_engine,
         )
 
-    assert profile("llama_cpp", True) == "medium-b"
-    assert profile("vllm", True) == "medium-a"
-    # Until both replacement guests exist, preserve the current legacy profile.
-    assert profile("llama_cpp", False) == "medium-a"
-    assert profile(None, False) == "medium-a"
+    all_engines = {"llama_cpp", "vllm", "sglang"}
+    assert profile("llama_cpp", all_engines) == "medium-b"
+    assert profile("vllm", all_engines) == "medium-a"
+    assert profile("sglang", all_engines) == profiles_by_engine["sglang"]
+    # Preserve the legacy profile if the selected engine guest is absent.
+    assert profile("sglang", {"llama_cpp", "vllm"}) == "medium-a"
+    assert profile(None, set()) == "medium-a"
 
 
 def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostname():
@@ -93,17 +95,19 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
     assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
 
 
-def test_inventory_loader_assigns_selected_router_membership_and_retains_both_engine_identities():
+def test_inventory_loader_assigns_selected_router_membership_and_retains_engine_identities():
     loader = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml")
     host_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
     add_host = next(task["ansible.builtin.add_host"] for task in _walk(host_tasks) if "ansible.builtin.add_host" in task)
     groups = add_host["groups"]
 
-    assert "load_tofu_gpu_engine_pair_present" in groups
+    assert "load_tofu_gpu_engine_set_present" in groups
     assert "load_tofu_gpu_engine_selector == 'llama_cpp'" in groups
     assert "load_tofu_gpu_engine_selector == 'vllm'" in groups
     assert "llm_gpu_engine_llama_cpp_group" in groups
     assert "llm_gpu_engine_vllm_group" in groups
+    assert "llm_gpu_engine_sglang_group" in groups
+    assert "llm_gpu_serving_sglang_group" in groups
     assert "llm_gpu_legacy_group" in groups
     assert "value.llm_gpu_engine_identity" in yaml.safe_dump(loader + host_tasks)
     selector = next(task for task in loader if task.get("name") == "Resolve the selector and declared GPU engine members")
@@ -111,7 +115,7 @@ def test_inventory_loader_assigns_selected_router_membership_and_retains_both_en
     assert "nvidia_gpu_group" in groups
     assert "'nvidia-gpu'" in groups
     assert "selectattr('value.llm_gpu_engine_identity', 'defined')" in members
-    assert "selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm'])" in members
+    assert "selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm', 'sglang'])" in members
     assert "llm_gpu_group" in groups
 
 
@@ -126,10 +130,11 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
             "llm_gpu_legacy_group",
             "llm_gpu_serving_llama_cpp_group",
             "llm_gpu_serving_vllm_group",
+            "llm_gpu_serving_sglang_group",
         }
     ]
 
-    assert len(gpu_plays) == 3
+    assert len(gpu_plays) == 4
     assert all(hosts.index(play["hosts"]) < router for play in gpu_plays)
     assert all("docker_engine" not in yaml.safe_dump(play) for play in gpu_plays)
 
