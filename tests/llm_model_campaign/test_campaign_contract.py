@@ -51,6 +51,15 @@ def test_campaign_selects_one_exact_registry_artifact() -> None:
     assert "_llm_campaign_selected_artifacts | length == 1" in "\n".join(_assert_conditions(plays))
 
 
+def test_campaign_loads_the_mlx_artifact_shard() -> None:
+    tasks = yaml.safe_load(CAMPAIGN.read_text(encoding="utf-8"))[0]["tasks"]
+    assert any(
+        task.get("name") == "Load the MLX artifact shard"
+        and task["ansible.builtin.include_vars"]["file"].endswith("69-gpu-artifacts-mlx.yml")
+        for task in tasks
+    )
+
+
 def test_large_batched_bench_is_an_artifact_capability() -> None:
     campaign = yaml.safe_load(CAMPAIGN.read_text(encoding="utf-8"))
     conditions = "\n".join(_assert_conditions(campaign))

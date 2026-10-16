@@ -17,6 +17,7 @@ ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
     REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
     REPO_ROOT / "llm-models.d/68-gpu-stage0-artifacts.yml",
+    REPO_ROOT / "llm-models.d/69-gpu-artifacts-mlx.yml",
 )
 LOCAL_VERIFIER = SHARED_ROOT / "files/verify-local-model-store.py"
 
@@ -115,6 +116,16 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
 
     assert any(task.get("name") == "Assert each serving profile resolves to exactly one artifact" for task in registry_tasks)
     assert any(
+        task.get("name") == "Load the MLX artifact shard"
+        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_mlx_artifact_registry_file }}"
+        for task in registry_tasks
+    )
+    assert any(
+        task.get("name") == "Load the MLX artifact shard for cache sync"
+        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_mlx_artifact_registry_file }}"
+        for task in cache_tasks
+    )
+    assert any(
         task.get("name", "").startswith("Load the GLM-5.3-Flash artifact shard")
         and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
         for task in registry_tasks
@@ -150,6 +161,7 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     )
     assert any(
         task.get("name", "").startswith("Combine the campaign model artifact shards")
+        and "_llm_model_artifacts_mlx" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
         and "_llm_model_artifacts_glm53flash" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
         and "_llm_model_artifacts_nvfp4_sweep"
         in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
