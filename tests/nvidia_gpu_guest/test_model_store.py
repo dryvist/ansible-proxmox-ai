@@ -46,6 +46,7 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")} == {
+        "qwen38-27b-mlx-4bit",
         "qwen38-27b-nvfp4",
         "flash-next-nvfp4-nvidia",
         "qwen38-27b-ud-q4-k-m",

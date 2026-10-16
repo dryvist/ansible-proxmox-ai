@@ -91,13 +91,13 @@
                      | map('float') | map('round', 2) | unique | list
                      == [power_cap_w | float | round(2)])
                 or
-                (engine == 'mlx_lm'
+                (engine in ['mlx_lm', 'mlx_vlm_native', 'vllm_mlx']
                  and _llm_campaign_power_limit.rc != 0
                  and _llm_campaign_system_name.stdout | trim == 'Darwin'
                  and power_cap_w | float == 0)
             fail_msg: >-
               Survey power_cap_w must equal every NVIDIA GPU's enforced limit;
-              an uncapped value of zero is accepted only for an MLX target
+              an uncapped value of zero is accepted only for a Darwin MLX target
               whose inventory-backed platform is Darwin.
             quiet: true
 
@@ -289,7 +289,12 @@
         tasks_from: cache-sync.yml
       loop: >-
         {{ [_llm_campaign_model.artifact_id]
-           + (_llm_campaign_model.required_artifact_ids | default([])) }}
+           + (_llm_campaign_model.required_artifact_ids | default([]))
+           + ([_llm_campaign_model.mtp_artifact_id]
+              if engine == 'mlx_vlm_native'
+              and config_name is search('-mtp$')
+              and _llm_campaign_model.mtp_artifact_id is defined
+              else []) }}
       loop_control:
         loop_var: _llm_campaign_cache_artifact_id
         label: "{{ _llm_campaign_cache_artifact_id }}"

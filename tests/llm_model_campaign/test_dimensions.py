@@ -93,6 +93,12 @@ def test_target_play_receives_the_pinned_config_revision():
     assert saved["ansible.builtin.set_fact"]["_llm_campaign_config_ref"] == "{{ _llm_campaign_benchmarks_ref }}"
 
 
+def test_campaign_pins_a_full_benchmark_git_revision():
+    plays = _load_tasks(PLAYBOOKS / "llm-model-campaign.yml")
+
+    assert re.fullmatch(r"[0-9a-f]{40}", plays[0]["vars"]["_llm_campaign_benchmarks_ref"])
+
+
 def test_conversion_renders_the_dimensions_file_and_passes_it_to_the_converter():
     render, convert = _load_tasks(TASKS / "llm-model-campaign-convert.yml")
     template = render["ansible.builtin.template"]
