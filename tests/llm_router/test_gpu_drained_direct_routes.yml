@@ -1,0 +1,129 @@
+---
+- name: Render direct routes while GPU profiles are drained
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      benchmark_llm_router_key: fixture-direct-key
+    bao_local_llm_secrets: {}
+    llm_router_subdomain: pve.example.test
+    llm_large_serving_host: llm-large
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    llm_router_llm_large_base_url: http://localhost:11434/v1
+    llm_router_llm_gpu_base_url: http://localhost:10434/v1
+    llm_router_llm_vllm_base_url: http://localhost:10434/v1
+    ai_router_request_timeout_seconds: 2400
+    ai_router_retry_after_seconds: 2
+    ai_default_model: "{{ llm_router_vllm_medium_model }}"
+    hermes_brain_model: "{{ llm_router_vllm_medium_model }}"
+    hermes_goal_judge_model: judge
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+  tasks:
+    - name: Add an inventory-backed GPU endpoint
+      ansible.builtin.add_host:
+        name: llm-gpu-direct-fixture
+        groups: llm_gpu_group
+        ansible_connection: local
+
+    - name: Load role defaults and registry projections
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the same model and key catalogs as the router
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+        public: true
+
+    - name: Drain GPU profiles while retaining the selected direct endpoint
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: false
+        llm_router_llm_vllm_enabled: false
+        llm_router_vllm_precheck_passed: false
+        llm_active_profile: medium-a
+
+    - name: Apply the playbook model input projection
+      ansible.builtin.import_tasks: ../../playbooks/tasks/resolve_llm_router_model_inputs.yml
+
+    - name: Materialize the convergence assertion input projections
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assertion-inputs.yml
+
+    - name: Render the proxy config without external calls
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Direct routes stay isolated and safe defaults resolve to the primary
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_gpu_models | length == 0
+          - llm_router_direct_route_aliases | length == 2
+          - >-
+            llm_router_direct_route_aliases
+            | difference(_config.model_list | map(attribute='model_name') | list)
+            | length == 0
+          - llm_router_direct_route_aliases | intersect(llm_router_d1_ladder_groups) | length == 0
+          - llm_router_direct_route_aliases | intersect(llm_router_rendered_capability_names) | length == 0
+          - llm_router_direct_route_aliases | intersect(llm_router_entry_point_names) | length == 0
+          - llm_router_direct_route_aliases | intersect(llm_router_fallback_map.keys() | list) | length == 0
+          - llm_router_direct_route_aliases | intersect(llm_router_fallback_map.values() | flatten | list) | length == 0
+          - llm_router_direct_route_aliases | intersect(_role_chain_names) | length == 0
+          - _direct_key.models == llm_router_direct_route_aliases
+          - _other_key_models | intersect(llm_router_direct_route_aliases) | length == 0
+          - ai_default_model == llm_router_primary_model
+          - hermes_brain_model == llm_router_primary_model
+          - hermes_goal_judge_model == (llm_router_d1_zdr_ladder_groups | first)
+      vars:
+        _direct_key: >-
+          {{ llm_router_virtual_keys
+             | selectattr('alias', 'equalto', 'inference-direct-only') | first }}
+        _other_key_models: >-
+          {{ llm_router_virtual_keys
+             | rejectattr('alias', 'equalto', 'inference-direct-only')
+             | map(attribute='models') | flatten | list }}
+        _role_chain_names: >-
+          {{ (llm_router_role_deployments | map(attribute='model') | list)
+             + (llm_router_role_deployments | map(attribute='fallbacks') | flatten | list) }}
+
+    - name: Keep the safe-model assertion active with GPU profiles drained
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-safe-models.yml
+
+    - name: Drain Studio resident models from the shared ladders
+      ansible.builtin.set_fact:
+        llm_router_studio_profiles_enabled: false
+
+    - name: Render the router after the Studio drain
+      ansible.builtin.set_fact:
+        _studio_drained_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Studio drain removes resident groups from ladders and keeps direct routing
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _studio_ladder_groups | length > 0
+          - _studio_ladder_groups | intersect(llm_router_local_fallback_groups) | length == 0
+          - _studio_ladder_groups | intersect(llm_router_d1_ladder_groups) | length == 0
+          - _studio_ladder_groups | intersect(llm_router_d1_zdr_ladder_groups) | length == 0
+          - _studio_ladder_groups | intersect(llm_router_hermes_default_fallback_chain) | length == 0
+          - _studio_ladder_groups | intersect(llm_router_review_oss_chain) | length == 0
+          - >-
+            _studio_direct_aliases
+            | difference(_studio_drained_config.model_list | map(attribute='model_name') | list)
+            | length == 0
+      vars:
+        _studio_ladder_groups: >-
+          {{ llm_router_large_models
+             | selectattr('route_group', 'defined') | map(attribute='route_group') | unique | list }}
+        _studio_direct_aliases: >-
+          {{ llm_router_direct_studio_models
+             | map(attribute='direct_route_aliases') | flatten | list }}
