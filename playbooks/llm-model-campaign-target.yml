@@ -41,18 +41,6 @@
         file: "{{ playbook_dir }}/../roles/llm_gpu_serving/defaults/main/00-core.yml"
         name: _llm_campaign_role_defaults
 
-    - name: Read the shared GPU guest defaults for Strata preflight
-      ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/../roles/nvidia_gpu_guest/defaults/main/00-core.yml"
-        name: _llm_campaign_nvidia_defaults
-      when: engine == 'strata'
-
-    - name: Read the Strata role defaults for campaign preflight
-      ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/../roles/strata_serving/defaults/main/00-engine.yml"
-        name: _llm_campaign_strata_defaults
-      when: engine == 'strata'
-
     - name: Require the target-provisioned writable model cache
       ansible.builtin.assert:
         that:
@@ -203,81 +191,8 @@
         - engine in ['vllm', 'llama_cpp']
         - _llm_campaign_model.serving_profile is defined
 
-    - name: Inspect the active Strata systemd command
-      ansible.builtin.command:
-        argv:
-          - systemctl
-          - show
-          - --property=ExecStart
-          - --value
-          - "{{ _llm_campaign_nvidia_defaults.nvidia_gpu_guest_unit_prefix }}-strata.service"
-      register: _llm_campaign_strata_service_command
-      changed_when: false
-      when: engine == 'strata'
-
-    - name: Read the generated Strata configuration
-      ansible.builtin.slurp:
-        src: >-
-          {{ _llm_campaign_nvidia_defaults.nvidia_gpu_guest_install_dir
-             ~ '/strata/'
-             ~ _llm_campaign_strata_defaults.strata_serving_config_filename }}
-      register: _llm_campaign_strata_config_file
-      when: engine == 'strata'
-
-    - name: Parse the generated Strata configuration
-      ansible.builtin.set_fact:
-        _llm_campaign_strata_config: >-
-          {{ _llm_campaign_strata_config_file.content | b64decode | from_json }}
-      when: engine == 'strata'
-
-    - name: Require the selected Strata batch, MTP, and context configuration
-      ansible.builtin.assert:
-        that:
-          - >-
-            _llm_campaign_strata_service_command.stdout
-            is search(_llm_campaign_strata_defaults.strata_serving_run_script_filename)
-          - _llm_campaign_strata_config.parallel | int == _llm_campaign_strata_batch_size | int
-          - _llm_campaign_strata_batch_size | int in [1, 4, 8]
-          - "'--mtp' in _llm_campaign_strata_config.args"
-          - >-
-            _llm_campaign_strata_config.args | join(' ')
-            | regex_search('--max-context[ =]+([0-9]+)', '\\1')
-            | default(['0'], true) | first | int
-            >= _llm_campaign_contexts | max
-               + (_llm_campaign.run | map(attribute='output_tokens') | map('int') | max)
-        fail_msg: >-
-          Strata must use the IQ3_S runner, MTP, the requested batch setting,
-          and enough context for every campaign cell.
-        quiet: true
-      when: engine == 'strata'
-
-    - name: Verify the Strata Prometheus scrape endpoint
-      ansible.builtin.uri:
-        url: "{{ _llm_campaign_endpoint_root }}/metrics?format=prometheus"
-        method: GET
-        status_code: 200
-        return_content: true
-      delegate_to: localhost
-      vars:
-        ansible_become: false
-      register: _llm_campaign_strata_metrics
-      when: engine == 'strata'
-
-    - name: Require the Strata Prometheus metrics surface
-      ansible.builtin.assert:
-        that:
-          - _llm_campaign_strata_metrics.content is search('vllm:num_requests_running')
-        fail_msg: Strata must expose Prometheus metrics before the campaign starts.
-        quiet: true
-      when: engine == 'strata'
-
-    - name: Record the configured Strata context and release for result dimensions
-      ansible.builtin.set_fact:
-        _llm_campaign_strata_context_tokens: >-
-          {{ _llm_campaign_strata_config.args | join(' ')
-             | regex_search('--max-context[ =]+([0-9]+)', '\\1')
-             | default(['0'], true) | first | int }}
-        _llm_campaign_strata_version: "{{ _llm_campaign_strata_defaults.strata_serving_version }}"
+    - name: Preflight the selected Strata serving configuration
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-strata-preflight.yml
       when: engine == 'strata'
 
     - name: Check every configured executable before cache changes or benchmarks
