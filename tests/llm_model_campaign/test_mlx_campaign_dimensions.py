@@ -24,7 +24,9 @@ def test_mlx_recipes_are_admitted_and_the_campaign_revision_is_pinned():
 
     for name in ("mlx/vlm-native", "mlx/vlm-native-mtp", "mlx/vllm-mlx"):
         assert re.match(pattern.group(1), name)
-    assert re.fullmatch(r"[0-9a-f]{40}", plays[0]["vars"]["_llm_campaign_benchmarks_ref"])
+    assert plays[0]["vars"]["_llm_campaign_benchmarks_ref"] == (
+        "4649920a2a2488137228d98457c546f562524d69"
+    )
 
 
 def test_mlx_text_candidates_are_revision_pinned_for_256k_campaigns():
