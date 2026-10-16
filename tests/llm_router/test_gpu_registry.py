@@ -20,6 +20,7 @@ REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 REGISTRY_TASKS = REPO_ROOT / "roles/llm_router/tasks/registry.yml"
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
+SGLANG_DEFAULTS = REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml"
 VLLM_CORE_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/00-engine.yml"
 MATRIX_PROFILES = {
     "qwen38-64k-8-fp8-mtp0", "qwen38-64k-8-fp8-mtp2",
@@ -45,7 +46,8 @@ def _entries() -> list[dict]:
 def _serving_profiles() -> dict:
     vllm = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))["vllm_serving_profiles"]
     llamacpp = yaml.safe_load(LLAMACPP_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
-    return {**vllm, **llamacpp}
+    sglang = yaml.safe_load(SGLANG_DEFAULTS.read_text(encoding="utf-8"))["sglang_serving_profiles"]
+    return {**vllm, **llamacpp, **sglang}
 
 
 def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
@@ -100,7 +102,14 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "muse-glimmer-30b",
         "nemotron-lightning-30b-a3b",
         "qwen38-64k-8-fp8-mtp",
+        "qwen38-64k-1-fp8-mtp",
+        "qwen38-64k-4-fp8-mtp",
         "flash-next-64k-8-fp8-mtp",
+        "flash-next-64k-1-fp8",
+        "flash-next-64k-4-fp8",
+        "flash-next-64k-8-fp8",
+        "flash-next-64k-1-fp8-mtp",
+        "flash-next-64k-4-fp8-mtp",
     } | MATRIX_PROFILES
     assert len({entry["client_model_id"] for entry in entries}) == len(entries)
     assert all(entry["artifact_id"] in artifacts_by_id for entry in entries)
@@ -179,8 +188,15 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "muse-glimmer-30b": 0,
         "nemotron-lightning-30b-a3b": 0,
         "qwen38-64k-8-fp8-mtp": 0,
+        "qwen38-64k-1-fp8-mtp": 0,
+        "qwen38-64k-4-fp8-mtp": 0,
         "flash-next-64k-8-fp8-mtp": 0,
         **dict.fromkeys(MATRIX_PROFILES, 0),
+        "flash-next-64k-1-fp8": 0,
+        "flash-next-64k-4-fp8": 0,
+        "flash-next-64k-8-fp8": 0,
+        "flash-next-64k-1-fp8-mtp": 0,
+        "flash-next-64k-4-fp8-mtp": 0,
     }
     assert {entry["profile"]: entry.get("route_group") for entry in entries} == {
         "small": "small",
