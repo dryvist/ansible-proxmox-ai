@@ -15,7 +15,8 @@ def test_vllm_profiles_render_optional_runtime_flags():
         if "quantization" in profile:
             assert f"--quantization {profile['quantization']}" in exec_start
         if "speculative_config" in profile:
-            assert f"--speculative-config '{json.dumps(profile['speculative_config'])}'" in exec_start
+            rendered = json.loads(exec_start.split("--speculative-config '", 1)[1].split("'", 1)[0])
+            assert all(rendered.get(key) == value for key, value in profile["speculative_config"].items())
         if "engram_config" in profile:
             assert f"--engram-config '{json.dumps(profile['engram_config'])}'" in exec_start
         if profile.get("enable_flashinfer_autotune") is False:

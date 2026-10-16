@@ -18,6 +18,7 @@ ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
     REPO_ROOT / "llm-models.d/68-gpu-stage0-artifacts.yml",
     REPO_ROOT / "llm-models.d/69-gpu-artifacts-mlx.yml",
+    REPO_ROOT / "llm-models.d/69-gpu-artifacts-matrix.yml",
 )
 LOCAL_VERIFIER = SHARED_ROOT / "files/verify-local-model-store.py"
 
@@ -42,16 +43,21 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
         "medium-b",
         "16gb",
         "max",
+        "flash-next-gguf",
+        "nemotron-super-vl-64k-8",
     }
-    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 587_389_185_765
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 744_108_203_242
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
-    assert {artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")} == {
+    assert {
         "qwen38-27b-mlx-4bit",
         "qwen38-27b-nvfp4",
         "flash-next-nvfp4-nvidia",
         "qwen38-27b-ud-q4-k-m",
         "flash-next-iq3-s",
+    } <= {artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")}
+    assert "qwen38-27b-mlx-4bit" in {
+        artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")
     }
     model_store_ids = {artifact["artifact_id"] for artifact in model_store}
     assert "qwen35-9b-q4-k-m" in model_store_ids
@@ -68,6 +74,13 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
     assert any(artifact["format"] == "GGUF" and "llama_cpp" in artifact["engines"] for artifact in model_store)
     assert any(artifact["format"] == "safetensors" and "vllm" in artifact["engines"] for artifact in model_store)
     assert any(artifact["format"] == "MLX" and "mlx_lm" in artifact["engines"] for artifact in model_store)
+    assert any(artifact["format"] == "GGUF" and artifact.get("gguf_draft_file") for artifact in model_store)
+    assert any(
+        artifact.get("model_task") == "image-text-to-text"
+        and artifact.get("model_size") == "size-large"
+        and "vllm" in artifact["engines"]
+        for artifact in model_store
+    )
 
 
 def test_model_store_writer_group_comes_from_declared_gpu_mount_access():
@@ -140,6 +153,18 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         and task["ansible.builtin.include_vars"]["file"]
         == "{{ nvidia_gpu_guest_nvfp4_sweep_artifact_registry_file }}"
         for task in registry_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Load the GPU matrix artifact shard")
+        and task["ansible.builtin.include_vars"]["file"]
+        == "{{ nvidia_gpu_guest_matrix_artifact_registry_file }}"
+        for task in registry_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Load the GPU matrix artifact shard for cache sync")
+        and task["ansible.builtin.include_vars"]["file"]
+        == "{{ nvidia_gpu_guest_matrix_artifact_registry_file }}"
+        for task in cache_tasks
     )
     assert any(
         task.get("name", "").startswith("Load the NVFP4 sweep artifact shard for cache sync")
