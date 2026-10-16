@@ -6,17 +6,40 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
+REGISTRY_FILES = (
+    REPO_ROOT / "llm-models.d/60-gpu.yml",
+    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
+)
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
     REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
     REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
+    REPO_ROOT / "llm-models.d/69-gpu-artifacts-matrix.yml",
 )
 REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 REGISTRY_TASKS = REPO_ROOT / "roles/llm_router/tasks/registry.yml"
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
 VLLM_CORE_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/00-engine.yml"
+MATRIX_PROFILES = {
+    "qwen38-64k-8-fp8-mtp0", "qwen38-64k-8-fp8-mtp2",
+    "qwen38-64k-8-fp8-mtp4",
+    "flash-next-64k-8-fp8-mtp0", "flash-next-64k-8-fp8-mtp2", "flash-next-64k-8-fp8-mtp4",
+    "flash-next-262k-1-fp8", "flash-next-262k-2-fp8",
+    "nemotron-lightning-256k-8-fp8", "nemotron-lightning-1m-1-fp8",
+    "nemotron-lightning-1m-2-fp8", "nemotron-super-vl-64k-8",
+    "flash-next-gguf", "flash-next-gguf-262k-1", "flash-next-gguf-262k-2",
+}
+
+
+def _entries() -> list[dict]:
+    return [
+        entry
+        for path in REGISTRY_FILES
+        for key, values in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_registry_gpu")
+        for entry in values
+    ]
 
 
 def _serving_profiles() -> dict:
@@ -26,8 +49,7 @@ def _serving_profiles() -> dict:
 
 
 def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
-    registry = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))
-    entries = registry["_llm_registry_gpu"]
+    entries = _entries()
     artifacts = [
         artifact
         for path in ARTIFACT_FILES
@@ -79,7 +101,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "nemotron-lightning-30b-a3b",
         "qwen38-64k-8-fp8-mtp",
         "flash-next-64k-8-fp8-mtp",
-    }
+    } | MATRIX_PROFILES
     assert len({entry["client_model_id"] for entry in entries}) == len(entries)
     assert all(entry["artifact_id"] in artifacts_by_id for entry in entries)
     assert len(artifacts_by_id) == len(artifacts)
@@ -158,6 +180,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "nemotron-lightning-30b-a3b": 0,
         "qwen38-64k-8-fp8-mtp": 0,
         "flash-next-64k-8-fp8-mtp": 0,
+        **dict.fromkeys(MATRIX_PROFILES, 0),
     }
     assert {entry["profile"]: entry.get("route_group") for entry in entries} == {
         "small": "small",
@@ -169,7 +192,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
     qwen_artifact = artifacts_by_id[qwen_profile["artifact_id"]]
     medium_a_serving = serving_profiles[qwen_profile["profile"]]
-    assert serving_core["vllm_serving_version"] == "0.30.0"
+    assert serving_core["vllm_serving_version"] == "0.31.0"
     assert medium_a_serving["max_model_len"] == 196608
     assert qwen_artifact["context_window_tokens"] == 262144
     assert medium_a_serving["max_num_seqs"] == 8
@@ -185,7 +208,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
 
 def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
     """Sweeps and medium-a admit 1..64; engine slots control active work."""
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
+    entries = _entries()
     serving_profiles = _serving_profiles()
 
     caps = {entry["profile"]: entry["max_parallel_requests"] for entry in entries}
@@ -213,5 +236,5 @@ def test_router_consumes_the_shared_gpu_profile_projection() -> None:
     )
 
     assert "llm_router_gpu_profile_registry" in projection
-    assert "_llm_registry_gpu" in projection["llm_router_gpu_profile_registry"]
+    assert "llm_router_registry_gpu_profiles" in projection["llm_router_gpu_profile_registry"]
     assert "llm_router_gpu_profile_registry" in defaults["llm_router_model_registry"]

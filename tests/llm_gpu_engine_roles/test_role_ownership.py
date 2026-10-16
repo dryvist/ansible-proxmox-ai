@@ -55,10 +55,29 @@ def test_engine_roles_own_only_their_profiles_and_selectors():
                 "muse-glimmer-30b",
                 "nemotron-lightning-30b-a3b",
                 "qwen38-64k-8-fp8-mtp",
+                "qwen38-64k-8-fp8-mtp0",
+                "qwen38-64k-8-fp8-mtp2",
+                "qwen38-64k-8-fp8-mtp4",
                 "flash-next-64k-8-fp8-mtp",
+                "flash-next-64k-8-fp8-mtp0",
+                "flash-next-64k-8-fp8-mtp2",
+                "flash-next-64k-8-fp8-mtp4",
+                "flash-next-262k-1-fp8",
+                "flash-next-262k-2-fp8",
+                "nemotron-lightning-256k-8-fp8",
+                "nemotron-lightning-1m-1-fp8",
+                "nemotron-lightning-1m-2-fp8",
+                "nemotron-super-vl-64k-8",
             },
         ),
-        ("llamacpp_serving", "llama_cpp", {"small", "medium-b", "16gb", "max", "glm-flash"}),
+        (
+            "llamacpp_serving",
+            "llama_cpp",
+            {
+                "small", "medium-b", "16gb", "max", "glm-flash",
+                "flash-next-gguf", "flash-next-gguf-262k-1", "flash-next-gguf-262k-2",
+            },
+        ),
     )
     for role, engine, expected_profiles in cases:
         role_root = ROLES / role

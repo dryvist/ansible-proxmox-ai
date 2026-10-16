@@ -13,6 +13,9 @@ Environment=HF_HOME={{ nvidia_gpu_guest_hf_home }}
 Environment=HF_HUB_OFFLINE=1
 Environment=TRANSFORMERS_OFFLINE=1
 Environment=CUDA_HOME={{ nvidia_gpu_guest_cuda_home }}
+{% if vllm_serving_profile.allow_long_max_model_len | default(false) %}
+Environment=VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+{% endif %}
 Environment=PATH={{ nvidia_gpu_guest_cuda_home }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Restart=on-failure
 RestartSec=5
@@ -31,7 +34,27 @@ ExecStart={{ nvidia_gpu_guest_venv }}/bin/vllm serve {{ vllm_serving_profile_mod
   --quantization {{ vllm_serving_profile.quantization }} \
 {% endif %}
 {% if vllm_serving_profile.speculative_config is defined %}
-  --speculative-config '{{ vllm_serving_profile.speculative_config | to_json }}' \
+{% set vllm_speculative_config = vllm_serving_profile.speculative_config %}
+{% set vllm_profile_required_artifact_ids = vllm_serving_profile_registry_model.required_artifact_ids | default([]) %}
+{% if vllm_profile_required_artifact_ids | length > 0 %}
+{% set vllm_draft_artifact = nvidia_gpu_guest_artifacts_by_id[vllm_profile_required_artifact_ids[0]] %}
+{% set vllm_draft_model_dir = nvidia_gpu_guest_model_cache_path ~ '/' ~ vllm_draft_artifact.hf_repo %}
+{% set vllm_speculative_config = vllm_speculative_config | combine({'model': vllm_draft_model_dir}) %}
+{% endif %}
+  --speculative-config '{{ vllm_speculative_config | to_json }}' \
+{% endif %}
+{% if vllm_serving_profile.hf_overrides is defined %}
+  --hf-overrides '{{ vllm_serving_profile.hf_overrides | to_json }}' \
+{% endif %}
+{% if vllm_serving_profile.kv_offloading_size is defined %}
+  --kv-offloading-size {{ vllm_serving_profile.kv_offloading_size }} \
+  --kv-offloading-backend {{ vllm_serving_profile.kv_offloading_backend | default('native') }} \
+{% endif %}
+{% if vllm_serving_profile.generation_config is defined %}
+  --generation-config {{ vllm_serving_profile.generation_config }} \
+{% endif %}
+{% if vllm_serving_profile.sampling_params is defined %}
+  --override-generation-config '{{ vllm_serving_profile.sampling_params | to_json }}' \
 {% endif %}
 {% if vllm_serving_profile.engram_config is defined %}
   --engram-config '{{ vllm_serving_profile.engram_config | to_json }}' \

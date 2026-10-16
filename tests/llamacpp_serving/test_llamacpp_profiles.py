@@ -12,11 +12,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 PROFILE_DEFAULTS = ROLE_ROOT / "defaults/main/10-profiles.yml"
 TEMPLATE_DIR = ROLE_ROOT / "templates"
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
+REGISTRY_FILES = (
+    REPO_ROOT / "llm-models.d/60-gpu.yml",
+    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
+)
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
     REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
     REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
+    REPO_ROOT / "llm-models.d/69-gpu-artifacts-matrix.yml",
 )
 LLAMA_BIN = "/opt/llm-gpu-serving/llama.cpp/llama-server"
 
@@ -40,7 +44,13 @@ def _artifacts() -> list[dict]:
 
 
 def _registry(profile_name: str) -> dict:
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
+    entries = [
+        entry
+        for path in REGISTRY_FILES
+        for key, values in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_registry_gpu")
+        for entry in values
+    ]
     artifacts = _artifacts()
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     entry = next(item for item in entries if item["profile"] == profile_name)
@@ -80,7 +90,10 @@ def _exec_start(unit: str) -> str:
 
 
 def test_every_gguf_profile_renders_a_llama_server_command_from_profile_and_registry_fields():
-    assert set(_llama_profiles()) == {"small", "medium-b", "16gb", "max", "glm-flash"}
+    assert set(_llama_profiles()) == {
+        "small", "medium-b", "16gb", "max", "glm-flash",
+        "flash-next-gguf", "flash-next-gguf-262k-1", "flash-next-gguf-262k-2",
+    }
     for name, profile in _llama_profiles().items():
         unit = _render(name, profile)
         exec_start = _exec_start(unit)
@@ -98,7 +111,11 @@ def test_every_gguf_profile_renders_a_llama_server_command_from_profile_and_regi
         assert "--flash-attn on" in exec_start
         assert exec_start.endswith("--jinja")
         assert "vllm" not in exec_start
-        assert "--cache-type-k" not in exec_start
+        if "kv_cache_dtype" in profile:
+            assert f"--cache-type-k {profile['kv_cache_dtype']}" in exec_start
+            assert f"--cache-type-v {profile['kv_cache_dtype']}" in exec_start
+        else:
+            assert "--cache-type-k" not in exec_start
         assert "{{" not in unit
         assert "Environment=LD_LIBRARY_PATH=/opt/llm-gpu-serving/llama.cpp" in unit
         assert "[Install]\nWantedBy=multi-user.target" in unit
@@ -129,6 +146,23 @@ def test_optional_profile_fields_become_flags():
     assert "-lm mmap -lzm on" in extra
 
 
+def test_flash_next_gguf_uses_the_pinned_mtp_head_within_native_context():
+    profiles = _llama_profiles()
+    speculative = _exec_start(_render("flash-next-gguf", profiles["flash-next-gguf"]))
+    artifact = _registry("flash-next-gguf")["artifact"]
+    draft_path = f"/cache/models/{artifact['hf_repo']}/{artifact['gguf_draft_file']}"
+    assert f"--model-draft {draft_path}" in speculative
+    assert "--spec-type draft-mtp --spec-draft-n-max 2" in speculative
+    assert "--metrics" in speculative
+    assert "--perf" in speculative
+    for name in ("flash-next-gguf-262k-1", "flash-next-gguf-262k-2"):
+        profile = profiles[name]
+        command = _exec_start(_render(name, profile))
+        assert profile["max_model_len"] == 262144
+        assert "--rope-scaling" not in command
+        assert "--model-draft" not in command
+
+
 def test_each_served_gguf_artifact_names_one_literal_file_its_selector_downloads():
     for name in _llama_profiles():
         artifact = _registry(name)["artifact"]
@@ -143,7 +177,13 @@ def test_each_served_gguf_artifact_names_one_literal_file_its_selector_downloads
 
 def test_registry_entries_stay_inactive_while_every_profile_is_selectable():
     assert all(profile["enabled"] is True for profile in _profiles().values())
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
+    entries = [
+        entry
+        for path in REGISTRY_FILES
+        for key, values in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_registry_gpu")
+        for entry in values
+    ]
     assert all(entry["enabled"] is False and entry["servable"] is False for entry in entries)
 
 

@@ -13,12 +13,16 @@ NVIDIA_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 VLLM_ROOT = REPO_ROOT / "roles/vllm_serving"
 LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 LEGACY_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
+REGISTRY_FILES = (
+    REPO_ROOT / "llm-models.d/60-gpu.yml",
+    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
+)
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
     REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
     REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
     REPO_ROOT / "llm-models.d/68-gpu-stage0-artifacts.yml",
+    REPO_ROOT / "llm-models.d/69-gpu-artifacts-matrix.yml",
 )
 
 
@@ -42,8 +46,18 @@ def _artifacts() -> list[dict]:
     ]
 
 
+def _registry_entries() -> list[dict]:
+    return [
+        entry
+        for path in REGISTRY_FILES
+        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_registry_gpu")
+        for entry in entries
+    ]
+
+
 def _registry_profiles() -> dict:
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
+    entries = _registry_entries()
     artifacts = _artifacts()
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     return {
@@ -72,6 +86,7 @@ def _render(profile_name: str, profile: dict) -> str:
     env.filters["comment"] = _comment_filter
     env.filters["mandatory"] = lambda value, message="": value
     env.filters["to_json"] = json.dumps
+    env.filters["combine"] = lambda value, updates: {**value, **updates}
     resolved_profile = {
         **profile,
         "port": env.from_string(str(profile["port"])).render(nvidia_gpu_guest_api_port=10434),
@@ -83,6 +98,7 @@ def _render(profile_name: str, profile: dict) -> str:
         "nvidia_gpu_guest_user": "llm-gpu-serving",
         "nvidia_gpu_guest_group": "llm-gpu-serving",
         "nvidia_gpu_guest_data_dir": "/var/lib/llm-gpu-serving",
+        "nvidia_gpu_guest_model_cache_path": "/cache/models",
         "nvidia_gpu_guest_venv": "/opt/llm-gpu-serving/venv",
         "nvidia_gpu_guest_cuda_home": "/usr/local/cuda-X.Y",
         "nvidia_gpu_guest_hf_home": "HF_CACHE_HOME",
@@ -96,6 +112,9 @@ def _render(profile_name: str, profile: dict) -> str:
             "vllm_serving_profile": resolved_profile,
             "vllm_serving_profile_registry_model": registry_model,
             "vllm_serving_profile_model_dir": f"/cache/models/{registry_model['artifact']['hf_repo']}",
+            "nvidia_gpu_guest_artifacts_by_id": {
+                artifact["artifact_id"]: artifact for artifact in _artifacts()
+            },
         }
     else:
         template = "llamacpp-serving.service.j2"
@@ -170,9 +189,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert all(artifact["model_task_source"] in {"model_card", "inferred"} for artifact in campaign_artifacts)
     assert all("model_task" not in artifact or "model_task_source" in artifact for artifact in artifacts)
 
-    registry_entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))[
-        "_llm_registry_gpu"
-    ]
+    registry_entries = _registry_entries()
     assert all("artifact_id" in entry for entry in registry_entries)
     assert all(
         not {"hf_repo", "include_globs", "format", "quantization"} & entry.keys()

@@ -3,6 +3,14 @@
   ansible.builtin.include_vars:
     file: "{{ nvidia_gpu_guest_registry_file }}"
 
+- name: Load the GPU matrix profile shard
+  ansible.builtin.include_vars:
+    file: "{{ nvidia_gpu_guest_matrix_registry_file }}"
+
+- name: Combine shared GPU profile references
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_registry_profiles: "{{ _llm_registry_gpu + _llm_registry_gpu_matrix }}"
+
 - name: Load campaign model artifacts
   ansible.builtin.include_vars:
     file: "{{ nvidia_gpu_guest_artifact_registry_file }}"
@@ -23,11 +31,16 @@
   ansible.builtin.include_vars:
     file: "{{ nvidia_gpu_guest_stage0_artifact_registry_file }}"
 
+- name: Load the GPU matrix artifact shard
+  ansible.builtin.include_vars:
+    file: "{{ nvidia_gpu_guest_matrix_artifact_registry_file }}"
+
 - name: Combine the campaign model artifact shards
   ansible.builtin.set_fact:
     nvidia_gpu_guest_model_artifacts: >-
-      {{ _llm_model_artifacts + _llm_model_artifacts_mlx + _llm_model_artifacts_glm53flash
-         + _llm_model_artifacts_nvfp4_sweep + _llm_model_stage0_artifacts }}
+      {{ _llm_model_artifacts + _llm_model_artifacts_glm53flash
+         + _llm_model_artifacts_nvfp4_sweep + _llm_model_stage0_artifacts
+         + _llm_model_artifacts_mlx + _llm_model_artifacts_matrix }}
 
 - name: Index campaign model artifacts by stable id
   ansible.builtin.set_fact:
@@ -55,7 +68,7 @@
   ansible.builtin.assert:
     that:
       - item.revision is match('^[0-9a-f]{40}$')
-      - item.model_store_profile in (_llm_registry_gpu | map(attribute='profile') | list)
+      - item.model_store_profile in (nvidia_gpu_guest_registry_profiles | map(attribute='profile') | list)
       - item.model_store_size_bytes | int > 0
     fail_msg: "Every model-store artifact must declare one pinned revision, profile, and positive size."
     quiet: true
@@ -112,7 +125,7 @@
       - item.model_size is not defined or item.model_task is defined
       - >-
         item.use == 'benchmark-only'
-        or item.engines | difference(['vllm', 'llama_cpp', 'mlx_lm']) | length == 0
+        or item.engines | difference(['vllm', 'llama_cpp', 'sglang', 'mlx_lm']) | length == 0
       - item.model_size is not defined or item.model_size | length > 0
       - item.context_window_tokens is not defined or item.context_window_tokens | int > 0
       - >-
@@ -133,7 +146,7 @@
   ansible.builtin.set_fact:
     nvidia_gpu_guest_registry_by_profile: >-
       {%- set ns = namespace(by_profile={}) -%}
-      {%- for profile in _llm_registry_gpu -%}
+      {%- for profile in nvidia_gpu_guest_registry_profiles -%}
       {%- set artifact = nvidia_gpu_guest_artifacts_by_id.get(profile.artifact_id) -%}
       {%- if artifact is not none -%}
       {%- set _ = ns.by_profile.update({profile.profile: profile | combine({
@@ -146,9 +159,13 @@
 - name: Assert each serving profile resolves to exactly one artifact
   ansible.builtin.assert:
     that:
-      - nvidia_gpu_guest_registry_by_profile | length == _llm_registry_gpu | length
+      - nvidia_gpu_guest_registry_by_profile | length == nvidia_gpu_guest_registry_profiles | length
       - nvidia_gpu_guest_profiles.keys() | difference(nvidia_gpu_guest_registry_by_profile.keys() | list) | length == 0
       - item.value.artifact_id in nvidia_gpu_guest_artifacts_by_id
+      - >-
+        item.value.required_artifact_ids | default([])
+        | difference(nvidia_gpu_guest_model_artifacts | map(attribute='artifact_id') | list)
+        | length == 0
       - >-
         item.key not in nvidia_gpu_guest_profiles
         or not (nvidia_gpu_guest_profiles[item.key].enabled | default(true))

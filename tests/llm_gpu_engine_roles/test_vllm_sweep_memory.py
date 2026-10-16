@@ -8,11 +8,18 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml"
+REGISTRY_FILES = (
+    REPO_ROOT / "llm-models.d/60-gpu.yml",
+    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
+)
+ARTIFACT_FILES = (
+    REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
+    REPO_ROOT / "llm-models.d/69-gpu-artifacts-matrix.yml",
+)
 PROFILE_FILE = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 GIB = 2**30
 GPU_MEMORY_GIB = 96
+HOST_MEMORY_RESERVE_GIB = 64
 # Sanitized from the production vLLM unit's non-default-args journal output on
 # 2026-10-07, with utilization lowered to share the card with the small guest;
 # paths, host and address are intentionally omitted.
@@ -55,8 +62,20 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
 
 def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
     profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts_nvfp4_sweep"]
+    entries = [
+        entry
+        for path in REGISTRY_FILES
+        for key, values in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_registry_gpu")
+        for entry in values
+    ]
+    artifacts = [
+        artifact
+        for path in ARTIFACT_FILES
+        for key, values in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts")
+        for artifact in values
+    ]
     artifacts_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     entries_by_profile = {entry["profile"]: entry for entry in entries}
     candidate_profiles = {
@@ -75,39 +94,51 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         assert entry["max_parallel_requests"] == 64
         assert entry["context_window"] + entry["max_output_tokens"] == profile["max_model_len"]
 
-        gpu_resident_size = artifact.get(
-            "gpu_resident_size_bytes", artifact["model_store_size_bytes"]
+        gpu_resident_size = artifact.get("gpu_resident_size_bytes", artifact["model_store_size_bytes"])
+        gpu_resident_size += sum(
+            artifacts_by_id[artifact_id]["model_store_size_bytes"]
+            for artifact_id in entry.get("required_artifact_ids", [])
         )
         dtype_scale = 0.5 if profile["kv_cache_dtype"] == "fp8" else 1.0
         assert profile["kv_cache_dtype"] in {"auto", "fp8"}
-        pool_token_capacity = floor(
-            (GPU_MEMORY_GIB * profile["gpu_memory_utilization"]
-             - gpu_resident_size / GIB
-             - profile["memory_screen_reserve_gib"])
-            * GIB
-            / (artifact["kv_cache_bytes_per_token_bf16"] * dtype_scale)
-        )
         required_tokens = profile["max_model_len"]
-        if name.startswith("qwen38-262k-") or name.endswith("-mtp"):
+        if (
+            name.startswith(("qwen38-262k-", "flash-next-262k-", "nemotron-lightning-1m-"))
+            or "mtp" in name
+            or name in {"nemotron-lightning-256k-8-fp8", "nemotron-super-vl-64k-8"}
+        ):
             required_tokens *= profile["max_num_seqs"]
-        kv_gib = (
+        total_kv_gib = (
             artifact["kv_cache_bytes_per_token_bf16"]
             * required_tokens
             * dtype_scale
             / GIB
         )
+        kv_offloading_gib = profile.get("kv_offloading_size", 0)
+        gpu_kv_gib = max(0, total_kv_gib - kv_offloading_gib)
+        pool_token_capacity = floor(
+            (GPU_MEMORY_GIB * profile["gpu_memory_utilization"]
+             - gpu_resident_size / GIB
+             - profile["memory_screen_reserve_gib"]
+             + kv_offloading_gib)
+            * GIB
+            / (artifact["kv_cache_bytes_per_token_bf16"] * dtype_scale)
+        )
         checkpoint_gib = gpu_resident_size / GIB
         reserve_gib = profile["memory_screen_reserve_gib"]
-        estimated_gib = checkpoint_gib + kv_gib + reserve_gib
+        estimated_gib = checkpoint_gib + gpu_kv_gib + reserve_gib
         budget_gib = GPU_MEMORY_GIB * profile["gpu_memory_utilization"]
         assert required_tokens <= pool_token_capacity, (
             name, required_tokens, pool_token_capacity
         )
         assert estimated_gib <= budget_gib, (name, estimated_gib, budget_gib, pool_token_capacity)
+        if kv_offloading_gib:
+            ple_bytes = artifact["model_store_size_bytes"] - artifact["gpu_resident_size_bytes"]
+            assert (ple_bytes / GIB) + kv_offloading_gib <= HOST_MEMORY_RESERVE_GIB
 
 
 def test_sweep_artifact_sizes_match_the_hugging_face_reads():
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))[
+    artifacts = yaml.safe_load(REGISTRY_FILES[0].with_name("67-gpu-artifacts-nvfp4-sweep.yml").read_text(encoding="utf-8"))[
         "_llm_model_artifacts_nvfp4_sweep"
     ]
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
