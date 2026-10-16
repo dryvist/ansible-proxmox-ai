@@ -43,6 +43,9 @@ def _entries() -> list[dict]:
     ]
 
 
+GPU_CORE_DEFAULTS = REPO_ROOT / "roles/llm_gpu_serving/defaults/main/00-core.yml"
+
+
 def _serving_profiles() -> dict:
     vllm = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))["vllm_serving_profiles"]
     llamacpp = yaml.safe_load(LLAMACPP_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
@@ -63,6 +66,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     defaults = yaml.safe_load(REGISTRY_DEFAULTS.read_text(encoding="utf-8"))
     serving_profiles = _serving_profiles()
     serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
+    gpu_core = yaml.safe_load(GPU_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
     profiles = [entry["profile"] for entry in entries]
     assert profiles
@@ -208,7 +212,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
     qwen_artifact = artifacts_by_id[qwen_profile["artifact_id"]]
     medium_a_serving = serving_profiles[qwen_profile["profile"]]
-    assert serving_core["vllm_serving_version"] == "0.31.0"
+    assert serving_core["vllm_serving_version"] == gpu_core["llm_gpu_serving_vllm_version"]
     assert medium_a_serving["max_model_len"] == 196608
     assert qwen_artifact["context_window_tokens"] == 262144
     assert medium_a_serving["max_num_seqs"] == 8
