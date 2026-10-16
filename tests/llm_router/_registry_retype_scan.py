@@ -56,6 +56,8 @@ def registry_values(root: Path) -> dict[str, set[str]]:
                 if is_alias_bearing:
                     for alias in entry.get("stable_aliases") or []:
                         values.setdefault(str(alias), set()).add("alias")
+                for alias in entry.get("direct_route_aliases") or []:
+                    values.setdefault(str(alias), set()).add("alias")
     return values
 
 def _scalars(node, path=()):

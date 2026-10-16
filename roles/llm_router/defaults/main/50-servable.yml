@@ -83,8 +83,30 @@ llm_router_all_servable_models: >-
   {{ (llm_router_servable_route_groups + llm_router_gpu_servable_models) | unique
      | reject('equalto', none) | list }}
 
-# Aliases carry no deployment configuration. Their targets are route groups,
-# never physical model ids.
+# Direct-only routes use the currently selected physical profile without
+# joining the normal GPU view. They stay available when GPU profiles are
+# drained, but only while the inventory-backed endpoint exists.
+llm_router_direct_gpu_models: >-
+  {{ (llm_router_model_registry | selectattr('tier', 'equalto', 'gpu')
+      | selectattr('profile', 'equalto', llm_active_profile | default(''))
+      | selectattr('direct_route_aliases', 'defined') | list)
+     if (groups['llm_gpu_group'] | default([]) | length > 0) else [] }}
+llm_router_direct_studio_models: >-
+  {{ llm_router_large_models
+     | selectattr('direct_route_aliases', 'defined') | list }}
+llm_router_direct_route_alias_pairs: >-
+  {%- set ns = namespace(pairs=[]) -%}
+  {%- for m in llm_router_direct_gpu_models + llm_router_direct_studio_models -%}
+  {%- for alias in m.direct_route_aliases -%}
+  {%- set ns.pairs = ns.pairs + [[alias, alias]] -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.pairs }}
+llm_router_direct_route_aliases: >-
+  {{ llm_router_direct_route_alias_pairs | map('last') | unique | list }}
+
+# Stable aliases carry no deployment configuration. Direct aliases are
+# separate model-list groups projected from their registry source entries.
 llm_router_hermes_router_ids: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-router')
      | selectattr('context_window', 'defined') | rejectattr('context_window', 'none')
@@ -125,7 +147,7 @@ llm_router_alias_pairs: >-
   {%- set ns.pairs = ns.pairs
         + [[llm_router_primary_large_model, llm_router_small_capability_name]] -%}
   {%- endif -%}
-  {{ ns.pairs }}
+  {{ ns.pairs + llm_router_direct_route_alias_pairs }}
 llm_router_model_group_aliases: >-
   {{ dict(llm_router_alias_pairs | map(attribute=1)
           | zip(llm_router_alias_pairs | map(attribute=0))) }}

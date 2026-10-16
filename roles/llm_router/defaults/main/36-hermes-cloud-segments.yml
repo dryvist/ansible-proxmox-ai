@@ -58,21 +58,31 @@ llm_router_hermes_cloud_free_groups: >-
   {%- endfor -%}
   {{ ns.groups }}
 
-# OpenCode Go subscription tier as a fallback segment, opencode_sub. Keyed off
-# client_model_id, not fallback_group/route_group: llm-models.d/35-opencode.yml
-# deliberately carries neither (the opencode/ prefix already keeps each entry
-# its own model_name group, so there is nothing to dedupe against). Credential
-# gate mirrors llm_router_hermes_cloud_models_credentialed exactly — every
-# gated tier resolves its own key_field/credential_env the same way.
-llm_router_opencode_fallback_groups: >-
+# OpenCode Go subscription tier as two sub-class fallback segments. Registry
+# privacy evidence owns the split; the explicit ZDR projection is exhausted
+# before entries without that evidence. Keyed off client_model_id because the
+# opencode/ prefix gives each entry its own model_name group.
+llm_router_opencode_zdr_fallback_groups: >-
   {%- set ns = namespace(models=[]) -%}
   {%- for m in llm_router_opencode_models -%}
   {%- set key = llm_router_resolved_credentials.get(m.credential_env, '') -%}
-  {%- if key | length > 0 -%}
+  {%- if key | length > 0 and llm_router_registry_zdr_by_model[m.client_model_id] -%}
   {%- set ns.models = ns.models + [m.client_model_id] -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.models }}
+llm_router_opencode_retaining_fallback_groups: >-
+  {%- set ns = namespace(models=[]) -%}
+  {%- for m in llm_router_opencode_models -%}
+  {%- set key = llm_router_resolved_credentials.get(m.credential_env, '') -%}
+  {%- if key | length > 0 and not llm_router_registry_zdr_by_model[m.client_model_id] -%}
+  {%- set ns.models = ns.models + [m.client_model_id] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.models }}
+llm_router_opencode_fallback_groups: >-
+  {{ llm_router_opencode_zdr_fallback_groups
+     + llm_router_opencode_retaining_fallback_groups }}
 
 # free_zdrless: the final ZDRless free segment before the shared non-ZDR
 # continuation. A DELIBERATE, NARROW exception to

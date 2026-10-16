@@ -11,6 +11,12 @@
     _secrets_role_dir: "{{ playbook_dir }}/../../roles/openbao_secrets"
     _gateway_role_dir: "{{ playbook_dir }}/../../roles/agentgateway_docker"
   tasks:
+    - name: Add a router-group fixture host for the direct-only key gate
+      ansible.builtin.add_host:
+        name: llm-router-direct-key-fixture
+        groups: llm_router_group
+        ansible_connection: local
+
     - name: Load the declared domains
       ansible.builtin.include_vars:
         dir: "{{ _secrets_role_dir }}/defaults/main"
@@ -45,7 +51,7 @@
       vars:
         _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
 
-    - name: A disabled optional path is declared but not fetched until its switch flips
+    - name: Router direct keys stay scoped while switched optional paths stay gated
       ansible.builtin.assert:
         quiet: true
         that:
@@ -54,7 +60,7 @@
           - _fetched_on | select('search', 'github-actions-oss') | list | length == 1
           - "'apps/benchmark' in _optional_paths"
           - _fetched_off | select('search', 'apps/benchmark') | list | length == 0
-          - _fetched_on | select('search', 'apps/benchmark') | list | length == 1
+          - _fetched_on | select('search', 'apps/benchmark') | list | length == 0
         fail_msg: "off={{ _fetched_off }} on={{ _fetched_on }}"
       vars:
         _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
@@ -128,6 +134,36 @@
         bao_local_llm_secrets:
           VIKUNJA_MCP_TOKEN_RO: ro-token-under-test
           VIKUNJA_MCP_TOKEN: wrong-field-under-test
+
+- name: Keep the direct-only key available on router hosts during GPU drains
+  hosts: llm-router-direct-key-fixture
+  gather_facts: false
+  vars:
+    _secrets_role_dir: "{{ playbook_dir }}/../../roles/openbao_secrets"
+    llm_router_gpu_profiles_enabled: false
+  tasks:
+    - name: Load the declared domains
+      ansible.builtin.include_vars:
+        dir: "{{ _secrets_role_dir }}/defaults/main"
+
+    - name: Resolve the benchmark app path
+      ansible.builtin.set_fact:
+        _benchmark_app: >-
+          {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths
+             | select('mapping') | selectattr('path', 'equalto', 'apps/benchmark') | first }}
+
+    - name: Render the benchmark app fetch gate
+      ansible.builtin.set_fact:
+        _benchmark_app_enabled: "{{ _benchmark_app.enabled }}"
+
+    - name: Fetch the optional direct-only key for the router during a GPU drain
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (llm_router_gpu_profiles_enabled | bool)
+          - inventory_hostname in groups['llm_router_group']
+          - _benchmark_app.optional | bool
+          - _benchmark_app_enabled | bool
 
 # The virtual-key gate, asserted on the RENDER of 56-virtual-keys.yml rather
 # than on a restatement of it, in both directions. A second play so the router
