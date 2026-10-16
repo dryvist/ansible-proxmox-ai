@@ -17,7 +17,10 @@ llm_router_drift_env_marker_values:
 # declared role that is not also a declared alias. Any other row shadows a
 # Git name (an alias or a config deployment) or is untracked; back-port it to
 # llm-models.d/ or 55-roles.yml to keep it. Reads _llm_router_model_rows
-# (tasks/read-model-rows.yml), so it re-evaluates after each read.
+# (tasks/read-model-rows.yml), so it re-evaluates after each read. A declared
+# role is also reverted when its live API host is the GPU-profile backend and
+# GPU profiles are disabled; otherwise a database-stored role can outlive its
+# registry-rendered deployment.
 _llm_router_db_model_reverts: >-
   {%- set rows = _llm_router_model_rows | default([]) -%}
   {%- set aliases = llm_router_model_group_aliases | list -%}
@@ -25,12 +28,18 @@ _llm_router_db_model_reverts: >-
         | map(attribute='model_name') | list -%}
   {%- set roles = llm_router_role_deployments | map(attribute='role')
         | reject('in', aliases) | list -%}
+  {%- set gpu_backend_host = llm_router_llm_gpu_base_url | default('', true) | urlsplit('hostname') -%}
   {%- set ns = namespace(out=[]) -%}
   {%- for row in rows | selectattr('model_info.db_model', 'equalto', true) -%}
+  {%- set row_backend_host = ((row.litellm_params | default({})).api_base
+        | default('', true) | urlsplit('hostname')) -%}
   {%- if row.model_name in aliases -%}
   {%- set reason = 'shadows a declared alias' -%}
   {%- elif row.model_name in config_names -%}
   {%- set reason = 'shadows a config deployment' -%}
+  {%- elif not (llm_router_gpu_profiles_enabled | default(false) | bool)
+        and gpu_backend_host and row_backend_host == gpu_backend_host -%}
+  {%- set reason = 'uses a disabled GPU-profile backend' -%}
   {%- elif row.model_name not in roles -%}
   {%- set reason = 'is not tracked in Git' -%}
   {%- else -%}
