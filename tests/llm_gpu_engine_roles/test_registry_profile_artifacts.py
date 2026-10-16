@@ -1,11 +1,11 @@
 """Validate artifact registration as the source for GPU profile metadata."""
 
 from test_engine_profiles import (
-    _all_profiles,
     _artifacts,
     _registry_entries,
     _registry_profiles,
 )
+from test_sglang_profiles import _all_profiles
 
 
 def test_artifact_registry_is_the_only_source_for_model_files_and_quantization():

@@ -11,7 +11,6 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NVIDIA_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 VLLM_ROOT = REPO_ROOT / "roles/vllm_serving"
-SGLANG_ROOT = REPO_ROOT / "roles/sglang_serving"
 LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 LEGACY_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
 REGISTRY_FILES = (
@@ -35,16 +34,6 @@ def _profiles() -> dict:
         (LLAMACPP_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8")
     )["llamacpp_serving_profiles"]
     return {**vllm, **llamacpp}
-
-
-def _sglang_profiles() -> dict:
-    return yaml.safe_load((SGLANG_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8"))[
-        "sglang_serving_profiles"
-    ]
-
-
-def _all_profiles() -> dict:
-    return {**_profiles(), **_sglang_profiles()}
 
 
 def _artifacts() -> list[dict]:
@@ -87,8 +76,7 @@ def _comment_filter(text: str) -> str:
 
 def _render(profile_name: str, profile: dict) -> str:
     is_vllm = profile["engine"] == "vllm"
-    is_sglang = profile["engine"] == "sglang"
-    role_root = VLLM_ROOT if is_vllm else SGLANG_ROOT if is_sglang else LLAMACPP_ROOT
+    role_root = VLLM_ROOT if is_vllm else LLAMACPP_ROOT
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(role_root / "templates"),
         trim_blocks=True,
@@ -128,15 +116,6 @@ def _render(profile_name: str, profile: dict) -> str:
                 artifact["artifact_id"]: artifact for artifact in _artifacts()
             },
         }
-    elif is_sglang:
-        template = "sglang-serving.service.j2"
-        values = {
-            **common,
-            "sglang_serving_profile_name": profile_name,
-            "sglang_serving_profile": resolved_profile,
-            "sglang_serving_profile_registry_model": registry_model,
-            "sglang_serving_profile_model_dir": f"/cache/models/{registry_model['artifact']['hf_repo']}",
-        }
     else:
         template = "llamacpp-serving.service.j2"
         values = {
@@ -157,7 +136,7 @@ def _exec_start(unit: str) -> str:
 
 
 def test_named_profiles_carry_the_serving_contract():
-    profiles = _all_profiles()
+    profiles = _profiles()
     assert {"small", "medium-a", "medium-b", "16gb", "max", "glm-flash"} <= set(profiles)
     common = {"engine", "max_model_len", "max_num_seqs", "port"}
     vllm_only = {
@@ -180,7 +159,8 @@ def test_named_profiles_carry_the_serving_contract():
         "max": "llama_cpp",
         "glm-flash": "llama_cpp",
     }
-    assert set(_registry_profiles()) == set(profiles)
+    # Registry equality across every engine lives in test_sglang_profiles.py.
+    assert set(profiles) <= set(_registry_profiles())
     assert all(profile["enabled"] is True for profile in profiles.values())
     assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
     assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
@@ -283,7 +263,7 @@ def test_vllm_profiles_leave_quantization_to_the_checkpoint():
 
 
 def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
-    for role_root in (VLLM_ROOT, SGLANG_ROOT, LLAMACPP_ROOT):
+    for role_root in (VLLM_ROOT, REPO_ROOT / "roles/sglang_serving", LLAMACPP_ROOT):
         render_tasks = yaml.safe_load((role_root / "tasks/render-units.yml").read_text(encoding="utf-8"))
         main_tasks = yaml.safe_load((role_root / "tasks/main.yml").read_text(encoding="utf-8"))
         activate_tasks = yaml.safe_load((role_root / "tasks/activate.yml").read_text(encoding="utf-8"))
