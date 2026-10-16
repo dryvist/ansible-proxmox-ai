@@ -11,6 +11,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK_FILE = REPO_ROOT / "roles/llm_gpu_serving/tasks/install-cuda-toolkit.yml"
 
 
+def test_gpu_guest_roles_pin_the_latest_cuda_minor():
+    for role in ("nvidia_gpu_guest", "llm_gpu_serving"):
+        defaults = yaml.safe_load(
+            (REPO_ROOT / f"roles/{role}/defaults/main/00-core.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert defaults[f"{role}_cuda_version"] == "13.4"
+
+
 def test_cuda_cache_refresh_tracks_the_shared_repo_result_and_skips_safely():
     task = yaml.safe_load(TASK_FILE.read_text(encoding="utf-8"))[0]
     expression = task["ansible.builtin.apt"]["update_cache"]
