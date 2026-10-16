@@ -316,6 +316,8 @@ def main() -> int:
     parser.add_argument("--paths-file", default="")
     parser.add_argument("--output", default="")
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--skip-router", action="store_true",
+                        help="omit router shards from a full selection for docs-only promotions")
     args = parser.parse_args()
     if args.full:
         result = full_selection()
@@ -324,6 +326,8 @@ def main() -> int:
         if args.paths_file:
             paths = Path(args.paths_file).read_text().splitlines()
         result = select(paths)
+    if args.skip_router:
+        result["llm_router_playbooks"] = []
     encoded = json.dumps(result, sort_keys=True)
     if args.output:
         with open(args.output, "a", encoding="utf-8") as output:
