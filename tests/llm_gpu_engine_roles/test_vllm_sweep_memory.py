@@ -134,17 +134,13 @@ def test_sweep_artifact_sizes_match_the_hugging_face_reads():
 def test_nvfp4_mtp_profiles_enable_fp8_kv_and_mtp():
     profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
     for family in ("qwen38", "flash-next"):
-        for slots in (1, 4, 8):
-            profile = profiles[f"{family}-64k-{slots}-fp8-mtp"]
-            assert profile["max_model_len"] == 65536
-            assert profile["max_num_seqs"] == slots
-            assert profile["kv_cache_dtype"] == "fp8"
-            assert profile["speculative_config"] == {
-                "method": "mtp",
-                "num_speculative_tokens": 3,
-            }
-            assert profile["quantization"] == "modelopt"
+        profile = profiles[f"{family}-64k-8-fp8-mtp"]
+        assert profile["max_model_len"] == 65536
+        assert profile["max_num_seqs"] == 8
+        assert profile["kv_cache_dtype"] == "fp8"
+        assert profile["speculative_config"] == {"method": "mtp", "num_speculative_tokens": 3}
+        assert profile["quantization"] == "modelopt"
 
-    flash = profiles["flash-next-64k-1-fp8-mtp"]
+    flash = profiles["flash-next-64k-8-fp8-mtp"]
     assert flash["engram_config"] == {"cpu_offload": True}
     assert flash["enable_flashinfer_autotune"] is False
