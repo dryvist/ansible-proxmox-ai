@@ -27,6 +27,51 @@ def test_mlx_recipes_are_admitted_and_the_campaign_revision_is_pinned():
     assert re.fullmatch(r"[0-9a-f]{40}", plays[0]["vars"]["_llm_campaign_benchmarks_ref"])
 
 
+def test_mlx_text_candidates_are_revision_pinned_for_256k_campaigns():
+    artifacts_path = REPO_ROOT / "llm-models.d" / "69-gpu-artifacts-mlx.yml"
+    artifacts = yaml.safe_load(artifacts_path.read_text(encoding="utf-8"))[
+        "_llm_model_artifacts_mlx"
+    ]
+    expected = [
+        (
+            "orcarouter-qwen38-27b-mlx-4bit",
+            "34c32b5b1b2c24181e121a5cba3df8924fa66bce",
+        ),
+        ("qwen38-27b-optiq-4bit", "a97e1450285cb818b0572a3515f0fc59b8cd7228"),
+        (
+            "qwen38-27b-uncensored-optiq-4bit",
+            "c8e325be5c198bf210d55285bbf05a2e651df38a",
+        ),
+        (
+            "mimo-v26-distill-qwen-9b-optiq-4bit",
+            "60061fc7499d25ce238e0687154557e504ea690a",
+        ),
+        (
+            "kat-coder-v25-dev-optiq-4bit",
+            "57c6e8372737f8a04aca1c210c926b8aa29c802e",
+        ),
+        (
+            "gemma4-12b-it-qat-optiq-4bit",
+            "625223a54b2ecae941d727df319b91dbcc4ba603",
+        ),
+        (
+            "gemma4-26b-a4b-it-qat-optiq-4bit",
+            "4ddfc5ba4cb66a1e03451402336d2ca63c87896e",
+        ),
+        (
+            "nemotron-35-lightning-30b-a3b-optiq-4bit",
+            "8ec4fb1863e3d8878914178a3b53e7842f3c372e",
+        ),
+    ]
+    by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
+
+    for artifact_id, revision in expected:
+        artifact = by_id[artifact_id]
+        assert artifact["revision"] == revision
+        assert artifact["context_window_tokens"] == 262144
+        assert "mlx_lm" in artifact["engines"]
+
+
 def test_mlx_engines_allow_zero_power_cap_only_on_darwin():
     plays = yaml.safe_load(TARGET.read_text(encoding="utf-8"))
     guard = next(
