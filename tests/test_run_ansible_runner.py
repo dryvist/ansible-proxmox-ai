@@ -40,7 +40,9 @@ class RunAnsibleGuardContract(RunnerSandboxBase):
         (other / "README.md").write_text("newer\n", encoding="utf-8")
         subprocess.run(["git", "add", "README.md"], cwd=other, check=True)
         subprocess.run(
-            ["git", "commit", "-q", "-m", "someone else's push"], cwd=other, check=True
+            ["git", "commit", "-q", "-m", "test: simulate remote update"],
+            cwd=other,
+            check=True,
         )
         subprocess.run(["git", "push", "-q"], cwd=other, check=True)
 
@@ -63,7 +65,9 @@ class RunAnsibleGuardContract(RunnerSandboxBase):
         (other / "README.md").write_text("newer\n", encoding="utf-8")
         subprocess.run(["git", "add", "README.md"], cwd=other, check=True)
         subprocess.run(
-            ["git", "commit", "-q", "-m", "someone else's push"], cwd=other, check=True
+            ["git", "commit", "-q", "-m", "test: simulate remote update"],
+            cwd=other,
+            check=True,
         )
         subprocess.run(["git", "push", "-q"], cwd=other, check=True)
 
