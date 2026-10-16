@@ -11,6 +11,23 @@
   ansible.builtin.set_fact:
     llm_gpu_serving_registry_profiles: "{{ _llm_registry_gpu + _llm_registry_gpu_matrix }}"
 
+- name: Load shared vLLM profile definitions
+  ansible.builtin.include_vars:
+    file: "{{ role_path | dirname }}/vllm_serving/defaults/main/10-profiles.yml"
+
+- name: Add the selected vLLM profile to legacy serving
+  ansible.builtin.set_fact:
+    llm_gpu_serving_profiles: >-
+      {{ llm_gpu_serving_profiles
+         | combine({llm_active_profile: vllm_serving_profiles[llm_active_profile]
+                   | combine({'port': llm_gpu_serving_api_port})}) }}
+  when:
+    - llm_active_profile not in llm_gpu_serving_profiles
+    - llm_active_profile in vllm_serving_profiles
+    - >-
+      llm_active_profile in (llm_gpu_serving_registry_profiles
+                             | map(attribute='profile') | list)
+
 - name: Load campaign model artifacts
   ansible.builtin.include_vars:
     file: "{{ llm_gpu_serving_artifact_registry_file }}"
@@ -143,7 +160,7 @@
     llm_gpu_serving_registry_by_profile: >-
       {%- set ns = namespace(by_profile={}) -%}
       {%- for profile in llm_gpu_serving_registry_profiles
-            if profile.profile in llm_profiles -%}
+            if profile.profile in llm_gpu_serving_profiles -%}
       {%- set artifact = llm_gpu_serving_artifacts_by_id.get(profile.artifact_id) -%}
       {%- if artifact is not none -%}
       {%- set _ = ns.by_profile.update({profile.profile: profile | combine({
@@ -156,17 +173,17 @@
 - name: Assert each serving profile resolves to exactly one artifact
   ansible.builtin.assert:
     that:
-      - llm_gpu_serving_registry_by_profile | length == llm_profiles | length
-      - llm_gpu_serving_registry_by_profile.keys() | list | sort == llm_profiles.keys() | list | sort
+      - llm_gpu_serving_registry_by_profile | length == llm_gpu_serving_profiles | length
+      - llm_gpu_serving_registry_by_profile.keys() | list | sort == llm_gpu_serving_profiles.keys() | list | sort
       - item.value.artifact_id in llm_gpu_serving_artifacts_by_id
       - >-
         item.value.required_artifact_ids | default([])
         | difference(llm_gpu_serving_model_artifacts | map(attribute='artifact_id') | list)
         | length == 0
       - >-
-        not (llm_profiles[item.key].enabled | default(true))
+        not (llm_gpu_serving_profiles[item.key].enabled | default(true))
         or (item.value.artifact.use == 'serving'
-            and llm_profiles[item.key].engine in item.value.artifact.engines)
+            and llm_gpu_serving_profiles[item.key].engine in item.value.artifact.engines)
     fail_msg: >-
       Every GPU serving profile must reference exactly one serving artifact with
       matching engine support in the GPU artifact registry shards.
