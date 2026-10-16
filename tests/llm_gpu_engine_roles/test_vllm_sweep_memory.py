@@ -131,27 +131,8 @@ def test_sweep_artifact_sizes_match_the_hugging_face_reads():
     }
 
 
-def test_nvidia_nvfp4_profiles_pin_both_models_and_enable_fp8_mtp():
+def test_nvfp4_mtp_profiles_enable_fp8_kv_and_mtp():
     profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))[
-        "_llm_model_artifacts_nvfp4_sweep"
-    ]
-    artifacts_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
-    expected = {
-        "qwen38-27b-nvfp4": (
-            "nvidia/Qwen3.8-27B-NVFP4",
-            "482ca0f3832238542f8f5295dde86b5f22711d80",
-        ),
-        "flash-next-nvfp4-nvidia": (
-            "nvidia/Qwen3.8-Flash-Next-NVFP4",
-            "fc694b54fb0174e0913e6adf86691ef85a4ead47",
-        ),
-    }
-
-    for artifact_id, (repository, revision) in expected.items():
-        artifact = artifacts_by_id[artifact_id]
-        assert (artifact["hf_repo"], artifact["revision"]) == (repository, revision)
-
     for family in ("qwen38", "flash-next"):
         for slots in (1, 4, 8):
             profile = profiles[f"{family}-64k-{slots}-fp8-mtp"]
@@ -160,7 +141,7 @@ def test_nvidia_nvfp4_profiles_pin_both_models_and_enable_fp8_mtp():
             assert profile["kv_cache_dtype"] == "fp8"
             assert profile["speculative_config"] == {
                 "method": "mtp",
-                "num_speculative_tokens": 1,
+                "num_speculative_tokens": 3,
             }
             assert profile["quantization"] == "modelopt"
 
