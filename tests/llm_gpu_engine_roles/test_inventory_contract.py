@@ -134,6 +134,7 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
     assert all("docker_engine" not in yaml.safe_dump(play) for play in gpu_plays)
 
     for play in gpu_plays:
+        assert "llm_gpu_serving" in play["tags"]
         if play["hosts"] == "llm_gpu_legacy_group":
             continue
         assert play["any_errors_fatal"] is True
