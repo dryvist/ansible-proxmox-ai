@@ -1,6 +1,7 @@
 """A converge lists installed jobs and reads markers once; an unchanged job makes no remote call."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -10,18 +11,23 @@ TASKS = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent" / "tasks"
 REMOTE_MODULES = ("ansible.builtin.command", "ansible.builtin.copy", "ansible.builtin.file")
 ENV = Environment()
 ENV.filters["bool"] = lambda v: v if isinstance(v, bool) else str(v).lower() in ("true", "yes", "1")
+ENV.filters["regex_escape"] = re.escape
+ENV.filters["regex_search"] = lambda value, pattern: re.search(pattern, value)
 
 
 def _load(name: str) -> list[dict]:
     return yaml.safe_load((TASKS / name).read_text())
 
 
-def _ran(*, wanted: bool, listed: bool, marker: str | None, changed: bool) -> set[str]:
+def _ran(*, wanted: bool, listed: bool | str, marker: str | None, changed: bool) -> set[str]:
     """Names of the remote/CLI tasks whose `when` passes for one job."""
     ctx = {
         "item": {"name": "job-a"},
         "hermes_agent_direct_wanted": wanted,
-        "hermes_agent_direct_cron_list": {"stdout": "job-a" if listed else ""},
+        "hermes_agent_direct_cron_list": {
+            "stdout": f"Name: {listed}" if isinstance(listed, str)
+            else "Name: job-a" if listed else ""
+        },
         "hermes_agent_direct_markers": {"job-a": marker} if marker else {},
         "hermes_agent_direct_marker_probe": {"changed": changed},
         "ansible_check_mode": False,
@@ -51,6 +57,13 @@ def test_drifted_job_is_removed_recreated_and_recorded():
 
 def test_absent_job_is_created_and_recorded_without_a_remove():
     assert _ran(wanted=True, listed=False, marker=None, changed=True) == {
+        "Direct cron | Create",
+        "Direct cron | Record desired state for",
+    }
+
+
+def test_job_name_substring_does_not_count_as_an_exact_match():
+    assert _ran(wanted=True, listed="job-ab", marker=None, changed=True) == {
         "Direct cron | Create",
         "Direct cron | Record desired state for",
     }

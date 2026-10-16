@@ -137,17 +137,19 @@
   become: true
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_direct_cron_withdraw
-  # `hermes cron remove` exits 1 on an already-absent job ("... not found"),
-  # but absent IS the desired state here — a list-guard race or a substring
-  # match in `cron list` output must not abort the play. Fail only on a real
-  # removal error; report changed only when something was actually removed.
+  # `hermes cron remove` exits 1 on an already-absent job ("... not found").
+  # A stale list or concurrent remove can produce that result; fail only on a
+  # real removal error and report changed only when a job was removed.
   changed_when: hermes_agent_direct_cron_withdraw.rc == 0
   failed_when: >-
     hermes_agent_direct_cron_withdraw.rc != 0
     and 'not found' not in hermes_agent_direct_cron_withdraw.stdout
   when:
     - not (hermes_agent_direct_wanted | bool)
-    - item.name in (hermes_agent_direct_cron_list.stdout | default(''))
+    - >-
+      (hermes_agent_direct_cron_list.stdout | default('')
+       | regex_search('(?m)^[ \\t]*Name:[ \\t]*'
+                      ~ (item.name | regex_escape) ~ '[ \\t]*$')) is not none
     - not ansible_check_mode
 
 # Drop the desired-state marker too, so a later re-scoping of this job back to
@@ -203,20 +205,24 @@
   become: true
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_direct_cron_drift_remove
-  # `hermes cron remove` exits 1 on an already-absent job ("... not found"),
-  # but absent IS the desired state here — a list-guard race or a substring
-  # match in `cron list` output must not abort the play. Fail only on a real
-  # removal error; report changed only when something was actually removed.
+  # `hermes cron remove` exits 1 on an already-absent job ("... not found").
+  # A stale list or concurrent remove can produce that result; fail only on a
+  # real removal error and report changed only when a job was removed.
   changed_when: hermes_agent_direct_cron_drift_remove.rc == 0
   failed_when: >-
     hermes_agent_direct_cron_drift_remove.rc != 0
     and 'not found' not in hermes_agent_direct_cron_drift_remove.stdout
   when:
     - hermes_agent_direct_wanted | bool
-    - item.name in (hermes_agent_direct_cron_list.stdout | default(''))
+    - >-
+      (hermes_agent_direct_cron_list.stdout | default('')
+       | regex_search('(?m)^[ \\t]*Name:[ \\t]*'
+                      ~ (item.name | regex_escape) ~ '[ \\t]*$')) is not none
     - hermes_agent_direct_marker_probe.changed | bool
     - not ansible_check_mode
 
+# Match the complete Name field from the cached authoritative cron list. A
+# substring match can mistake a similarly named job for this one.
 - name: "Direct cron | Create {{ item.name }}"
   ansible.builtin.command:
     argv: "{{ hermes_agent_direct_argv }}"
@@ -229,7 +235,9 @@
     - hermes_agent_direct_wanted | bool
     - item.enabled_toolsets is not defined
     - >-
-      item.name not in (hermes_agent_direct_cron_list.stdout | default(''))
+      (hermes_agent_direct_cron_list.stdout | default('')
+       | regex_search('(?m)^[ \\t]*Name:[ \\t]*'
+                      ~ (item.name | regex_escape) ~ '[ \\t]*$')) is none
       or hermes_agent_direct_marker_probe.changed | bool
 
 - name: "Direct cron | Create with job-scoped toolsets: {{ item.name }}"
@@ -245,7 +253,9 @@
     - hermes_agent_direct_wanted | bool
     - item.enabled_toolsets is defined
     - >-
-      item.name not in (hermes_agent_direct_cron_list.stdout | default(''))
+      (hermes_agent_direct_cron_list.stdout | default('')
+       | regex_search('(?m)^[ \\t]*Name:[ \\t]*'
+                      ~ (item.name | regex_escape) ~ '[ \\t]*$')) is none
       or hermes_agent_direct_marker_probe.changed | bool
 
 # Only when the marker is missing or stale: a matching marker is already the

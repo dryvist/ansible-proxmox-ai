@@ -7,10 +7,8 @@ a permanent guard:
 
 1. A wiring typo that drops it out of the reconciled fleet (wrong list key,
    wrong var names) — it would simply never be created.
-2. A name collision under the reconcile's substring existence test
-   (docs/hermes-ops/cron-fleet.md: cron names must not be substrings of one
-   another, because presence is checked by substring match against
-   `cron list --all`).
+2. A create guard that mistakes a similarly named cron for this job; the
+   reconcile matches the complete `Name:` field from `cron list --all`.
 3. A same-minute start collision with another enabled agentic job — the exact
    thing tests/hermes_agent/test_cron_stagger.py exists for; this re-checks it
    scoped to this job so a future schedule edit to either side is caught from
@@ -92,15 +90,23 @@ def test_enabled_gate_requires_its_inputs():
         assert needle in gate, f"enabled gate does not require {needle}"
 
 
-def test_name_is_not_a_substring_of_any_other_job_name():
-    """The reconcile's existence test is a SUBSTRING match against
-    `cron list --all` — a name contained in (or containing) another job's name
-    makes create-if-absent lie about what already exists."""
-    mine = DEFAULTS["hermes_agent_self_audit_cron_name"]
-    others = {_render(j["name"]) for j in DEFAULTS["hermes_agent_direct_cron_jobs"]}
-    others.discard(mine)
-    clashes = {n for n in others if n in mine or mine in n}
-    assert not clashes, f"substring collision between {mine!r} and {sorted(clashes)}"
+def test_create_guards_match_the_complete_cron_name_field():
+    tasks = yaml.safe_load((ROLE / "tasks" / "reconcile_direct_cron.yml").read_text())
+    create_tasks = [
+        task for task in tasks if task["name"].startswith("Direct cron | Create")
+    ]
+    assert len(create_tasks) == 2
+    assert all(
+        any(
+            "regex_search" in condition
+            and "regex_escape" in condition
+            and "Name:" in condition
+            and "^" in condition
+            and "$" in condition
+            for condition in task["when"]
+        )
+        for task in create_tasks
+    )
 
 
 def test_schedule_does_not_start_in_the_same_minute_as_another_enabled_job():
