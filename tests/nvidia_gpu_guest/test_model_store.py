@@ -17,6 +17,7 @@ ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
     REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
     REPO_ROOT / "llm-models.d/68-gpu-stage0-artifacts.yml",
+    REPO_ROOT / "llm-models.d/69-gpu-artifacts-mlx.yml",
 )
 LOCAL_VERIFIER = SHARED_ROOT / "files/verify-local-model-store.py"
 
@@ -46,6 +47,7 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")} == {
+        "qwen38-27b-mlx-4bit",
         "qwen38-27b-nvfp4",
         "flash-next-nvfp4-nvidia",
         "qwen38-27b-ud-q4-k-m",
@@ -114,6 +116,16 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
 
     assert any(task.get("name") == "Assert each serving profile resolves to exactly one artifact" for task in registry_tasks)
     assert any(
+        task.get("name") == "Load the MLX artifact shard"
+        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_mlx_artifact_registry_file }}"
+        for task in registry_tasks
+    )
+    assert any(
+        task.get("name") == "Load the MLX artifact shard for cache sync"
+        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_mlx_artifact_registry_file }}"
+        for task in cache_tasks
+    )
+    assert any(
         task.get("name", "").startswith("Load the GLM-5.3-Flash artifact shard")
         and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
         for task in registry_tasks
@@ -149,6 +161,7 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     )
     assert any(
         task.get("name", "").startswith("Combine the campaign model artifact shards")
+        and "_llm_model_artifacts_mlx" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
         and "_llm_model_artifacts_glm53flash" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
         and "_llm_model_artifacts_nvfp4_sweep"
         in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]

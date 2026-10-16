@@ -17,6 +17,8 @@
         that:
           - machine is defined
           - machine | string | length > 0
+          - artifact_id is defined
+          - artifact_id | string | length > 0
           - benchmark_endpoint_root is defined
           - benchmark_endpoint_root | string is match('^https://[A-Za-z0-9-]+([.][A-Za-z0-9-]+)+$')
           - benchmark_endpoint_root | urlsplit('hostname') is search('[A-Za-z]')
@@ -31,7 +33,7 @@
           - power_cap_w | string is match('^[0-9]+([.][0-9]+)?$')
         fail_msg: >-
           The campaign survey requires an inventory alias, a named config,
-          supported engine/model size, positive context/concurrency lists,
+          a registry artifact id, supported engine/model size, positive context/concurrency lists,
           an HTTPS endpoint origin, an existing target cache path, and a
           non-negative numeric power cap in watts.
         quiet: true
@@ -102,6 +104,10 @@
       ansible.builtin.include_vars:
         file: "{{ playbook_dir }}/../llm-models.d/65-gpu-artifacts.yml"
 
+    - name: Load the MLX artifact shard
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../llm-models.d/69-gpu-artifacts-mlx.yml"
+
     - name: Load the NVFP4 sweep artifact shard
       ansible.builtin.include_vars:
         file: "{{ playbook_dir }}/../llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml"
@@ -135,10 +141,11 @@
           --campaign-dimensions option; install uv in the runner or advance the pin.
         quiet: true
 
-    - name: Resolve the selected model-size and engine from the artifact registry
+    - name: Resolve the selected artifact id, model size, and engine from the artifact registry
       ansible.builtin.set_fact:
         _llm_campaign_selected_artifacts: >-
-          {{ (_llm_model_artifacts + _llm_model_artifacts_nvfp4_sweep)
+          {{ (_llm_model_artifacts + _llm_model_artifacts_mlx + _llm_model_artifacts_nvfp4_sweep)
+             | selectattr('artifact_id', 'equalto', artifact_id)
              | selectattr('model_size', 'defined')
              | selectattr('model_size', 'equalto', model_size)
              | selectattr('engines', 'contains', engine)
