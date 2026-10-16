@@ -14,7 +14,8 @@
           redis_default: 6379
     bao_apps_secrets:
       benchmark_llm_router_key: fixture-direct-key
-    bao_local_llm_secrets: {}
+    bao_local_llm_secrets:
+      OPENCODE_API_KEY: fixture-opencode-key
     llm_router_subdomain: pve.example.test
     llm_large_serving_host: llm-large
     llm_router_master_key: sk-test-master
@@ -26,8 +27,6 @@
     ai_router_retry_after_seconds: 2
     ai_default_model: "{{ llm_router_vllm_medium_model }}"
     hermes_brain_model: "{{ llm_router_vllm_medium_model }}"
-    hermes_goal_judge_model: judge
-    llm_router_d1_zdr_ladder_groups: [judge]
     hindsight_retain_model: "{{ llm_router_small_model }}"
   tasks:
     - name: Add an inventory-backed GPU endpoint
@@ -39,6 +38,10 @@
     - name: Load role defaults and registry projections
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Drain Studio before ladder projections
+      ansible.builtin.set_fact:
+        llm_router_studio_profiles_enabled: false
 
     - name: Load the same model and key catalogs as the router
       ansible.builtin.include_role:
@@ -99,17 +102,16 @@
     - name: Keep the safe-model assertion active with GPU profiles drained
       ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-safe-models.yml
 
-    - name: Drain Studio resident models from the shared ladders
-      ansible.builtin.set_fact:
-        llm_router_studio_profiles_enabled: false
-
-    - name: Render the router after the Studio drain
+    - name: Render the router with Studio profiles drained
       ansible.builtin.set_fact:
         _studio_drained_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
     - name: Studio drain removes resident groups from ladders and keeps direct routing
       ansible.builtin.assert:
         quiet: true
+        fail_msg: >-
+          Studio groups leaked into the Hermes fallback chain:
+          {{ _studio_ladder_groups | intersect(llm_router_hermes_default_fallback_chain) }}
         that:
           - _studio_ladder_groups | length > 0
           - _studio_ladder_groups | intersect(llm_router_local_fallback_groups) | length == 0
