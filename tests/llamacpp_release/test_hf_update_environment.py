@@ -9,7 +9,7 @@ from typing import Literal
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / "tests/llamacpp_release/fixtures/hf-2.1.1-update-check.txt"
+FIXTURE = ROOT / "tests/llamacpp_release/fixtures/hf-2.2.0-update-check.txt"
 
 
 def _replay(tmp_path, disabled):
@@ -18,7 +18,7 @@ def _replay(tmp_path, disabled):
 
     def installed_version(library):
         version_lookups.append(library)
-        return "2.1.1"
+        return "2.2.0"
 
     namespace = {
         "Literal": Literal, "Path": Path, "os": os, "time": time,
