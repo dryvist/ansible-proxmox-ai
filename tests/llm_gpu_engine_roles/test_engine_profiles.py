@@ -224,7 +224,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert profiles["small"]["artifact_id"] == "qwen35-9b-q4-k-m"
     assert all(model["artifact"]["use"] == "serving" for model in profiles.values())
     assert profiles["small"]["artifact"]["engines"] == ["llama_cpp"]
-    assert profiles["medium-a"]["artifact"]["engines"] == ["vllm"]
+    assert profiles["medium-a"]["artifact"]["engines"] == ["vllm", "sglang"]
     assert profiles["medium-b"]["artifact"]["format"] == "GGUF"
     assert profiles["16gb"]["artifact"]["artifact_id"] == "qwen38-27b-ud-iq3-xxs"
     assert profiles["16gb"]["artifact"]["format"] == "GGUF"

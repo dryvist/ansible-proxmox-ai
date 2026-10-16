@@ -1,8 +1,11 @@
 """Validate artifact registration as the source for GPU profile metadata."""
 
-import yaml
-
-from test_engine_profiles import REGISTRY_FILE, _all_profiles, _artifacts, _registry_profiles
+from test_engine_profiles import (
+    _all_profiles,
+    _artifacts,
+    _registry_entries,
+    _registry_profiles,
+)
 
 
 def test_artifact_registry_is_the_only_source_for_model_files_and_quantization():
@@ -28,9 +31,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert all(artifact["model_task_source"] in {"model_card", "inferred"} for artifact in campaign_artifacts)
     assert all("model_task" not in artifact or "model_task_source" in artifact for artifact in artifacts)
 
-    registry_entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))[
-        "_llm_registry_gpu"
-    ]
+    registry_entries = _registry_entries()
     assert all("artifact_id" in entry for entry in registry_entries)
     assert all(
         not {"hf_repo", "include_globs", "format", "quantization"} & entry.keys()
