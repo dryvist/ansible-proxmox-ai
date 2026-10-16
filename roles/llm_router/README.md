@@ -198,10 +198,11 @@ scope word for open-source repositories is `oss` (`github-actions-oss`,
 appears in a credential, path, variable or role name — a key so named reads as
 if the key itself were public.
 
-This proxy issues per-caller virtual keys. The `benchmark` key is scoped to the
-GPU profiles and intentionally has no budget, so repeated benchmark runs do not
-consume a caller's daily ceiling. It seeds only when its OpenBao value and
-the GPU profile switch are both enabled.
+This proxy issues per-caller virtual keys. The `inference-direct-only` key
+reaches the direct Pro6000 and Studio aliases and intentionally has no budget,
+so repeated inference runs do not consume a caller's daily ceiling. Its source
+remains the existing `apps/benchmark` field; it seeds only while that value and
+at least one direct route are available.
 
 MCP server IDs, tool allowlists, caller grants, OpenBao sources, and the OAuth
 boundary are documented in
