@@ -66,3 +66,13 @@ def test_legacy_role_installs_vllm_and_its_toolchain_only_for_vllm_profiles():
     assert by_name["Create the vLLM virtual environment"]["when"] == vllm_engine
     assert vllm_engine in by_name["Install the pinned vLLM build with SM120 b12x kernels"]["when"]
     assert vllm_engine in by_name["Put the vLLM and Hugging Face CLIs on the default PATH"]["when"]
+
+
+def test_vllm_venv_ownership_is_reset_before_the_install():
+    tasks = yaml.safe_load((LEGACY_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    names = [task.get("name") for task in tasks]
+    owner = tasks[names.index("Keep the vLLM virtual environment owned by the serving user")]
+
+    assert owner["ansible.builtin.file"]["recurse"] is True
+    assert owner["ansible.builtin.file"]["owner"] == "{{ llm_gpu_serving_user }}"
+    assert names.index(owner["name"]) < names.index("Install the pinned vLLM build with SM120 b12x kernels")
