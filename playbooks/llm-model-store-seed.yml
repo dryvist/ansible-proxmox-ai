@@ -35,7 +35,7 @@
         # Declared here rather than derived from the artifact catalog, so the
         # coverage assert below can reject a catalog that drops a profile.
         _llm_model_store_profiles:
-          [16gb, max, medium-a, medium-b, small, flash-next-gguf, nemotron-super-vl-64k-8]
+          [16gb, max, medium-a, medium-b, small, flash-next-gguf, nemotron-super-vl-64k-8, nemotron-bolt-64k-16]
 
     - name: Load model-store artifact metadata
       ansible.builtin.include_role:
@@ -44,22 +44,61 @@
 
     - name: Select the registry-declared model-store artifacts
       ansible.builtin.set_fact:
-        llm_model_store_seed_artifacts: >-
+        _llm_model_store_seed_catalog_artifacts: >-
           {{ llm_gpu_serving_model_artifacts
              | selectattr('model_store', 'defined')
              | selectattr('model_store', 'equalto', true)
              | list }}
 
+    - name: Select requested model-store artifacts, or the full catalog by default
+      ansible.builtin.set_fact:
+        llm_model_store_seed_artifacts: >-
+          {{ (_llm_model_store_seed_catalog_artifacts
+              | selectattr('artifact_id', 'in', llm_model_store_seed_artifact_ids | default([], true))
+              | list)
+             if (llm_model_store_seed_artifact_ids | default([], true) | length > 0)
+             else _llm_model_store_seed_catalog_artifacts }}
+
+    - name: Validate an optional seed artifact selection
+      ansible.builtin.assert:
+        that:
+          - llm_model_store_seed_artifact_ids | default([], true) is sequence
+          - llm_model_store_seed_artifact_ids | default([], true) is not string
+          - >-
+            (llm_model_store_seed_artifact_ids | default([], true) | unique | list | length)
+            == (llm_model_store_seed_artifact_ids | default([], true) | length)
+          - >-
+            (llm_model_store_seed_artifact_ids | default([], true)
+             | difference(_llm_model_store_seed_catalog_artifacts | map(attribute='artifact_id') | list)
+             | length) == 0
+          - >-
+            (llm_model_store_seed_artifact_ids | default([], true) | length == 0)
+            or ((llm_model_store_seed_artifacts | map(attribute='artifact_id') | sort)
+                == (llm_model_store_seed_artifact_ids | sort))
+          - llm_model_store_seed_artifacts | length > 0
+        fail_msg: >-
+          Every requested model-store artifact must be unique and registered for model-store seeding.
+        quiet: true
+
     - name: Require the complete model-store profile and engine coverage
       ansible.builtin.assert:
         that:
-          - llm_model_store_seed_artifacts | length >= 20
           - >-
-            (llm_model_store_seed_artifacts | map(attribute='model_store_profile') | unique | list | sort)
-            == (_llm_model_store_profiles | unique | list | sort)
-          - "'GGUF' in (llm_model_store_seed_artifacts | map(attribute='format') | list)"
-          - "'safetensors' in (llm_model_store_seed_artifacts | map(attribute='format') | list)"
-          - "'MLX' in (llm_model_store_seed_artifacts | map(attribute='format') | list)"
+            (llm_model_store_seed_artifact_ids | default([], true) | length > 0)
+            or llm_model_store_seed_artifacts | length >= 20
+          - >-
+            (llm_model_store_seed_artifact_ids | default([], true) | length > 0)
+            or ((llm_model_store_seed_artifacts | map(attribute='model_store_profile') | unique | list | sort)
+                == (_llm_model_store_profiles | unique | list | sort))
+          - >-
+            (llm_model_store_seed_artifact_ids | default([], true) | length > 0)
+            or 'GGUF' in (llm_model_store_seed_artifacts | map(attribute='format') | list)
+          - >-
+            (llm_model_store_seed_artifact_ids | default([], true) | length > 0)
+            or 'safetensors' in (llm_model_store_seed_artifacts | map(attribute='format') | list)
+          - >-
+            (llm_model_store_seed_artifact_ids | default([], true) | length > 0)
+            or 'MLX' in (llm_model_store_seed_artifacts | map(attribute='format') | list)
         fail_msg: >-
           The artifact registry must cover all declared model-store profiles and the GGUF,
           safetensors, and MLX formats before the model origin is populated.

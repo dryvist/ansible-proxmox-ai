@@ -61,7 +61,24 @@
           serving group.
         quiet: true
   tasks:
+    - name: Converge Bolt through the shared profile selector
+      when: llm_active_profile in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24']
+      block:
+        - name: Gather facts
+          ansible.builtin.include_tasks: tasks/gather_facts.yml
+        - name: Include llm_gpu_serving role
+          ansible.builtin.include_role:
+            name: llm_gpu_serving
+      rescue:
+        - name: Record isolated failure for the final run gate
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: llm_gpu_serving
+        - name: Mark the selected GPU engine convergence as failed
+          ansible.builtin.set_fact:
+            llm_gpu_engine_convergence_failed: true
     - name: Converge llamacpp_serving (isolated — failure does not abort downstream plays)
+      when: llm_active_profile not in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24']
       block:
         - name: Gather facts
           ansible.builtin.include_tasks: tasks/gather_facts.yml

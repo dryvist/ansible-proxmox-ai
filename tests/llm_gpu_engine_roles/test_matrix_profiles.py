@@ -95,11 +95,17 @@ def test_matrix_profiles_stay_within_the_registered_artifact_context():
     llama_profiles = yaml.safe_load(
         (ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml").read_text()
     )["llamacpp_serving_profiles"]
+    legacy_profiles = yaml.safe_load(
+        (ROOT / "roles/llm_gpu_serving/defaults/main/10-profiles.yml").read_text()
+    )["llm_profiles"]
 
     for entry in GPU_MATRIX:
         artifact = artifacts[entry["artifact_id"]]
-        assert entry["context_window"] + entry["max_output_tokens"] <= artifact["context_window_tokens"]
-        for profiles in (VLLM_PROFILES, llama_profiles):
+        if "catalog_profile" in entry:
+            assert legacy_profiles[entry["profile"]]["max_model_len"] <= artifact["context_window_tokens"]
+        else:
+            assert entry["context_window"] + entry["max_output_tokens"] <= artifact["context_window_tokens"]
+        for profiles in (VLLM_PROFILES, llama_profiles, legacy_profiles):
             if entry["profile"] in profiles:
                 assert profiles[entry["profile"]]["max_model_len"] <= artifact["context_window_tokens"]
 
