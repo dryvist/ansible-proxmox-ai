@@ -25,12 +25,14 @@
           - benchmark_cache_path is defined
           - benchmark_cache_path | string is match('^/.+')
           - benchmark_cache_path is not search('(^|/)[.][.](/|$)')
-          - config_name is match('^(llama-cpp|vllm|mlx|lm-eval|evalscope)/[a-z0-9-]+$')
+          - config_name is match('^(llama-cpp|vllm|mlx|lm-eval|evalscope|strata)/[a-z0-9-]+$')
           - engine is defined
           - model_size is defined
           - concurrency_list is defined
           - context_list is defined
           - power_cap_w | string is match('^[0-9]+([.][0-9]+)?$')
+          - engine != 'strata' or strata_batch_size is defined
+          - strata_batch_size is not defined or strata_batch_size | string is match('^(1|4|8)$')
         fail_msg: >-
           The campaign survey requires an inventory alias, a named config,
           a registry artifact id, supported engine/model size, positive context/concurrency lists,
@@ -166,6 +168,15 @@
           - >-
             ('model_card_max' in _llm_campaign_context_tokens)
             == ('model_card_max' in _llm_campaign_config.context_list)
+          - >-
+            (_llm_campaign_config.run
+             | selectattr('prompt_tokens', 'defined')
+             | map(attribute='prompt_tokens') | map('int') | list
+             | difference(_llm_campaign_context_values) | length) == 0
+          - >-
+            (_llm_campaign_config.run
+             | selectattr('prompt_tokens', 'defined')
+             | map(attribute='prompt_tokens') | map('int') | list | min | default(1)) > 0
           - _llm_campaign_selected_artifacts | length == 1
           - _llm_campaign_selected_artifacts[0].artifact_id | length > 0
           - _llm_campaign_selected_artifacts[0].hf_repo | length > 0
@@ -263,6 +274,7 @@
         _llm_campaign_contexts: "{{ _llm_campaign_context_values }}"
         _llm_campaign_endpoint_origin: "{{ benchmark_endpoint_root }}"
         _llm_campaign_cache_root: "{{ benchmark_cache_path }}"
+        _llm_campaign_strata_batch_size: "{{ strata_batch_size | default('') }}"
 
 - name: Continue the campaign on the selected target
   ansible.builtin.import_playbook: llm-model-campaign-target.yml

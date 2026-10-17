@@ -7,7 +7,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STAGE0_FILE = REPO_ROOT / "llm-models.d/68-gpu-stage0-artifacts.yml"
 ENGINE_ROLES = ("nvidia_gpu_guest", "llm_gpu_serving")
-SUPPORTED_SERVING_ENGINES = {"vllm", "llama_cpp", "sglang", "mlx_lm"}
+SUPPORTED_SERVING_ENGINES = {"vllm", "llama_cpp", "sglang", "mlx_lm", "strata"}
 
 
 def _engine_guard_accepts(artifact: dict) -> bool:
@@ -119,8 +119,10 @@ def test_benchmark_only_artifacts_can_name_external_evaluation_engines():
 
         assert "item.use == 'benchmark-only'" in engine_guard
         assert "'sglang'" in engine_guard
+        assert "'strata'" in engine_guard
         assert all(_engine_guard_accepts(item) for item in stage0)
         assert _engine_guard_accepts({"use": "benchmark-only", "engines": ["laya"]})
         assert not _engine_guard_accepts({"use": "serving", "engines": ["laya"]})
         assert _engine_guard_accepts({"use": "serving", "engines": ["vllm"]})
         assert _engine_guard_accepts({"use": "serving", "engines": ["sglang"]})
+        assert _engine_guard_accepts({"use": "serving", "engines": ["strata"]})

@@ -18,6 +18,7 @@ POWER_LIMIT_FIXTURE = Path(__file__).parent / "fixtures/nvidia-smi-enforced-powe
 
 DECLARED_CONFIGS = (
     "llama-cpp/cross-card",
+    "strata/throughput",
     "vllm/cross-card",
     "mlx/cross-card",
     "mlx/vlm-native",
