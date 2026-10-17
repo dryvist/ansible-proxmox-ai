@@ -1,0 +1,66 @@
+---
+- name: Run a fixed-length cell with the pinned vLLM client image
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - -v
+      - "{{ _benchmark_run_client_result }}:/out"
+      - --entrypoint
+      - vllm
+      - "{{ benchmark_run_request.vllm_client_image }}"
+      - bench
+      - serve
+      - --backend
+      - openai-chat
+      - --base-url
+      - >-
+        {{ benchmark_run_request.engine_url | urlsplit('scheme') }}://{{
+          benchmark_run_request.engine_url | urlsplit('netloc') }}
+      - --endpoint
+      - >-
+        {{ benchmark_run_request.engine_url | urlsplit('path')
+          | regex_replace('/+$', '') }}/chat/completions
+      - --model
+      - "{{ benchmark_run_request.model }}"
+      - --tokenizer
+      - "{{ benchmark_run_request.tokenizer }}"
+      - --dataset-name
+      - random
+      - --random-input-len
+      - "{{ benchmark_run_request.input_tokens }}"
+      - --random-output-len
+      - "{{ benchmark_run_request.max_tokens }}"
+      - --random-prefix-len
+      - "0"
+      - --ignore-eos
+      - --num-prompts
+      - "{{ benchmark_run_request.num_prompts }}"
+      - --request-rate
+      - "{{ benchmark_run_request.request_rate }}"
+      - --burstiness
+      - "1"
+      - --max-concurrency
+      - "{{ benchmark_run_request.concurrency }}"
+      - --seed
+      - "{{ benchmark_run_request.seed }}"
+      - --percentile-metrics
+      - ttft,tpot,itl
+      - --metric-percentiles
+      - 50,90,99
+      - --save-result
+      - --save-detailed
+      - --result-dir
+      - /out
+      - --result-filename
+      - "{{ benchmark_run_request.run_id }}.json"
+  register: _benchmark_run_suite
+  changed_when: true
+  failed_when: _benchmark_run_suite.rc != 0

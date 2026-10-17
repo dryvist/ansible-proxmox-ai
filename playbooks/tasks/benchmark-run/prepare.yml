@@ -1,0 +1,293 @@
+---
+- name: Read the selected client's Proxmox configuration
+  ansible.builtin.command:
+    argv: [pct, config, "{{ benchmark_run_request.client_vmid }}"]
+  register: _benchmark_run_client_config
+  changed_when: false
+
+- name: Require a benchmark-client tag on the selected LXC
+  ansible.builtin.assert:
+    that:
+      - >-
+        'benchmark-client' in
+        (_benchmark_run_client_config.stdout
+         | regex_findall('(?m)^tags: *(.+)$') | first | default('') | split(';'))
+    fail_msg: "The selected LXC must carry the benchmark-client tag."
+    quiet: true
+
+- name: Require the selected client to be running
+  ansible.builtin.command:
+    argv: [pct, status, "{{ benchmark_run_request.client_vmid }}"]
+  register: _benchmark_run_client_status
+  changed_when: false
+
+- name: Assert the selected client is running
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_client_status.stdout | trim == 'status: running'
+    fail_msg: "The benchmark client must be running before a suite can start."
+    quiet: true
+
+- name: Verify the pinned uv release in the selected client
+  ansible.builtin.command:
+    argv: [pct, exec, "{{ benchmark_run_request.client_vmid }}", --, uv, --version]
+  register: _benchmark_run_uv_version
+  changed_when: false
+  when: benchmark_run_request.suite == 'bigcodebench-hard'
+
+- name: Require the pinned uv release
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_uv_version.stdout | trim == 'uv ' ~ benchmark_run_request.uv_version
+    fail_msg: "The client uv version must match the benchmark-run pin."
+    quiet: true
+  when: benchmark_run_request.suite == 'bigcodebench-hard'
+
+- name: Verify the pinned Node release in the selected client
+  ansible.builtin.command:
+    argv: [pct, exec, "{{ benchmark_run_request.client_vmid }}", --, node, --version]
+  register: _benchmark_run_node_version
+  changed_when: false
+  when: benchmark_run_request.suite is match('^promptfoo-')
+
+- name: Require the pinned Node release
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_node_version.stdout | trim == 'v' ~ benchmark_run_request.node_version
+    fail_msg: "The client Node.js version must match the benchmark-run pin."
+    quiet: true
+  when: benchmark_run_request.suite is match('^promptfoo-')
+
+- name: Verify the pinned Docker sandbox image for BigCodeBench
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - docker
+      - image
+      - inspect
+      - "{{ benchmark_run_request.bcb_sandbox_image }}"
+  register: _benchmark_run_sandbox_image
+  changed_when: false
+  when: benchmark_run_request.suite == 'bigcodebench-hard'
+
+- name: Require the pre-pulled Docker sandbox image
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_sandbox_image.rc == 0
+    fail_msg: >-
+      The pinned BigCodeBench sandbox image is absent; add its digest-pinned
+      reference to the benchmark-client images survey before this run.
+    quiet: true
+  when: benchmark_run_request.suite == 'bigcodebench-hard'
+
+- name: Verify the pre-pulled fixed-length vLLM client image
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - docker
+      - image
+      - inspect
+      - "{{ benchmark_run_request.vllm_client_image }}"
+  register: _benchmark_run_vllm_image
+  changed_when: false
+  when: benchmark_run_request.suite == 'vllm-sweep'
+
+- name: Require the fixed-length vLLM client image
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_vllm_image.rc == 0
+    fail_msg: >-
+      The pinned x86_64 vLLM client image is absent; add it to the benchmark
+      client's digest-pinned images list before this run.
+    quiet: true
+  when: benchmark_run_request.suite == 'vllm-sweep'
+
+- name: Set paths for this run on the node and client
+  ansible.builtin.set_fact:
+    _benchmark_run_node_scratch: "/var/tmp/benchmark-run/{{ benchmark_run_request.run_id }}"
+    _benchmark_run_client_root: "/var/lib/benchmark-client/{{ benchmark_run_request.run_id }}"
+    _benchmark_run_client_result: "/var/lib/benchmark-client/{{ benchmark_run_request.run_id }}/results"
+    _benchmark_run_node_artifact: >-
+      /var/lib/benchmark-results/{{ benchmark_run_request.run_id }}/{{ benchmark_run_request.suite }}
+    _benchmark_run_client_archive: "/tmp/benchmark-run-{{ benchmark_run_request.run_id }}.tar.gz"
+
+- name: Create the node scratch and artifact directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0750"
+  loop:
+    - "{{ _benchmark_run_node_scratch }}"
+    - "{{ _benchmark_run_node_artifact }}"
+
+- name: Create the suite and input directories inside the client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - mkdir
+      - -p
+      - "{{ _benchmark_run_client_result }}"
+      - "{{ _benchmark_run_client_root }}/inputs"
+      - "{{ _benchmark_run_client_root }}/artifacts"
+  changed_when: true
+
+- name: Verify the selected engine from inside the benchmark client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - --max-time
+      - "15"
+      - --output
+      - /dev/null
+      - "{{ benchmark_run_request.engine_url | regex_replace('/+$', '') }}/models"
+  register: _benchmark_run_engine_probe
+  changed_when: false
+  no_log: true
+
+- name: Read the Proxmox node uptime at benchmark block start
+  ansible.builtin.command:
+    argv: [cut, -d, " ", -f1, /proc/uptime]
+  register: _benchmark_run_host_uptime
+  changed_when: false
+  failed_when: false
+
+- name: Read the engine process start time from metrics
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail &&
+      pct exec {{ benchmark_run_request.client_vmid | quote }} --
+      curl --fail --silent --show-error --max-time 10
+      {{ (benchmark_run_request.engine_url | urlsplit('scheme') ~ '://' ~
+          benchmark_run_request.engine_url | urlsplit('netloc') ~ '/metrics') | quote }}
+      | awk '$1 == "process_start_time_seconds" { print $2; exit }'
+    executable: /bin/bash
+  register: _benchmark_run_engine_start_time
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Read the current epoch for uptime derivation
+  ansible.builtin.command:
+    argv: [date, +%s]
+  register: _benchmark_run_now
+  changed_when: false
+  when: _benchmark_run_engine_start_time.stdout | trim | length > 0
+
+- name: Record nullable host and engine uptime values
+  ansible.builtin.set_fact:
+    _benchmark_run_host_uptime_s: >-
+      {{ (_benchmark_run_host_uptime.stdout | trim | regex_search('^[0-9]+'))
+         if (_benchmark_run_host_uptime.rc == 0 and
+             _benchmark_run_host_uptime.stdout | trim is match('^[0-9]+'))
+         else none }}
+    _benchmark_run_host_uptime_reason: >-
+      {{ none if (_benchmark_run_host_uptime.rc == 0 and
+         _benchmark_run_host_uptime.stdout | trim is match('^[0-9]+'))
+         else 'Proxmox node /proc/uptime could not be read.' }}
+    _benchmark_run_engine_uptime_s: >-
+      {{ ([0, (_benchmark_run_now.stdout | int) -
+          (_benchmark_run_engine_start_time.stdout | trim | float)] | max | int)
+         if (_benchmark_run_engine_start_time.stdout | trim | length > 0)
+         else none }}
+    _benchmark_run_guest_uptime_s: none
+    _benchmark_run_guest_uptime_reason: "Direct guest OS uptime is not exposed by this engine endpoint."
+    _benchmark_run_engine_uptime_reason: >-
+      {{ none if (_benchmark_run_engine_start_time.stdout | trim | length > 0)
+         else 'Engine metrics did not expose process_start_time_seconds.' }}
+
+- name: Report uptime tags at benchmark block start
+  ansible.builtin.debug:
+    msg: >-
+      host_uptime_s={{ _benchmark_run_host_uptime_s | default(none) }}
+      host_uptime_reason={{ _benchmark_run_host_uptime_reason }}
+      guest_uptime_s={{ _benchmark_run_guest_uptime_s | default(none) }}
+      guest_uptime_reason={{ _benchmark_run_guest_uptime_reason }}
+      engine_uptime_s={{ _benchmark_run_engine_uptime_s | default(none) }}
+      engine_uptime_reason={{ _benchmark_run_engine_uptime_reason }}
+
+- name: Download the immutable Promptfoo config to the selected node
+  ansible.builtin.get_url:
+    url: "{{ benchmark_run_request.items_file }}"
+    dest: "{{ _benchmark_run_node_scratch }}/{{ benchmark_run_request.items_file | urlsplit('path') | basename }}"
+    mode: "0644"
+  when: benchmark_run_request.suite is match('^promptfoo-')
+
+- name: Record the staged Promptfoo config checksum
+  ansible.builtin.command:
+    argv:
+      - sha256sum
+      - "{{ _benchmark_run_node_scratch }}/{{ benchmark_run_request.items_file | urlsplit('path') | basename }}"
+  register: _benchmark_run_items_checksum
+  changed_when: false
+  when: benchmark_run_request.suite is match('^promptfoo-')
+
+- name: Copy the Promptfoo config into the selected client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ benchmark_run_request.client_vmid }}"
+      - "{{ _benchmark_run_node_scratch }}/{{ benchmark_run_request.items_file | urlsplit('path') | basename }}"
+      - "{{ _benchmark_run_client_root }}/inputs/{{ benchmark_run_request.items_file | urlsplit('path') | basename }}"
+  changed_when: true
+  when: benchmark_run_request.suite is match('^promptfoo-')
+
+- name: Write run metadata for the client
+  ansible.builtin.copy:
+    dest: "{{ _benchmark_run_node_scratch }}/run.json"
+    mode: "0640"
+    content: >-
+      {{ {
+        'run_id': benchmark_run_request.run_id,
+        'suite': benchmark_run_request.suite,
+        'model': benchmark_run_request.model,
+        'tokenizer': benchmark_run_request.tokenizer,
+        'reasoning_arm': benchmark_run_request.reasoning_arm,
+        'concurrency': benchmark_run_request.concurrency,
+        'max_tokens': benchmark_run_request.max_tokens,
+        'input_tokens': benchmark_run_request.input_tokens,
+        'request_rate': benchmark_run_request.request_rate,
+        'num_prompts': benchmark_run_request.num_prompts,
+        'seed': benchmark_run_request.seed,
+        'sandbox_pool': benchmark_run_request.sandbox_pool,
+        'host_uptime_s': _benchmark_run_host_uptime_s | default(none),
+        'host_uptime_reason': _benchmark_run_host_uptime_reason,
+        'guest_uptime_s': _benchmark_run_guest_uptime_s | default(none),
+        'guest_uptime_reason': _benchmark_run_guest_uptime_reason,
+        'engine_uptime_s': _benchmark_run_engine_uptime_s | default(none),
+        'engine_uptime_reason': _benchmark_run_engine_uptime_reason,
+        'publish': false,
+        'items_file_sha256': (_benchmark_run_items_checksum.stdout.split()[0]
+          if _benchmark_run_items_checksum is defined else none),
+        'evalscope_version': benchmark_run_request.evalscope_version,
+        'promptfoo_version': benchmark_run_request.promptfoo_version,
+        'uv_version': benchmark_run_request.uv_version,
+        'node_version': benchmark_run_request.node_version,
+        'vllm_client_image': benchmark_run_request.vllm_client_image,
+      } | to_nice_json }}
+
+- name: Copy run metadata into the selected client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ benchmark_run_request.client_vmid }}"
+      - "{{ _benchmark_run_node_scratch }}/run.json"
+      - "{{ _benchmark_run_client_root }}/run.json"
+  changed_when: true

@@ -1,0 +1,67 @@
+---
+- name: Run the pinned BigCodeBench-Hard sample with EvalScope
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - uv
+      - run
+      - --with
+      - "evalscope[sandbox,swe_bench]=={{ benchmark_run_request.evalscope_version }}"
+      - evalscope
+      - eval
+      - --model
+      - "{{ benchmark_run_request.model }}"
+      - --api-url
+      - "{{ benchmark_run_request.engine_url }}"
+      - --api-key
+      - EMPTY
+      - --eval-type
+      - openai_api
+      - --datasets
+      - bigcodebench_hard
+      - --dataset-args
+      - >-
+        {{ {
+          'bigcodebench_hard': {
+            'dataset_id': 'bigcode/bigcodebench-hard',
+            'dataset_revision': benchmark_run_request.bcb_dataset_revision,
+            'dataset_hub': 'huggingface',
+            'eval_split': 'v0.1.4',
+            'shuffle': false,
+            'extra_params': {'split': 'complete', 'version': 'v0.1.4'},
+          }
+        } | to_json }}
+      - --limit
+      - "30"
+      - --seed
+      - "0"
+      - --eval-batch-size
+      - "{{ benchmark_run_request.concurrency }}"
+      - --generation-config
+      - >-
+        {{ {
+          'max_tokens': benchmark_run_request.max_tokens,
+          'extra_body': {
+            'chat_template_kwargs': (
+              {'enable_thinking': false}
+              if benchmark_run_request.reasoning_arm == 'off'
+              else {'reasoning_effort': benchmark_run_request.reasoning_arm}
+            )
+          }
+        } | to_json }}
+      - --sandbox
+      - >-
+        {{ {
+          'enabled': true,
+          'engine': 'docker',
+          'default_config': {'image': benchmark_run_request.bcb_sandbox_image},
+          'pool_size': benchmark_run_request.sandbox_pool,
+        } | to_json }}
+      - --work-dir
+      - "{{ _benchmark_run_client_result }}"
+  register: _benchmark_run_suite
+  changed_when: true
+  failed_when: _benchmark_run_suite.rc != 0

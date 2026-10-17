@@ -1,0 +1,125 @@
+---
+- name: Validate the benchmark run survey
+  ansible.builtin.assert:
+    that:
+      - node is defined and node in tofu_data.nodes
+      - client_vmid is defined and client_vmid | string is match('^[0-9]{3,9}$')
+      - engine_url is defined
+      - (engine_url | string | urlsplit('scheme')) in ['http', 'https']
+      - engine_url | string | urlsplit('hostname') | length > 0
+      - engine_url | string | urlsplit('username') | default('', true) | length == 0
+      - engine_url | string | urlsplit('password') | default('', true) | length == 0
+      - engine_url | string | urlsplit('query') | default('', true) | length == 0
+      - engine_url | string | urlsplit('fragment') | default('', true) | length == 0
+      - engine_url | string | urlsplit('path') is match('^(/[^?#]+)?/v1/?$')
+      - model is defined and model | string | trim | length > 0
+      - tokenizer is defined and tokenizer | string | trim | length > 0
+      - suite is defined
+      - >-
+        suite == 'bigcodebench-hard' or suite == 'vllm-sweep' or
+        suite | string is match('^promptfoo-[a-z0-9][a-z0-9-]*$')
+      - reasoning_arm is defined and reasoning_arm in ['off', 'low', 'xhigh']
+      - concurrency is defined and concurrency | int > 0
+      - max_tokens is defined and max_tokens | int > 0
+      - sandbox_pool is defined and sandbox_pool | int > 0
+      - run_id is defined and run_id | string is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+      - not (publish | default(false) | bool)
+      - lookup('env', 'PROXMOX_SSH_KEY_PATH') | length > 0
+    fail_msg: >-
+      The survey must select one published node, a tagged client VMID, an
+      OpenAI-compatible /v1 URL, a model and tokenizer, a supported suite,
+      explicit reasoning arm, positive limits, and a safe run ID. Publishing
+      is disabled until an approved dataset-token path exists.
+    quiet: true
+
+- name: Require a suite input file when Promptfoo is selected
+  ansible.builtin.assert:
+    that:
+      - items_file is defined
+      - items_file | string is match('^https://raw[.]githubusercontent[.]com/[^/?#]+/[^/?#]+/[0-9a-f]{40}/[^?#]+$')
+      - items_file | string | urlsplit('path') | basename is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+    fail_msg: >-
+      Promptfoo requires items_file to be an immutable raw GitHub file URL with
+      a commit SHA in the path and a simple filename.
+    quiet: true
+  when: suite is match('^promptfoo-')
+
+- name: Require the BigCodeBench sandbox pool to cover its concurrency
+  ansible.builtin.assert:
+    that:
+      - sandbox_pool | int >= concurrency | int
+      - sandbox_pool | int <= 8
+    fail_msg: >-
+      BigCodeBench sandbox_pool must be at least concurrency and at most the
+      supported pool size of eight.
+    quiet: true
+  when: suite == 'bigcodebench-hard'
+
+- name: Require no separate input file for the pinned BigCodeBench set
+  ansible.builtin.assert:
+    that:
+      - items_file | default('') | length == 0
+    fail_msg: >-
+      BigCodeBench uses the pinned built-in dataset selection and sample limit;
+      items_file is only used by Promptfoo suites.
+    quiet: true
+  when: suite == 'bigcodebench-hard'
+
+- name: Require fixed-length input parameters for a vLLM serving cell
+  ansible.builtin.assert:
+    that:
+      - input_tokens is defined and input_tokens | int > 0
+      - num_prompts is defined and num_prompts | int > 0
+      - seed is defined and seed | string is match('^[0-9]+$')
+      - request_rate is defined
+      - >-
+        request_rate | string == 'inf' or
+        request_rate | string is match('^[0-9]+([.][0-9]+)?$')
+      - request_rate | string == 'inf' or request_rate | float > 0
+      - items_file | default('') | length == 0
+    fail_msg: >-
+      vllm-sweep runs one fixed-length vllm bench serve cell. Supply positive
+      input_tokens, num_prompts, and seed, plus request_rate=inf or a positive
+      Poisson arrival rate; do not set items_file.
+    quiet: true
+  when: suite == 'vllm-sweep'
+
+- name: Add the selected Proxmox node to this run's inventory
+  ansible.builtin.add_host:
+    name: benchmark-run-node
+    groups: benchmark_run_node
+    ansible_host: "{{ (tofu_data.nodes[node].role | default(node, true)) ~ '.' ~ tofu_data.domain }}"
+    ansible_connection: ssh
+    ansible_user: root
+    ansible_ssh_private_key_file: "{{ lookup('env', 'PROXMOX_SSH_KEY_PATH') }}"
+    ansible_python_interpreter: auto_silent
+    benchmark_run_request:
+      node: "{{ node }}"
+      client_vmid: "{{ client_vmid | int }}"
+      engine_url: "{{ engine_url }}"
+      model: "{{ model }}"
+      tokenizer: "{{ tokenizer }}"
+      suite: "{{ suite }}"
+      items_file: "{{ items_file | default('') }}"
+      reasoning_arm: "{{ reasoning_arm }}"
+      concurrency: "{{ concurrency | int }}"
+      max_tokens: "{{ max_tokens | int }}"
+      sandbox_pool: "{{ sandbox_pool | int }}"
+      input_tokens: "{{ input_tokens | default(0) | int }}"
+      request_rate: "{{ request_rate | default('inf') }}"
+      num_prompts: "{{ num_prompts | default(0) | int }}"
+      seed: "{{ seed | default(0) | int }}"
+      run_id: "{{ run_id }}"
+      evalscope_version: "{{ _benchmark_run_evalscope_version }}"
+      promptfoo_version: "{{ _benchmark_run_promptfoo_version }}"
+      uv_version: "{{ _benchmark_run_uv_version }}"
+      node_version: "{{ _benchmark_run_node_version }}"
+      vllm_client_image: "{{ _benchmark_run_vllm_client_image }}"
+      bcb_dataset_revision: "{{ _benchmark_run_bcb_dataset_revision }}"
+      bcb_sandbox_image: "{{ _benchmark_run_bcb_sandbox_image }}"
+
+- name: Ensure exactly one selected node was added
+  ansible.builtin.assert:
+    that:
+      - groups['benchmark_run_node'] | default([]) | length == 1
+    quiet: true
