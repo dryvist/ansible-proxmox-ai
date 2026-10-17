@@ -174,6 +174,26 @@ def test_legacy_gpu_serving_role_uses_the_shared_userspace_installer() -> None:
     assert includes == [{"name": "nvidia_gpu_guest", "tasks_from": "install-nvidia-userspace.yml"}]
 
 
+def test_legacy_serving_play_installs_fan_control_only_when_enabled() -> None:
+    play = next(
+        play
+        for play in _serving_plays()
+        if _host_group(play) == "llm_gpu_legacy_group"
+    )
+    fan_control = next(
+        task
+        for task in play["tasks"]
+        if task.get("name") == "Install GPU fan control for opted-in legacy guests"
+    )
+
+    assert "llm_gpu_serving" in play["tags"]
+    assert fan_control["ansible.builtin.include_role"] == {
+        "name": "nvidia_gpu_guest",
+        "tasks_from": "install-fan-control.yml",
+    }
+    assert fan_control["when"] == "nvidia_gpu_guest_fan_control_enabled | default(false) | bool"
+
+
 def test_router_projects_gpu_profiles_only_when_a_gpu_host_exists() -> None:
     expression = _load(ROUTER_GPU_PROFILE_VARS)["llm_router_gpu_profiles_enabled"]
     env = jinja2.Environment()
