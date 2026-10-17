@@ -20,6 +20,9 @@
           }) }}
       no_log: true
 
+    - name: Refresh the router projections with legacy key values
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
     - name: Reject roster agents with no router key value
       vars:
         ai_agents:
@@ -28,6 +31,11 @@
         ai_agent_owner: {}
         openbao_secrets_by_domain: {}
       block:
+        - name: Refresh the router projections for the missing-key case
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: assertion-inputs.yml
+
         - name: Materialize the required roster key
           ansible.builtin.set_fact:
             _missing_agent_keys: "{{ _llm_router_agent_keys }}"
@@ -48,6 +56,11 @@
         ai_agent_owner: {}
         openbao_secrets_by_domain: {}
       block:
+        - name: Refresh the router projections for the empty roster
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: assertion-inputs.yml
+
         - name: Materialize the empty roster
           ansible.builtin.set_fact:
             _empty_agent_keys: "{{ _llm_router_agent_keys }}"
@@ -107,12 +120,22 @@
             example_owner_llm_router_key: fixture-owner-key
             example_standard_llm_router_key: fixture-standard-key
       block:
+        - name: Refresh the router projections for the ownership fixture
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: assertion-inputs.yml
+
         - name: Give the workstation fixture a hub server
           ansible.builtin.set_fact:
             _llm_router_workstation_virtual_keys: >-
               {{ _llm_router_workstation_virtual_keys
                  | map('combine', {'object_permission': {'mcp_servers': ['splunk']}}, recursive=true)
                  | list }}
+
+        - name: Refresh the router projections after adding the workstation server
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: assertion-inputs.yml
 
         - name: Materialize the roster keys
           ansible.builtin.set_fact:
