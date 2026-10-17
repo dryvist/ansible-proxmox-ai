@@ -135,7 +135,7 @@ def _render_model_list(entries: list[dict], rates: dict) -> list[dict]:
         llm_router_hermes_identity_bearers={},
         llm_router_hermes_agent_timeout=1,
         llm_router_hermes_agent_context_window=1,
-        llm_router_hermes_cloud_models_credentialed=cloud_entries,
+        _llm_router_m_hermes_cloud_models_credentialed=cloud_entries,
         llm_router_hermes_cloud_rpm=12,
         llm_router_hermes_cloud_tpm=500000,
         llm_router_hermes_cloud_max_parallel_requests=2,
@@ -149,7 +149,7 @@ def _render_model_list(entries: list[dict], rates: dict) -> list[dict]:
         llm_router_openrouter_tpm=200000,
         llm_router_openrouter_max_parallel_requests=4,
         llm_router_local_registry_tiers=local_registry_tiers,
-        llm_router_resolved_credentials={
+        _llm_router_m_resolved_credentials={
             "OPENROUTER_API_KEY": "fixture",
             "OPENROUTER_HERMES_KEY": "fixture",
             "GEMINI_API_KEY": "fixture",
