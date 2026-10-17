@@ -22,15 +22,23 @@ def _profiles_by_name() -> dict:
     return {**legacy, **_profiles(), **_sglang_profiles()}
 
 
-def _evaluate_facts(name: str) -> tuple[dict, list[bool]]:
+def _evaluate_facts(
+    name: str,
+    gpu_memory_mib: int = 98304,
+    guest_memory_mb: int = 49152,
+) -> tuple[dict, list[bool]]:
     profile = _profiles_by_name()[name]
     artifact = _registry_profiles()[name]["artifact"]
     facts = {
         "nvidia_gpu_guest_active_profile": name,
         "nvidia_gpu_guest_profiles": {name: profile},
         "nvidia_gpu_guest_registry_by_profile": {name: {"artifact": artifact}},
-        "nvidia_gpu_guest_fit_gpu_query": {"rc": 0, "stdout_lines": ["98304"]},
-        "hostvars": {"localhost": {"tofu_data": {"containers": {"test-guest": {"memory_mb": 49152}}}}},
+        "nvidia_gpu_guest_fit_gpu_query": {"rc": 0, "stdout_lines": [str(gpu_memory_mib)]},
+        "hostvars": {
+            "localhost": {
+                "tofu_data": {"containers": {"test-guest": {"memory_mb": guest_memory_mb}}}
+            }
+        },
         "inventory_hostname": "test-guest",
     }
     environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
@@ -53,6 +61,15 @@ def test_27b_and_flash_next_ud_q2_llama_cpp_profiles_fit_declared_budgets():
         assert all(results), (name, facts, results)
         assert facts["nvidia_gpu_guest_fit_weights_bytes"] < 96 * GIB
         assert facts["nvidia_gpu_guest_fit_guest_memory_bytes"] == 48 * GIB
+
+
+def test_qwen38_131k_profile_fits_the_4080_guest_weight_admission():
+    facts, results = _evaluate_facts("qwen38-27b-131k-1", gpu_memory_mib=16376, guest_memory_mb=13312)
+    assert all(results), (facts, results)
+    assert facts["nvidia_gpu_guest_fit_weights_bytes"] == 10934860704
+    assert facts["nvidia_gpu_guest_fit_gpu_weights_bytes"] < 16 * GIB
+    assert facts["nvidia_gpu_guest_fit_guest_memory_bytes"] == 13 * 1024**3
+    assert facts["nvidia_gpu_guest_fit_cpu_weights_bytes"] == 0
 
 
 def test_flash_next_nvfp4_mtp_is_rejected_by_the_guest_ram_budget():

@@ -54,6 +54,8 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert profiles["medium-b"]["artifact"]["format"] == "GGUF"
     assert profiles["16gb"]["artifact"]["artifact_id"] == "qwen38-27b-ud-iq3-xxs"
     assert profiles["16gb"]["artifact"]["format"] == "GGUF"
+    assert profiles["qwen38-27b-131k-1"]["artifact_id"] == "qwen38-27b-ud-iq3-xxs"
+    assert profiles["qwen38-27b-131k-1"]["catalog_profile"] == "qwen38-27b-131k-1"
     assert profiles["max"]["artifact"]["format"] == "GGUF"
 
 
