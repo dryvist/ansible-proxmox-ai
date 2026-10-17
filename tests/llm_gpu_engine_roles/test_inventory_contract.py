@@ -51,6 +51,26 @@ def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
     all_vars = _load(REPO_ROOT / "inventory/group_vars/all.yml")
     profiles_by_engine = all_vars["llm_gpu_active_profiles_by_engine"]
     assert profiles_by_engine["llama_cpp"] == "medium-b"
+    llama_cpp_group = _load(
+        REPO_ROOT / "inventory/group_vars/llm_gpu_serving_llama_cpp_group.yml"
+    )
+    assert llama_cpp_group["llm_active_profile"] == "nemotron-bolt-64k-16"
+    generic_profiles = _load(
+        REPO_ROOT / "roles/llm_gpu_serving/defaults/main/10-profiles.yml"
+    )["llm_profiles"]
+    flash_next = generic_profiles["flash-next-small-128k-8"]
+    bolt_64k = generic_profiles["nemotron-bolt-64k-16"]
+    bolt_256k = generic_profiles["nemotron-bolt-256k-24"]
+    assert (bolt_64k["max_model_len"], bolt_64k["max_num_seqs"]) == (65536, 16)
+    assert (bolt_256k["max_model_len"], bolt_256k["max_num_seqs"]) == (262144, 24)
+    for profile in (bolt_64k, bolt_256k):
+        assert {
+            key: profile[key]
+            for key in ("engine", "flash_attention", "gpu_layers", "kv_cache_dtype")
+        } == {
+            key: flash_next[key]
+            for key in ("engine", "flash_attention", "gpu_layers", "kv_cache_dtype")
+        }
     assert profiles_by_engine["vllm"] == "medium-a"
     sglang_profiles = _load(REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml")[
         "sglang_serving_profiles"
@@ -77,6 +97,27 @@ def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
     # Preserve the legacy profile if the selected engine guest is absent.
     assert profile("sglang", {"llama_cpp", "vllm"}) == "medium-a"
     assert profile(None, set()) == "medium-a"
+
+
+def test_bolt_profiles_use_the_shared_serving_role_and_selector():
+    plays = _load(GPU_ENGINE_PLAYBOOK)
+    llamacpp_play = next(
+        play for play in plays
+        if play.get("hosts") == "llm_gpu_serving_llama_cpp_group"
+    )
+    tasks = llamacpp_play["tasks"]
+    shared = next(
+        task for task in tasks
+        if task["name"] == "Converge Bolt through the shared profile selector"
+    )
+    specialized = next(
+        task for task in tasks
+        if task["name"].startswith("Converge llamacpp_serving")
+    )
+
+    assert shared["block"][1]["ansible.builtin.include_role"]["name"] == "llm_gpu_serving"
+    assert shared["when"] == "llm_active_profile in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24']"
+    assert specialized["when"] == "llm_active_profile not in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24']"
 
 
 def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostname():
