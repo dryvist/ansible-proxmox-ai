@@ -1,0 +1,49 @@
+---
+- name: Load the existing GPU serving and llama.cpp release settings
+  ansible.builtin.include_vars:
+    file: "{{ item }}"
+  loop:
+    - "{{ role_path }}/defaults/main/engine-rules.yml"
+    - "{{ role_path }}/defaults/main/00-trial.yml"
+    - "{{ role_path | dirname }}/llm_gpu_serving/defaults/main/00-core.yml"
+    - "{{ role_path | dirname }}/llamacpp_release/defaults/main/00-release.yml"
+  loop_control:
+    label: "{{ item | basename }}"
+
+- name: Bind the controller's validated plan to this fixed GPU host
+  ansible.builtin.set_fact:
+    llm_model_trial_plan: "{{ hostvars['localhost'].llm_model_trial_selected }}"
+    llm_model_trial_id: "{{ hostvars['localhost'].llm_model_trial_id }}"
+    llm_model_trial_artifact_path: "{{ hostvars['localhost'].llm_model_trial_artifact_path }}"
+    llm_model_trial_failure_artifact_path: "{{ hostvars['localhost'].llm_model_trial_failure_artifact_path }}"
+    llm_model_trial_bind_host: "{{ ansible_default_ipv4.address }}"
+    llm_model_trial_unit_name: "llm-model-trial@{{ hostvars['localhost'].llm_model_trial_id }}.service"
+    llm_model_trial_lock_unit_name: "llm-model-trial-lock@{{ hostvars['localhost'].llm_model_trial_id }}.service"
+    llm_model_trial_model_dir: "{{ llm_gpu_serving_model_cache_path }}/{{ hf_repo }}"
+    llm_model_trial_endpoint_url: >-
+      http://{{ ansible_default_ipv4.address }}:{{ llm_model_trial_port }}/v1
+
+- name: Require the fixed target, one inventory member, private port, and installed engines
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_host == '6000'
+      - groups[llm_model_trial_inventory_group] | length == 1
+      - ansible_play_hosts_all | length == 1
+      - llm_model_trial_port | int != llm_gpu_serving_api_port | int
+      - llm_gpu_serving_model_cache_path | string is match('^/.+')
+      - llm_gpu_serving_hf_bin | string is match('^/.+')
+    fail_msg: >-
+      The trial is fixed to the single 6000 GPU guest and its private port;
+      the existing serving cache and Hugging Face CLI must be available.
+    quiet: true
+
+- name: Run the isolated candidate trial and preserve failure evidence
+  block:
+    - name: Lock host, download the candidate, and serve it privately
+      ansible.builtin.include_tasks: acquire-and-serve.yml
+  rescue:
+    - name: Save bounded candidate failure evidence
+      ansible.builtin.include_tasks: failure-evidence.yml
+  always:
+    - name: Stop the candidate and restore the baseline
+      ansible.builtin.include_tasks: restore.yml

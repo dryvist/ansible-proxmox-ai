@@ -1,0 +1,184 @@
+---
+- name: Resolve and validate the public model revision on the controller
+  block:
+    - name: Load the model trial rules and controller settings
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+      loop:
+        - "{{ role_path }}/defaults/main/engine-rules.yml"
+        - "{{ role_path }}/defaults/main/00-trial.yml"
+      loop_control:
+        label: "{{ item | basename }}"
+
+    - name: Validate the model trial survey values
+      ansible.builtin.assert:
+        that:
+          - hf_repo is defined
+          - hf_repo is match('^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$')
+          - revision is not defined or revision | string is match('^[A-Za-z0-9._/-]+$')
+          - llm_model_trial_requested_engine in ['auto', 'vllm', 'llama_cpp']
+          - context is not defined or context | string is match('^[1-9][0-9]*$')
+          - slots is not defined or slots | string is match('^[1-9][0-9]*$')
+        fail_msg: >-
+          Provide hf_repo as owner/name and, when set, a safe revision, one of
+          auto/vllm/llama_cpp, a positive context, and positive slots.
+        quiet: true
+
+    - name: Confirm the fixed target resolves to one inventory host
+      ansible.builtin.assert:
+        that:
+          - groups[llm_model_trial_inventory_group] | default([]) | length == 1
+          - llm_model_trial_host == '6000'
+        fail_msg: >-
+          The model trial is fixed to host 6000 and requires exactly one
+          llm_gpu_group inventory member.
+        quiet: true
+
+    - name: Create a temporary controller directory for revision-pinned Hub metadata
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: llm-model-trial-hub-
+      register: llm_model_trial_hub_tmp
+
+    - name: Read the Hub model facts and resolve the requested revision to a SHA
+      ansible.builtin.command:
+        argv: >-
+          {{ ['hf', 'models', 'info', hf_repo, '--json', '--expand',
+              'author,sha,likes,downloads,private,gated,gguf,createdAt,lastModified']
+             + (['--revision', revision] if revision is defined else []) }}
+      environment:
+        HF_HUB_DISABLE_IMPLICIT_TOKEN: '1'
+      register: llm_model_trial_hub_info_raw
+      changed_when: false
+
+    - name: Parse the resolved Hub model facts
+      ansible.builtin.set_fact:
+        llm_model_trial_hub_info: "{{ llm_model_trial_hub_info_raw.stdout | from_json }}"
+
+    - name: Enforce repository visibility, trust, popularity, and immutable revision gates
+      ansible.builtin.assert:
+        that:
+          - llm_model_trial_hub_info.private is false
+          - llm_model_trial_hub_info.gated is false
+          - >-
+            (llm_model_trial_hub_info.author | default('') | lower)
+            in (llm_model_trial_trusted_authors | map('lower') | list)
+            or ((llm_model_trial_hub_info.likes | default(0) | int) >= llm_model_trial_minimum_likes
+                and (llm_model_trial_hub_info.downloads | default(0) | int) >= llm_model_trial_minimum_downloads)
+          - llm_model_trial_hub_info.sha is match('^[0-9a-f]{40}$')
+        fail_msg: >-
+          The Hub revision must be public and ungated, from an allowlisted
+          author or meet both popularity thresholds, and resolve to a full SHA.
+        quiet: true
+
+    - name: Read the revision-pinned file tree and sizes
+      ansible.builtin.command:
+        argv:
+          - hf
+          - models
+          - ls
+          - "{{ hf_repo }}"
+          - --recursive
+          - --json
+          - --revision
+          - "{{ llm_model_trial_hub_info.sha }}"
+      environment:
+        HF_HUB_DISABLE_IMPLICIT_TOKEN: '1'
+      register: llm_model_trial_hub_tree_raw
+      changed_when: false
+
+    - name: Parse the revision-pinned file tree
+      ansible.builtin.set_fact:
+        llm_model_trial_hub_tree: "{{ llm_model_trial_hub_tree_raw.stdout | from_json }}"
+        llm_model_trial_metadata_download_files: >-
+          {{ ['README.md']
+             + (['config.json'] if 'config.json' in (llm_model_trial_hub_tree_raw.stdout | from_json
+                  | map(attribute='path') | list) else [])
+             + (['generation_config.json'] if 'generation_config.json' in
+                  (llm_model_trial_hub_tree_raw.stdout | from_json | map(attribute='path') | list) else [])
+             + (['hf_quant_config.json'] if 'hf_quant_config.json' in
+                  (llm_model_trial_hub_tree_raw.stdout | from_json | map(attribute='path') | list) else [])
+             + (['model.safetensors.index.json'] if 'model.safetensors.index.json' in
+                  (llm_model_trial_hub_tree_raw.stdout | from_json | map(attribute='path') | list) else []) }}
+
+    - name: Require a pinned model card and safely bounded metadata inputs
+      ansible.builtin.assert:
+        that:
+          - "'README.md' in (llm_model_trial_hub_tree | map(attribute='path') | list)"
+          - >-
+            llm_model_trial_hub_tree
+            | selectattr('path', 'in', llm_model_trial_metadata_download_files)
+            | selectattr('size', 'gt', 67108864) | list | length == 0
+        fail_msg: >-
+          The pinned Hub revision must include README.md, and metadata files
+          downloaded to the controller must be no larger than 64 MiB.
+        quiet: true
+
+    - name: Download only small metadata files at the resolved SHA to the controller
+      ansible.builtin.command:
+        argv: >-
+          {{ ['hf', 'download', hf_repo] + llm_model_trial_metadata_download_files
+             + ['--revision', llm_model_trial_hub_info.sha, '--local-dir', llm_model_trial_hub_tmp.path] }}
+      environment:
+        HF_HUB_DISABLE_IMPLICIT_TOKEN: '1'
+      register: llm_model_trial_hub_metadata_download
+      changed_when: false
+
+    - name: Read config, generation, quantization, index, and card facts from pinned metadata
+      ansible.builtin.set_fact:
+        llm_model_trial_hub_config: >-
+          {{ (lookup('ansible.builtin.file', llm_model_trial_hub_tmp.path ~ '/config.json') | from_json)
+             if 'config.json' in llm_model_trial_metadata_download_files else {} }}
+        llm_model_trial_hub_generation_config: >-
+          {{ (lookup('ansible.builtin.file', llm_model_trial_hub_tmp.path ~ '/generation_config.json') | from_json)
+             if 'generation_config.json' in llm_model_trial_metadata_download_files else {} }}
+        llm_model_trial_hub_quant: >-
+          {{ (lookup('ansible.builtin.file', llm_model_trial_hub_tmp.path ~ '/hf_quant_config.json') | from_json)
+             if 'hf_quant_config.json' in llm_model_trial_metadata_download_files else {} }}
+        llm_model_trial_hub_weight_index: >-
+          {{ (lookup('ansible.builtin.file', llm_model_trial_hub_tmp.path
+                     ~ '/model.safetensors.index.json') | from_json)
+             if 'model.safetensors.index.json' in llm_model_trial_metadata_download_files else {} }}
+        llm_model_trial_hub_card: >-
+          {{ lookup('ansible.builtin.file', llm_model_trial_hub_tmp.path ~ '/README.md') }}
+
+    - name: Select validated engine, weights, context, and slots from Hub facts
+      ansible.builtin.set_fact:
+        llm_model_trial_selected: >-
+          {{ llm_model_trial_hub_info
+             | llm_model_trial_select(llm_model_trial_hub_tree,
+                 llm_model_trial_hub_config, llm_model_trial_hub_generation_config,
+                 llm_model_trial_hub_quant, llm_model_trial_hub_weight_index,
+                 llm_model_trial_hub_card, vars,
+                 llm_model_trial_requested_engine, llm_model_trial_requested_context,
+                 llm_model_trial_requested_slots) }}
+
+    - name: Create the unique trial id on the controller
+      ansible.builtin.command:
+        argv: [uuidgen]
+      register: llm_model_trial_uuid
+      changed_when: false
+
+    - name: Resolve the unique trial id
+      ansible.builtin.set_fact:
+        llm_model_trial_id: "{{ llm_model_trial_uuid.stdout | trim | lower | replace('-', '') }}"
+
+    - name: Resolve protected controller artifact paths
+      ansible.builtin.set_fact:
+        llm_model_trial_artifact_path: >-
+          {{ llm_model_trial_artifact_dir }}/{{ llm_model_trial_id }}/trial-facts.json
+        llm_model_trial_failure_artifact_path: >-
+          {{ llm_model_trial_artifact_dir }}/{{ llm_model_trial_id }}/failure.json
+
+    - name: Create the protected controller artifact directory
+      ansible.builtin.file:
+        path: "{{ llm_model_trial_artifact_path | dirname }}"
+        state: directory
+        mode: '0700'
+
+  always:
+    - name: Remove temporary controller Hub metadata
+      ansible.builtin.file:
+        path: "{{ llm_model_trial_hub_tmp.path }}"
+        state: absent
+      when: llm_model_trial_hub_tmp is defined and llm_model_trial_hub_tmp.path is defined
