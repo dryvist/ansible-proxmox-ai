@@ -83,6 +83,7 @@ def test_legacy_loader_uses_the_vllm_definitions_for_the_selected_profile():
     profile_map = merge["ansible.builtin.set_fact"]["llm_gpu_serving_profiles"]
     assert "vllm_serving_profiles[llm_active_profile]" in profile_map
     assert "llm_gpu_serving_api_port" in profile_map
+    assert merge["vars"]["nvidia_gpu_guest_api_port"] == "{{ llm_gpu_serving_api_port }}"
     assert "llm_active_profile not in llm_gpu_serving_profiles" in merge["when"]
     assert any("llm_gpu_serving_registry_profiles" in condition for condition in merge["when"])
 
