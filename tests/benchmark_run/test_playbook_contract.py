@@ -37,6 +37,11 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     assert "enable_thinking" in generation
     assert "reasoning_effort" in generation
     assert "pool_size" in sandbox
+    assert "'entrypoint': ['sleep']" in sandbox
+    assert "'command': ['infinity']" in sandbox
+    assert load_tasks("bigcodebench.yml")[0]["no_log"] is True
+    assert load_tasks("promptfoo.yml")[0]["no_log"] is True
+    assert load_tasks("vllm-serve.yml")[0]["no_log"] is True
 
     promptfoo = load_tasks("promptfoo.yml")[0]["ansible.builtin.command"]["argv"]
     assert "--max-concurrency" in promptfoo
@@ -53,6 +58,14 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
     names = [task.get("name", "") for task in execute[0]["block"] + execute[0]["always"]]
     assert any("Archive the raw suite output" in name for name in names)
     assert any("Copy the raw result archive" in name for name in names)
+
+    safe_summary = execute[0]["always"][0]["ansible.builtin.debug"]["msg"]
+    assert set(safe_summary) == {
+        "suite",
+        "return_code",
+        "stdout_line_count",
+        "stderr_line_count",
+    }
 
 
 def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
