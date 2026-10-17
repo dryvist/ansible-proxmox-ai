@@ -16,10 +16,16 @@ def _engine_guard_accepts(artifact: dict) -> bool:
     )
 
 
+def _stage0_artifacts() -> list[dict]:
+    registry = yaml.safe_load(STAGE0_FILE.read_text(encoding="utf-8"))
+    return next(
+        entries for key, entries in registry.items()
+        if key.startswith("_llm_model_artifacts") or key.endswith("_artifacts")
+    )
+
+
 def test_stage0_artifacts_are_pinned_and_separate_from_campaign_data():
-    artifacts = yaml.safe_load(STAGE0_FILE.read_text(encoding="utf-8"))[
-        "_llm_model_stage0_artifacts"
-    ]
+    artifacts = _stage0_artifacts()
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
 
     assert set(by_id) == {
@@ -44,24 +50,40 @@ def test_stage0_artifacts_are_pinned_and_separate_from_campaign_data():
 
 
 def test_engine_and_cache_sync_loaders_include_stage0_artifacts():
+    loader = yaml.safe_load(
+        (REPO_ROOT / "roles/llm_gpu_serving/tasks/load-artifacts.yml").read_text()
+    )
+    loader_pattern = loader[0]["ansible.builtin.include_vars"]["files_matching"]
+    assert "llm_gpu_serving_artifact_files_matching" in loader_pattern
+    assert ".*artifacts.*" in loader_pattern
     for role in ENGINE_ROLES:
         role_root = REPO_ROOT / "roles" / role
         load_tasks = yaml.safe_load((role_root / "tasks/load-registry.yml").read_text())
         cache_tasks = yaml.safe_load((role_root / "tasks/cache-sync.yml").read_text())
 
-        assert any("stage0_artifact_registry_file" in str(task) for task in load_tasks)
-        assert any("stage0_artifact_registry_file" in str(task) for task in cache_tasks)
         for tasks in (load_tasks, cache_tasks):
-            combine = next(
-                str(task)
-                for task in tasks
-                if "_llm_model_stage0_artifacts" in str(task)
-                and f"{role}_model_artifacts" in str(task)
-            )
-            assert "_llm_model_artifacts_glm53flash" in combine
-            assert "_llm_model_artifacts_nvfp4_sweep" in combine
-        assert any(f"{role}_model_artifacts" in str(task) for task in load_tasks)
-        assert any(f"{role}_model_artifacts" in str(task) for task in cache_tasks)
+            if role == "llm_gpu_serving":
+                assert any(
+                    isinstance(task.get("ansible.builtin.include_tasks"), dict)
+                    and task["ansible.builtin.include_tasks"].get("file") == "load-artifacts.yml"
+                    and "-mlx" in task.get("vars", {}).get(
+                        "llm_gpu_serving_artifact_files_matching", ""
+                    )
+                    for task in tasks
+                )
+            else:
+                assert any(
+                    task.get("ansible.builtin.include_role") == {
+                        "name": "llm_gpu_serving",
+                        "tasks_from": "load-artifacts.yml",
+                    }
+                    for task in tasks
+                )
+                assert any(
+                    task.get("ansible.builtin.set_fact", {}).get(f"{role}_model_artifacts")
+                    == "{{ llm_gpu_serving_model_artifacts }}"
+                    for task in tasks
+                )
 
 
 def test_loader_checks_model_task_provenance_for_all_artifacts():
@@ -95,9 +117,7 @@ def test_loader_checks_model_task_provenance_for_all_artifacts():
 
 
 def test_benchmark_only_artifacts_can_name_external_evaluation_engines():
-    stage0 = yaml.safe_load(STAGE0_FILE.read_text(encoding="utf-8"))[
-        "_llm_model_stage0_artifacts"
-    ]
+    stage0 = _stage0_artifacts()
 
     for role in ENGINE_ROLES:
         tasks = yaml.safe_load(

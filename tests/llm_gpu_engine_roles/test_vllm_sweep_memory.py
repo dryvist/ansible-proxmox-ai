@@ -12,10 +12,7 @@ REGISTRY_FILES = (
     REPO_ROOT / "llm-models.d/60-gpu.yml",
     REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
 )
-ARTIFACT_FILES = (
-    REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
-    REPO_ROOT / "llm-models.d/69-gpu-artifacts-matrix.yml",
-)
+ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 PROFILE_FILE = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 GIB = 2**30
 GPU_MEMORY_GIB = 96
@@ -29,6 +26,16 @@ TARGET_MEDIUM_A_ARGS = {
     "gpu_memory_utilization": 0.85,
     "linear_backend": "b12x",
 }
+
+
+def _artifacts() -> list[dict]:
+    return [
+        artifact
+        for path in ARTIFACT_FILES
+        for key, values in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts") or key.endswith("_artifacts")
+        for artifact in values
+    ]
 
 
 def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
@@ -69,13 +76,7 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         if key.startswith("_llm_registry_gpu")
         for entry in values
     ]
-    artifacts = [
-        artifact
-        for path in ARTIFACT_FILES
-        for key, values in yaml.safe_load(path.read_text(encoding="utf-8")).items()
-        if key.startswith("_llm_model_artifacts")
-        for artifact in values
-    ]
+    artifacts = _artifacts()
     artifacts_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     entries_by_profile = {entry["profile"]: entry for entry in entries}
     candidate_profiles = {
@@ -138,8 +139,17 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
 
 
 def test_sweep_artifact_sizes_match_the_hugging_face_reads():
-    artifacts = yaml.safe_load(REGISTRY_FILES[0].with_name("67-gpu-artifacts-nvfp4-sweep.yml").read_text(encoding="utf-8"))[
-        "_llm_model_artifacts_nvfp4_sweep"
+    artifacts = [
+        artifact
+        for artifact in _artifacts()
+        if artifact["artifact_id"] in {
+            "qwen38-27b-nvfp4",
+            "qwen36-35b-a3b-nvfp4",
+            "nemotron-super-120b-a12b-nvfp4",
+            "muse-glimmer-30b-nvfp4",
+            "nemotron-lightning-30b-a3b-nvfp4",
+            "flash-next-nvfp4-nvidia",
+        }
     ]
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     assert {
