@@ -89,10 +89,12 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
     }
 
     assert candidate_profiles
-    assert candidate_profiles <= entries_by_profile.keys()
 
     for name in candidate_profiles:
         profile = profiles[name]
+        if name not in entries_by_profile:
+            assert profile.get("enabled", True) is False
+            continue
         entry = entries_by_profile[name]
         artifact = artifacts_by_id[entry["artifact_id"]]
         assert entry["enabled"] is False

@@ -154,8 +154,10 @@ def test_named_profiles_carry_the_serving_contract():
         "glm-flash": "llama_cpp",
     }
     # Registry equality across every engine lives in test_sglang_profiles.py.
-    assert set(profiles) <= set(_registry_profiles())
-    assert all(profile["enabled"] is True for profile in profiles.values())
+    assert {
+        name for name, profile in profiles.items() if profile.get("enabled", True)
+    } <= set(_registry_profiles())
+    assert all(profile["enabled"] is True for name, profile in profiles.items() if not name.startswith("flash-next-"))
     assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
     assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
     assert [profiles[name]["max_num_seqs"] for name in ("medium-a", "medium-b", "16gb", "max")] == [8, 8, 1, 1]
@@ -221,7 +223,7 @@ def test_each_vllm_profile_renders_its_runtime_flags():
     profiles = _profiles()
     registry_profiles = _registry_profiles()
     for name, profile in profiles.items():
-        if profile["engine"] != "vllm":
+        if profile["engine"] != "vllm" or not profile.get("enabled", True):
             continue
         exec_start = _exec_start(_render(name, profile))
         registry_model_id = registry_profiles[name]["upstream_model_id"]

@@ -31,6 +31,18 @@ MATRIX_PROFILES = {
     "flash-next-small-128k-8",
     "nemotron-bolt-64k-16", "nemotron-bolt-256k-24",
 }
+RETIRED_FLASH_NEXT_NVFP4_PROFILES = {
+    "flash-next-64k-1-fp8-mtp",
+    "flash-next-64k-4-fp8-mtp",
+    "flash-next-64k-1-fp8",
+    "flash-next-64k-4-fp8",
+    "flash-next-64k-8-fp8",
+    "flash-next-64k-8-fp8-mtp0",
+    "flash-next-64k-8-fp8-mtp2",
+    "flash-next-64k-8-fp8-mtp4",
+    "flash-next-262k-1-fp8",
+    "flash-next-262k-2-fp8",
+}
 ENABLED_MATRIX_PROFILES = {"nemotron-bolt-64k-16", "nemotron-bolt-256k-24"}
 
 
@@ -76,7 +88,7 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert len(profiles) == len(set(profiles))
     assert set(profiles) <= set(serving_profiles)
     assert defaults["llm_router_gpu_profiles_enabled"] is False
-    assert {entry["profile"] for entry in entries} == {
+    assert {entry["profile"] for entry in entries} == ({
         "small",
         "medium-a",
         "medium-b",
@@ -117,7 +129,8 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
         "flash-next-64k-8-fp8",
         "flash-next-64k-1-fp8-mtp",
         "flash-next-64k-4-fp8-mtp",
-    } | MATRIX_PROFILES
+    } | MATRIX_PROFILES) - RETIRED_FLASH_NEXT_NVFP4_PROFILES
+    assert all(not serving_profiles[name]["enabled"] for name in RETIRED_FLASH_NEXT_NVFP4_PROFILES)
     assert len({entry["client_model_id"] for entry in entries}) == len(entries)
     assert all(entry["artifact_id"] in artifacts_by_id for entry in entries)
     assert len(artifacts_by_id) == len(artifacts)
@@ -177,49 +190,7 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     aliases_by_profile = {
         entry["profile"]: entry.get("stable_aliases", []) for entry in entries
     }
-    assert {profile: len(aliases) for profile, aliases in aliases_by_profile.items()} == {
-        "small": 0,
-        "medium-a": 0,
-        "medium-b": 0,
-        "16gb": 0,
-        "max": 0,
-        "glm-flash": 0,
-        "qwen38-16k-1-auto": 0,
-        "qwen38-16k-4-auto": 0,
-        "qwen38-16k-1-fp8": 0,
-        "qwen38-16k-4-fp8": 0,
-        "qwen38-64k-1-auto": 0,
-        "qwen38-64k-1-fp8": 0,
-        "qwen38-64k-4-auto": 0,
-        "qwen38-64k-4-fp8": 0,
-        "qwen38-192k-1-auto": 0,
-        "qwen38-192k-1-fp8": 0,
-        "qwen38-192k-4-fp8": 0,
-        "qwen38-196k-4-auto": 0,
-        "qwen38-262k-1-auto": 0,
-        "qwen38-262k-1-fp8": 0,
-        "qwen38-262k-2-auto": 0,
-        "qwen38-262k-2-fp8": 0,
-        "qwen38-16k-8-auto": 0,
-        "qwen38-16k-8-fp8": 0,
-        "qwen38-64k-8-auto": 0,
-        "qwen38-64k-8-fp8": 0,
-        "qwen36-35b-a3b": 0,
-        "nemotron-super-1x8192": 0,
-        "nemotron-super-2x4096": 0,
-        "muse-glimmer-30b": 0,
-        "nemotron-lightning-30b-a3b": 0,
-        "qwen38-64k-8-fp8-mtp": 0,
-        "qwen38-64k-1-fp8-mtp": 0,
-        "qwen38-64k-4-fp8-mtp": 0,
-        "flash-next-64k-8-fp8-mtp": 0,
-        **dict.fromkeys(MATRIX_PROFILES, 0),
-        "flash-next-64k-1-fp8": 0,
-        "flash-next-64k-4-fp8": 0,
-        "flash-next-64k-8-fp8": 0,
-        "flash-next-64k-1-fp8-mtp": 0,
-        "flash-next-64k-4-fp8-mtp": 0,
-    }
+    assert all(not aliases for aliases in aliases_by_profile.values())
     assert {entry["profile"]: entry.get("route_group") for entry in entries} == {
         "small": "small",
         "medium-a": "medium",
@@ -262,8 +233,8 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
         if entry["client_model_id"].startswith("gpu-sweep-")
     } | {"medium-a"}
     expected_caps = {
-        name: 64 if name in admission_profiles else profile["max_num_seqs"]
-        for name, profile in serving_profiles.items()
+        name: 64 if name in admission_profiles else serving_profiles[name]["max_num_seqs"]
+        for name in caps
     }
     assert caps == expected_caps
 

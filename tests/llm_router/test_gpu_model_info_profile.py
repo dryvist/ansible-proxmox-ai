@@ -21,6 +21,18 @@ VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
 SGLANG_DEFAULTS = REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml"
 LEGACY_DEFAULTS = REPO_ROOT / "roles/llm_gpu_serving/defaults/main/10-profiles.yml"
+RETIRED_FLASH_NEXT_NVFP4_PROFILES = {
+    "flash-next-64k-1-fp8-mtp",
+    "flash-next-64k-4-fp8-mtp",
+    "flash-next-64k-1-fp8",
+    "flash-next-64k-4-fp8",
+    "flash-next-64k-8-fp8",
+    "flash-next-64k-8-fp8-mtp0",
+    "flash-next-64k-8-fp8-mtp2",
+    "flash-next-64k-8-fp8-mtp4",
+    "flash-next-262k-1-fp8",
+    "flash-next-262k-2-fp8",
+}
 
 
 @lru_cache(maxsize=1)
@@ -83,7 +95,9 @@ def _render(models: list[dict]) -> list[dict]:
 def test_every_serving_profile_is_declared_by_exactly_one_gpu_registry_entry():
     profiles = [entry["profile"] for entry in _entries()]
     serving = _serving_profiles()
-    assert sorted(profiles) == sorted(serving)
+    assert len(profiles) == len(set(profiles))
+    assert set(profiles) == set(serving) - RETIRED_FLASH_NEXT_NVFP4_PROFILES
+    assert all(not serving[name]["enabled"] for name in RETIRED_FLASH_NEXT_NVFP4_PROFILES)
     assert all(entry["tier"] == "gpu" for entry in _entries())
 
 

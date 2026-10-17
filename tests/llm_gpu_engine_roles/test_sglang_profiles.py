@@ -60,13 +60,23 @@ def _render(profile_name: str, profile: dict) -> str:
 
 
 def test_every_registry_profile_has_exactly_one_engine_profile():
-    assert set(_registry_profiles()) == set(_all_profiles())
+    profiles = _all_profiles()
+    registry_profiles = _registry_profiles()
+    assert set(registry_profiles) <= set(profiles)
+    assert {
+        name for name, profile in profiles.items() if profile.get("enabled", True)
+    } <= set(registry_profiles)
 
 
 def test_sglang_profiles_render_the_requested_runtime_flags():
     profiles = _sglang_profiles()
     registry_profiles = _registry_profiles()
     assert len(profiles) == 12
+    assert all(
+        profile["enabled"] is False
+        for name, profile in profiles.items()
+        if name.startswith("flash-next-")
+    )
 
     for model in ("qwen38", "flash-next"):
         for concurrency in (1, 4, 8):
@@ -74,6 +84,8 @@ def test_sglang_profiles_render_the_requested_runtime_flags():
                 suffix = "-fp8-mtp" if mtp else "-fp8"
                 name = f"{model}-64k-{concurrency}{suffix}"
                 profile = profiles[name]
+                if not profile.get("enabled", True):
+                    continue
                 registry_model = registry_profiles[name]
                 exec_start = _exec_start(_render(name, profile))
 
