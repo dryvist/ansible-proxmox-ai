@@ -24,8 +24,8 @@ def test_seed_coverage_accepts_the_catalog_and_rejects_a_missing_profile(tmp_pat
         tasks.insert(2, {
             "name": "Remove one profile from the artifact catalog",
             "ansible.builtin.set_fact": {
-                "_llm_model_artifacts": (
-                    "{{ _llm_model_artifacts | selectattr('model_store_profile', 'defined')"
+                "llm_gpu_serving_model_artifacts": (
+                    "{{ llm_gpu_serving_model_artifacts | selectattr('model_store_profile', 'defined')"
                     " | rejectattr('model_store_profile', 'equalto', '"
                     + missing_profile + "') | list }}"
                 ),

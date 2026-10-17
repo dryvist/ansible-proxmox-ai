@@ -29,8 +29,11 @@ def test_mlx_recipes_are_admitted_and_the_campaign_revision_is_pinned():
 
 def test_mlx_text_candidates_are_revision_pinned_for_256k_campaigns():
     artifacts_path = REPO_ROOT / "llm-models.d" / "69-gpu-artifacts-mlx.yml"
-    artifacts = yaml.safe_load(artifacts_path.read_text(encoding="utf-8"))[
-        "_llm_model_artifacts_mlx"
+    artifacts = [
+        artifact
+        for key, entries in yaml.safe_load(artifacts_path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts") or key.endswith("_artifacts")
+        for artifact in entries
     ]
     expected = [
         (
@@ -95,7 +98,10 @@ def test_mlx_engines_allow_zero_power_cap_only_on_darwin():
 
 def test_mlx_artifact_shard_uses_revision_pins_and_resolves_mtp_pairs():
     registry = yaml.safe_load(MLX_ARTIFACTS.read_text(encoding="utf-8"))
-    artifacts = registry["_llm_model_artifacts_mlx"]
+    artifacts = next(
+        entries for key, entries in registry.items()
+        if key.startswith("_llm_model_artifacts") or key.endswith("_artifacts")
+    )
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
 
     assert artifacts
