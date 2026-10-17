@@ -41,16 +41,18 @@ SERVE_TOGGLE = "llama_cpp_service_enabled"
 MAX_PARAM_BILLIONS = 14
 
 
-def test_every_restart_handler_is_gated_on_the_serve_toggle() -> None:
-    """A restart handler must honor the service-enable flag."""
-    restarting = [h for h in HANDLERS if h.get("ansible.builtin.systemd", {}).get("state") == "restarted"]
+def test_restart_handler_requires_the_enabled_active_service() -> None:
+    """Queued changes must not restart a missing or non-serving unit."""
+    handler = next(h for h in HANDLERS if h["name"] == "Restart llama-server")
+    tasks = handler.get("block", [handler])
+    restarting = [t for t in tasks if t.get("ansible.builtin.systemd", {}).get("state") == "restarted"]
 
-    assert restarting, "expected at least one restart handler; the gate below would be vacuous without it"
-    for handler in restarting:
-        assert handler.get("when") == SERVE_TOGGLE, (
-            f"handler {handler['name']!r} restarts the service without `when: {SERVE_TOGGLE}` — "
-            "a config change could start a service that the flag disables"
-        )
+    assert len(restarting) == 1
+    assert handler.get("when") == SERVE_TOGGLE
+    assert any("ansible.builtin.service_facts" in t for t in tasks[: tasks.index(restarting[0])])
+    assert restarting[0].get("when") == (
+        "ansible_facts.services.get('llama-server.service', {}).get('state', '') == 'running'"
+    )
 
 
 def test_the_service_state_task_follows_the_serve_toggle_both_ways() -> None:
