@@ -24,12 +24,15 @@ def test_router_render_is_parallel_and_only_pending_restarts_roll() -> None:
     restart_block = next(
         task
         for task in restart["tasks"]
-        if task.get("name") == "Restart and verify the rendered config on pending members"
+        if task.get("name") == "Restart pending members and verify every member"
     )
+    steps = {task["name"]: task for task in restart_block["block"]}
 
     assert render["hosts"] == "llm_router_group"
     assert "serial" not in render
     assert render["any_errors_fatal"] is True
     assert restart["hosts"] == "llm_router_group"
     assert restart["serial"] == 1
-    assert "llm_router_restart_pending" in restart_block["when"]
+    assert "when" not in restart_block
+    assert "llm_router_restart_pending" in steps["Restart litellm"]["when"]
+    assert "when" not in steps["Verify the rendered router runtime"]
