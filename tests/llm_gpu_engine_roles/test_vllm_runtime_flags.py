@@ -9,7 +9,7 @@ from test_engine_profiles import _exec_start, _profiles, _render
 
 def test_vllm_profiles_render_optional_runtime_flags():
     for name, profile in _profiles().items():
-        if profile["engine"] != "vllm":
+        if profile["engine"] != "vllm" or not profile.get("enabled", True):
             continue
         exec_start = _exec_start(_render(name, profile))
         if "quantization" in profile:

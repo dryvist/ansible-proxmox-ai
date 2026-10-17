@@ -94,6 +94,10 @@ def test_selected_sweep_profiles_render_legacy_units_with_vllm_flags_and_paths()
     assert len(profiles) == 4
 
     for name, profile in profiles.items():
+        if not profile.get("enabled", True):
+            assert name not in registry_profiles or registry_profiles[name]["enabled"] is False
+            continue
+
         unit = _render_legacy(name, profile)
         exec_start = _exec_start(unit)
         registry_model = registry_profiles[name]
