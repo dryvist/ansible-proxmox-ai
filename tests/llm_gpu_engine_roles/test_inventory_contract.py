@@ -154,7 +154,8 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
 
     router_play = next(play for play in plays if play.get("hosts") == "llm_router_group")
     router_pre_tasks = router_play["pre_tasks"]
-    assert router_play["serial"] == 1
+    assert "serial" not in router_play
+    assert router_play["any_errors_fatal"] is True
     assert router_play["max_fail_percentage"] == 0
     gate = next(
         index for index, task in enumerate(router_pre_tasks)
