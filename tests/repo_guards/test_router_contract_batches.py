@@ -67,7 +67,7 @@ def test_matrix_paths_are_nonempty_unique_existing_playbooks():
     assert JOB["strategy"]["matrix"]["shard"] == "${{ fromJSON(inputs.playbooks) }}"
     assert JOB["name"] == "Router contract: ${{ matrix.shard.name }}"
     assert JOB["steps"][-1]["env"]["PLAYBOOKS"] == "${{ matrix.shard.playbooks }}"
-    assert JOB["if"] == "inputs.full_suite || inputs.playbooks != '[]'"
+    assert JOB["if"] == "${{ !cancelled() && inputs.playbooks != '[]' }}"
     assert all((ROOT / path).is_file() for path in paths)
     assert JOB["strategy"]["fail-fast"] is False
     assert JOB["strategy"]["max-parallel"] == 16
