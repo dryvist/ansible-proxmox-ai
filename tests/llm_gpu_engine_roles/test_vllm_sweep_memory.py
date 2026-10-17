@@ -51,6 +51,9 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
         (262144, slots, dtype)
         for slots in (1, 2)
         for dtype in ("auto", "fp8")
+    } | {
+        (131072, 2, "fp8"),
+        (65536, 16, "fp8"),
     }
 
     assert profiles["medium-a"]["max_num_seqs"] == 8

@@ -119,3 +119,23 @@ def test_selected_sweep_profiles_render_legacy_units_with_vllm_flags_and_paths()
             assert "--no-enable-flashinfer-autotune" in exec_start
         if registry_model["artifact"].get("trust_remote_code"):
             assert "--trust-remote-code" in exec_start
+
+
+def test_qwen38_long_context_profiles_render_through_legacy_units():
+    profiles = _vllm_profiles()
+    expected = {
+        "qwen38-128k-2-fp8-mtp": (131072, 2),
+        "qwen38-256k-1-fp8-mtp": (262144, 1),
+        "qwen38-64k-16-fp8-mtp": (65536, 16),
+    }
+
+    for name, (max_model_len, max_num_seqs) in expected.items():
+        profile = profiles[name]
+        exec_start = _exec_start(_render_legacy(name, profile))
+
+        assert f"--max-model-len {max_model_len}" in exec_start
+        assert f"--max-num-seqs {max_num_seqs}" in exec_start
+        assert "--kv-cache-dtype fp8" in exec_start
+        assert "--quantization modelopt" in exec_start
+        rendered = json.loads(exec_start.split("--speculative-config '", 1)[1].split("'", 1)[0])
+        assert rendered == {"method": "mtp", "num_speculative_tokens": 3}

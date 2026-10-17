@@ -29,6 +29,14 @@ def test_nvfp4_mtp_profiles_cover_requested_draft_counts():
 
 
 def test_long_context_profiles_match_card_limits_and_memory_targets():
+    qwen_mtp = VLLM_PROFILES["qwen38-64k-8-fp8-mtp"]
+    qwen_profiles = {
+        name: VLLM_PROFILES[name]
+        for name in (
+            "qwen38-128k-2-fp8-mtp",
+            "qwen38-256k-1-fp8-mtp",
+        )
+    }
     flash = [
         profile
         for name, profile in VLLM_PROFILES.items()
@@ -56,6 +64,28 @@ def test_long_context_profiles_match_card_limits_and_memory_targets():
     super_vl = VLLM_PROFILES["nemotron-super-vl-64k-8"]
     assert (super_vl["max_model_len"], super_vl["max_num_seqs"]) == (65536, 8)
     assert super_vl["minimum_engine_version"] == "0.32.0"
+
+    assert {
+        (profile["max_model_len"], profile["max_num_seqs"])
+        for profile in (*qwen_profiles.values(), VLLM_PROFILES["qwen38-64k-16-fp8-mtp"])
+    } == {(131072, 2), (262144, 1), (65536, 16)}
+    for profile in (*qwen_profiles.values(), VLLM_PROFILES["qwen38-64k-16-fp8-mtp"]):
+        assert profile["gpu_memory_utilization"] == qwen_mtp["gpu_memory_utilization"]
+        assert profile["quantization"] == qwen_mtp["quantization"] == "modelopt"
+        assert profile["kv_cache_dtype"] == qwen_mtp["kv_cache_dtype"] == "fp8"
+        assert profile["speculative_config"] == qwen_mtp["speculative_config"]
+        assert "hf_overrides" not in profile and not profile.get("allow_long_max_model_len")
+
+    qwen_matrix = {entry["profile"]: entry for entry in GPU_MATRIX}
+    for name, profile in {
+        **qwen_profiles,
+        "qwen38-64k-16-fp8-mtp": VLLM_PROFILES["qwen38-64k-16-fp8-mtp"],
+    }.items():
+        entry = qwen_matrix[name]
+        assert entry["enabled"] is False
+        assert entry["servable"] is False
+        assert entry["context_window"] == profile["max_model_len"] - 4096
+        assert entry["max_output_tokens"] == 4096
 
 
 def test_matrix_profiles_stay_within_the_registered_artifact_context():

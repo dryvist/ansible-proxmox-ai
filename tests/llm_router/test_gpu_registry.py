@@ -25,6 +25,8 @@ VLLM_CORE_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/00-engine.yml
 MATRIX_PROFILES = {
     "qwen38-64k-8-fp8-mtp0", "qwen38-64k-8-fp8-mtp2",
     "qwen38-64k-8-fp8-mtp4",
+    "qwen38-128k-2-fp8-mtp", "qwen38-256k-1-fp8-mtp",
+    "qwen38-64k-16-fp8-mtp",
     "flash-next-64k-8-fp8-mtp0", "flash-next-64k-8-fp8-mtp2", "flash-next-64k-8-fp8-mtp4",
     "flash-next-262k-1-fp8", "flash-next-262k-2-fp8",
     "nemotron-lightning-256k-8-fp8", "nemotron-lightning-1m-1-fp8",
