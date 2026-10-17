@@ -88,6 +88,7 @@ ROLE_TESTS = {
     "strata_serving": GPU_PYTEST,
     "nvidia_gpu_guest": GPU_PYTEST,
     "llm_gpu_serving": GPU_PYTEST,
+    "llm_model_trial": {"tests/llm_model_trial/"},
     "openbao_secrets": {"tests/test_openbao_login_classification.py",
                         "tests/test_openbao_secrets_approle_name_resolution.py"},
     "phoenix_docker": set(),
