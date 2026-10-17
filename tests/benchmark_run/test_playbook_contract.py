@@ -22,6 +22,17 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     request_assert = preflight[0]["ansible.builtin.assert"]["that"]
     assert "not (publish | default(false) | bool)" in request_assert
     assert any("reasoning_arm" in assertion for assertion in request_assert)
+    assert any(
+        "item_limit" in assertion
+        for task in preflight
+        for assertion in task.get("ansible.builtin.assert", {}).get("that", [])
+    )
+    assert any(
+        "evalscope_timeout_seconds" in assertion
+        for task in preflight
+        for assertion in task.get("ansible.builtin.assert", {}).get("that", [])
+    )
+    assert "default(3600)" in str(preflight)
 
 
 def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
@@ -30,16 +41,31 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     assert any("bigcodebench-hard" in assertion for assertion in suites)
     assert any("promptfoo-" in assertion for assertion in suites)
 
-    bigcodebench = load_tasks("bigcodebench.yml")[0]["ansible.builtin.command"]["argv"]
+    tasks = load_tasks("bigcodebench.yml")
+    evalscope_task = next(task for task in tasks if "Generate the pinned BigCodeBench" in task["name"])
+    bigcodebench = evalscope_task["ansible.builtin.command"]["argv"]
     generation = bigcodebench[bigcodebench.index("--generation-config") + 1]
     sandbox = bigcodebench[bigcodebench.index("--sandbox") + 1]
     assert "chat_template_kwargs" in generation
     assert "enable_thinking" in generation
     assert "reasoning_effort" in generation
+    assert "stream" in generation
+    assert "timeout" in generation
+    assert "item_limit" in str(bigcodebench)
     assert "pool_size" in sandbox
-    assert "'entrypoint': ['sleep']" in sandbox
-    assert "'command': ['infinity']" in sandbox
-    assert load_tasks("bigcodebench.yml")[0]["no_log"] is True
+    assert "entrypoint" not in sandbox
+    assert "infinity" not in sandbox
+    assert evalscope_task["no_log"] is True
+    task_names = [task["name"] for task in tasks]
+    negative_control = task_names.index("Score the negative controls with the official evaluator")
+    positive_control = task_names.index("Score canonical controls with the official ground-truth check")
+    generation_index = task_names.index("Generate the pinned BigCodeBench-Hard sample with EvalScope")
+    official_score = task_names.index("Score model samples with the official BigCodeBench evaluator")
+    assert negative_control < positive_control < generation_index < official_score
+    official_argv = tasks[official_score]["ansible.builtin.command"]["argv"]
+    assert "--execution" in official_argv and "local" in official_argv
+    assert "--selective_evaluate" in official_argv
+    assert any("--check_gt_only" in task.get("ansible.builtin.command", {}).get("argv", []) for task in tasks)
     assert load_tasks("promptfoo.yml")[0]["no_log"] is True
     assert load_tasks("vllm-serve.yml")[0]["no_log"] is True
 
