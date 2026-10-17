@@ -226,6 +226,19 @@ Outcomes, by design:
 Do not add these keywords to a single-node play — the gate would turn a down
 host into a silent skip. Adopt them in the same change that adds the 2nd node.
 
+## Versions
+
+New benchmark batches use the latest stable engine release published by the
+batch timestamp; stable means the upstream release is not marked prerelease.
+Rows record the engine, release version, build or commit when available, and
+release date, latest stable release at run time, and whether the row used that
+release. Older-version rows remain valid.
+
+Renovate-managed engine pins live in `roles/llamacpp_release/defaults/main/00-release.yml`,
+`roles/vllm_serving/defaults/main/00-engine.yml`,
+`roles/sglang_serving/defaults/main/00-engine.yml`, and
+`roles/llm_gpu_serving/defaults/main/00-core.yml`.
+
 ## Testing
 
 | Check | Command | When |
