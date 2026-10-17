@@ -62,6 +62,22 @@ _llm_router_db_model_deletes: >-
   {{ _llm_router_db_model_reverts if llm_router_db_model_revert_untracked | bool
      else _llm_router_db_model_reverts | rejectattr('reason', 'equalto', 'is not tracked in Git') | list }}
 
+# Direct routes deliberately project an identity alias to a deployment with
+# that same name. Only aliases that point to another model name can shadow a
+# deployment row.
+_llm_router_shadowable_alias_names: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- for alias, target in llm_router_model_group_aliases.items() -%}
+  {%- if alias != target -%}
+  {%- set ns.out = ns.out + [alias] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.out }}
+_llm_router_still_shadowed: >-
+  {{ _llm_router_shadowable_alias_names
+     | select('in', _llm_router_model_rows | default([])
+        | map(attribute='model_name') | list) | list }}
+
 # The declared roles the proxy carries as database rows, and the report lines
 # for those whose target or fallback order differs from the seed in
 # 55-roles.yml. Fallbacks compare against the seed intersected with the live

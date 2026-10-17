@@ -49,7 +49,7 @@
         tasks_from: registry.yml
         public: true
 
-    - name: Drain GPU profiles while retaining the selected direct endpoint
+    - name: Drain GPU profiles and disable the vLLM direct endpoint
       ansible.builtin.set_fact:
         llm_router_gpu_profiles_enabled: false
         llm_router_llm_vllm_enabled: false
@@ -71,7 +71,9 @@
         quiet: true
         that:
           - llm_router_gpu_models | length == 0
-          - llm_router_direct_route_aliases | length == 2
+          - llm_router_direct_gpu_models | length == 0
+          - llm_router_direct_route_aliases == _studio_direct_aliases
+          - _studio_direct_aliases | length > 0
           - >-
             llm_router_direct_route_aliases
             | difference(_config.model_list | map(attribute='model_name') | list)
@@ -98,6 +100,9 @@
         _role_chain_names: >-
           {{ (llm_router_role_deployments | map(attribute='model') | list)
              + (llm_router_role_deployments | map(attribute='fallbacks') | flatten | list) }}
+        _studio_direct_aliases: >-
+          {{ llm_router_direct_studio_models
+             | map(attribute='direct_route_aliases') | flatten | unique | list }}
 
     - name: Keep the safe-model assertion active with GPU profiles drained
       ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-safe-models.yml
