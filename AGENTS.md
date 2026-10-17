@@ -38,6 +38,12 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
   duplicate config silently drifts from the real backend every time the
   model changes (root cause of the #1004 diagnosis cost). One physical
   entry per backend; every other name is a literal alias with zero config.
+  The `llm-models.d/` registry is the sole source for consumer-facing names,
+  aliases, tiers, and persistent enabled/servable profiles. A single-run trial
+  endpoint with no router route, alias, tier, persistent profile, or consumer
+  selection may use model identity resolved at runtime; trial facts are stored
+  only in benchmark results. Promotion to consumer serving requires a registry
+  record.
   An alias is declared in `stable_aliases` on the registry entry it points
   at, which is what makes it structurally incapable of naming a model that
   is not registered.**
