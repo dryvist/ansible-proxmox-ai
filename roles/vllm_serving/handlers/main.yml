@@ -1,7 +1,7 @@
 ---
 - name: Stop every other GPU serving profile before switching
   ansible.builtin.systemd:
-    name: "{{ nvidia_gpu_guest_unit_prefix }}-{{ item.key }}.service"
+    name: "{{ nvidia_gpu_guest_unit_prefix }}-{{ item }}.service"
     state: stopped
     enabled: false
     daemon_reload: true
@@ -10,13 +10,17 @@
   failed_when:
     - vllm_serving_stop_others.failed | default(false)
     - "'Could not find the requested service' not in (vllm_serving_stop_others.msg | default(''))"
-  loop: "{{ vllm_serving_profiles | dict2items }}"
+  # Every installed unit, not only this map's profiles: another engine role's unit or a sweep profile left
+  # running otherwise keeps the port and the new profile crash-loops on "Address already in use".
+  loop: >-
+    {{ vllm_serving_installed_units.files | default([]) | map(attribute='path') | map('basename')
+       | map('regex_replace', '^' ~ nvidia_gpu_guest_unit_prefix ~ '-', '') | map('regex_replace', '[.]service$', '')
+       | union(vllm_serving_profiles | list) | list }}
   loop_control:
-    label: "{{ item.key }}"
+    label: "{{ item }}"
   when:
     - not (vllm_serving_render_only | default(false))
-    - item.value.enabled | default(true)
-    - item.key != vllm_serving_active_profile
+    - item != vllm_serving_active_profile
 
 - name: Start the active GPU serving profile
   ansible.builtin.systemd:
