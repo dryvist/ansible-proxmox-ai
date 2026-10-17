@@ -30,6 +30,7 @@ MATRIX_PROFILES = {
     "nemotron-lightning-256k-8-fp8", "nemotron-lightning-1m-1-fp8",
     "nemotron-lightning-1m-2-fp8", "nemotron-super-vl-64k-8",
     "flash-next-gguf", "flash-next-gguf-262k-1", "flash-next-gguf-262k-2",
+    "flash-next-small-128k-8",
 }
 
 
@@ -44,13 +45,15 @@ def _entries() -> list[dict]:
 
 
 GPU_CORE_DEFAULTS = REPO_ROOT / "roles/llm_gpu_serving/defaults/main/00-core.yml"
+LEGACY_DEFAULTS = REPO_ROOT / "roles/llm_gpu_serving/defaults/main/10-profiles.yml"
 
 
 def _serving_profiles() -> dict:
     vllm = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))["vllm_serving_profiles"]
     llamacpp = yaml.safe_load(LLAMACPP_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
     sglang = yaml.safe_load(SGLANG_DEFAULTS.read_text(encoding="utf-8"))["sglang_serving_profiles"]
-    return {**vllm, **llamacpp, **sglang}
+    legacy = yaml.safe_load(LEGACY_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
+    return {**legacy, **vllm, **llamacpp, **sglang}
 
 
 def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:

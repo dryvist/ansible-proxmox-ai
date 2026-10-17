@@ -9,6 +9,7 @@ from test_engine_profiles import _exec_start, _profiles, _registry_profiles
 
 ROOT = Path(__file__).resolve().parents[2]
 SGLANG_ROOT = ROOT / "roles/sglang_serving"
+LEGACY_ROOT = ROOT / "roles/llm_gpu_serving"
 
 
 def _sglang_profiles() -> dict:
@@ -18,7 +19,10 @@ def _sglang_profiles() -> dict:
 
 
 def _all_profiles() -> dict:
-    return {**_profiles(), **_sglang_profiles()}
+    legacy = yaml.safe_load(
+        (LEGACY_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8")
+    )["llm_profiles"]
+    return {**_profiles(), **_sglang_profiles(), **legacy}
 
 
 def _render(profile_name: str, profile: dict) -> str:
