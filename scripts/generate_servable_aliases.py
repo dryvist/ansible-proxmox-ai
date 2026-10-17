@@ -65,6 +65,11 @@ def load_registry(path: pathlib.Path) -> list[dict]:
 
 def build_contract(entries: list[dict]) -> dict:
     enabled = [e for e in entries if e.get("enabled")]
+    artifacts_by_id = {
+        entry["artifact_id"]: entry
+        for entry in entries
+        if entry.get("artifact_id") and entry.get("hf_repo")
+    }
 
     aliases: dict[str, str] = {}
     for entry in enabled:
@@ -78,18 +83,27 @@ def build_contract(entries: list[dict]) -> dict:
                 )
             aliases[alias] = entry["client_model_id"]
 
-    models = [
-        {
-            "client_model_id": e["client_model_id"],
-            "upstream_model_id": e["upstream_model_id"],
-            "provider": e["provider"],
-            "tier": e["tier"],
-            "servable": bool(e.get("servable", False)),
-            "context_window": e.get("context_window"),
-            "stable_aliases": sorted(e.get("stable_aliases", [])),
-        }
-        for e in enabled
-    ]
+    models = []
+    for entry in enabled:
+        upstream_model_id = entry.get("upstream_model_id")
+        if upstream_model_id is None:
+            upstream_model_id = artifacts_by_id.get(entry.get("artifact_id"), {}).get("hf_repo")
+        if upstream_model_id is None:
+            raise SystemExit(
+                f"enabled model {entry.get('client_model_id')!r} must set upstream_model_id "
+                "or reference an artifact with hf_repo."
+            )
+        models.append(
+            {
+                "client_model_id": entry["client_model_id"],
+                "upstream_model_id": upstream_model_id,
+                "provider": entry["provider"],
+                "tier": entry["tier"],
+                "servable": bool(entry.get("servable", False)),
+                "context_window": entry.get("context_window"),
+                "stable_aliases": sorted(entry.get("stable_aliases", [])),
+            }
+        )
     models.sort(key=lambda m: (m["tier"], m["client_model_id"]))
 
     return {
