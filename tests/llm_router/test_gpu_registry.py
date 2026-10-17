@@ -10,12 +10,7 @@ REGISTRY_FILES = (
     REPO_ROOT / "llm-models.d/60-gpu.yml",
     REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
 )
-ARTIFACT_FILES = (
-    REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
-    REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
-    REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
-    REPO_ROOT / "llm-models.d/69-gpu-artifacts-matrix.yml",
-)
+ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 REGISTRY_TASKS = REPO_ROOT / "roles/llm_router/tasks/registry.yml"
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
@@ -65,7 +60,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         artifact
         for path in ARTIFACT_FILES
         for key, values in yaml.safe_load(path.read_text(encoding="utf-8")).items()
-        if key.startswith("_llm_model_artifacts")
+        if key.startswith("_llm_model_artifacts") or key.endswith("_artifacts")
         for artifact in values
     ]
     artifacts_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
