@@ -46,6 +46,7 @@ def _engine_plays() -> dict[str, dict]:
         "llm_gpu_serving_llama_cpp_group": "llamacpp_serving",
         "llm_gpu_serving_vllm_group": "vllm_serving",
         "llm_gpu_serving_sglang_group": "sglang_serving",
+        "llm_gpu_serving_strata_group": "strata_serving",
     }
     plays = {
         _host_group(play): play
@@ -71,6 +72,7 @@ def test_serving_plays_apply_each_engine_role_to_one_guest_at_a_time() -> None:
         "llm_gpu_serving_llama_cpp_group": "llamacpp_serving",
         "llm_gpu_serving_vllm_group": "vllm_serving",
         "llm_gpu_serving_sglang_group": "sglang_serving",
+        "llm_gpu_serving_strata_group": "strata_serving",
     }
 
     for host_group, play in _engine_plays().items():
@@ -129,6 +131,7 @@ def test_profile_comes_from_the_shared_selector_not_a_new_variable() -> None:
     assert render_profile("llama_cpp", engine_groups) == "medium-b"
     assert render_profile("vllm", engine_groups) == "medium-a"
     assert render_profile("sglang", engine_groups) == all_vars["llm_gpu_active_profiles_by_engine"]["sglang"]
+    assert render_profile("strata", engine_groups) == "medium-a"
 
 
 def test_no_play_gives_the_gpu_guest_a_container_engine() -> None:
@@ -142,10 +145,11 @@ def test_no_play_gives_the_gpu_guest_a_container_engine() -> None:
     assert "docker_engine" not in yaml.safe_dump(_load(LLAMACPP_ROLE_ROOT / "tasks/main.yml"))
     assert "docker_engine" not in yaml.safe_dump(_load(VLLM_ROLE_ROOT / "tasks/main.yml"))
     assert "docker_engine" not in yaml.safe_dump(_load(SGLANG_ROLE_ROOT / "tasks/main.yml"))
+    assert "docker_engine" not in yaml.safe_dump(_load(REPO_ROOT / "roles/strata_serving/tasks/main.yml"))
 
 
 def test_engine_roles_depend_on_the_shared_nvidia_guest_role() -> None:
-    for role_root in (LLAMACPP_ROLE_ROOT, VLLM_ROLE_ROOT, SGLANG_ROLE_ROOT):
+    for role_root in (LLAMACPP_ROLE_ROOT, VLLM_ROLE_ROOT, SGLANG_ROLE_ROOT, REPO_ROOT / "roles/strata_serving"):
         includes = [
             task["ansible.builtin.include_role"]["name"]
             for task in _walk(_load(role_root / "tasks/main.yml"))

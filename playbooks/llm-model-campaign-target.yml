@@ -16,6 +16,7 @@
     _llm_campaign_cache_root: "{{ hostvars['localhost']._llm_campaign_cache_root }}"
     _llm_campaign_model_path: "{{ _llm_campaign_cache_root }}/models/{{ _llm_campaign_model.hf_repo }}"
     _llm_campaign_endpoint_root: "{{ hostvars['localhost']._llm_campaign_endpoint_origin }}"
+    _llm_campaign_strata_batch_size: "{{ hostvars['localhost']._llm_campaign_strata_batch_size | default('') }}"
   pre_tasks:
     - name: Require exactly one selected host present in the published inventory
       ansible.builtin.assert:
@@ -127,19 +128,27 @@
       ansible.builtin.assert:
         that:
           - >-
-            _llm_campaign_models_response.json.data
-            | selectattr(
-                'id',
-                'equalto',
-                _llm_campaign_serving_model if _llm_campaign_uses_api_key
-                else _llm_campaign_model.hf_repo
-              )
-            | list | length == 1
+            (engine == 'strata'
+             and _llm_campaign_models_response.json.data | length == 1
+             and _llm_campaign_models_response.json.data[0].id | string | length > 0)
+            or
+            (engine != 'strata'
+             and _llm_campaign_models_response.json.data
+                 | selectattr(
+                     'id',
+                     'equalto',
+                     _llm_campaign_serving_model if _llm_campaign_uses_api_key
+                     else _llm_campaign_model.hf_repo
+                   )
+                 | list | length == 1)
         fail_msg: >-
-          The selected model artifact is not the exact model currently served
-          by the inventory-backed endpoint.
+          The endpoint must expose the selected artifact or one unambiguous Strata model ID.
         quiet: true
       no_log: "{{ _llm_campaign_uses_api_key }}"
+
+    - name: Record the model ID exposed by the live endpoint
+      ansible.builtin.set_fact:
+        _llm_campaign_served_model_id: "{{ _llm_campaign_models_response.json.data[0].id }}"
 
     - name: Inspect the selected serving profile's rendered service command
       ansible.builtin.command:
@@ -181,6 +190,10 @@
       when:
         - engine in ['vllm', 'llama_cpp']
         - _llm_campaign_model.serving_profile is defined
+
+    - name: Preflight the selected Strata serving configuration
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-strata-preflight.yml
+      when: engine == 'strata'
 
     - name: Check every configured executable before cache changes or benchmarks
       ansible.builtin.include_tasks: tasks/llm-model-campaign-preflight-tool.yml
@@ -228,7 +241,7 @@
         recurse: true
         file_type: file
       register: _llm_campaign_gguf_files
-      when: _llm_campaign_model.format == 'GGUF'
+      when: engine == 'llama_cpp' and _llm_campaign_model.format == 'GGUF'
 
     - name: Require one downloaded GGUF file for llama.cpp recipes
       ansible.builtin.assert:
@@ -236,13 +249,13 @@
           - _llm_campaign_gguf_files.matched == 1
         fail_msg: "The registered GGUF include must resolve to exactly one local file."
         quiet: true
-      when: _llm_campaign_model.format == 'GGUF'
+      when: engine == 'llama_cpp' and _llm_campaign_model.format == 'GGUF'
 
     - name: Set the selected model path for tool-native invocations
       ansible.builtin.set_fact:
         _llm_campaign_artifact_path: >-
           {{ _llm_campaign_gguf_files.files[0].path
-             if _llm_campaign_model.format == 'GGUF'
+             if engine == 'llama_cpp' and _llm_campaign_model.format == 'GGUF'
              else _llm_campaign_model_path }}
 
     - name: Inspect the selected MLX model in the target cache
@@ -303,7 +316,7 @@
         nvidia_gpu_guest_cache_sync_notify_service: false
         nvidia_gpu_guest_model_cache_mount_path: "{{ _llm_campaign_cache_root }}"
         nvidia_gpu_guest_hf_home: "{{ _llm_campaign_cache_root }}/.hf-home"
-      when: engine != 'mlx_lm'
+      when: engine not in ['mlx_lm', 'strata']
 
     - name: Run each recipe row and its requested parameter cells
       ansible.builtin.include_tasks: tasks/llm-model-campaign-run.yml

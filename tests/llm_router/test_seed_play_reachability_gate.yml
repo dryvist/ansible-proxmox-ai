@@ -21,10 +21,12 @@
   vars:
     _plays: "{{ lookup('file', playbook_dir ~ '/../../playbooks/llm-serving.yml') | from_yaml }}"
     _names: "{{ _plays | map(attribute='name') | list }}"
-    _router_name: "Configure the LiteLLM router (fabric front door)"
+    _render_name: "Render the LiteLLM router config (all members in parallel)"
+    _restart_name: "Roll LiteLLM restarts (one member at a time)"
     _seed_name: "Seed llm_router virtual keys, budgets, and caller-facing roles"
     _seed: "{{ _plays | selectattr('name', 'equalto', _seed_name) | list }}"
     _seed_idx: "{{ _names.index(_seed[0].name) if _seed | length == 1 else -1 }}"
+    _restart_idx: "{{ _names.index(_restart_name) if _restart_name in _names else -1 }}"
     _seed_pre_tasks: "{{ _seed[0].pre_tasks | default([]) if _seed | length == 1 else [] }}"
     # Bracket notation, not selectattr('ansible.builtin.import_tasks', ...):
     # a dotted selectattr/map(attribute=...) name is a NESTED lookup
@@ -38,12 +40,13 @@
     _seed_task: "{{ _seed[0].tasks[0] if _seed | length == 1 else {} }}"
     _seed_task_names: "{{ _seed[0].tasks | map(attribute='name') | list if _seed | length == 1 else [] }}"
   tasks:
-    - name: The seed play exists exactly once, after the rolling router play, and no longer carries play-level run_once
+    - name: The seed play exists exactly once, after both router plays, and no longer carries play-level run_once
       ansible.builtin.assert:
         quiet: true
         that:
           - _seed | length == 1
-          - _seed_idx | int > _names.index(_router_name)
+          - _seed_idx | int > _names.index(_render_name)
+          - _seed_idx | int > _restart_idx | int
           - not (_seed[0].run_once | default(false))
         fail_msg: "seed play: {{ _seed }}"
 
@@ -75,18 +78,18 @@
           - _seed_task.run_once | default(false) | bool
         fail_msg: "seed task: {{ _seed_task }}"
 
-    - name: --skip-tags llm_router_rolling drops the rolling converge but keeps seeding, which loads its own inputs
+    - name: --skip-tags llm_router_rolling skips both router plays but keeps seeding, which loads its own inputs
       ansible.builtin.assert:
         quiet: true
         that:
           - _plays | selectattr('tags', 'defined') | selectattr('tags', 'contains', 'llm_router_rolling')
-            | map(attribute='name') | list == [_router_name]
+            | map(attribute='name') | list == [_render_name, _restart_name]
           - _seed_pre_tasks | map(attribute='name')
             | select('equalto', "Load Hermes' operating-profile list") | list | length == 1
           - "'registry.yml' in lookup('file', playbook_dir ~ '/../../roles/llm_router/tasks/seed-consumers.yml')"
         fail_msg: >-
-          llm_router_rolling must tag the rolling play alone, and the seed play
-          must load the Hermes profiles and the registry itself.
+          llm_router_rolling must tag both router plays, and the seed play must
+          load the Hermes profiles and the registry itself.
 
 - name: Verify a total reachability-gate failure fails the run instead of silently seeding nothing
   hosts: localhost

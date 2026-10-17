@@ -85,8 +85,10 @@ ROLE_TESTS = {
     "llamacpp_release": {"tests/llamacpp_release/", "tests/llamacpp_serving/"},
     "llamacpp_serving": GPU_PYTEST,
     "vllm_serving": GPU_PYTEST,
+    "strata_serving": GPU_PYTEST,
     "nvidia_gpu_guest": GPU_PYTEST,
     "llm_gpu_serving": GPU_PYTEST,
+    "llm_model_trial": {"tests/llm_model_trial/"},
     "openbao_secrets": {"tests/test_openbao_login_classification.py",
                         "tests/test_openbao_secrets_approle_name_resolution.py"},
     "phoenix_docker": set(),
@@ -173,7 +175,7 @@ def select(paths: list[str]) -> Selection:
         if role in OTEL_CONSUMER_ROLES and Path(OTEL_CONSUMER_TEST).is_file():
             pytest_targets.add(OTEL_CONSUMER_TEST)
         ansible_tests.update(test for test in ANSIBLE_TESTS if test.startswith(f"tests/{role}/"))
-        if role in {"llamacpp_serving", "vllm_serving", "nvidia_gpu_guest", "llm_gpu_serving"}:
+        if role in {"llamacpp_serving", "vllm_serving", "strata_serving", "nvidia_gpu_guest", "llm_gpu_serving"}:
             ansible_tests.update(GPU_ANSIBLE)
         if role == "llm_router":
             # hermes_agent tests read the router role defaults (alias and role

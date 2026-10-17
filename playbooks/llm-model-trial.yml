@@ -1,0 +1,39 @@
+---
+# Populate the dynamic host groups from the published OpenTofu inventory.
+- name: Load OpenTofu infrastructure inventory
+  ansible.builtin.import_playbook: ../inventory/load_tofu.yml
+
+- name: Resolve and preflight one exact model revision on the controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    ansible_become: false
+  tasks:
+    - name: Require exactly one GPU trial host in the inventory
+      ansible.builtin.assert:
+        that:
+          - groups['llm_gpu_group'] | default([]) | length == 1
+        fail_msg: >-
+          The trial is fixed to host 6000 and requires llm_gpu_group to resolve
+          to exactly one inventory host.
+        quiet: true
+
+    - name: Run the controller-side Hugging Face preflight
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: preflight.yml
+
+- name: Serve one run-scoped candidate on the fixed 6000 GPU host
+  hosts: llm_gpu_group
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Run the target-side model trial role
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: serve.yml
+      tags:
+        - llm_model_trial

@@ -116,8 +116,9 @@ provider spend tracking, and the `openrouter` `provider_budget_config` ceiling
 renders **only** when Redis is configured (`tasks/assert.yml` fails the build
 otherwise). Without a shared store, a multi-member pool would count only its
 own spend, silently turning a stated ceiling into N times its real value and
-resetting it on every rolling converge — a control that reports a limit it
-does not hold is worse than an absent one.
+resetting each member's counters whenever a config change triggers its rolling
+restart — a control that reports a limit it does not hold is worse than an
+absent one.
 
 LiteLLM uses logical database 1 for router budget/cooldown state and database 2
 for the shared cache/spend client. The response cache and spend features use

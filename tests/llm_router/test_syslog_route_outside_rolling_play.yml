@@ -2,7 +2,7 @@
 # The router's journal-forwarding route runs as its own play AFTER the rolling
 # pool converge (playbooks/llm-serving.yml), never as a task inside it:
 #   * roles/llm_router/tasks/main.yml does not import 10-llm-router-syslog.yml;
-#   * llm-serving.yml has a play over llm_router_group, after the serial router
+#   * llm-serving.yml has a play over llm_router_group, after the serial restart
 #     play, that includes the role with tasks_from 10-llm-router-syslog.yml and
 #     records its failure for the end-of-run gate.
 #
@@ -15,7 +15,7 @@
     _main: "{{ lookup('file', playbook_dir ~ '/../../roles/llm_router/tasks/main.yml') | from_yaml }}"
     _plays: "{{ lookup('file', playbook_dir ~ '/../../playbooks/llm-serving.yml') | from_yaml }}"
     _names: "{{ _plays | map(attribute='name') | list }}"
-    _router_idx: "{{ _names.index('Configure the LiteLLM router (fabric front door)') }}"
+    _restart_idx: "{{ _names.index('Roll LiteLLM restarts (one member at a time)') }}"
     _tail_name: "Ship the router pool's journal to the dedicated LLM Splunk index"
     _tail: "{{ _plays | selectattr('name', 'equalto', _tail_name) | list }}"
     _tail_idx: "{{ _names.index(_tail[0].name) if _tail | length == 1 else -1 }}"
@@ -30,13 +30,13 @@
             | map(attribute='value') | map('string') | select('search', 'syslog') | list | length == 0
         fail_msg: roles/llm_router/tasks/main.yml imports the syslog route inside the rolling converge.
 
-    - name: A tail play over the pool runs the route after the serial router play and records its failure
+    - name: A tail play over the pool runs the route after the serial restart play and records its failure
       ansible.builtin.assert:
         quiet: true
         that:
           - _tail | length == 1
           - _tail[0].hosts == 'llm_router_group'
-          - _tail_idx | int > _router_idx | int
+          - _tail_idx | int > _restart_idx | int
           - _tail_include.name | default('') == 'llm_router'
           - _tail_include.tasks_from | default('') == '10-llm-router-syslog.yml'
           - _tail_rescue['ansible.builtin.include_tasks'] | default('') == 'tasks/record_isolated_failure.yml'

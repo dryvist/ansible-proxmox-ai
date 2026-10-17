@@ -124,4 +124,4 @@ requests from `develop` into `main` in this repository; the Renovate checksum
 fix job caps at five. Required validation is aggregated by `Merge Gate`.
 Public pull-request CI stays on GitHub-hosted runners.
 
-See the canonical policy in the `dryvist/.github` README, “Ansible CI policy.”
+See the canonical policy in the `JacobPEvans/.github` README, “Ansible CI policy.”

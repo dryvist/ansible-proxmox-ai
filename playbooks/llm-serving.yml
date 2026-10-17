@@ -148,7 +148,7 @@
           vars:
             _isolated_play_name: llm_redis
 
-- name: Configure the LiteLLM router (fabric front door)
+- name: Render the LiteLLM router config (all members in parallel)
   hosts: llm_router_group
   become: true
   gather_facts: false
@@ -159,23 +159,18 @@
   vars_files:
     - "{{ playbook_dir }}/../inventory/group_vars/all.yml"
     - "{{ playbook_dir }}/../inventory/group_vars/llm_router_group.yml"
-  # Rolling pool converge. Restarting every member in the same play takes the
-  # whole pool down, so serial: 1 restarts one member at a time, and the role's
-  # own liveness check is the gate: it runs after flush_handlers, inside this
-  # member's window, so the next member is not touched until this one is
-  # serving again. max_fail_percentage: 0 stops the play on any failure rather
-  # than marching on to break the rest.
-  #
-  # NOT isolated. The rescue the other plays use turns a failed member into a
-  # "rescued" one, which max_fail_percentage never sees — so a render that
-  # killed member 1 was still rolled onto members 2 and 3. The rescue here
-  # re-raises the failure via `fail`, which stops the entire playbook run
-  # (not just this play's rolling batch): the CPU-scaler, syslog-route, and
-  # RAG plays below never run. Remaining pool members keep serving their
-  # previous config.
-  serial: 1
+  vars:
+    llm_router_defer_restart: true
+  # Handlers only flag a pending restart; the next play restarts one member at
+  # a time. A render failure stops the pool before any restart.
+  any_errors_fatal: true
   max_fail_percentage: 0
   pre_tasks:
+    - name: Initialize deferred router restart state
+      ansible.builtin.set_fact:
+        llm_router_restart_pending: false
+        llm_router_sync_settings_pending: false
+
     - name: Resolve failed selected GPU serving guests before router projection
       ansible.builtin.set_fact:
         _llm_router_gpu_engine_failures: >-
@@ -219,16 +214,13 @@
         _hermes_agent_role_dir: "{{ playbook_dir }}/../roles/hermes_agent"
     - name: Gate on pool-member reachability
       ansible.builtin.import_tasks: tasks/pool_member_gate.yml
-  # llm_router_rolling names this play alone, so `--skip-tags
-  # llm_router_rolling` runs the consumer seeding below without the rolling
-  # converge (the seed tasks load the registry themselves).
   tags:
     - llm_router
     - llm_router_rolling
     - llm
     - ai
   tasks:
-    - name: Converge llm_router (a failed member stops the rolling batch)
+    - name: Render llm_router (a failed member stops all restarts)
       block:
         - name: Gather facts
           ansible.builtin.include_tasks: tasks/gather_facts.yml
@@ -240,13 +232,33 @@
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: llm_router
-        - name: Stop the rolling converge at this member
+        - name: Stop router rendering before any restart
           ansible.builtin.fail:
             msg: >-
               llm_router failed on {{ inventory_hostname }}:
               {{ ansible_failed_result.msg | default(ansible_failed_task.name | default('task failed')) }}.
               Remaining pool members keep their previous config.
 
+- name: Roll LiteLLM restarts (one member at a time)
+  hosts: llm_router_group
+  become: true
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/group_vars/all.yml"
+    - "{{ playbook_dir }}/../inventory/group_vars/llm_router_group.yml"
+  serial: 1
+  max_fail_percentage: 0
+  tags:
+    - llm_router
+    - llm_router_rolling
+    - llm
+    - ai
+  tasks:
+    - name: Restart pending members and verify every member
+      ansible.builtin.import_tasks: tasks/llm_router_rolling_restart.yml
+
+# `--skip-tags llm_router_rolling` skips both router plays; seeding still runs.
+#
 # Virtual keys, their budgets, and caller-facing roles — its own run_once
 # play, not a task inside the rolling converge above: seed-consumers.yml
 # writes to the pool's SHARED database (every member's proxy reads the same
