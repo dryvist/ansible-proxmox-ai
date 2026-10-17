@@ -1,0 +1,64 @@
+---
+- name: Create the NVML fan-control Python environment
+  ansible.builtin.command:
+    argv:
+      - "{{ nvidia_gpu_guest_uv_bin }}"
+      - venv
+      - --python
+      - "{{ nvidia_gpu_guest_python }}"
+      - "{{ nvidia_gpu_guest_nvml_venv }}"
+    creates: "{{ nvidia_gpu_guest_nvml_python }}"
+  environment: "{{ nvidia_gpu_guest_uv_environment }}"
+
+- name: Install the pinned NVML Python bindings
+  ansible.builtin.command:
+    argv:
+      - "{{ nvidia_gpu_guest_uv_bin }}"
+      - pip
+      - install
+      - --python
+      - "{{ nvidia_gpu_guest_nvml_python }}"
+      - "nvidia-ml-py=={{ nvidia_gpu_guest_nvml_version }}"
+  environment: "{{ nvidia_gpu_guest_uv_environment }}"
+  register: nvidia_gpu_guest_nvml_install
+  changed_when: >-
+    'Installed' in (nvidia_gpu_guest_nvml_install.stdout ~ nvidia_gpu_guest_nvml_install.stderr)
+    or 'Uninstalled' in (nvidia_gpu_guest_nvml_install.stdout ~ nvidia_gpu_guest_nvml_install.stderr)
+
+- name: Create the local executable directory
+  ansible.builtin.file:
+    path: "{{ nvidia_gpu_guest_fan_control_script_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the NVML fan-control command
+  ansible.builtin.copy:
+    src: set-fan-speed.py
+    dest: "{{ nvidia_gpu_guest_fan_control_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the GPU fan-control unit
+  ansible.builtin.template:
+    src: nvidia-gpu-fan-control.service.j2
+    dest: "{{ nvidia_gpu_guest_systemd_dir }}/{{ nvidia_gpu_guest_fan_control_unit_name }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable the GPU fan-control unit for boot
+  ansible.builtin.systemd_service:
+    name: "{{ nvidia_gpu_guest_fan_control_unit_name }}"
+    daemon_reload: true
+    enabled: true
+
+- name: Set every NVIDIA GPU fan to 100 percent now
+  ansible.builtin.command:
+    argv:
+      - "{{ nvidia_gpu_guest_nvml_python }}"
+      - "{{ nvidia_gpu_guest_fan_control_script_path }}"
+  register: nvidia_gpu_guest_fan_control_result
+  changed_when: "'SET ' in nvidia_gpu_guest_fan_control_result.stdout"
