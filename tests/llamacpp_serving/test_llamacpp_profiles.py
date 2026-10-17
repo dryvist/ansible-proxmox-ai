@@ -16,12 +16,7 @@ REGISTRY_FILES = (
     REPO_ROOT / "llm-models.d/60-gpu.yml",
     REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
 )
-ARTIFACT_FILES = (
-    REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
-    REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
-    REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
-    REPO_ROOT / "llm-models.d/69-gpu-artifacts-matrix.yml",
-)
+ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 LLAMA_BIN = "/opt/llm-gpu-serving/llama.cpp/llama-server"
 
 
@@ -38,7 +33,7 @@ def _artifacts() -> list[dict]:
         artifact
         for path in ARTIFACT_FILES
         for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
-        if key.startswith("_llm_model_artifacts")
+        if key.startswith("_llm_model_artifacts") or key.endswith("_artifacts")
         for artifact in entries
     ]
 

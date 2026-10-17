@@ -12,14 +12,7 @@ ENGINE_ROOTS = {
     "vllm": REPO_ROOT / "roles/vllm_serving",
     "llama_cpp": REPO_ROOT / "roles/llamacpp_serving",
 }
-ARTIFACT_FILES = (
-    REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
-    REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
-    REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
-    REPO_ROOT / "llm-models.d/68-gpu-stage0-artifacts.yml",
-    REPO_ROOT / "llm-models.d/69-gpu-artifacts-mlx.yml",
-    REPO_ROOT / "llm-models.d/69-gpu-artifacts-matrix.yml",
-)
+ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 LOCAL_VERIFIER = SHARED_ROOT / "files/verify-local-model-store.py"
 
 
@@ -28,7 +21,7 @@ def _model_store() -> list[dict]:
         artifact
         for path in ARTIFACT_FILES
         for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
-        if key.startswith("_llm_model_artifacts")
+        if key.startswith("_llm_model_artifacts") or key.endswith("_artifacts")
         for artifact in entries
     ]
     return [artifact for artifact in artifacts if artifact.get("model_store") is True]
@@ -128,72 +121,25 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     notify = next(task for task in cache_tasks if task.get("name", "").startswith("Notify serving handlers"))
 
     assert any(task.get("name") == "Assert each serving profile resolves to exactly one artifact" for task in registry_tasks)
-    assert any(
-        task.get("name") == "Load the MLX artifact shard"
-        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_mlx_artifact_registry_file }}"
-        for task in registry_tasks
+    loader_tasks = yaml.safe_load(
+        (REPO_ROOT / "roles/llm_gpu_serving/tasks/load-artifacts.yml").read_text(encoding="utf-8")
     )
-    assert any(
-        task.get("name") == "Load the MLX artifact shard for cache sync"
-        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_mlx_artifact_registry_file }}"
-        for task in cache_tasks
-    )
-    assert any(
-        task.get("name", "").startswith("Load the GLM-5.3-Flash artifact shard")
-        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
-        for task in registry_tasks
-    )
-    assert any(
-        task.get("name", "").startswith("Load the GLM-5.3-Flash artifact shard for cache sync")
-        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
-        for task in cache_tasks
-    )
-    assert any(
-        task.get("name", "").startswith("Load the NVFP4 sweep artifact shard")
-        and task["ansible.builtin.include_vars"]["file"]
-        == "{{ nvidia_gpu_guest_nvfp4_sweep_artifact_registry_file }}"
-        for task in registry_tasks
-    )
-    assert any(
-        task.get("name", "").startswith("Load the GPU matrix artifact shard")
-        and task["ansible.builtin.include_vars"]["file"]
-        == "{{ nvidia_gpu_guest_matrix_artifact_registry_file }}"
-        for task in registry_tasks
-    )
-    assert any(
-        task.get("name", "").startswith("Load the GPU matrix artifact shard for cache sync")
-        and task["ansible.builtin.include_vars"]["file"]
-        == "{{ nvidia_gpu_guest_matrix_artifact_registry_file }}"
-        for task in cache_tasks
-    )
-    assert any(
-        task.get("name", "").startswith("Load the NVFP4 sweep artifact shard for cache sync")
-        and task["ansible.builtin.include_vars"]["file"]
-        == "{{ nvidia_gpu_guest_nvfp4_sweep_artifact_registry_file }}"
-        for task in cache_tasks
-    )
-    assert any(
-        task.get("name") == "Load Stage 0 benchmark artifacts"
-        and task["ansible.builtin.include_vars"]["file"]
-        == "{{ nvidia_gpu_guest_stage0_artifact_registry_file }}"
-        for task in registry_tasks
-    )
-    assert any(
-        task.get("name") == "Load Stage 0 benchmark artifacts for cache sync"
-        and task["ansible.builtin.include_vars"]["file"]
-        == "{{ nvidia_gpu_guest_stage0_artifact_registry_file }}"
-        for task in cache_tasks
-    )
-    assert any(
-        task.get("name", "").startswith("Combine the campaign model artifact shards")
-        and "_llm_model_artifacts_mlx" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
-        and "_llm_model_artifacts_glm53flash" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
-        and "_llm_model_artifacts_nvfp4_sweep"
-        in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
-        and "_llm_model_stage0_artifacts"
-        in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
-        for task in registry_tasks
-    )
+    loader_pattern = loader_tasks[0]["ansible.builtin.include_vars"]["files_matching"]
+    assert "llm_gpu_serving_artifact_files_matching" in loader_pattern
+    assert ".*artifacts.*" in loader_pattern
+    for tasks in (registry_tasks, cache_tasks):
+        assert any(
+            task.get("ansible.builtin.include_role") == {
+                "name": "llm_gpu_serving",
+                "tasks_from": "load-artifacts.yml",
+            }
+            for task in tasks
+        )
+        assert any(
+            task.get("ansible.builtin.set_fact", {}).get("nvidia_gpu_guest_model_artifacts")
+            == "{{ llm_gpu_serving_model_artifacts }}"
+            for task in tasks
+        )
     for engine, role_root in ENGINE_ROOTS.items():
         main_tasks = yaml.safe_load((role_root / "tasks/main.yml").read_text(encoding="utf-8"))
         activation_tasks = yaml.safe_load((role_root / "tasks/activate.yml").read_text(encoding="utf-8"))

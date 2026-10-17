@@ -19,7 +19,7 @@ cd ansible-proxmox-ai
 direnv allow    # one-time per worktree — auto-activates the dev shell on cd
 
 # Install required Ansible Galaxy dependencies
-ansible-galaxy install -r requirements.yml
+ansible-galaxy install -r requirements.yml --force
 ```
 
 To activate the dev shell manually without direnv:

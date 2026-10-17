@@ -9,7 +9,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CAMPAIGN = REPO_ROOT / "playbooks/llm-model-campaign.yml"
 TARGET = REPO_ROOT / "playbooks/llm-model-campaign-target.yml"
-ARTIFACTS = REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml"
+ARTIFACTS = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 
 
 def _assert_conditions(node) -> list[str]:
@@ -51,11 +51,14 @@ def test_campaign_selects_one_exact_registry_artifact() -> None:
     assert "_llm_campaign_selected_artifacts | length == 1" in "\n".join(_assert_conditions(plays))
 
 
-def test_campaign_loads_the_mlx_artifact_shard() -> None:
+def test_campaign_loads_artifacts_through_the_shared_loader() -> None:
     tasks = yaml.safe_load(CAMPAIGN.read_text(encoding="utf-8"))[0]["tasks"]
     assert any(
-        task.get("name") == "Load the MLX artifact shard"
-        and task["ansible.builtin.include_vars"]["file"].endswith("69-gpu-artifacts-mlx.yml")
+        task.get("name") == "Load the single-source model artifact registry"
+        and task["ansible.builtin.include_role"] == {
+            "name": "llm_gpu_serving",
+            "tasks_from": "load-artifacts.yml",
+        }
         for task in tasks
     )
 
@@ -63,7 +66,13 @@ def test_campaign_loads_the_mlx_artifact_shard() -> None:
 def test_large_batched_bench_is_an_artifact_capability() -> None:
     campaign = yaml.safe_load(CAMPAIGN.read_text(encoding="utf-8"))
     conditions = "\n".join(_assert_conditions(campaign))
-    artifacts = yaml.safe_load(ARTIFACTS.read_text(encoding="utf-8"))["_llm_model_artifacts"]
+    artifacts = [
+        artifact
+        for path in ARTIFACTS
+        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts") or key.endswith("_artifacts")
+        for artifact in entries
+    ]
     opted_in = [artifact["artifact_id"] for artifact in artifacts if artifact.get("supports_batched_bench")]
 
     assert "supports_batched_bench" in conditions
