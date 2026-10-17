@@ -53,8 +53,8 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
         for dtype in ("auto", "fp8")
     } | {
         (131072, 2, "fp8"),
-        (131072, 8, "fp8"),
-        (262144, 4, "fp8"),
+        (131072, 11, "fp8"),
+        (262144, 5, "fp8"),
         (65536, 16, "fp8"),
     }
 
