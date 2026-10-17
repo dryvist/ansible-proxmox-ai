@@ -44,7 +44,8 @@ def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> 
     assert set(aliases.values()) <= capabilities
 
     defaults = role_defaults(REPO_ROOT / "roles" / "llm_router")
-    seeded = {entry["role"]: entry for entry in defaults["llm_router_role_deployments"]}
+    # The public name reads the once-evaluated fact; the data is defined under the _source name.
+    seeded = {entry["role"]: entry for entry in defaults["_llm_router_role_deployments_source"]}
     assert set(seeded) == {"judge", "recorder"}
     small_group = next(entry["route_group"] for entry in local_entries if entry["tier"] == "vllm")
     assert seeded["judge"]["model"] == "{{ llm_router_small_model }}"
