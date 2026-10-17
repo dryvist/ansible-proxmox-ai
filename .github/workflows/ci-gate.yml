@@ -182,10 +182,19 @@ jobs:
           PUSH_HEAD: ${{ github.sha }}
         run: |
           if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
-             [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop ]] ||
-             [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
+             [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop ]]; then
             echo 'full_suite=true' >> "$GITHUB_OUTPUT"
             python .github/scripts/select-contract-scope.py --full --output "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
+            echo 'full_suite=true' >> "$GITHUB_OUTPUT"
+            git diff --name-only "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"
+            if grep -qvE '(^docs/|\.md$)' "$RUNNER_TEMP/changed-paths"; then
+              python .github/scripts/select-contract-scope.py --full --output "$GITHUB_OUTPUT"
+            else
+              python .github/scripts/select-contract-scope.py --full --skip-router --output "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
           echo 'full_suite=false' >> "$GITHUB_OUTPUT"

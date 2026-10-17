@@ -29,9 +29,25 @@ permissions:
   contents: read
 
 jobs:
+  router-contract-dependencies:
+    name: Router contract dependencies
+    if: inputs.playbooks != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install router contract dependencies
+        uses: ./.github/actions/router-deps
+        with:
+          save: "true"
+
   llm-router-contract:
     name: "Router contract: ${{ matrix.shard.name }}"
-    if: inputs.full_suite || inputs.playbooks != '[]'
+    if: ${{ !cancelled() && inputs.playbooks != '[]' }}
+    needs: router-contract-dependencies
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes < 30 && 30 || inputs.timeout_minutes }}
     strategy:
@@ -174,42 +190,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: '3.14'
-          cache: pip
-          cache-dependency-path: .github/requirements-ci.txt
-
-      - name: Install Ansible
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r .github/requirements-ci.txt
-
-      # An exact requirements.yml cache hit already contains this install. A
-      # miss runs the forced install to resolve the current requirement set.
-      # Same v2 key/paths as dryvist/.github's _ansible-ci.yml on main, so a warm run of
-      # either workflow warms the other.
-      - name: Cache Ansible Galaxy content
-        id: galaxy-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.ansible/collections
-            ~/.ansible/roles
-          key: ansible-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
-          restore-keys: |
-            ansible-galaxy-v2-${{ runner.os }}-
-
-      - name: Install Ansible dependencies
-        if: steps.galaxy-cache.outputs.cache-hit != 'true'
-        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
-        with:
-          max_attempts: 4
-          timeout_minutes: 10
-          command: ansible-galaxy install --force -r requirements.yml
-        env:
-          ANSIBLE_GALAXY_SERVER_TIMEOUT: "60"
+      - name: Restore router contract dependencies
+        uses: ./.github/actions/router-deps
 
       - name: Run llm_router contract playbook
         env:
@@ -228,7 +210,8 @@ jobs:
   # Not part of the matrix above: pytest, not ansible-playbook.
   llm-router-registry-contract:
     name: Registry single-source contract
-    if: inputs.full_suite || inputs.playbooks != '[]'
+    if: ${{ !cancelled() && inputs.playbooks != '[]' }}
+    needs: router-contract-dependencies
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
 
@@ -241,38 +224,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: '3.14'
-          cache: pip
-          cache-dependency-path: .github/requirements-ci.txt
-
-      - name: Install Ansible
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r .github/requirements-ci.txt
-
-      - name: Cache Ansible Galaxy content
-        id: galaxy-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.ansible/collections
-            ~/.ansible/roles
-          key: ansible-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
-          restore-keys: |
-            ansible-galaxy-v2-${{ runner.os }}-
-
-      - name: Install Ansible dependencies
-        if: steps.galaxy-cache.outputs.cache-hit != 'true'
-        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
-        with:
-          max_attempts: 4
-          timeout_minutes: 10
-          command: ansible-galaxy install --force -r requirements.yml
-        env:
-          ANSIBLE_GALAXY_SERVER_TIMEOUT: "60"
+      - name: Restore router contract dependencies
+        uses: ./.github/actions/router-deps
 
       # The registry rule's teeth: a registry value re-typed as a literal in
       # the role, its tests or the playbooks fails here. Render parity cannot

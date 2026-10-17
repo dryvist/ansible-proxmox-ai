@@ -150,8 +150,6 @@ def test_reusable_calls_forward_the_timeout_input() -> None:
 @pytest.mark.parametrize(("workflow", "job"), [
     ("_data-contract.yml", "syntax-check"),
     ("_data-contract.yml", "verify-inventory-load"),
-    ("_llm-router-contract.yml", "llm-router-contract"),
-    ("_llm-router-contract.yml", "llm-router-registry-contract"),
 ])
 def test_ansible_install_uses_cached_pinned_ci_requirements(workflow: str, job: str) -> None:
     steps = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"]
@@ -170,8 +168,6 @@ def test_ansible_install_uses_cached_pinned_ci_requirements(workflow: str, job: 
 @pytest.mark.parametrize(("workflow", "job"), [
     ("_data-contract.yml", "syntax-check"),
     ("_data-contract.yml", "verify-inventory-load"),
-    ("_llm-router-contract.yml", "llm-router-contract"),
-    ("_llm-router-contract.yml", "llm-router-registry-contract"),
     ("_molecule.yml", "test"),
 ])
 def test_galaxy_install_skips_exact_cache_hits(workflow: str, job: str) -> None:
@@ -181,6 +177,27 @@ def test_galaxy_install_skips_exact_cache_hits(workflow: str, job: str) -> None:
                    == step.get("with", {}).get("command"))
     assert cache["uses"].startswith("actions/cache@")
     assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
+
+
+@pytest.mark.parametrize("job", [
+    "router-contract-dependencies", "llm-router-contract", "llm-router-registry-contract",
+])
+def test_router_jobs_share_the_cached_dependency_action(job: str) -> None:
+    steps = yaml.safe_load((WORKFLOWS / "_llm-router-contract.yml").read_text())["jobs"][job]["steps"]
+    assert any(step.get("uses") == "./.github/actions/router-deps" for step in steps)
+
+
+def test_router_dependency_action_caches_pinned_requirements() -> None:
+    steps = yaml.safe_load((WORKFLOWS.parent / "actions/router-deps/action.yml").read_text())["runs"]["steps"]
+    setup = next(step for step in steps if step.get("uses", "").startswith("actions/setup-python@"))
+    assert setup["with"]["cache"] == "pip"
+    assert setup["with"]["cache-dependency-path"] == ".github/requirements-ci.txt"
+    key = next(step for step in steps if step.get("id") == "key")
+    assert key["env"]["HASH"] == "${{ hashFiles('.github/requirements-ci.txt', 'requirements.yml') }}"
+    restore = next(step for step in steps if step.get("id") == "router-deps-cache")
+    assert restore["with"]["key"] == "${{ steps.key.outputs.key }}"
+    install = next(step for step in steps if step.get("uses", "").startswith("nick-fields/retry@"))
+    assert install["if"] == "steps.router-deps-cache.outputs.cache-hit != 'true'"
 
 
 def test_ci_requirements_pin_exact_versions() -> None:
