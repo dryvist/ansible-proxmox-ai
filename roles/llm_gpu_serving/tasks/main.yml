@@ -43,7 +43,7 @@
       - gcc
       - libc6-dev
     state: present
-  when: llm_profiles[llm_active_profile].engine == 'vllm'
+  when: llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'
   environment: "{{ llamacpp_release_proxy_environment }}"
 
 - name: Install NVIDIA userspace from the host module version
@@ -53,7 +53,7 @@
 
 - name: Install the CUDA toolkit for runtime kernel compilation
   ansible.builtin.include_tasks: install-cuda-toolkit.yml
-  when: llm_profiles[llm_active_profile].engine == 'vllm'
+  when: llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'
 
 - name: Create GPU serving directories
   ansible.builtin.file:
@@ -126,7 +126,7 @@
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
   environment: "{{ llm_gpu_serving_uv_environment }}"
-  when: llm_profiles[llm_active_profile].engine == 'vllm'
+  when: llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'
 
 # A process run as another user inside the venv leaves bytecode the serving user
 # cannot remove, and uv then fails replacing the old vLLM.
@@ -138,7 +138,7 @@
     group: "{{ llm_gpu_serving_group }}"
     recurse: true
   become: true
-  when: llm_profiles[llm_active_profile].engine == 'vllm'
+  when: llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'
 
 - name: Install the pinned vLLM build with SM120 b12x kernels
   ansible.builtin.command:
@@ -163,7 +163,7 @@
   register: llm_gpu_serving_vllm_install
   when:
     - not ansible_check_mode
-    - llm_profiles[llm_active_profile].engine == 'vllm'
+    - llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'
   changed_when: >-
     'Installed' in llm_gpu_serving_vllm_install.stderr or
     'Prepared' in llm_gpu_serving_vllm_install.stderr or
@@ -184,7 +184,7 @@
       src: "{{ llm_gpu_serving_hf_bin }}"
   loop_control:
     label: "{{ item.name }}"
-  when: item.name != 'vllm' or llm_profiles[llm_active_profile].engine == 'vllm'
+  when: item.name != 'vllm' or llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'
 
 - name: Inspect the llama.cpp server binary
   ansible.builtin.stat:
@@ -339,7 +339,7 @@
 
 - name: Retire units for disabled GPU serving profiles
   ansible.builtin.include_tasks: retire-disabled-profile.yml
-  loop: "{{ llm_profiles | dict2items }}"
+  loop: "{{ llm_gpu_serving_profiles | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
   when:
@@ -362,7 +362,7 @@
      (llm_gpu_serving_paused | default(false) | bool) == (llm_gpu_serving_profile_state.rc == 0)) or
     (item.key != llm_active_profile and llm_gpu_serving_profile_state.rc == 0)
   failed_when: llm_gpu_serving_profile_state.rc not in [0, 3, 4]
-  loop: "{{ llm_profiles | dict2items }}"
+  loop: "{{ llm_gpu_serving_profiles | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
   when: item.value.enabled | default(true)

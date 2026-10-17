@@ -59,7 +59,7 @@ def test_small_profile_renders_the_pinned_gguf_with_llama_cpp():
 def test_legacy_role_installs_vllm_and_its_toolchain_only_for_vllm_profiles():
     tasks = yaml.safe_load((LEGACY_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
     by_name = {task["name"]: task for task in tasks}
-    vllm_engine = "llm_profiles[llm_active_profile].engine == 'vllm'"
+    vllm_engine = "llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'"
 
     assert by_name["Install vLLM CUDA helper build prerequisites"]["when"] == vllm_engine
     assert by_name["Install the CUDA toolkit for runtime kernel compilation"]["when"] == vllm_engine
