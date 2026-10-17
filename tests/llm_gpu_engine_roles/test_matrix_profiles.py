@@ -34,9 +34,9 @@ def test_long_context_profiles_match_card_limits_and_memory_targets():
         name: VLLM_PROFILES[name]
         for name in (
             "qwen38-128k-2-fp8-mtp",
-            "qwen38-128k-8-fp8-mtp",
+            "qwen38-128k-11-fp8-mtp",
             "qwen38-256k-1-fp8-mtp",
-            "qwen38-256k-4-fp8-mtp",
+            "qwen38-256k-5-fp8-mtp",
         )
     }
     flash = [
@@ -70,7 +70,7 @@ def test_long_context_profiles_match_card_limits_and_memory_targets():
     assert {
         (profile["max_model_len"], profile["max_num_seqs"])
         for profile in (*qwen_profiles.values(), VLLM_PROFILES["qwen38-64k-16-fp8-mtp"])
-    } == {(131072, 2), (131072, 8), (262144, 1), (262144, 4), (65536, 16)}
+    } == {(131072, 2), (131072, 11), (262144, 1), (262144, 5), (65536, 16)}
     for profile in (*qwen_profiles.values(), VLLM_PROFILES["qwen38-64k-16-fp8-mtp"]):
         assert profile["gpu_memory_utilization"] == qwen_mtp["gpu_memory_utilization"]
         assert profile["quantization"] == qwen_mtp["quantization"] == "modelopt"
