@@ -11,7 +11,7 @@ repo and installing collection dependencies:
 ```bash
 git clone https://github.com/dryvist/ansible-proxmox-ai.git
 cd ansible-proxmox-ai
-ansible-galaxy collection install -r requirements.yml
+ansible-galaxy collection install -r requirements.yml --force
 ```
 
 ## Prerequisites

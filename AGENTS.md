@@ -129,7 +129,7 @@ This repo is fully self-sufficient: `playbooks/site.yml` +
 `dryvist.homelab` collection — install dependencies once per fresh worktree:
 
 ```bash
-ansible-galaxy install -r requirements.yml
+ansible-galaxy install -r requirements.yml --force
 ```
 
 Use `install`, not `collection install` or `role install`: each of those
@@ -271,7 +271,7 @@ TOFU_INVENTORY_PATH=$PWD/tests/inventory_load/tofu_inventory.json \
 
 ```bash
 # Install Ansible Galaxy dependencies (once)
-ansible-galaxy install -r requirements.yml
+ansible-galaxy install -r requirements.yml --force
 
 # Run one scenario's full test cycle (create -> converge -> idempotence -> verify -> destroy)
 molecule test -s llamaindex

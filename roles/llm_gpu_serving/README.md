@@ -37,7 +37,7 @@ downloads use the published inventory's `cache_proxy_urls.apt_cache` list; a
 missing list blocks the converge before upstream fetches.
 
 ```sh
-ansible-galaxy install -r requirements.yml
+ansible-galaxy install -r requirements.yml --force
 ```
 
 ## Usage

@@ -10,6 +10,21 @@ CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
 WORKFLOWS = Path(__file__).parents[1] / ".github/workflows"
 
 
+def _job_steps(workflow: str, job: str) -> list[dict]:
+    """A job's steps with local composite actions (`uses: ./...`) expanded in place."""
+    def expand(steps: list[dict]) -> list[dict]:
+        out = []
+        for step in steps:
+            uses = step.get("uses", "")
+            if uses.startswith("./"):
+                action = yaml.safe_load((WORKFLOWS.parents[1] / uses / "action.yml").read_text())
+                out.extend(expand(action["runs"]["steps"]))
+            else:
+                out.append(step)
+        return out
+    return expand(yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"])
+
+
 def test_agent_ci_fix_runs_only_for_pull_request_ci_gate_runs() -> None:
     job = yaml.safe_load((WORKFLOWS / "agent-ci-fix.yml").read_text())["jobs"]["ci-fix"]
     assert "vars.AI_AGENT_CI_FIX_ENABLED == 'true'" in job["if"]
@@ -152,7 +167,7 @@ def test_reusable_calls_forward_the_timeout_input() -> None:
     ("_data-contract.yml", "verify-inventory-load"),
 ])
 def test_ansible_install_uses_cached_pinned_ci_requirements(workflow: str, job: str) -> None:
-    steps = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"]
+    steps = _job_steps(workflow, job)
     setup = next(step for step in steps if step.get("uses", "").startswith("actions/setup-python@"))
     assert setup["with"]["cache"] == "pip"
     assert setup["with"]["cache-dependency-path"] == ".github/requirements-ci.txt"
@@ -171,7 +186,7 @@ def test_ansible_install_uses_cached_pinned_ci_requirements(workflow: str, job: 
     ("_molecule.yml", "test"),
 ])
 def test_galaxy_install_skips_exact_cache_hits(workflow: str, job: str) -> None:
-    steps = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"]
+    steps = _job_steps(workflow, job)
     cache = next(step for step in steps if step.get("id") == "galaxy-cache")
     install = next(step for step in steps if "ansible-galaxy install --force -r requirements.yml"
                    == step.get("with", {}).get("command"))
