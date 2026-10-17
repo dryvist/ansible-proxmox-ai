@@ -77,3 +77,10 @@ def test_legacy_play_does_not_override_the_shared_engine_profile_selector():
     assert "llm_active_profile" not in _legacy_play().get("vars", {})
     assert "llm_gpu_serving_model_cache_mount_path" not in text
     assert "llm_gpu_serving_model_origin_mount_path" not in text
+
+
+def test_shared_long_context_profile_skips_the_legacy_model_play():
+    play = next(play for play in _serving_plays() if play.get("hosts") == "llm_vllm_group")
+    converge = next(task for task in play["tasks"] if task.get("block"))
+
+    assert converge["when"] == "llm_active_profile != 'qwen38-27b-131k-1'"
