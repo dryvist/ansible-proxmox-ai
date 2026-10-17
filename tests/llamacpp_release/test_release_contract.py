@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -19,14 +20,34 @@ def test_one_renovate_pin_declares_every_backend_asset():
     defaults_path = RELEASE_ROOT / "defaults/main/00-release.yml"
     text = defaults_path.read_text(encoding="utf-8")
     defaults = _load(defaults_path)
-    pin_line = next(
+    version_line = next(
         index
         for index, line in enumerate(text.splitlines())
-        if line.startswith("llamacpp_release_tag:")
+        if line.startswith("llamacpp_release_version:")
     )
 
-    assert text.splitlines()[pin_line - 1].startswith("# renovate: datasource=github-releases")
-    assert r"depName=ggml-org/llama.cpp versioning=regex:^b(?<major>\d+)$" in text.splitlines()[pin_line - 1]
+    assert text.splitlines()[version_line - 1] == (
+        "# renovate: datasource=github-releases depName=ggml-org/llama.cpp versioning=semver"
+    )
+    assert re.fullmatch(r"\d+\.\d+\.\d+", defaults["llamacpp_release_version"])
+    assert re.fullmatch(r"b\d+", defaults["llamacpp_release_tag"])
+    mapping_fixture = (
+        ROOT
+        / "tests/llamacpp_release/fixtures"
+        / f"stable-release-v{defaults['llamacpp_release_version']}-nightly-tag.txt"
+    )
+    assert defaults["llamacpp_release_tag"] == mapping_fixture.read_text(encoding="utf-8").strip()
+
+    renovate = json.loads((ROOT / "renovate.json").read_text(encoding="utf-8"))
+    llama_rules = [
+        rule
+        for rule in renovate["packageRules"]
+        if rule.get("matchPackageNames") == ["ggml-org/llama.cpp"]
+    ]
+    assert len(llama_rules) == 1
+    assert llama_rules[0]["versioning"] == "semver"
+    assert llama_rules[0]["extractVersion"] == "^v(?<version>.+)$"
+    assert llama_rules[0]["ignoreUnstable"] is True
     for key in (
         "llamacpp_release_cpu_asset",
         "llamacpp_release_vulkan_asset",
