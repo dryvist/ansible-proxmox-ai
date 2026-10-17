@@ -118,6 +118,9 @@ def test_engine_roles_own_only_their_profiles_and_selectors():
             for task in main_tasks
         )
 
+    legacy_profiles = _yaml(ROLES / "llm_gpu_serving/defaults/main/10-profiles.yml")["llm_profiles"]
+    assert {"nemotron-bolt-64k-16", "nemotron-bolt-256k-24"} <= set(legacy_profiles)
+
 
 def test_engine_installers_stay_separate_and_keep_shared_safety_tasks():
     vllm_install = (ROLES / "vllm_serving/tasks/install.yml").read_text()

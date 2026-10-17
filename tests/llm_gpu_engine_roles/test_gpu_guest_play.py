@@ -67,12 +67,12 @@ def _walk(node):
             yield from _walk(item)
 
 
-def test_serving_plays_apply_each_engine_role_to_one_guest_at_a_time() -> None:
+def test_serving_plays_apply_the_selected_engine_role_to_one_guest_at_a_time() -> None:
     expected_roles = {
-        "llm_gpu_serving_llama_cpp_group": "llamacpp_serving",
-        "llm_gpu_serving_vllm_group": "vllm_serving",
-        "llm_gpu_serving_sglang_group": "sglang_serving",
-        "llm_gpu_serving_strata_group": "strata_serving",
+        "llm_gpu_serving_llama_cpp_group": ["llm_gpu_serving", "llamacpp_serving"],
+        "llm_gpu_serving_vllm_group": ["vllm_serving"],
+        "llm_gpu_serving_sglang_group": ["sglang_serving"],
+        "llm_gpu_serving_strata_group": ["strata_serving"],
     }
 
     for host_group, play in _engine_plays().items():
@@ -84,7 +84,18 @@ def test_serving_plays_apply_each_engine_role_to_one_guest_at_a_time() -> None:
             for task in _walk(play["tasks"])
             if "ansible.builtin.include_role" in task
         ]
-        assert included == [expected_roles[host_group]]
+        assert included == expected_roles[host_group]
+        if host_group == "llm_gpu_serving_llama_cpp_group":
+            bolt = next(
+                task for task in play["tasks"]
+                if task["name"] == "Converge Bolt through the shared profile selector"
+            )
+            specialized = next(
+                task for task in play["tasks"]
+                if task["name"].startswith("Converge llamacpp_serving")
+            )
+            assert bolt["when"] == "llm_active_profile in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24']"
+            assert specialized["when"] == "llm_active_profile not in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24']"
 
 
 def test_serving_play_precedes_the_router_pool() -> None:

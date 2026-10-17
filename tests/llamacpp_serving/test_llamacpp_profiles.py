@@ -179,7 +179,14 @@ def test_registry_entries_stay_inactive_while_every_profile_is_selectable():
         if key.startswith("_llm_registry_gpu")
         for entry in values
     ]
-    assert all(entry["enabled"] is False and entry["servable"] is False for entry in entries)
+    for entry in entries:
+        assert entry["enabled"] is (
+            entry["profile"] in {"nemotron-bolt-64k-16", "nemotron-bolt-256k-24"}
+        )
+        assert entry["servable"] is False
+        if entry["profile"].startswith("nemotron-bolt-"):
+            assert entry["catalog_profile"] == entry["profile"]
+            assert entry["lifecycle"] == "current"
 
 
 def test_role_validation_requires_a_literal_gguf_file_for_llama_cpp_profiles():

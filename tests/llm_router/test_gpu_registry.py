@@ -29,6 +29,7 @@ MATRIX_PROFILES = {
     "nemotron-lightning-1m-2-fp8", "nemotron-super-vl-64k-8",
     "flash-next-gguf", "flash-next-gguf-262k-1", "flash-next-gguf-262k-2",
     "flash-next-small-128k-8",
+    "nemotron-bolt-64k-16", "nemotron-bolt-256k-24",
 }
 RETIRED_FLASH_NEXT_NVFP4_PROFILES = {
     "flash-next-64k-1-fp8-mtp",
@@ -42,6 +43,7 @@ RETIRED_FLASH_NEXT_NVFP4_PROFILES = {
     "flash-next-262k-1-fp8",
     "flash-next-262k-2-fp8",
 }
+ENABLED_MATRIX_PROFILES = {"nemotron-bolt-64k-16", "nemotron-bolt-256k-24"}
 
 
 def _entries() -> list[dict]:
@@ -66,7 +68,7 @@ def _serving_profiles() -> dict:
     return {**legacy, **vllm, **llamacpp, **sglang}
 
 
-def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
+def test_pro6000_profiles_are_guarded_and_free() -> None:
     entries = _entries()
     artifacts = [
         artifact
@@ -150,8 +152,20 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     for entry in entries:
         assert entry["provider"] == "hosted_vllm"
         assert entry["tier"] == "gpu"
-        assert entry["enabled"] is False
+        assert entry["enabled"] is (entry["profile"] in ENABLED_MATRIX_PROFILES)
         assert entry["servable"] is False
+        if entry["profile"] in ENABLED_MATRIX_PROFILES:
+            assert entry["lifecycle"] == "current"
+            assert entry["catalog_profile"] == entry["profile"]
+            assert all(
+                arm in entry["notes"]
+                for arm in (
+                    'OFF {"enable_thinking":false}',
+                    'default {"enable_thinking":true}',
+                    'medium {"enable_thinking":true,"medium_effort":true}',
+                )
+            )
+            continue
         assert isinstance(entry["context_window"], int) and entry["context_window"] > 0
         assert isinstance(entry["max_output_tokens"], int) and entry["max_output_tokens"] > 0
         assert entry.get("input_cost_per_token", 0) == 0
@@ -168,7 +182,10 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     for entry in entries:
         model_window = artifacts_by_id[entry["artifact_id"]].get("context_window_tokens")
         if model_window is not None:
-            assert entry["context_window"] + entry["max_output_tokens"] <= model_window
+            if "catalog_profile" in entry:
+                assert serving_profiles[entry["profile"]]["max_model_len"] <= model_window
+            else:
+                assert entry["context_window"] + entry["max_output_tokens"] <= model_window
 
     aliases_by_profile = {
         entry["profile"]: entry.get("stable_aliases", []) for entry in entries
@@ -191,11 +208,14 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     assert medium_a_serving["kv_cache_dtype"] == "auto"
     assert qwen_profile["context_window"] + qwen_profile["max_output_tokens"] == medium_a_serving["max_model_len"]
 
-    # Every registry input window plus its output reservation must fit both
-    # the selected artifact and the profile's configured serving limit.
+    # Legacy rows carry their input and output windows; catalog rows use the
+    # profile's complete model limit against the artifact context ceiling.
     for entry in entries:
         profile = serving_profiles[entry["profile"]]
-        assert entry["context_window"] + entry["max_output_tokens"] <= profile["max_model_len"]
+        if "catalog_profile" in entry:
+            assert profile["max_model_len"] <= artifacts_by_id[entry["artifact_id"]]["context_window_tokens"]
+        else:
+            assert entry["context_window"] + entry["max_output_tokens"] <= profile["max_model_len"]
 
 
 def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
@@ -203,7 +223,10 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
     entries = _entries()
     serving_profiles = _serving_profiles()
 
-    caps = {entry["profile"]: entry["max_parallel_requests"] for entry in entries}
+    caps = {
+        entry["profile"]: entry.get("max_parallel_requests", 64)
+        for entry in entries
+    }
     admission_profiles = {
         entry["profile"]
         for entry in entries

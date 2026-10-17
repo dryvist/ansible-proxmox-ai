@@ -7,6 +7,9 @@ is set, so each profile's entry must carry it into the rendered config.
 from __future__ import annotations
 
 import json
+import subprocess
+import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 import jinja2
@@ -14,10 +17,6 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = REPO_ROOT / "roles/llm_router/templates"
-REGISTRY_FILES = (
-    REPO_ROOT / "llm-models.d/60-gpu.yml",
-    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
-)
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
 SGLANG_DEFAULTS = REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml"
@@ -36,14 +35,30 @@ RETIRED_FLASH_NEXT_NVFP4_PROFILES = {
 }
 
 
+@lru_cache(maxsize=1)
 def _entries() -> list[dict]:
-    return [
-        entry
-        for path in REGISTRY_FILES
-        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
-        if key.startswith("_llm_registry_gpu")
-        for entry in entries
-    ]
+    """Read the router registry after its production catalog projection."""
+    with tempfile.TemporaryDirectory(prefix="llm-router-catalog-projection-") as temp_dir:
+        output = Path(temp_dir) / "gpu-registry.json"
+        result = subprocess.run(
+            [
+                "ansible-playbook",
+                str(REPO_ROOT / "tests/llm_router/fixtures/project_catalog_entries.yml"),
+                "-i",
+                "localhost,",
+                "-c",
+                "local",
+                "--extra-vars",
+                json.dumps({"projection_output": str(output)}),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        projected = json.loads(output.read_text(encoding="utf-8"))
+    return [entry for entry in projected if entry["tier"] == "gpu"]
 
 
 def _serving_profiles() -> dict:
