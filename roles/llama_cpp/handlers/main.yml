@@ -6,8 +6,15 @@
 # Ungated, editing the template was enough to serve on a host set never to serve.
 # daemon_reload is not lost: that same task reloads unconditionally.
 - name: Restart llama-server
-  ansible.builtin.systemd:
-    name: llama-server
-    state: restarted
-    daemon_reload: true
   when: llama_cpp_service_enabled
+  block:
+    # A failure before unit deployment still flushes queued notifications.
+    - name: Read service state before restart
+      ansible.builtin.service_facts:
+
+    - name: Restart llama-server when it is serving
+      ansible.builtin.systemd:
+        name: llama-server
+        state: restarted
+        daemon_reload: true
+      when: ansible_facts.services.get('llama-server.service', {}).get('state', '') == 'running'
