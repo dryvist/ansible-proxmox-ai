@@ -161,13 +161,8 @@
     - "{{ playbook_dir }}/../inventory/group_vars/llm_router_group.yml"
   vars:
     llm_router_defer_restart: true
-  # Rendering is safe across the pool. The role's restart handler records a
-  # per-host pending flag here; the next play applies changed configs one
-  # member at a time and waits for its existing liveness checks before moving on.
-  #
-  # NOT isolated. A render failure must stop every member before the restart
-  # play starts. The rescue records the failure and re-raises it so the
-  # remaining pool keeps serving its previous config.
+  # Handlers only flag a pending restart; the next play restarts one member at
+  # a time. A render failure stops the pool before any restart.
   any_errors_fatal: true
   max_fail_percentage: 0
   pre_tasks:
@@ -259,48 +254,10 @@
     - llm
     - ai
   tasks:
-    # Only pending members restart; every member still runs the runtime checks,
-    # so a no-op converge still verifies the live pool.
     - name: Restart pending members and verify every member
-      block:
-        - name: Restart litellm
-          ansible.builtin.systemd:
-            name: "{{ llm_router_service }}"
-            state: restarted
-            daemon_reload: true
-          when: llm_router_restart_pending | default(false) | bool
+      ansible.builtin.import_tasks: tasks/llm_router_rolling_restart.yml
 
-        - name: Wait for liveness before syncing router settings
-          ansible.builtin.include_role:
-            name: llm_router
-            tasks_from: verify-liveness.yml
-          when: llm_router_sync_settings_pending | default(false) | bool
-
-        - name: Sync router settings into the database
-          ansible.builtin.include_role:
-            name: llm_router
-            tasks_from: sync-router-settings-request.yml
-          when: llm_router_sync_settings_pending | default(false) | bool
-
-        - name: Verify the rendered router runtime
-          ansible.builtin.include_role:
-            name: llm_router
-            tasks_from: verify-runtime.yml
-      rescue:
-        - name: Record the failure for the end-of-run gate
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: llm_router
-        - name: Stop the rolling converge at this member
-          ansible.builtin.fail:
-            msg: >-
-              llm_router failed on {{ inventory_hostname }}:
-              {{ ansible_failed_result.msg | default(ansible_failed_task.name | default('task failed')) }}.
-              Remaining pool members keep their previous config.
-
-# Both router plays carry llm_router_rolling, so `--skip-tags
-# llm_router_rolling` skips config rendering and restarts while leaving
-# consumer seeding available; the seed tasks load their own inputs.
+# `--skip-tags llm_router_rolling` skips both router plays; seeding still runs.
 #
 # Virtual keys, their budgets, and caller-facing roles — its own run_once
 # play, not a task inside the rolling converge above: seed-consumers.yml

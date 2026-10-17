@@ -7,6 +7,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
+RESTART_TASKS = REPO_ROOT / "playbooks/tasks/llm_router_rolling_restart.yml"
 
 
 def test_router_render_is_parallel_and_only_pending_restarts_roll() -> None:
@@ -21,9 +22,15 @@ def test_router_render_is_parallel_and_only_pending_restarts_roll() -> None:
         for play in plays
         if play.get("name") == "Roll LiteLLM restarts (one member at a time)"
     )
-    restart_block = next(
+    restart_import = next(
         task
         for task in restart["tasks"]
+        if task.get("name") == "Restart pending members and verify every member"
+    )
+    assert restart_import["ansible.builtin.import_tasks"] == "tasks/llm_router_rolling_restart.yml"
+    restart_block = next(
+        task
+        for task in yaml.safe_load(RESTART_TASKS.read_text(encoding="utf-8"))
         if task.get("name") == "Restart pending members and verify every member"
     )
     steps = {task["name"]: task for task in restart_block["block"]}
