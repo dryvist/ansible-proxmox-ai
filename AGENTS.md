@@ -306,4 +306,4 @@ minutes (Molecule and the data contract at fifteen), or at sixty on pull request
 aggregated by `Merge Gate`.
 Public pull-request CI stays on GitHub-hosted runners.
 
-See the canonical policy in the `dryvist/.github` README, “Ansible CI policy.”
+See the canonical policy in the `JacobPEvans/.github` README, “Ansible CI policy.”
