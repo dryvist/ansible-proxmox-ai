@@ -114,7 +114,9 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
         "return_code",
         "stdout_line_count",
         "stderr_line_count",
+        "promptfoo_pass_summary",
     }
+    assert "regex_search('[0-9]+ passed')" in safe_summary["promptfoo_pass_summary"]
 
 
 def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
