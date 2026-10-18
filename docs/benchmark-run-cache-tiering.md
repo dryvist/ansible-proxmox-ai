@@ -16,6 +16,13 @@ the cell and every 15 seconds during it, along with
 runner allows up to 79 more seconds for warm-up and command setup. Before and
 after captures are bounded, keeping the cell below its 20-minute cap.
 
+Each successful LMCache cell emits one JSON line prefixed with `KVO_RESULT` and
+a space in the Semaphore task log. It combines the suite CSV's per-round TTFT/TPOT/throughput summary,
+vLLM cache configuration and cache metrics, cgroup `memory.max`/`memory.peak`,
+and the active vLLM service main-process RSS. External cache counters are
+included by their live metric names; rates remain `null` when the pinned engine
+does not expose enough counters to calculate them.
+
 The LMCache CSV contains one record per request. `question_id == 1` is the first
 round; later `question_id` values are subsequent rounds. The vLLM cross-check
 stores per-request statistics in its JSON output. Its generated conversations
