@@ -1,0 +1,183 @@
+---
+- name: Create the pinned KVO tool directories on the selected node
+  ansible.builtin.file:
+    path: "{{ _benchmark_run_node_scratch }}/inputs/kvo/{{ item }}"
+    state: directory
+    mode: "0750"
+  loop:
+    - lmcache
+    - vllm
+
+- name: Download the pinned LMCache multi-round QA tool
+  ansible.builtin.get_url:
+    url: >-
+      {{ 'https://raw.githubusercontent.com/LMCache/LMCache/v' ~
+         benchmark_run_request.lmcache_version ~ '/benchmarks/multi_round_qa/' ~ item }}
+    dest: "{{ _benchmark_run_node_scratch }}/inputs/kvo/lmcache/{{ item }}"
+    mode: "0644"
+  loop:
+    - multi-round-qa.py
+    - utils.py
+
+- name: Download the vLLM multi-turn benchmark and its upstream helpers
+  ansible.builtin.get_url:
+    url: >-
+      {{ 'https://raw.githubusercontent.com/vllm-project/vllm/v' ~
+         benchmark_run_request.vllm_client_version ~ '/benchmarks/multi_turn/' ~ item }}
+    dest: "{{ _benchmark_run_node_scratch }}/inputs/kvo/vllm/{{ item }}"
+    mode: "0644"
+  loop:
+    - benchmark_serving_multi_turn.py
+    - bench_dataset.py
+    - bench_utils.py
+
+- name: Download the pinned vLLM synthetic conversation source text
+  ansible.builtin.get_url:
+    url: https://www.gutenberg.org/ebooks/1184.txt.utf-8
+    dest: "{{ _benchmark_run_node_scratch }}/inputs/kvo/vllm/pg1184.txt"
+    checksum: "sha256:{{ benchmark_run_request.gutenberg_sha256 }}"
+    mode: "0644"
+
+- name: Write the vLLM multi-turn input configuration
+  ansible.builtin.copy:
+    dest: "{{ _benchmark_run_node_scratch }}/inputs/kvo/vllm/generate_multi_turn.json"
+    mode: "0644"
+    content: >-
+      {{ {
+        'filetype': 'generate_conversations',
+        'num_conversations': benchmark_run_request.num_users,
+        'text_files': ['/work/kvo/vllm/pg1184.txt'],
+        'print_stats': false,
+        'prompt_input': {
+          'num_turns': {'distribution': 'constant', 'value': benchmark_run_request.num_rounds * 2},
+          'common_prefix_num_tokens': {
+            'distribution': 'constant', 'value': benchmark_run_request.shared_prompt_tokens
+          },
+          'prefix_num_tokens': {
+            'distribution': 'constant', 'value': benchmark_run_request.user_history_tokens
+          },
+          'num_tokens': {'distribution': 'constant', 'value': 32}
+        },
+        'prompt_output': {
+          'num_tokens': {'distribution': 'constant', 'value': benchmark_run_request.answer_tokens}
+        }
+      } | to_nice_json }}
+
+- name: Create the pinned KVO input directories in the benchmark client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - mkdir
+      - -p
+      - "{{ _benchmark_run_client_root }}/inputs/kvo/lmcache"
+      - "{{ _benchmark_run_client_root }}/inputs/kvo/vllm"
+  changed_when: true
+
+- name: Copy the pinned KVO tool sources and input data into the client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ benchmark_run_request.client_vmid }}"
+      - "{{ _benchmark_run_node_scratch }}/inputs/kvo/{{ item }}"
+      - "{{ _benchmark_run_client_root }}/inputs/kvo/{{ item }}"
+  loop:
+    - lmcache/multi-round-qa.py
+    - lmcache/utils.py
+    - vllm/benchmark_serving_multi_turn.py
+    - vllm/bench_dataset.py
+    - vllm/bench_utils.py
+    - vllm/generate_multi_turn.json
+    - vllm/pg1184.txt
+  changed_when: true
+
+- name: Calculate checksums for the downloaded benchmark tools
+  ansible.builtin.command:
+    argv:
+      - sha256sum
+      - "{{ _benchmark_run_node_scratch }}/inputs/kvo/lmcache/multi-round-qa.py"
+      - "{{ _benchmark_run_node_scratch }}/inputs/kvo/lmcache/utils.py"
+      - "{{ _benchmark_run_node_scratch }}/inputs/kvo/vllm/benchmark_serving_multi_turn.py"
+      - "{{ _benchmark_run_node_scratch }}/inputs/kvo/vllm/bench_dataset.py"
+      - "{{ _benchmark_run_node_scratch }}/inputs/kvo/vllm/bench_utils.py"
+  register: _benchmark_run_kvo_tool_hashes
+  changed_when: false
+
+- name: Write benchmark tool source provenance
+  ansible.builtin.copy:
+    dest: "{{ _benchmark_run_node_scratch }}/inputs/kvo/tooling.json"
+    mode: "0644"
+    content: >-
+      {{ {
+        'lmcache_release': benchmark_run_request.lmcache_version,
+        'lmcache_repository': 'https://github.com/LMCache/LMCache',
+        'vllm_version': benchmark_run_request.vllm_client_version,
+        'vllm_repository': 'https://github.com/vllm-project/vllm',
+        'vllm_serving_version': benchmark_run_request.vllm_serving_version,
+        'gutenberg_source': 'https://www.gutenberg.org/ebooks/1184.txt.utf-8',
+        'gutenberg_sha256': benchmark_run_request.gutenberg_sha256,
+        'source_sha256': _benchmark_run_kvo_tool_hashes.stdout_lines
+      } | to_nice_json }}
+
+- name: Copy benchmark tool provenance into the client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ benchmark_run_request.client_vmid }}"
+      - "{{ _benchmark_run_node_scratch }}/inputs/kvo/tooling.json"
+      - "{{ _benchmark_run_client_root }}/inputs/kvo/tooling.json"
+  changed_when: true
+
+- name: Verify the vLLM CPU image can import the LMCache benchmark tool
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - docker
+      - run
+      - --rm
+      - --pull=never
+      - -v
+      - "{{ _benchmark_run_client_root }}/inputs/kvo:/work/kvo:ro"
+      - --workdir
+      - /work/kvo/lmcache
+      - --entrypoint
+      - python
+      - "{{ benchmark_run_request.vllm_client_image }}"
+      - /work/kvo/lmcache/multi-round-qa.py
+      - --help
+  register: _benchmark_run_lmcache_help
+  changed_when: false
+  failed_when: _benchmark_run_lmcache_help.rc != 0
+  no_log: true
+
+- name: Verify the vLLM CPU image can import the vLLM multi-turn tool
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - docker
+      - run
+      - --rm
+      - --pull=never
+      - -v
+      - "{{ _benchmark_run_client_root }}/inputs/kvo:/work/kvo:ro"
+      - --workdir
+      - /work/kvo/vllm
+      - --entrypoint
+      - python
+      - "{{ benchmark_run_request.vllm_client_image }}"
+      - /work/kvo/vllm/benchmark_serving_multi_turn.py
+      - --help
+  register: _benchmark_run_vllm_multiturn_help
+  changed_when: false
+  failed_when: _benchmark_run_vllm_multiturn_help.rc != 0
+  no_log: true

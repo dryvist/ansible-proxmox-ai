@@ -1,0 +1,76 @@
+---
+- name: Run the pinned cache benchmark with 15-second engine and cgroup capture
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      metrics_dir={{ (_benchmark_run_node_scratch ~ '/telemetry') | quote }}
+      stop_file="$metrics_dir/{{ benchmark_run_request.run_id }}.stop"
+      memory_file="$metrics_dir/{{ benchmark_run_request.run_id }}-cgroup-memory.tsv"
+      client_vmid={{ benchmark_run_request.client_vmid | string | quote }}
+      gpu_guest_vmid={{ benchmark_run_request.gpu_guest_vmid | string | quote }}
+      metrics_url={{ _benchmark_run_kvo_metrics_url | quote }}
+      mkdir -p "$metrics_dir"
+      rm -f "$stop_file"
+      printf 'timestamp_utc\tphase\tmemory_current_bytes\n' > "$memory_file"
+
+      capture_sample() {
+        phase="$1"
+        timestamp="$(date -u +%Y%m%dT%H%M%S%N)"
+        /usr/bin/timeout --signal=TERM --kill-after=1s 10s \
+          pct exec "$client_vmid" -- /usr/bin/curl \
+          --fail --silent --show-error --max-time 5 \
+          "$metrics_url" \
+          > "$metrics_dir/{{ benchmark_run_request.run_id }}-$phase-$timestamp.prom"
+        printf '%s\t%s\t' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase" \
+          >> "$memory_file"
+        /usr/bin/timeout --signal=TERM --kill-after=1s 10s \
+          pct exec "$gpu_guest_vmid" -- /usr/bin/cat \
+          /sys/fs/cgroup/memory.current >> "$memory_file"
+      }
+
+      capture_sample before
+      (
+        set -euo pipefail
+        next_sample=$((SECONDS + 15))
+        while [[ ! -e "$stop_file" ]]; do
+          while (( SECONDS < next_sample )); do
+            [[ -e "$stop_file" ]] && exit 0
+            sleep 1
+          done
+          [[ -e "$stop_file" ]] && break
+          capture_sample during
+          next_sample=$((next_sample + 15))
+        done
+      ) &
+      sampler_pid=$!
+
+      cleanup() {
+        runner_rc=$?
+        trap - EXIT INT TERM
+        set +e
+        touch "$stop_file"
+        wait "$sampler_pid"
+        sampler_rc=$?
+        capture_sample after
+        after_rc=$?
+        rm -f "$stop_file"
+        if [[ "$runner_rc" -eq 0 ]]; then
+          if [[ "$sampler_rc" -ne 0 ]]; then
+            runner_rc=$sampler_rc
+          elif [[ "$after_rc" -ne 0 ]]; then
+            runner_rc=$after_rc
+          fi
+        fi
+        exit "$runner_rc"
+      }
+      trap cleanup EXIT
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+
+      {{ _benchmark_run_kvo_argv | map('quote') | join(' ') }}
+  args:
+    executable: /bin/bash
+  register: _benchmark_run_suite
+  changed_when: true
+  failed_when: _benchmark_run_suite.rc != 0
+  no_log: true
