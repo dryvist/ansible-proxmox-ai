@@ -95,8 +95,13 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
 def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
     plays = yaml.safe_load(PLAYBOOK.read_text())
     assert plays[2]["hosts"] == "{{ node | default('localhost') }}"
+    assert plays[2]["vars"]["benchmark_run_request"] == "{{ hostvars[node].benchmark_run_request }}"
     run_tasks = plays[2]["tasks"][0]
-    assert run_tasks["delegate_to"] == "benchmark-run-node"
+    assert "delegate_to" not in run_tasks
+
+    preflight = load_tasks("preflight.yml")
+    selected_node = next(task for task in preflight if task["name"] == "Add the selected Proxmox node to this run's inventory")
+    assert selected_node["ansible.builtin.add_host"]["name"] == "{{ node }}"
 
     prepare = load_tasks("prepare.yml")
     assert any("benchmark-client" in task.get("name", "") for task in prepare)
