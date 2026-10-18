@@ -83,3 +83,19 @@ def test_exporter_collectors_keep_upstream_defaults_and_add_fan_speed():
         "DCGM_FI_PROF_PCIE_RX_BYTES",
         "DCGM_FI_DEV_FB_USED",
     }.issubset(fields)
+
+
+def test_legacy_vulkan_path_installs_dcgm_exporter_when_nvidia_is_exposed():
+    tasks = _load(ROOT / "roles/llama_cpp/tasks/gpu_access.yml")
+    install = next(
+        task
+        for task in tasks
+        if task.get("name") == "Install the DCGM exporter on NVIDIA Vulkan guests"
+    )
+
+    assert install["ansible.builtin.include_role"] == {
+        "name": "nvidia_gpu_guest",
+        "tasks_from": "install-dcgm-exporter.yml",
+    }
+    assert "llama_cpp_gpu_backend == 'vulkan'" in install["when"]
+    assert "llama_cpp_nvidia_exposure.results[0].stat.exists" in install["when"][1]
