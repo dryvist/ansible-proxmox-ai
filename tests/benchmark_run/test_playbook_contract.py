@@ -91,14 +91,14 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     assert any("BENCHMARK_CHAT_TEMPLATE_KWARGS" in argument for argument in promptfoo)
 
     prepare = load_tasks("prepare.yml")
-    uv_check = next(task for task in prepare if task["name"] == "Verify the pinned uv release in the selected client")
-    node_check = next(task for task in prepare if task["name"] == "Verify the pinned Node release in the selected client")
+    uv_check = next(task for task in prepare if task.get("register") == "_benchmark_run_uv_version")
+    node_check = next(task for task in prepare if task.get("register") == "_benchmark_run_node_version")
     assert uv_check["ansible.builtin.command"]["argv"][-2] == "/usr/local/bin/uv"
     assert node_check["ansible.builtin.command"]["argv"][-2] == "/usr/local/bin/node"
-    engine_probe = next(task for task in prepare if task["name"] == "Verify the selected engine from inside the benchmark client")
+    engine_probe = next(task for task in prepare if task.get("register") == "_benchmark_run_engine_probe")
     assert engine_probe["ansible.builtin.command"]["argv"][4] == "/usr/bin/curl"
     assert engine_probe["when"] == "benchmark_run_request.suite != 'promptfoo-echo-smoke'"
-    engine_metrics = next(task for task in prepare if task["name"] == "Read the engine process start time from metrics")
+    engine_metrics = next(task for task in prepare if task.get("register") == "_benchmark_run_engine_start_time")
     assert "/usr/bin/curl" in engine_metrics["ansible.builtin.shell"]["cmd"]
 
 
@@ -116,9 +116,7 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
     prepare = load_tasks("prepare.yml")
     assert any("benchmark-client" in task.get("name", "") for task in prepare)
     assert any("engine" in task.get("name", "").lower() for task in prepare)
-    running_assert = next(
-        task for task in prepare if task["name"] == "Assert the selected client is running"
-    )
+    running_assert = next(task for task in prepare if "_benchmark_run_client_status.stdout" in str(task))
     assert running_assert["ansible.builtin.assert"]["that"] == [
         "_benchmark_run_client_status.stdout | trim == 'status: running'"
     ]
@@ -258,8 +256,13 @@ def test_cache_tier_cells_use_upstream_tools_and_preserve_telemetry() -> None:
     assert any("tooling.json" in str(task) for task in sources)
 
     prepare = load_tasks("prepare.yml")
-    assert any("/metrics" in str(task) and "before a cache cell" in task.get("name", "") for task in prepare)
-    assert any("memory.current" in str(task) and "before a cache cell" in task.get("name", "") for task in prepare)
+    metrics_probe = next(task for task in prepare if task.get("register") == "_benchmark_run_kvo_metrics_probe")
+    memory_probe = next(task for task in prepare if task.get("register") == "_benchmark_run_kvo_memory_probe")
+    assert "/metrics" in str(metrics_probe)
+    assert "memory.current" in str(memory_probe)
+    for probe in (metrics_probe, memory_probe):
+        assert "lmcache-multi-round-qa" in str(probe.get("when"))
+        assert "vllm-multi-turn" in str(probe.get("when"))
 
     execute = load_tasks("execute.yml")[0]
     always = execute["always"]
