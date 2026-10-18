@@ -86,6 +86,7 @@ def test_serving_plays_apply_the_selected_engine_role_to_one_guest_at_a_time() -
         ]
         assert included == expected_roles[host_group]
         if host_group == "llm_gpu_serving_llama_cpp_group":
+            assert "llama_cpp" in play["tags"]
             bolt = next(
                 task for task in play["tasks"]
                 if task["name"] == "Converge shared llama.cpp profiles through the selector"
