@@ -20,7 +20,7 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     assert vars_["_benchmark_run_lmcache_version"] == "0.5.5"
     assert vars_["_benchmark_run_vllm_client_version"] == "{{ vllm_serving_version }}"
     assert vars_["_benchmark_run_vllm_client_image"] == (
-        "vllm/vllm-openai-cpu:v{{ vllm_serving_version }}"
+        "vllm/vllm-openai-cpu:v{{ vllm_serving_version }}-x86_64"
     )
     serving = yaml.safe_load(SERVING_DEFAULTS.read_text())
     assert "../roles/vllm_serving/defaults/main/00-engine.yml" in plays[1]["vars_files"]
