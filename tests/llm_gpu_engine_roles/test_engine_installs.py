@@ -38,7 +38,8 @@ def test_hf_cli_and_uv_are_pinned_and_store_tools_on_the_tofu_cache_mount():
     vllm_argv = vllm_install["ansible.builtin.command"]["argv"]
     assert "vllm=={{ vllm_serving_version }}" in vllm_argv
     assert f"b12x=={{{{ vllm_serving_b12x_version }}}}" in vllm_argv
-    assert vllm_defaults["vllm_serving_b12x_version"] == "1.5.0"
+    assert vllm_defaults["vllm_serving_version"] == "0.32.0"
+    assert vllm_defaults["vllm_serving_b12x_version"] == "1.5.1"
     assert not any("[b12x]" in str(arg) for arg in vllm_argv)
     for key in (
         "nvidia_gpu_guest_uv_cache_dir",
