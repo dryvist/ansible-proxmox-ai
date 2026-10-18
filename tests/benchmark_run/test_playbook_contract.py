@@ -44,6 +44,7 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     tasks = load_tasks("bigcodebench.yml")
     evalscope_task = next(task for task in tasks if "Generate the pinned BigCodeBench" in task["name"])
     bigcodebench = evalscope_task["ansible.builtin.command"]["argv"]
+    assert "/usr/local/bin/uv" in bigcodebench
     generation = bigcodebench[bigcodebench.index("--generation-config") + 1]
     sandbox = bigcodebench[bigcodebench.index("--sandbox") + 1]
     assert "chat_template_kwargs" in generation
@@ -70,9 +71,20 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     assert load_tasks("vllm-serve.yml")[0]["no_log"] is True
 
     promptfoo = load_tasks("promptfoo.yml")[0]["ansible.builtin.command"]["argv"]
+    npx_index = promptfoo.index("/usr/local/bin/npx")
+    assert promptfoo[npx_index - 2 : npx_index] == [
+        "/usr/bin/env",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    ]
     assert "--max-concurrency" in promptfoo
     assert "--no-cache" in promptfoo
     assert any("BENCHMARK_CHAT_TEMPLATE_KWARGS" in argument for argument in promptfoo)
+
+    prepare = load_tasks("prepare.yml")
+    uv_check = next(task for task in prepare if task["name"] == "Verify the pinned uv release in the selected client")
+    node_check = next(task for task in prepare if task["name"] == "Verify the pinned Node release in the selected client")
+    assert uv_check["ansible.builtin.command"]["argv"][-2] == "/usr/local/bin/uv"
+    assert node_check["ansible.builtin.command"]["argv"][-2] == "/usr/local/bin/node"
 
 
 def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
