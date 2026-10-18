@@ -123,6 +123,8 @@ HERMES_UI_TIMEOUT = (
 )
 ROUTER_TIMEOUT = "${{ inputs.timeout_minutes < 30 && 30 || inputs.timeout_minutes }}"
 ROUTER_DEPENDENCIES_TIMEOUT = "${{ github.event_name == 'pull_request' && 5 || inputs.timeout_minutes }}"
+# The merge gate only aggregates results, so it takes the shared policy's five-minute PR cap.
+GATE_TIMEOUT = "${{ github.event_name == 'pull_request' && 5 || 10 }}"
 
 
 @pytest.mark.parametrize(("scenario", "caller", "expected"), [
@@ -164,6 +166,8 @@ def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
                 allowed = {ROUTER_DEPENDENCIES_TIMEOUT}
             elif (path.name, name) == ("_llm-router-contract.yml", "llm-router-contract"):
                 allowed = {ROUTER_TIMEOUT}
+            elif (path.name, name) == ("ci-gate.yml", "gate"):
+                allowed = {GATE_TIMEOUT}
             assert value in allowed, f"{path.name}:{name}"
 
 
