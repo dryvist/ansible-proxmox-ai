@@ -1,0 +1,82 @@
+---
+- name: Dispatch the selected suite
+  block:
+    - name: Run BigCodeBench-Hard through EvalScope
+      ansible.builtin.import_tasks: bigcodebench.yml
+      when: benchmark_run_request.suite == 'bigcodebench-hard'
+
+    - name: Run the selected Promptfoo config
+      ansible.builtin.import_tasks: promptfoo.yml
+      when: benchmark_run_request.suite is match('^promptfoo-')
+
+    - name: Run one fixed-length vLLM serving cell
+      ansible.builtin.import_tasks: vllm-serve.yml
+      when: benchmark_run_request.suite == 'vllm-sweep'
+
+  always:
+    - name: Read a safe Promptfoo pass count from its JSON output
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ benchmark_run_request.client_vmid }}"
+          - --
+          - /usr/local/bin/node
+          - -p
+          - >-
+            (function(){const r=JSON.parse(require('fs').readFileSync(
+            '{{ _benchmark_run_client_result }}/{{ benchmark_run_request.suite }}.json',
+            'utf8'));const n=r.results.stats.successes;if(!Number.isInteger(n)){
+            throw new Error('Promptfoo success count missing')};return String(n)+' passed'})()
+      register: _benchmark_run_promptfoo_summary
+      changed_when: false
+      when: benchmark_run_request.suite is match('^promptfoo-')
+
+    - name: Emit a safe suite summary to the Semaphore task log
+      ansible.builtin.debug:
+        msg:
+          suite: "{{ benchmark_run_request.suite }}"
+          return_code: "{{ _benchmark_run_suite.rc | default('unknown') }}"
+          stdout_line_count: "{{ _benchmark_run_suite.stdout_lines | default([]) | length }}"
+          stderr_line_count: "{{ _benchmark_run_suite.stderr_lines | default([]) | length }}"
+          promptfoo_pass_summary: >-
+            {{ (_benchmark_run_promptfoo_summary.stdout | default('not reported', true))
+               if benchmark_run_request.suite is match('^promptfoo-')
+               else 'not applicable' }}
+      when: _benchmark_run_suite is defined
+
+    - name: Archive the raw suite output inside the client
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ benchmark_run_request.client_vmid }}"
+          - --
+          - tar
+          - -czf
+          - "{{ _benchmark_run_client_archive }}"
+          - -C
+          - "{{ _benchmark_run_client_root }}"
+          - .
+      register: _benchmark_run_archive
+      changed_when: true
+
+    - name: Copy the raw result archive from the client to the node
+      ansible.builtin.command:
+        argv:
+          - pct
+          - pull
+          - "{{ benchmark_run_request.client_vmid }}"
+          - "{{ _benchmark_run_client_archive }}"
+          - "{{ _benchmark_run_node_artifact }}/{{ benchmark_run_request.run_id }}.tar.gz"
+      register: _benchmark_run_collect
+      changed_when: true
+
+    - name: Report the raw result artifact path
+      ansible.builtin.debug:
+        msg: "Raw benchmark results: {{ _benchmark_run_node_artifact }}/{{ benchmark_run_request.run_id }}.tar.gz"
+
+    - name: Remove temporary run inputs from the node
+      ansible.builtin.file:
+        path: "{{ _benchmark_run_node_scratch }}"
+        state: absent

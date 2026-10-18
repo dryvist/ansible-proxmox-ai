@@ -21,7 +21,7 @@ llm_router_hermes_cloud_monthly_budget_period: 1mo
 llm_router_hermes_cloud_models_credentialed: >-
   {%- set ns = namespace(credentialed=[], models=[], groups=[]) -%}
   {%- for m in llm_router_hermes_cloud_models -%}
-  {%- set key = llm_router_resolved_credentials.get(m.credential_env, '') -%}
+  {%- set key = _llm_router_m_resolved_credentials.get(m.credential_env, '') -%}
   {%- if (key | length > 0)
         or (m.provider == 'chatgpt' and (llm_router_chatgpt_auth_file_present | default(false) | bool)) -%}
   {%- set ns.credentialed = ns.credentialed + [m] -%}
@@ -42,13 +42,15 @@ llm_router_hermes_cloud_models_credentialed: >-
 # Local chat capabilities, in registry order. Same-name hardware members are
 # selected by LiteLLM's deployment order before this cross-capability ladder.
 llm_router_hermes_local_fallback_models: >-
-  {{ llm_router_capability_members
-     | selectattr('route_group', 'in',
-         [llm_router_small_model, llm_router_primary_model, llm_router_large_model])
-     | list }}
+  {%- set _models = llm_router_capability_members
+       | selectattr('route_group', 'in',
+           [llm_router_small_model, llm_router_primary_model, llm_router_large_model])
+       | list -%}
+  {{ _models if llm_router_studio_profiles_enabled | bool
+     else (_models | rejectattr('tier', 'equalto', 'local-large') | list) }}
 llm_router_local_fallback_groups: >-
   {%- set ns = namespace(groups=[]) -%}
-  {%- for m in llm_router_hermes_local_fallback_models -%}
+  {%- for m in _llm_router_m_hermes_local_fallback_models -%}
   {%- set group = m.fallback_group | default(m.route_group | default(m.client_model_id)) -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
@@ -64,7 +66,7 @@ llm_router_local_fallback_groups: >-
 # (local-then-cloud) against its two parts independently.
 llm_router_hermes_cloud_only_fallback_groups: >-
   {%- set ns = namespace(groups=[]) -%}
-  {%- for m in llm_router_hermes_cloud_models_credentialed | rejectattr('hermes_chain', 'defined') -%}
+  {%- for m in _llm_router_m_hermes_cloud_models_credentialed | rejectattr('hermes_chain', 'defined') -%}
   {%- set group = m.fallback_group | default(m.route_group | default(m.client_model_id)) -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
@@ -107,9 +109,9 @@ llm_router_hermes_primary_max_parallel_requests: >-
       | map(attribute='max_parallel_requests') | list | first)
      | default(llm_router_local_max_parallel_requests) }}
 
-# Local groups are split for context-window escape construction. D1 keeps the
-# local class after subscriptions and before paid ZDR; wide local groups lead
-# the class, followed by the narrower local groups.
+# Local groups are split for context-window escape construction. D1 places the
+# local class before subscriptions and paid ZDR; wide local groups lead the
+# class, followed by the narrower local groups.
 #
 #   primary 429s (a RATE error, not a size error) -> the ordinary `fallbacks`
 #   chain engages -> the next rung is a narrow leg -> the request is oversized
@@ -146,10 +148,10 @@ llm_router_hermes_primary_max_parallel_requests: >-
 #
 llm_router_hermes_local_narrow_groups: >-
   {%- set ns = namespace(groups=[]) -%}
-  {%- for m in llm_router_hermes_local_fallback_models -%}
+  {%- for m in _llm_router_m_hermes_local_fallback_models -%}
   {%- set group = m.fallback_group | default(m.route_group | default(m.client_model_id)) -%}
   {%- if (m.context_window | default(0) | int)
-         < (llm_router_hermes_primary_context_window | int)
+         < (_llm_router_m_hermes_primary_context_window | int)
      and group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
   {%- endif -%}
@@ -158,8 +160,8 @@ llm_router_hermes_local_narrow_groups: >-
 
 llm_router_hermes_local_wide_groups: >-
   {%- set ns = namespace(groups=[]) -%}
-  {%- for group in llm_router_local_fallback_groups -%}
-  {%- if group not in llm_router_hermes_local_narrow_groups
+  {%- for group in _llm_router_m_local_fallback_groups -%}
+  {%- if group not in _llm_router_m_hermes_local_narrow_groups
      and group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
   {%- endif -%}
@@ -172,12 +174,12 @@ llm_router_hermes_local_wide_groups: >-
 # fallback selection; `enforce_fallback_model_access` remains the second
 # check for group names.
 llm_router_hermes_cloud_fallback_groups: >-
-  {{ llm_router_d1_ladder_groups }}
+  {{ _llm_router_m_d1_ladder_groups }}
 
 # The full post-entry chain shared by Hermes, stable aliases, and direct
 # model entry points.
 llm_router_hermes_default_fallback_chain: >-
-  {{ llm_router_hermes_cloud_fallback_groups }}
+  {{ _llm_router_m_hermes_cloud_fallback_groups }}
 
 # Cloud groups that carry a spend ceiling. No local member sits inside them:
 # an over-budget group empties, the router raises during selection, and that
@@ -187,7 +189,7 @@ llm_router_hermes_default_fallback_chain: >-
 # ORDER, never membership of a cloud group.
 llm_router_hermes_cloud_budgeted_groups: >-
   {%- set ns = namespace(groups=[]) -%}
-  {%- for m in llm_router_hermes_cloud_models_credentialed
+  {%- for m in _llm_router_m_hermes_cloud_models_credentialed
        if m.monthly_budget is defined or m.max_budget is defined -%}
   {%- set group = m.fallback_group | default(m.route_group) -%}
   {%- if group not in ns.groups -%}

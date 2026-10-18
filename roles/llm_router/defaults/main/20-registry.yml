@@ -21,6 +21,14 @@ llm_router_registry_dir: "{{ role_path | dirname | dirname }}/llm-models.d"
 # llm_gpu_group, so both the router and secret-prefetch play see the switch.
 llm_router_gpu_profiles_enabled: false
 
+# The Studio's resident registry entries remain available as direct routes;
+# this switch only controls whether they join shared fallback ladders. Derive
+# the default from the existing enabled resident set so routing stays the same
+# unless an operator drains the Studio profiles explicitly.
+llm_router_studio_profiles_enabled: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'local-large')
+     | list | length > 0 }}
+
 llm_router_model_registry: >-
   {{ _llm_registry_large + _llm_registry_light + _llm_registry_cpu_pool
      + _llm_registry_local_gpu
@@ -34,7 +42,7 @@ llm_router_model_registry: >-
 # one selected profile at a time.
 # cpu-moe / cpu-9b also require inventory-backed api_base URLs — without them
 # the template renders nothing and registry/render parity fails loudly.
-llm_router_registry_enabled: >-
+_llm_router_registry_enabled_source: >-
   {%- set ns = namespace(out=[]) -%}
   {%- set backends = llm_router_cpu_pool_backend_urls_by_tier | default({}) -%}
   {%- for m in llm_router_model_registry -%}
@@ -54,6 +62,7 @@ llm_router_registry_enabled: >-
   {%- endif -%}
   {%- endfor -%}
   {{ ns.out }}
+llm_router_registry_enabled: "{{ _llm_router_m_registry_enabled }}"
 
 # Values a credential can resolve to that are NEVER a real credential, however
 # non-empty they render: "local" is the placeholder every local
@@ -205,7 +214,8 @@ _llm_router_vllm_max_input_tokens_by_model: >-
 # router_settings.model_group_alias and never becomes a model_list entry, so it
 # can never appear among the rendered names this set is diffed against —
 # including it would only widen the exemption and let a genuinely unregistered
-# deployment name slip past the rendered-but-not-registered direction.
+# deployment name slip past the rendered-but-not-registered direction. Direct
+# route aliases are added separately because each has a dedicated deployment.
 llm_router_registry_enabled_route_names: >-
   {%- set ns = namespace(names=[]) -%}
   {%- for m in llm_router_registry_enabled -%}
@@ -215,4 +225,4 @@ llm_router_registry_enabled_route_names: >-
   {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
   {%- endif -%}
   {%- endfor -%}
-  {{ ns.names | unique | list }}
+  {{ (ns.names + llm_router_direct_route_aliases) | unique | list }}

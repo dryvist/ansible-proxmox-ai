@@ -24,8 +24,8 @@ def test_seed_coverage_accepts_the_catalog_and_rejects_a_missing_profile(tmp_pat
         tasks.insert(2, {
             "name": "Remove one profile from the artifact catalog",
             "ansible.builtin.set_fact": {
-                "_llm_model_artifacts": (
-                    "{{ _llm_model_artifacts | selectattr('model_store_profile', 'defined')"
+                "llm_gpu_serving_model_artifacts": (
+                    "{{ llm_gpu_serving_model_artifacts | selectattr('model_store_profile', 'defined')"
                     " | rejectattr('model_store_profile', 'equalto', '"
                     + missing_profile + "') | list }}"
                 ),
@@ -61,6 +61,45 @@ def _include_roles(node):
     elif isinstance(node, list):
         for item in node:
             yield from _include_roles(item)
+
+
+def test_seed_filter_selects_only_the_requested_registered_artifact(tmp_path):
+    seed = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text())[0]
+    tasks = seed["pre_tasks"][3:]
+    for task in tasks:
+        include = task.get("ansible.builtin.include_vars")
+        if include:
+            include["file"] = include["file"].replace("{{ playbook_dir }}/..", str(REPO_ROOT))
+    tasks.append({
+        "name": "Require only the selected Bolt artifact",
+        "ansible.builtin.assert": {
+            "that": [
+                (
+                    "llm_model_store_seed_artifacts | map(attribute='artifact_id') | list "
+                    "== ['nemotron-bolt-24gb-gguf']"
+                ),
+            ],
+        },
+    })
+    playbook = tmp_path / "seed-filter.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "name": "Verify a filtered seed selection without downloads",
+        "hosts": "localhost",
+        "gather_facts": False,
+        "tasks": tasks,
+    }], sort_keys=False))
+    result = subprocess.run(
+        [
+            "ansible-playbook", "-i", "localhost,", "-c", "local", str(playbook),
+            "--extra-vars", '{"llm_model_store_seed_artifact_ids":["nemotron-bolt-24gb-gguf"]}',
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(

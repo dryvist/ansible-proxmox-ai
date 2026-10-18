@@ -32,17 +32,19 @@
 #
 # Capability names and aliases are projections of registry route_group and
 # stable_aliases. The role selectors use serving_role / embedding metadata.
-llm_router_capability_names: >-
+_llm_router_capability_names_source: >-
   {{ llm_router_model_registry
      | selectattr('tier', 'in', llm_router_local_registry_tiers)
      | selectattr('route_group', 'defined')
      | map(attribute='route_group') | unique | list }}
+llm_router_capability_names: "{{ _llm_router_m_capability_names }}"
 llm_router_primary_large_model: >-
   {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
       | selectattr('serving_role', 'equalto', 'primary') | first).route_group }}
 llm_router_large_model: >-
   {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
-      | selectattr('serving_role', 'equalto', 'large') | first).route_group }}
+      | selectattr('serving_role', 'equalto', 'large') | first
+      | default({'route_group': llm_router_primary_large_model}, true)).route_group }}
 llm_router_primary_model: >-
   {{ llm_router_primary_large_model }}
 # The physical registry entry whose window backs the default route.
@@ -62,10 +64,11 @@ llm_router_routine_model: >-
   {{ llm_router_small_model }}
 # The physical ids the Mac serving gate must list: what the parity assert
 # (tasks/assert-servable-parity.yml) compares against the gate's own listing.
-llm_router_servable_models: >-
+_llm_router_servable_models_source: >-
   {{ llm_router_registry_enabled | selectattr('servable', 'defined')
      | selectattr('servable') | selectattr('tier', 'equalto', 'local-large')
      | map(attribute='client_model_id') | list }}
+llm_router_servable_models: "{{ _llm_router_m_servable_models }}"
 # The capability names those entries (and the other servable tiers) route
 # through; the alias, key-scope and fallback projections read this set.
 llm_router_servable_route_groups: >-
@@ -76,25 +79,51 @@ llm_router_servable_route_groups: >-
      | map(attribute='route_group') | unique | reject('equalto', none) | list }}
 # The Pro6000 is served by its own inventory-backed endpoint, not the Mac
 # large-tier gate. Keep its checked set separate and combine only for routing.
-llm_router_gpu_servable_models: >-
+_llm_router_gpu_servable_models_source: >-
   {{ llm_router_gpu_models | selectattr('servable', 'defined')
      | selectattr('servable') | map(attribute='route_group') | unique | list }}
-llm_router_all_servable_models: >-
+llm_router_gpu_servable_models: "{{ _llm_router_m_gpu_servable_models }}"
+_llm_router_all_servable_models_source: >-
   {{ (llm_router_servable_route_groups + llm_router_gpu_servable_models) | unique
      | reject('equalto', none) | list }}
+llm_router_all_servable_models: "{{ _llm_router_m_all_servable_models }}"
 
-# Aliases carry no deployment configuration. Their targets are route groups,
-# never physical model ids.
-llm_router_hermes_router_ids: >-
+# Direct-only GPU routes use the currently selected physical profile without
+# joining the normal GPU view. They drain with the profile switch, and also
+# require the inventory-backed endpoint.
+llm_router_direct_gpu_models: >-
+  {{ (llm_router_model_registry | selectattr('tier', 'equalto', 'gpu')
+      | selectattr('profile', 'equalto', llm_active_profile | default(''))
+      | selectattr('direct_route_aliases', 'defined') | list)
+     if (llm_router_gpu_profiles_enabled | default(false) | bool
+         and groups['llm_gpu_group'] | default([]) | length > 0) else [] }}
+llm_router_direct_studio_models: >-
+  {{ llm_router_large_models
+     | selectattr('direct_route_aliases', 'defined') | list }}
+llm_router_direct_route_alias_pairs: >-
+  {%- set ns = namespace(pairs=[]) -%}
+  {%- for m in llm_router_direct_gpu_models + llm_router_direct_studio_models -%}
+  {%- for alias in m.direct_route_aliases -%}
+  {%- set ns.pairs = ns.pairs + [[alias, alias]] -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.pairs }}
+llm_router_direct_route_aliases: >-
+  {{ llm_router_direct_route_alias_pairs | map('last') | unique | list }}
+
+# Stable aliases carry no deployment configuration. Direct aliases are
+# separate model-list groups projected from their registry source entries.
+_llm_router_hermes_router_ids_source: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-router')
      | selectattr('context_window', 'defined') | rejectattr('context_window', 'none')
      | map(attribute='client_model_id') | list }}
+llm_router_hermes_router_ids: "{{ _llm_router_m_hermes_router_ids }}"
 llm_router_auto_router_model: ""
 
 # OpenRouter candidates for long-context requests and the retained legacy
 # fallback. Only an explicit zero_data_retention assertion qualifies; a missing
 # field is retaining.
-llm_router_long_context_alias_ids: >-
+_llm_router_long_context_alias_ids_source: >-
   {%- set _candidates = llm_router_registry_enabled
         | selectattr('tier', 'equalto', 'openrouter')
         | selectattr('context_window', 'defined')
@@ -102,6 +131,7 @@ llm_router_long_context_alias_ids: >-
   {{ (_candidates | selectattr('zero_data_retention', 'defined')
       | selectattr('zero_data_retention') | list)
      | map(attribute='client_model_id') | list }}
+llm_router_long_context_alias_ids: "{{ _llm_router_m_long_context_alias_ids }}"
 
 # Every enabled servable entry contributes only its route_group. GPU entries
 # join this set only while their inventory profile is active.
@@ -125,10 +155,11 @@ llm_router_alias_pairs: >-
   {%- set ns.pairs = ns.pairs
         + [[llm_router_primary_large_model, llm_router_small_capability_name]] -%}
   {%- endif -%}
-  {{ ns.pairs }}
-llm_router_model_group_aliases: >-
+  {{ ns.pairs + llm_router_direct_route_alias_pairs }}
+_llm_router_model_group_aliases_source: >-
   {{ dict(llm_router_alias_pairs | map(attribute=1)
           | zip(llm_router_alias_pairs | map(attribute=0))) }}
+llm_router_model_group_aliases: "{{ _llm_router_m_model_group_aliases }}"
 
 
 # Background health checks send REAL test requests to every deployment — on the

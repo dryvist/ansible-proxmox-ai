@@ -85,8 +85,10 @@ ROLE_TESTS = {
     "llamacpp_release": {"tests/llamacpp_release/", "tests/llamacpp_serving/"},
     "llamacpp_serving": GPU_PYTEST,
     "vllm_serving": GPU_PYTEST,
+    "strata_serving": GPU_PYTEST,
     "nvidia_gpu_guest": GPU_PYTEST,
     "llm_gpu_serving": GPU_PYTEST,
+    "llm_model_trial": {"tests/llm_model_trial/"},
     "openbao_secrets": {"tests/test_openbao_login_classification.py",
                         "tests/test_openbao_secrets_approle_name_resolution.py"},
     "phoenix_docker": set(),
@@ -173,7 +175,7 @@ def select(paths: list[str]) -> Selection:
         if role in OTEL_CONSUMER_ROLES and Path(OTEL_CONSUMER_TEST).is_file():
             pytest_targets.add(OTEL_CONSUMER_TEST)
         ansible_tests.update(test for test in ANSIBLE_TESTS if test.startswith(f"tests/{role}/"))
-        if role in {"llamacpp_serving", "vllm_serving", "nvidia_gpu_guest", "llm_gpu_serving"}:
+        if role in {"llamacpp_serving", "vllm_serving", "strata_serving", "nvidia_gpu_guest", "llm_gpu_serving"}:
             ansible_tests.update(GPU_ANSIBLE)
         if role == "llm_router":
             # hermes_agent tests read the router role defaults (alias and role
@@ -316,6 +318,8 @@ def main() -> int:
     parser.add_argument("--paths-file", default="")
     parser.add_argument("--output", default="")
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--skip-router", action="store_true",
+                        help="omit router shards from a full selection for docs-only promotions")
     args = parser.parse_args()
     if args.full:
         result = full_selection()
@@ -324,6 +328,8 @@ def main() -> int:
         if args.paths_file:
             paths = Path(args.paths_file).read_text().splitlines()
         result = select(paths)
+    if args.skip_router:
+        result["llm_router_playbooks"] = []
     encoded = json.dumps(result, sort_keys=True)
     if args.output:
         with open(args.output, "a", encoding="utf-8") as output:

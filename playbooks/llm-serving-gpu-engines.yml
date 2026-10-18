@@ -1,8 +1,6 @@
 ---
-# Legacy profile serving stays available until the replacement pair is
-# declared. The inventory loader excludes this group once both engine guests
-# exist, so the legacy engine-switching role never runs against either new
-# guest.
+# Legacy profile serving stays available until replacement engine guests are
+# declared. The inventory loader excludes this group once those guests exist.
 - name: Configure legacy GPU profile serving
   hosts: llm_gpu_legacy_group
   become: true
@@ -35,6 +33,11 @@
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: llm_gpu_serving
+    - name: Install GPU fan control for opted-in legacy guests
+      ansible.builtin.include_role:
+        name: nvidia_gpu_guest
+        tasks_from: install-fan-control.yml
+      when: nvidia_gpu_guest_fan_control_enabled | default(false) | bool
 
 - name: Configure the selected llama.cpp engine guest
   hosts: llm_gpu_serving_llama_cpp_group
@@ -43,7 +46,9 @@
   serial: 1
   any_errors_fatal: true
   tags:
+    - llm_gpu_serving
     - llamacpp_serving
+    - llama_cpp
     - llm
     - ai
   pre_tasks:
@@ -57,7 +62,28 @@
           serving group.
         quiet: true
   tasks:
+    - name: Converge shared llama.cpp profiles through the selector
+      when: llm_active_profile in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24', 'qwen38-27b-131k-1']
+      block:
+        - name: Stop the retired llama-swap unit before selecting a shared profile
+          ansible.builtin.include_role:
+            name: llama_cpp
+            tasks_from: retire-legacy-llama-swap.yml
+        - name: Gather facts
+          ansible.builtin.include_tasks: tasks/gather_facts.yml
+        - name: Include llm_gpu_serving role
+          ansible.builtin.include_role:
+            name: llm_gpu_serving
+      rescue:
+        - name: Record isolated failure for the final run gate
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: llm_gpu_serving
+        - name: Mark the selected GPU engine convergence as failed
+          ansible.builtin.set_fact:
+            llm_gpu_engine_convergence_failed: true
     - name: Converge llamacpp_serving (isolated — failure does not abort downstream plays)
+      when: llm_active_profile not in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24', 'qwen38-27b-131k-1']
       block:
         - name: Gather facts
           ansible.builtin.include_tasks: tasks/gather_facts.yml
@@ -69,6 +95,44 @@
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: llamacpp_serving
+        - name: Mark the selected GPU engine convergence as failed
+          ansible.builtin.set_fact:
+            llm_gpu_engine_convergence_failed: true
+
+- name: Configure the selected Strata engine guest
+  hosts: llm_gpu_serving_strata_group
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tags:
+    - llm_gpu_serving
+    - strata_serving
+    - llm
+    - ai
+  pre_tasks:
+    - name: Require the Strata GPU serving host to be in nvidia_gpu_group
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname in groups.get('nvidia_gpu_group', [])
+        fail_msg: >-
+          {{ inventory_hostname }} is in a GPU serving group but not in
+          nvidia_gpu_group. Tag the guest nvidia-gpu or remove it from the
+          serving group.
+        quiet: true
+  tasks:
+    - name: Converge strata_serving (isolated — failure does not abort downstream plays)
+      block:
+        - name: Gather facts
+          ansible.builtin.include_tasks: tasks/gather_facts.yml
+        - name: Include strata_serving role
+          ansible.builtin.include_role:
+            name: strata_serving
+      rescue:
+        - name: Record isolated failure for the final run gate
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: strata_serving
         - name: Mark the selected GPU engine convergence as failed
           ansible.builtin.set_fact:
             llm_gpu_engine_convergence_failed: true
@@ -117,6 +181,7 @@
   serial: 1
   any_errors_fatal: true
   tags:
+    - llm_gpu_serving
     - vllm_serving
     - llm
     - ai
@@ -143,6 +208,44 @@
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: vllm_serving
+        - name: Mark the selected GPU engine convergence as failed
+          ansible.builtin.set_fact:
+            llm_gpu_engine_convergence_failed: true
+
+- name: Configure the selected SGLang engine guest
+  hosts: llm_gpu_serving_sglang_group
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tags:
+    - llm_gpu_serving
+    - sglang_serving
+    - llm
+    - ai
+  pre_tasks:
+    - name: Require the SGLang GPU serving host to be in nvidia_gpu_group
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname in groups.get('nvidia_gpu_group', [])
+        fail_msg: >-
+          {{ inventory_hostname }} is in a GPU serving group but not in
+          nvidia_gpu_group. Tag the guest nvidia-gpu or remove it from the
+          serving group.
+        quiet: true
+  tasks:
+    - name: Converge sglang_serving (isolated — failure does not abort downstream plays)
+      block:
+        - name: Gather facts
+          ansible.builtin.include_tasks: tasks/gather_facts.yml
+        - name: Include sglang_serving role
+          ansible.builtin.include_role:
+            name: sglang_serving
+      rescue:
+        - name: Record isolated failure for the final run gate
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: sglang_serving
         - name: Mark the selected GPU engine convergence as failed
           ansible.builtin.set_fact:
             llm_gpu_engine_convergence_failed: true

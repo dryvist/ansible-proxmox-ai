@@ -49,8 +49,9 @@
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
 
     # THE EXPECTED NAME SET IS BUILT INDEPENDENTLY of the defaults' own
-    # entry-point expression: from the RENDERED model_group_alias (every alias
-    # the proxy actually advertises) plus the registry's servable-id projection.
+    # entry-point expression: from the RENDERED model_group_alias (excluding
+    # direct-route aliases, which intentionally have no fallback) plus the
+    # registry's servable-id projection.
     # Asserting against llm_router_entry_point_names itself would only prove the
     # template copied that var faithfully, not that the var covers every name.
     - name: Every servable id and rendered alias has its applicable entry-point maps
@@ -99,7 +100,8 @@
           modality-appropriate fallback and context-window entries.
       vars:
         _rendered_aliases: >-
-          {{ _config.router_settings.model_group_alias | default({}) | list }}
+          {{ (_config.router_settings.model_group_alias | default({}) | list)
+             | reject('in', llm_router_direct_route_aliases) | list }}
         _servable_non_primary: >-
           {{ llm_router_all_servable_models | reject('equalto', llm_router_primary_model) | list }}
         _entry_points: >-
@@ -147,13 +149,14 @@
           Alias fallback target(s) must equal their explicit chain or the D1
           class ladder tail. Mismatched: {{ _mismatched_aliases }}.
         success_msg: >-
-          All {{ _rendered_aliases | length }} aliases carry their full
+          All {{ _rendered_aliases | length }} fallback-capable aliases carry their full
           configured ladder in order.
       vars:
         # Task-level vars do not carry across tasks — re-derived here rather
         # than assumed present from the earlier task's own vars block.
         _rendered_aliases: >-
-          {{ _config.router_settings.model_group_alias | default({}) | list }}
+          {{ (_config.router_settings.model_group_alias | default({}) | list)
+             | reject('in', llm_router_direct_route_aliases) | list }}
         _fallbacks_by_key: >-
           {{ dict(_config.router_settings.fallbacks
                   | map('dict2items') | flatten

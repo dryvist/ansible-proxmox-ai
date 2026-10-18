@@ -1,22 +1,15 @@
 ---
-# A `replace` REPLACEMENT is not a regex — it is a re.sub template. Escapes
-# that are valid in the pattern are errors there: `\s` in a replacement raises
-# "bad escape \s" at converge time, failing the play on a live guest. Write the
-# inserted Python without backslashes (`(.+)` not `\s*(.+)`), and remember that
-# `\1` and `\g<n>` ARE meaningful there and will be substituted.
+# `replace` values are Python re.sub templates, not regexes. `\s` in a
+# replacement fails at converge; write inserted Python without backslashes
+# (`(.+)` not `\s*(.+)`). `\1` and `\g<n>` are still substituted.
 #
-# Upstream v2026.8.3 documents HERMES_CRON_TIMEOUT as an inactivity timeout:
-# tool calls, API calls, and streamed tokens reset it, so an active retry/tool
-# loop can run forever. Keep that useful native stall detector and add the
-# missing aggregate deadline around the same run_job monitor. The patch uses
-# upstream's own monotonic clock, poll loop, and request_hard_interrupt path.
+# HERMES_CRON_TIMEOUT is an inactivity limit reset by active calls/tokens, so
+# retry/tool loops can run forever. Preserve it as the stall detector and add
+# an aggregate deadline around run_job using the upstream monotonic poll/interrupt.
 #
-# The hard-timeout raise below names the run's session id for the operator
-# reading the failure (the failure artifact keeps no response, so the
-# session is the only way to find the transcript). _cron_session_id is a
-# run_job local, not visible inside _run_agent_with_watchdog, so it is
-# threaded in as its own parameter — cron_session_id below — rather than
-# read from a name that does not exist in that scope.
+# Include the session id in timeout errors: the failure artifact has no response
+# and the id locates the session log. `_cron_session_id` is scoped to run_job, so
+# pass it into the watchdog as `cron_session_id`.
 - name: Thread the cron session id into the watchdog function signature
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
@@ -80,9 +73,7 @@
   notify: Restart hermes-gateway
 
 - name: Resolve the aggregate cron wall clock beside the inactivity timeout
-  # Re-anchored: the monitor moved out of run_job into
-  # _run_agent_with_watchdog (cron/scheduler.py), losing 4 spaces of
-  # indentation (8 -> 4). Content unchanged.
+  # Re-anchored after the monitor moved to _run_agent_with_watchdog (indent 8 -> 4).
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     regexp: |-
@@ -96,7 +87,7 @@
   notify: Restart hermes-gateway
 
 - name: Start the aggregate cron clock before submitting the conversation
-  # Re-anchored: same 8 -> 4 space re-indent as above; content unchanged.
+  # Re-anchored at the monitor's new indentation (8 -> 4).
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     regexp: '^    _cron_context = contextvars\.copy_context\(\)$'
@@ -108,7 +99,7 @@
   notify: Restart hermes-gateway
 
 - name: Initialize the independent cron timeout result flags
-  # Re-anchored: same 8 -> 4 space re-indent as above; content unchanged.
+  # Re-anchored at the monitor's new indentation (8 -> 4).
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     regexp: '^    _inactivity_timeout = False$(?!\n    _hard_timeout = False)'
@@ -119,20 +110,11 @@
       _hard_timeout = False
   notify: Restart hermes-gateway
 
-# HIGHEST MIS-ANCHOR RISK in this patch set. Upstream added a decoy: a
-# BARE `if _cron_inactivity_limit is None:` now sits inside
-# _watch_inactivity (cron/scheduler.py), at the SAME indentation as the
-# real gate below, and returns early when true. A regexp that only matched
-# the bare condition would hit that decoy FIRST (it appears earlier in the
-# file) and silently disable the inactivity watchdog by making it return
-# immediately, while this task itself would report a clean, matched
-# converge. The real gate also changed shape — upstream added its own
-# `and not _is_oneshot and cancel_event is None` terms — so the anchor
-# below matches the FULL current condition text, which the decoy's shorter
-# text cannot satisfy, rather than trying to re-exclude the decoy by
-# position. patches_verify_cron_wall_clock.yml's PR-A-retargeted assertion
-# for the decoy's own guard clause doubles as the negative check that this
-# patch left it untouched.
+# Mis-anchor risk: upstream has an earlier _watch_inactivity decoy with the
+# bare `if _cron_inactivity_limit is None:` at the same indent. Match the full
+# real gate (`and not _is_oneshot and cancel_event is None`) so a short anchor
+# cannot hit the decoy and disable the watchdog. The verification task asserts
+# that the decoy's own guard remains untouched.
 - name: Keep polling whenever either cron deadline is enabled
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
@@ -257,6 +239,7 @@
 #
 # Anchored on the script-timeout branch and inserted ABOVE it, so this runs
 # before any provider matching, exactly as that branch does for the same reason.
+# Parenthesize the preserved branch so the regexp cannot match its replacement.
 - name: Classify local stops and fallback exhaustion in delivered failures
   vars:
     _hermes_cron_wall_clock_classifier: |-
@@ -274,7 +257,7 @@
               f"request. Cause: {_fallback_cause.group(1).strip()}"
           )
 
-      if lower.startswith("script timed out"):
+      if (lower.startswith("script timed out")):
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     regexp: '^    if lower\.startswith\("script timed out"\):$'

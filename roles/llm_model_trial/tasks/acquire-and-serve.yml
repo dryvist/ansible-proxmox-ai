@@ -1,0 +1,250 @@
+---
+- name: Start a lock holder before changing the baseline
+  ansible.builtin.command:
+    argv:
+      - systemd-run
+      - "--unit={{ llm_model_trial_lock_unit_name | regex_replace('\\.service$', '') }}"
+      - --property=Type=exec
+      - "--property=RuntimeMaxSec={{ llm_model_trial_lock_timeout_seconds }}s"
+      - /usr/bin/flock
+      - --nonblock
+      - --no-fork
+      - "{{ llm_model_trial_lock_path }}"
+      - /usr/bin/sleep
+      - "{{ llm_model_trial_lock_timeout_seconds }}"
+  register: llm_model_trial_lock_start
+  changed_when: true
+  failed_when: false
+
+- name: Read the lock holder state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ llm_model_trial_lock_unit_name }}"]
+  register: llm_model_trial_lock_state
+  changed_when: false
+  failed_when: false
+
+- name: Require exclusive host ownership for the trial
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_lock_state.stdout | trim == 'active'
+    fail_msg: >-
+      The fixed 6000 host is locked by another trial; no baseline or
+      serving unit was changed.
+    quiet: true
+
+- name: Record that this run owns the host lock
+  ansible.builtin.set_fact:
+    llm_model_trial_lock_acquired: true
+
+- name: Record the beginning of this run for bounded failure evidence
+  ansible.builtin.command:
+    argv: [date, -u, "+%Y-%m-%dT%H:%M:%SZ"]
+  register: llm_model_trial_started_at
+  changed_when: false
+
+- name: Check the selected engine binary
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_venv }}/bin/vllm"
+  register: llm_model_trial_vllm_stat
+  when: llm_model_trial_plan.engine == 'vllm'
+
+- name: Check the installed llama.cpp server binary
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_llamacpp_server_bin }}"
+  register: llm_model_trial_llamacpp_stat
+  when: llm_model_trial_plan.engine == 'llama_cpp'
+
+- name: Require the selected engine binary and existing model cache
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_plan.engine != 'vllm' or llm_model_trial_vllm_stat.stat.executable | default(false)
+      - llm_model_trial_plan.engine != 'llama_cpp' or llm_model_trial_llamacpp_stat.stat.executable | default(false)
+    fail_msg: >-
+      The selected engine must already be installed by the existing GPU serving
+      role; this trial runner does not install or update engines.
+    quiet: true
+
+- name: Create the target model cache directory for the candidate
+  ansible.builtin.file:
+    path: "{{ llm_model_trial_model_dir }}"
+    state: directory
+    owner: "{{ llm_gpu_serving_user }}"
+    group: "{{ llm_gpu_serving_group }}"
+    mode: '0750'
+
+- name: Download the selected files at the resolved SHA into the existing model cache
+  ansible.builtin.command:
+    argv: >-
+      {{ [llm_gpu_serving_hf_bin, 'download', hf_repo]
+         + (llm_model_trial_plan.files | map(attribute='path') | list)
+         + ['--revision', llm_model_trial_plan.resolved_sha,
+            '--local-dir', llm_model_trial_model_dir] }}
+  environment: >-
+    {{ llamacpp_release_proxy_environment
+       | combine({'HF_HOME': llm_gpu_serving_hf_home,
+                  'HF_HUB_DISABLE_IMPLICIT_TOKEN': '1'}) }}
+  become: true
+  become_user: "{{ llm_gpu_serving_user }}"
+  register: llm_model_trial_download
+  changed_when: true
+
+- name: Find the active baseline serving unit
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - list-units
+      - --type=service
+      - --state=active
+      - --plain
+      - --no-legend
+      - --no-pager
+      - "{{ llm_gpu_serving_unit_prefix }}-*.service"
+  register: llm_model_trial_active_baseline
+  changed_when: false
+
+- name: Require exactly one active baseline serving unit
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_active_baseline.stdout_lines | length == 1
+    fail_msg: >-
+      Exactly one llm-gpu-serving baseline must be active before a trial;
+      no baseline was stopped.
+    quiet: true
+
+- name: Record the baseline unit and profile before suspending it
+  ansible.builtin.set_fact:
+    llm_model_trial_baseline_unit: "{{ llm_model_trial_active_baseline.stdout_lines[0].split()[0] }}"
+    llm_model_trial_baseline_profile: >-
+      {{ llm_model_trial_active_baseline.stdout_lines[0].split()[0]
+         | regex_replace('^' ~ llm_gpu_serving_unit_prefix ~ '-(.*)[.]service$', '\\1') }}
+
+- name: Stop the recorded baseline unit
+  ansible.builtin.systemd:
+    name: "{{ llm_model_trial_baseline_unit }}"
+    state: stopped
+
+- name: Read the selected engine version
+  ansible.builtin.command:
+    argv: >-
+      {{ [llm_gpu_serving_venv ~ '/bin/vllm', '--version']
+         if llm_model_trial_plan.engine == 'vllm'
+         else [llm_gpu_serving_llamacpp_server_bin, '--version'] }}
+  register: llm_model_trial_engine_version
+  changed_when: false
+
+- name: Select the installed engine binary metadata
+  ansible.builtin.set_fact:
+    llm_model_trial_engine_stat: >-
+      {{ llm_model_trial_vllm_stat if llm_model_trial_plan.engine == 'vllm'
+         else llm_model_trial_llamacpp_stat }}
+
+- name: Render the run-scoped trial systemd unit
+  ansible.builtin.template:
+    src: llm-model-trial@.service.j2
+    dest: "{{ llm_gpu_serving_systemd_dir }}/{{ llm_model_trial_unit_name }}"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd for the model trial
+
+- name: Reload systemd before starting the trial unit
+  ansible.builtin.meta: flush_handlers
+
+- name: Start this run's candidate engine unit
+  ansible.builtin.systemd:
+    name: "{{ llm_model_trial_unit_name }}"
+    state: started
+
+- name: Wait for the candidate OpenAI models endpoint
+  ansible.builtin.uri:
+    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_model_trial_port }}/v1/models"
+    return_content: true
+    status_code: 200
+  register: llm_model_trial_models_response
+  retries: "{{ llm_model_trial_health_retries }}"
+  delay: "{{ llm_model_trial_health_delay }}"
+  until: llm_model_trial_models_response.status | default(0) == 200
+
+- name: Require the expected candidate identity from the models endpoint
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_models_response.json.data | default([]) | length > 0
+      - >-
+        llm_model_trial_models_response.json.data
+        | selectattr('id', 'equalto', hf_repo) | list | length == 1
+    fail_msg: >-
+      Candidate /v1/models did not return exactly one model with the
+      requested Hugging Face repository id.
+    quiet: true
+
+- name: Read vLLM metrics for cache configuration proof
+  ansible.builtin.uri:
+    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_model_trial_port }}/metrics"
+    return_content: true
+    status_code: 200
+  register: llm_model_trial_metrics_response
+  when: llm_model_trial_plan.engine == 'vllm'
+
+- name: Require vLLM cache configuration proof
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_metrics_response.content is search('cache_config_info')
+    fail_msg: "The candidate vLLM endpoint did not expose cache_config_info in /metrics."
+    quiet: true
+  when: llm_model_trial_plan.engine == 'vllm'
+
+- name: Read llama.cpp properties for engine configuration proof
+  ansible.builtin.uri:
+    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_model_trial_port }}/props"
+    return_content: true
+    status_code: 200
+  register: llm_model_trial_props_response
+  when: llm_model_trial_plan.engine == 'llama_cpp'
+
+- name: Require llama.cpp properties proof
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_props_response.json is mapping
+    fail_msg: "The candidate llama.cpp endpoint did not return JSON properties from /props."
+    quiet: true
+  when: llm_model_trial_plan.engine == 'llama_cpp'
+
+- name: Build health evidence and benchmark handoff facts
+  ansible.builtin.set_fact:
+    llm_model_trial_facts:
+      trial_id: "{{ llm_model_trial_id }}"
+      host: "{{ llm_model_trial_host }}"
+      inventory_host: "{{ inventory_hostname }}"
+      endpoint_url: "{{ llm_model_trial_endpoint_url }}"
+      endpoint_model: "{{ hf_repo }}"
+      hf_repo: "{{ hf_repo }}"
+      rule_version: "{{ llm_model_trial_plan.rule_version }}"
+      resolved_sha: "{{ llm_model_trial_plan.resolved_sha }}"
+      author: "{{ llm_model_trial_plan.author }}"
+      likes: "{{ llm_model_trial_plan.likes }}"
+      downloads: "{{ llm_model_trial_plan.downloads }}"
+      model_created_at: "{{ llm_model_trial_plan.created_at }}"
+      model_last_modified: "{{ llm_model_trial_plan.last_modified }}"
+      model_release_date: "{{ llm_model_trial_plan.release_date }}"
+      generation_config: "{{ llm_model_trial_plan.generation_config }}"
+      files: "{{ llm_model_trial_plan.files }}"
+      format: "{{ llm_model_trial_plan.format }}"
+      quantization: "{{ llm_model_trial_plan.quantization }}"
+      architecture: "{{ llm_model_trial_plan.architecture }}"
+      mtp_head: "{{ llm_model_trial_plan.mtp_head }}"
+      engine: "{{ llm_model_trial_plan.engine }}"
+      engine_version: >-
+        {{ (llm_model_trial_engine_version.stdout ~ ' ' ~ llm_model_trial_engine_version.stderr) | trim }}
+      engine_binary_mtime_epoch: "{{ llm_model_trial_engine_stat.stat.mtime | int }}"
+      context: "{{ llm_model_trial_plan.context }}"
+      context_maximum: "{{ llm_model_trial_plan.context_maximum }}"
+      slots: "{{ llm_model_trial_plan.slots }}"
+      flags: "{{ llm_model_trial_plan.flags }}"
+      baseline_unit: "{{ llm_model_trial_baseline_unit }}"
+      baseline_profile: "{{ llm_model_trial_baseline_profile }}"
+      health_proof:
+        models: "{{ llm_model_trial_models_response.json }}"
+        metrics: >-
+          {{ llm_model_trial_metrics_response.content | default('')
+             | regex_findall('(?m)^.*cache_config_info.*$') }}
+        props: "{{ llm_model_trial_props_response.json | default({}) }}"

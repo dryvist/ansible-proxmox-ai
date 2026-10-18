@@ -1,0 +1,64 @@
+---
+name: Verify inventory load contract
+description: Install the Ansible dependencies and verify the published inventory mapping.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      with:
+        python-version: '3.14'
+        cache: pip
+        cache-dependency-path: .github/requirements-ci.txt
+
+    - name: Install Ansible
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r .github/requirements-ci.txt
+
+    # load_tofu.yml (imported by verify_inventory.yml) include_role's the
+    # shared inventory_resolve role by FQCN, so this run is what proves the
+    # collection actually resolves it. `install` covers both sections of
+    # requirements.yml — `collection install` and `role install` each silently
+    # ignore the other section and still exit zero.
+    - name: Cache Ansible Galaxy content
+      id: galaxy-cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: |
+          ~/.ansible/collections
+          ~/.ansible/roles
+        key: ansible-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+        restore-keys: |
+          ansible-galaxy-v2-${{ runner.os }}-
+
+    - name: Install Ansible dependencies
+      if: steps.galaxy-cache.outputs.cache-hit != 'true'
+      uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
+      with:
+        max_attempts: 4
+        timeout_minutes: 10
+        command: ansible-galaxy install --force -r requirements.yml
+      env:
+        ANSIBLE_GALAXY_SERVER_TIMEOUT: "60"
+
+    - name: Refresh homelab-contracts major tag
+      if: steps.galaxy-cache.outputs.cache-hit == 'true'
+      uses: ./.github/actions/refresh-contracts
+
+    - name: Verify inventory loads and groups are assigned correctly
+      shell: bash
+      run: |
+        ansible-playbook tests/inventory_load/verify_inventory.yml \
+          -i inventory/hosts.yml -c local
+        ansible-playbook tests/inventory_load/test_ssh_probe_result_selection.yml \
+          -i inventory/hosts.yml -c local
+      env:
+        # Pin the fixture explicitly (resolution priority 1) so the test is
+        # hermetic even on a runner with ambient AWS creds — the S3 artifact
+        # (priority 2) must never feed a test.
+        TOFU_INVENTORY_PATH: ${{ github.workspace }}/tests/inventory_load/tofu_inventory.json
+        PROXMOX_SSH_KEY_PATH: /dev/null
+        ANSIBLE_HOST_KEY_CHECKING: 'false'

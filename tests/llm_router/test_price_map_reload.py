@@ -37,6 +37,10 @@ REGISTERED_FIELDS = {
 }
 
 
+def _router_runtime_tasks() -> list[dict]:
+    return yaml.safe_load((ROLE_ROOT / "tasks/verify-runtime.yml").read_text(encoding="utf-8"))
+
+
 def _defaults() -> dict:
     return yaml.safe_load((ROLE_ROOT / "defaults/main/60-ops.yml").read_text(encoding="utf-8"))
 
@@ -75,8 +79,8 @@ def _render_env(price_map_url: str) -> str:
         "llm_router_log_level": "INFO",
         "llm_router_openrouter_models": [],
         "llm_router_opencode_models": [],
-        "llm_router_hermes_cloud_models_credentialed": [],
-        "llm_router_resolved_credentials": {},
+        "_llm_router_m_hermes_cloud_models_credentialed": [],
+        "_llm_router_m_resolved_credentials": {},
         "llm_router_price_map_url": price_map_url,
     }
     return env.get_template("litellm.env.j2").render(**values)
@@ -131,7 +135,7 @@ def test_schedule_status_is_read_before_schedule_post():
 
 def test_schedule_and_source_status_are_reported_without_secrets():
     schedule_tasks = yaml.safe_load((ROLE_ROOT / "tasks/price-map-reload.yml").read_text(encoding="utf-8"))
-    router_tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    router_tasks = _router_runtime_tasks()
     schedule_uri = next(
         task
         for task in schedule_tasks
@@ -176,7 +180,7 @@ def test_debug_safety_check_rejects_unscoped_registered_values_and_secrets():
 
 
 def test_source_status_read_is_per_router_and_outside_run_once_blocks():
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    tasks = _router_runtime_tasks()
     source_read_index = next(
         index
         for index, task in enumerate(tasks)
@@ -191,7 +195,7 @@ def test_source_status_read_is_per_router_and_outside_run_once_blocks():
 
 
 def test_running_litellm_version_is_reported_without_secrets():
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    tasks = _router_runtime_tasks()
     version_read = next(
         task for task in tasks if task.get("name") == "Read this router's running LiteLLM version"
     )
@@ -201,7 +205,8 @@ def test_running_litellm_version_is_reported_without_secrets():
     uri = version_read["ansible.builtin.uri"]
     message = version_report["ansible.builtin.debug"]["msg"]
 
-    assert uri["url"].endswith("/health/readiness/details")
+    assert uri["url"].endswith("{{ llm_router_readiness_path }}/details")
+    assert uri["url"].endswith("/details")
     assert uri["headers"]["Authorization"] == "Bearer {{ llm_router_master_key }}"
     assert uri["status_code"] == 200
     assert uri["timeout"] == "{{ llm_router_seed_request_timeout }}"
@@ -225,7 +230,7 @@ def test_running_litellm_version_is_reported_without_secrets():
 
 
 def test_running_version_report_renders_with_the_real_templar():
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    tasks = _router_runtime_tasks()
     message = next(
         task for task in tasks if task.get("name") == "Report this router's running LiteLLM version"
     )["ansible.builtin.debug"]["msg"]

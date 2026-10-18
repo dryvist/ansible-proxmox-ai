@@ -10,28 +10,32 @@
     # The runner has no sudo; the controller play needs no privilege.
     ansible_become: false
     # renovate: datasource=git-refs depName=https://github.com/dryvist/mlx-benchmarks.git currentValue=main
-    _llm_campaign_benchmarks_ref: cf1f23920e2391b91f0e94e78dfc8daac6bf10ae
+    _llm_campaign_benchmarks_ref: c896d980ecf92a04997a07022ebea89f49a31849
   tasks:
     - name: Validate the required survey values and safe config name
       ansible.builtin.assert:
         that:
           - machine is defined
           - machine | string | length > 0
+          - artifact_id is defined
+          - artifact_id | string | length > 0
           - benchmark_endpoint_root is defined
           - benchmark_endpoint_root | string is match('^https://[A-Za-z0-9-]+([.][A-Za-z0-9-]+)+$')
           - benchmark_endpoint_root | urlsplit('hostname') is search('[A-Za-z]')
           - benchmark_cache_path is defined
           - benchmark_cache_path | string is match('^/.+')
           - benchmark_cache_path is not search('(^|/)[.][.](/|$)')
-          - config_name is match('^(llama-cpp|vllm|mlx|lm-eval|evalscope)/[a-z0-9-]+$')
+          - config_name is match('^(llama-cpp|vllm|mlx|lm-eval|evalscope|strata)/[a-z0-9-]+$')
           - engine is defined
           - model_size is defined
           - concurrency_list is defined
           - context_list is defined
           - power_cap_w | string is match('^[0-9]+([.][0-9]+)?$')
+          - engine != 'strata' or strata_batch_size is defined
+          - strata_batch_size is not defined or strata_batch_size | string is match('^(1|4|8)$')
         fail_msg: >-
           The campaign survey requires an inventory alias, a named config,
-          supported engine/model size, positive context/concurrency lists,
+          a registry artifact id, supported engine/model size, positive context/concurrency lists,
           an HTTPS endpoint origin, an existing target cache path, and a
           non-negative numeric power cap in watts.
         quiet: true
@@ -40,16 +44,33 @@
       ansible.builtin.set_fact:
         _llm_campaign_concurrency_values: >-
           {{ concurrency_list.split(',') | map('trim') | map('int') | list }}
+        _llm_campaign_context_tokens: >-
+          {{ context_list.split(',') | map('trim') | list }}
         _llm_campaign_context_values: >-
-          {{ context_list.split(',') | map('trim') | map('int') | list }}
+          {{ context_list.split(',') | map('trim') | select('match', '^[1-9][0-9]*$') | map('int') | list }}
 
     - name: Validate each survey list is canonical, positive, and unique
       ansible.builtin.assert:
         that:
           - _llm_campaign_concurrency_values | length > 0
-          - _llm_campaign_context_values | length > 0
           - _llm_campaign_concurrency_values | min > 0
-          - _llm_campaign_context_values | min > 0
+          - >-
+            _llm_campaign_context_tokens
+            | select('match', '^(?:[1-9][0-9]*|model_card_max)$')
+            | length == _llm_campaign_context_tokens | length
+          - >-
+            _llm_campaign_context_values | length > 0
+            or 'model_card_max' in _llm_campaign_context_tokens
+          - >-
+            _llm_campaign_context_tokens | unique | length
+            == _llm_campaign_context_tokens | length
+          - >-
+            'model_card_max' not in _llm_campaign_context_tokens
+            or _llm_campaign_context_tokens[-1] == 'model_card_max'
+          - >-
+            _llm_campaign_context_tokens
+            | select('match', '^[1-9][0-9]*$') | list
+            == _llm_campaign_context_values | map('string') | list
           - _llm_campaign_concurrency_values | unique | length == _llm_campaign_concurrency_values | length
           - _llm_campaign_context_values | unique | length == _llm_campaign_context_values | length
           - >-
@@ -58,7 +79,9 @@
           - >-
             _llm_campaign_context_values | map('string') | list ==
             context_list.split(',') | map('trim') | list
-        fail_msg: "Context and concurrency lists must contain unique positive integers separated by commas."
+        fail_msg: >-
+          Context and concurrency lists must be canonical positive integers;
+          context_list may end with model_card_max for a recipe that declares it.
         quiet: true
 
     - name: Create a temporary workspace for the pinned benchmark config
@@ -80,12 +103,9 @@
       register: _llm_campaign_config_stat
 
     - name: Load the single-source model artifact registry
-      ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/../llm-models.d/65-gpu-artifacts.yml"
-
-    - name: Load the NVFP4 sweep artifact shard
-      ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/../llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml"
+      ansible.builtin.include_role:
+        name: llm_gpu_serving
+        tasks_from: load-artifacts.yml
 
     - name: Read the selected TOML config
       ansible.builtin.slurp:
@@ -116,10 +136,11 @@
           --campaign-dimensions option; install uv in the runner or advance the pin.
         quiet: true
 
-    - name: Resolve the selected model-size and engine from the artifact registry
+    - name: Resolve the selected artifact id, model size, and engine from the artifact registry
       ansible.builtin.set_fact:
         _llm_campaign_selected_artifacts: >-
-          {{ (_llm_model_artifacts + _llm_model_artifacts_nvfp4_sweep)
+          {{ llm_gpu_serving_model_artifacts
+             | selectattr('artifact_id', 'equalto', artifact_id)
              | selectattr('model_size', 'defined')
              | selectattr('model_size', 'equalto', model_size)
              | selectattr('engines', 'contains', engine)
@@ -133,7 +154,22 @@
           - _llm_campaign_config.power_cap_w == 'inventory'
           - engine in _llm_campaign_config.engines
           - _llm_campaign_concurrency_values | difference(_llm_campaign_config.concurrency_list) | length == 0
-          - _llm_campaign_context_values | difference(_llm_campaign_config.context_list) | length == 0
+          - >-
+            _llm_campaign_context_values | map('string') | list
+            | difference(_llm_campaign_config.context_list | map('string') | list)
+            | length == 0
+          - >-
+            ('model_card_max' in _llm_campaign_context_tokens)
+            == ('model_card_max' in _llm_campaign_config.context_list)
+          - >-
+            (_llm_campaign_config.run
+             | selectattr('prompt_tokens', 'defined')
+             | map(attribute='prompt_tokens') | map('int') | list
+             | difference(_llm_campaign_context_values) | length) == 0
+          - >-
+            (_llm_campaign_config.run
+             | selectattr('prompt_tokens', 'defined')
+             | map(attribute='prompt_tokens') | map('int') | list | min | default(1)) > 0
           - _llm_campaign_selected_artifacts | length == 1
           - _llm_campaign_selected_artifacts[0].artifact_id | length > 0
           - _llm_campaign_selected_artifacts[0].hf_repo | length > 0
@@ -152,14 +188,70 @@
             | list | length == _llm_campaign_config.run | length
           - _llm_campaign_config.run | map(attribute='output_tokens') | map('int') | min > 0
           - >-
+            _llm_campaign_config.run
+            | selectattr('api_key_env', 'defined')
+            | selectattr('api_key_env', 'equalto', 'OPENAI_API_KEY')
+            | list | length
+            == _llm_campaign_config.run
+               | selectattr('api_key_env', 'defined') | list | length
+          - >-
+            _llm_campaign_config.run
+            | selectattr('api_key_env', 'defined')
+            | selectattr('run_on', 'equalto', 'controller')
+            | list | length
+            == _llm_campaign_config.run
+               | selectattr('api_key_env', 'defined') | list | length
+          - >-
+            _llm_campaign_config.run
+            | selectattr('code_eval', 'defined')
+            | selectattr('code_eval', 'equalto', true)
+            | map(attribute='argv') | flatten
+            | select('equalto', '--confirm_run_unsafe_code') | list | length
+            == _llm_campaign_config.run
+               | selectattr('code_eval', 'defined')
+               | selectattr('code_eval', 'equalto', true) | list | length
+          - >-
+            'model_card_max' not in _llm_campaign_context_tokens
+            or _llm_campaign_selected_artifacts | length != 1
+            or _llm_campaign_selected_artifacts[0].context_window_tokens | int
+               > (_llm_campaign_config.run | map(attribute='output_tokens')
+                  | map('int') | max)
+          - >-
             not ('llama-batched-bench' in
             (_llm_campaign_config.run | map(attribute='executable') | list))
             or model_size in ['size-small', 'size-medium']
+            or (_llm_campaign_selected_artifacts[0].supports_batched_bench
+                | default(false) | bool)
         fail_msg: >-
           The selected recipe and survey must resolve to one registry artifact,
           use declared axes, and carry an authoritative context limit and output
-          size for every run. Batched llama.cpp supports size-small and size-medium only.
+          size for every run. Batched llama.cpp requires an artifact capability
+          when its registered size is large.
         quiet: true
+
+    - name: Require runtime endpoint inputs for authenticated model recipes
+      ansible.builtin.assert:
+        that:
+          - serving_model is defined
+          - serving_model | string is match('^[A-Za-z0-9._-]+$')
+          - lookup('env', 'OPENAI_API_KEY') | length > 0
+        fail_msg: >-
+          The selected recipe requires a runtime serving-model alias and
+          OPENAI_API_KEY environment variable.
+        quiet: true
+      no_log: true
+      when: >-
+        _llm_campaign_config.run
+        | selectattr('api_key_env', 'defined') | list | length > 0
+
+    - name: Resolve the model-card context marker using the recipe output reservation
+      ansible.builtin.set_fact:
+        _llm_campaign_context_values: >-
+          {{ _llm_campaign_context_values
+             + ([_llm_campaign_selected_artifacts[0].context_window_tokens | int
+                 - (_llm_campaign_config.run | map(attribute='output_tokens')
+                    | map('int') | max)]
+                if 'model_card_max' in _llm_campaign_context_tokens else []) }}
 
     - name: Save the prepared campaign inputs for the inventory target play
       ansible.builtin.set_fact:
@@ -167,10 +259,15 @@
         _llm_campaign_config_ref: "{{ _llm_campaign_benchmarks_ref }}"
         _llm_campaign_workdir: "{{ _llm_campaign_workspace.path }}"
         _llm_campaign_model: "{{ _llm_campaign_selected_artifacts[0] }}"
+        _llm_campaign_serving_model: "{{ serving_model | default(_llm_campaign_selected_artifacts[0].hf_repo) }}"
+        _llm_campaign_uses_api_key: >-
+          {{ _llm_campaign_config.run
+             | selectattr('api_key_env', 'defined') | list | length > 0 }}
         _llm_campaign_concurrencies: "{{ _llm_campaign_concurrency_values }}"
         _llm_campaign_contexts: "{{ _llm_campaign_context_values }}"
         _llm_campaign_endpoint_origin: "{{ benchmark_endpoint_root }}"
         _llm_campaign_cache_root: "{{ benchmark_cache_path }}"
+        _llm_campaign_strata_batch_size: "{{ strata_batch_size | default('') }}"
 
 - name: Continue the campaign on the selected target
   ansible.builtin.import_playbook: llm-model-campaign-target.yml

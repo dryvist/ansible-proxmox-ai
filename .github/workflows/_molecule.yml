@@ -9,7 +9,7 @@ on:
           JSON array of the scenarios this change touched, from the shared
           ansible CI's `molecule_scenarios` output. An empty string means "run
           every scenario" — that is the only widening signal a consumer handles;
-          the rules producing it live in dryvist/.github's _ansible-ci.yml.
+          the rules producing it live in JacobPEvans/.github's _ansible-ci.yml.
         type: string
         default: ""
       full_suite:
@@ -73,7 +73,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "latest"
 
@@ -87,12 +87,13 @@ jobs:
             netaddr \
             ansible-lint
 
-      # Exact-key hits match requirements.yml; misses and partial restores run the forced install.
-      # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
+      # Exact-key hits force-refresh only the floating homelab-contracts v5
+      # tag; misses run the forced install for the full requirement set.
+      # Same key/paths as JacobPEvans/.github's _ansible-ci.yml so a warm run of
       # either workflow warms the other.
       - name: Cache Ansible Galaxy content
         id: galaxy-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.ansible/collections
@@ -109,13 +110,26 @@ jobs:
         env:
           ANSIBLE_GALAXY_SERVER_TIMEOUT: "60"
 
+      - name: Refresh homelab-contracts major tag
+        if: steps.galaxy-cache.outputs.cache-hit == 'true'
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
+        with:
+          max_attempts: 4
+          timeout_minutes: 10
+          command: |
+            ansible-galaxy collection install \
+              'git+https://github.com/dryvist/homelab-contracts.git#/ansible/,v5' \
+              --force
+        env:
+          ANSIBLE_GALAXY_SERVER_TIMEOUT: "60"
+
       # agent_guest's converge play does `nix eval` delegate_to: localhost
       # (roles/agent_guest/tasks/policy.yml) — it evaluates the pinned
       # nix-ai flake ref (public repo) to resolve the residual deny policy.
       # Only that scenario needs Nix on the runner.
       - name: Install Nix
         if: matrix.scenario == 'agent_guest'
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       # Least-privilege secret handling: this action (pinned v2.0.0) has NO
       # allowlist input — it always fetches the token's entire config.

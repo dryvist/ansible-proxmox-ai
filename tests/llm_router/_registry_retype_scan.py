@@ -26,7 +26,7 @@ def registry_values(root: Path) -> dict[str, set[str]]:
     values: dict[str, set[str]] = {}
     for slice_file in sorted((root / "llm-models.d").glob("*.yml")):
         for name, entries in yaml.safe_load(slice_file.read_text()).items():
-            if name.startswith("_llm_model_artifacts") or name == "_llm_model_stage0_artifacts":
+            if name.startswith("_llm_model_artifacts") or name.endswith("_artifacts"):
                 for artifact in entries:
                     values.setdefault(str(artifact["hf_repo"]), set()).add("upstream")
                 continue
@@ -56,6 +56,8 @@ def registry_values(root: Path) -> dict[str, set[str]]:
                 if is_alias_bearing:
                     for alias in entry.get("stable_aliases") or []:
                         values.setdefault(str(alias), set()).add("alias")
+                for alias in entry.get("direct_route_aliases") or []:
+                    values.setdefault(str(alias), set()).add("alias")
     return values
 
 def _scalars(node, path=()):

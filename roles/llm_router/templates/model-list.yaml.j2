@@ -1,6 +1,9 @@
 {# Deployment list for the managed LiteLLM proxy config; included by
    config.yaml.j2, which owns the surrounding settings blocks. Split out so
    each file stays inside the repo's per-file token budget. #}
+{% set _deployment_tags_by_entry = _deployment_tags_by_entry | default(llm_router_deployment_tags_by_entry) -%}
+{% set _deployment_tags_by_model = _deployment_tags_by_model | default(llm_router_deployment_tags_by_model) -%}
+{% set _vllm_max_input_tokens_by_model = _vllm_max_input_tokens_by_model | default(_llm_router_vllm_max_input_tokens_by_model) -%}
 {% from 'model-list-tags.yaml.j2' import deployment_tags with context %}
 {% macro repr_safe_yaml_float(value) -%}
 {%- set rendered = value | float | to_json -%}
@@ -21,8 +24,8 @@
 {# Shared client IDs use the vLLM input cap; other light entries use catalog
    context and output limits. #}
 {% macro light_window(m) -%}
-{% if m.client_model_id in _llm_router_vllm_max_input_tokens_by_model %}
-{{ "\n" }}      max_input_tokens: {{ _llm_router_vllm_max_input_tokens_by_model[m.client_model_id] }}
+{% if m.client_model_id in _vllm_max_input_tokens_by_model %}
+{{ "\n" }}      max_input_tokens: {{ _vllm_max_input_tokens_by_model[m.client_model_id] }}
 {% elif m.context_window is defined %}
 {{ "\n" }}      max_input_tokens: {{ m.context_window }}
 {% endif %}
@@ -134,7 +137,7 @@ model_list:
   - model_name: "*"
     litellm_params:
       model: openai/*
-      tags: {{ llm_router_deployment_tags_by_entry['*|local-large'] | to_json }}
+      tags: {{ _deployment_tags_by_entry['*|local-large'] | to_json }}
       api_base: {{ llm_router_llm_large_base_url }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
 {% if llm_router_passthrough_max_parallel_requests | int > 0 %}
@@ -150,7 +153,7 @@ model_list:
   # Emitted only when its exact credential resolves. No cloud group aliases a
   # physical local model, so callers other than hermes-default never inherit
   # paid egress.
-{% for m in llm_router_hermes_cloud_models_credentialed %}
+{% for m in _llm_router_m_hermes_cloud_models_credentialed %}
   - model_name: {{ m.route_group }}
     litellm_params:
       model: {{ litellm_model(m) }}
@@ -263,7 +266,7 @@ model_list:
       # deployment on the same backend can never advertise a bigger window
       # than this one does. Set-then-emit-inline, never a folded block
       # scalar (always a string, breaking LiteLLM's int-typed pre-call check).
-{% set _vllm_max_input_tokens = _llm_router_vllm_max_input_tokens_by_model[m.client_model_id] %}
+{% set _vllm_max_input_tokens = _vllm_max_input_tokens_by_model[m.client_model_id] %}
       max_input_tokens: {{ _vllm_max_input_tokens }}
       max_tokens: {{ m.max_output_tokens | default(m.context_window) }}
 {% endif %}
@@ -278,3 +281,4 @@ model_list:
 {% endif %}
 {% endfor %}
 {% include 'model-list-gpu.yaml.j2' %}
+{% include 'model-list-direct.yaml.j2' %}

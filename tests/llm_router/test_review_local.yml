@@ -1,6 +1,6 @@
 ---
-# Local-only model-group behavior for the two parameterized database roles.
-- name: Verify the DB roles fail fast and retain local key scopes
+# The recorder stays local-only; the judge has a ZDR fallback chain.
+- name: Verify the recorder's local-only scope and judge ZDR access
   hosts: localhost
   gather_facts: false
   vars:
@@ -31,6 +31,10 @@
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
+    - name: Set the render's test subdomain after loading role defaults
+      ansible.builtin.set_fact:
+        llm_router_subdomain: "pve.example.test"
+
     - name: Load registry projections
       ansible.builtin.include_role:
         name: llm_router
@@ -41,23 +45,40 @@
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
         _keys: "{{ llm_router_virtual_keys }}"
 
-    - name: Roles fail fast and keys stay local-only
+    - name: Recorder fails fast while judge uses the standard ZDR chain
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_local_only_fail_fast_names | sort == (llm_router_role_deployments | map(attribute='role') | sort)
-          - _empty_fallbacks | length == llm_router_role_deployments | length
-          - _local_keys | length == llm_router_role_deployments | length
+          - llm_router_local_only_fail_fast_names | sort == _local_roles | sort
+          - _empty_fallbacks | length == _local_roles | length
+          - _local_keys | map(attribute='alias') | sort == _local_roles | sort
           - _local_keys | selectattr('allowed_classes', 'equalto', ['local']) | list | length == _local_keys | length
           - _local_keys | map(attribute='models') | flatten | intersect(_cloud_groups) | length == 0
+          - _judge.fallbacks == llm_router_d1_zdr_ladder_groups
+          - _judge_key.allowed_classes == _llm_router_consumer_classes_zdr
+          - _judge_key.models | intersect(_unsafe_rungs) | length == 0
+          - "'&zdr' in _judge_key.tags"
+          - "'!free' in _judge_key.tags"
+          - "'!retains' in _judge_key.tags"
+          - "'&local' not in _judge_key.tags"
         fail_msg: "roles={{ llm_router_local_only_fail_fast_names }}, keys={{ _local_keys }}"
       vars:
+        _local_roles: >-
+          {{ llm_router_role_deployments | selectattr('fallbacks', 'equalto', [])
+             | map(attribute='role') | list }}
         _empty_fallbacks: >-
           {{ _config.router_settings.fallbacks | map('dict2items') | flatten
              | selectattr('key', 'in', llm_router_local_only_fail_fast_names)
              | selectattr('value', 'equalto', []) | list }}
         _local_keys: >-
-          {{ _keys | selectattr('alias', 'in', (llm_router_role_deployments | map(attribute='role') | list)) | list }}
+          {{ _keys | selectattr('alias', 'in', _local_roles) | list }}
+        _judge: >-
+          {{ llm_router_role_deployments
+             | selectattr('role', 'equalto', hermes_goal_judge_model) | first }}
+        _judge_key: "{{ _keys | selectattr('alias', 'equalto', _judge.role) | first }}"
+        _unsafe_rungs: >-
+          {{ llm_router_d1_rungs_by_class['free']
+             + llm_router_d1_rungs_by_class['retains'] }}
         _cloud_groups: >-
           {{ llm_router_d1_group_class_by_name | dict2items
              | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}

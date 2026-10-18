@@ -42,7 +42,7 @@ class RunnerSandboxBase(unittest.TestCase):
         self.runner = scripts_dir / "run-ansible.sh"
         self.runner.write_text(RUNNER_SRC, encoding="utf-8")
         self.runner.chmod(0o700)
-        self._commit("init")
+        self._commit("test: initialize fixture")
         self._git("push", "-q", "-u", "origin", "develop")
         # A fresh bare repo's HEAD defaults to whatever init.defaultBranch
         # says (often "master"/"main"), which was never pushed here — left

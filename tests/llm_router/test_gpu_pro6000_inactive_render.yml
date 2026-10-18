@@ -48,6 +48,9 @@
         llm_router_vllm_precheck_passed: true
         llm_active_profile: medium-a
 
+    - name: Refresh cached router projections after fixture input changes [gpu-pro6000-inactive-render-1]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
     - name: Render the proxy config without external calls
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
@@ -71,3 +74,29 @@
           {{ _config.model_list | selectattr('model_name', 'equalto', llm_router_small_model) | list }}
         _medium_members: >-
           {{ _config.model_list | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
+
+    - name: Model the stored role deployments on the configured GPU backend
+      ansible.builtin.set_fact:
+        _llm_router_model_rows: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for role in llm_router_role_deployments -%}
+          {%- set ns.rows = ns.rows + [{
+                'model_name': role.role,
+                'litellm_params': {'api_base': llm_router_llm_gpu_base_url},
+                'model_info': {'id': role.role ~ '-fixture', 'db_model': true}
+              }] -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+
+    - name: Load the database deployment drain projection
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/76-drift.yml"
+
+    - name: Retire every database role backed by a disabled GPU profile
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            (_llm_router_db_model_deletes | map(attribute='model_name') | list)
+            == (llm_router_role_deployments | map(attribute='role') | list)
+        fail_msg: "GPU-backed database roles={{ _llm_router_db_model_deletes }}"

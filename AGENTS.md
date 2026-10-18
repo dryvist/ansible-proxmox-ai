@@ -38,6 +38,12 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
   duplicate config silently drifts from the real backend every time the
   model changes (root cause of the #1004 diagnosis cost). One physical
   entry per backend; every other name is a literal alias with zero config.
+  The `llm-models.d/` registry is the sole source for consumer-facing names,
+  aliases, tiers, and persistent enabled/servable profiles. A single-run trial
+  endpoint with no router route, alias, tier, persistent profile, or consumer
+  selection may use model identity resolved at runtime; trial facts are stored
+  only in benchmark results. Promotion to consumer serving requires a registry
+  record.
   An alias is declared in `stable_aliases` on the registry entry it points
   at, which is what makes it structurally incapable of naming a model that
   is not registered.**
@@ -123,7 +129,7 @@ This repo is fully self-sufficient: `playbooks/site.yml` +
 `dryvist.homelab` collection — install dependencies once per fresh worktree:
 
 ```bash
-ansible-galaxy install -r requirements.yml
+ansible-galaxy install -r requirements.yml --force
 ```
 
 Use `install`, not `collection install` or `role install`: each of those
@@ -226,6 +232,19 @@ Outcomes, by design:
 Do not add these keywords to a single-node play — the gate would turn a down
 host into a silent skip. Adopt them in the same change that adds the 2nd node.
 
+## Versions
+
+New benchmark batches use the latest stable engine release published by the
+batch timestamp; stable means the upstream release is not marked prerelease.
+Rows record the engine, release version, build or commit when available, and
+release date, latest stable release at run time, and whether the row used that
+release. Older-version rows remain valid.
+
+Renovate-managed engine pins live in `roles/llamacpp_release/defaults/main/00-release.yml`,
+`roles/vllm_serving/defaults/main/00-engine.yml`,
+`roles/sglang_serving/defaults/main/00-engine.yml`, and
+`roles/llm_gpu_serving/defaults/main/00-core.yml`.
+
 ## Testing
 
 | Check | Command | When |
@@ -252,7 +271,7 @@ TOFU_INVENTORY_PATH=$PWD/tests/inventory_load/tofu_inventory.json \
 
 ```bash
 # Install Ansible Galaxy dependencies (once)
-ansible-galaxy install -r requirements.yml
+ansible-galaxy install -r requirements.yml --force
 
 # Run one scenario's full test cycle (create -> converge -> idempotence -> verify -> destroy)
 molecule test -s llamaindex
@@ -302,8 +321,9 @@ Contract selector sends any path its mapping does not cover, including an
 unmapped test playbook, to the full contract suite; it does not fail the run.
 A removed test file selects its owner's scope, if any. Runner jobs cap at ten
 minutes (Molecule and the data contract at fifteen), or at sixty on pull requests from `develop` into
-`main` in this repository; the Renovate checksum fix job caps at five. Required validation is
+`main` in this repository; the Renovate checksum fix job caps at five, and `Merge Gate` caps at five on
+pull requests. Required validation is
 aggregated by `Merge Gate`.
 Public pull-request CI stays on GitHub-hosted runners.
 
-See the canonical policy in the `dryvist/.github` README, “Ansible CI policy.”
+See the canonical policy in the `JacobPEvans/.github` README, “Ansible CI policy.”

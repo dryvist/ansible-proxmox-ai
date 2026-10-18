@@ -1,0 +1,37 @@
+---
+- name: Load the published infrastructure inventory
+  ansible.builtin.import_playbook: ../inventory/load_tofu.yml
+
+- name: Validate a benchmark run request
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _benchmark_run_evalscope_version: "1.13.0"
+    _benchmark_run_promptfoo_version: "0.124.1"
+    _benchmark_run_uv_version: "0.13.1"
+    _benchmark_run_node_version: "24.21.0"
+    _benchmark_run_vllm_client_image: "vllm/vllm-openai-cpu:v0.31.0"
+    _benchmark_run_bcb_dataset_revision: "298d2cc7b96612e15e47313c3603ee124cee0c1f"
+    _benchmark_run_bcb_sandbox_image: >-
+      bigcodebench/bigcodebench-evaluate@sha256:a3cd34ec3840a49d6b7afb240f4bdd47c350bc5991043fd0a91773830f7cd405
+  tasks:
+    - name: Validate and add the selected node to this run's inventory
+      ansible.builtin.import_tasks: tasks/benchmark-run/preflight.yml
+
+- name: Run the selected benchmark from the tagged client
+  hosts: "{{ node | default('localhost') }}"
+  gather_facts: false
+  vars:
+    benchmark_run_request: "{{ hostvars[node].benchmark_run_request }}"
+  tasks:
+    - name: Run benchmark tasks on the selected Proxmox node
+      block:
+        - name: Upgrade the measured GPU guest before this cell when requested
+          ansible.builtin.import_tasks: tasks/benchmark-run/upgrade.yml
+          when: benchmark_run_request.upgrade | bool
+
+        - name: Verify and prepare the benchmark client
+          ansible.builtin.import_tasks: tasks/benchmark-run/prepare.yml
+
+        - name: Run the selected suite and collect its raw artifacts
+          ansible.builtin.import_tasks: tasks/benchmark-run/execute.yml

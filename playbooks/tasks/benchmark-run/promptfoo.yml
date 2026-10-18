@@ -1,0 +1,48 @@
+---
+- name: Run the pinned Promptfoo suite config
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - env
+      - "OPENAI_API_BASE_URL={{ benchmark_run_request.engine_url }}"
+      - OPENAI_API_KEY=EMPTY
+      - "OPENAI_MAX_TOKENS={{ benchmark_run_request.max_tokens }}"
+      - "OPENAI_MAX_COMPLETION_TOKENS={{ benchmark_run_request.max_tokens }}"
+      - "BENCHMARK_MODEL={{ benchmark_run_request.model }}"
+      - "BENCHMARK_TOKENIZER={{ benchmark_run_request.tokenizer }}"
+      - "BENCHMARK_REASONING_ARM={{ benchmark_run_request.reasoning_arm }}"
+      - >-
+        BENCHMARK_CHAT_TEMPLATE_KWARGS={{
+          ({'enable_thinking': false}
+           if benchmark_run_request.reasoning_arm == 'off'
+           else {'reasoning_effort': benchmark_run_request.reasoning_arm}) | to_json
+        }}
+      - /usr/bin/env
+      - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - /usr/local/bin/npx
+      - --yes
+      - "promptfoo@{{ benchmark_run_request.promptfoo_version }}"
+      - eval
+      - --config
+      - "{{ _benchmark_run_client_root }}/inputs/{{ benchmark_run_request.items_file | urlsplit('path') | basename }}"
+      - --output
+      - "{{ _benchmark_run_client_result }}/{{ benchmark_run_request.suite }}.json"
+      - --no-cache
+      - --no-progress-bar
+      - --max-concurrency
+      - "{{ benchmark_run_request.concurrency }}"
+      - --tag
+      - "benchmark.run_id={{ benchmark_run_request.run_id }}"
+      - --tag
+      - "benchmark.model={{ benchmark_run_request.model }}"
+      - --tag
+      - "benchmark.tokenizer={{ benchmark_run_request.tokenizer }}"
+      - --tag
+      - "benchmark.reasoning_arm={{ benchmark_run_request.reasoning_arm }}"
+  register: _benchmark_run_suite
+  no_log: true
+  changed_when: true
+  failed_when: _benchmark_run_suite.rc not in [0, 100]

@@ -1,0 +1,84 @@
+---
+- name: Capture bounded status and full trial-window journal
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - - systemctl
+      - status
+      - "{{ llm_model_trial_unit_name }}"
+      - --no-pager
+      - --full
+    - - systemctl
+      - show
+      - "{{ llm_model_trial_unit_name }}"
+      - --property=ActiveState
+      - --property=Result
+      - --property=ExecStart
+    - - journalctl
+      - --unit
+      - "{{ llm_model_trial_unit_name }}"
+      - --since
+      - "{{ (llm_model_trial_started_at.stdout | default('1 hour ago')) | trim }}"
+      - --lines
+      - "{{ llm_model_trial_journal_max_lines }}"
+      - --no-pager
+      - --output=short-iso
+  register: llm_model_trial_diagnostics
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item[0] }}"
+
+- name: Read the candidate models endpoint after a failure
+  ansible.builtin.uri:
+    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_model_trial_port }}/v1/models"
+    return_content: true
+    status_code: 200
+  register: llm_model_trial_failed_models
+  failed_when: false
+
+- name: Read candidate configuration proof after a failure
+  ansible.builtin.uri:
+    url: >-
+      {{ 'http://' ~ llm_model_trial_bind_host ~ ':' ~ llm_model_trial_port ~
+         ('/metrics' if llm_model_trial_plan.engine == 'vllm' else '/props') }}
+    return_content: true
+    status_code: 200
+  register: llm_model_trial_failed_configuration
+  failed_when: false
+
+- name: Assemble protected failure evidence
+  ansible.builtin.set_fact:
+    llm_model_trial_failure_evidence:
+      trial_id: "{{ llm_model_trial_id }}"
+      hf_repo: "{{ hf_repo }}"
+      resolved_sha: "{{ llm_model_trial_plan.resolved_sha }}"
+      engine: "{{ llm_model_trial_plan.engine }}"
+      unit: "{{ llm_model_trial_unit_name }}"
+      started_at: "{{ (llm_model_trial_started_at.stdout | default('unknown')) | trim }}"
+      failed_task: "{{ ansible_failed_task.name | default('unknown') }}"
+      failure: >-
+        {{ ansible_failed_result | default({}) | to_json
+           | regex_replace(llm_model_trial_redact_regex, '<redacted>') }}
+      diagnostics: >-
+        {{ llm_model_trial_diagnostics.results | default([])
+           | map(attribute='stdout') | map('regex_replace', llm_model_trial_redact_regex, '<redacted>') | list }}
+      models_response: "{{ llm_model_trial_failed_models.json | default({}) }}"
+      configuration_response: >-
+        {{ llm_model_trial_failed_configuration.json
+           | default(llm_model_trial_failed_configuration.content | default('')) }}
+
+- name: Save protected failure evidence on the controller
+  ansible.builtin.copy:
+    content: "{{ llm_model_trial_failure_evidence | to_nice_json }}"
+    dest: "{{ llm_model_trial_failure_artifact_path }}"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+
+- name: Mark the candidate trial as failed after preserving evidence
+  ansible.builtin.fail:
+    msg: >-
+      Candidate trial failed; its bounded service status, full run journal,
+      endpoint diagnostics, and triggering task output were saved to the
+      protected controller artifact path.

@@ -3,7 +3,7 @@
 # canonical role map (dryvist.homelab.llm_roles), and the registry matches the
 # map. Positive: the shipped chains pass, and `recorder` holds home-lab rungs
 # only with message logging off. Negative: a recorder chain with a cloud rung,
-# a judge chain with a cloud rung, and a registry whose concurrency drifts
+# an unasserted rung on the judge chain, and a registry whose concurrency drifts
 # from the map each fail the converge-time asserts.
 #
 # Run (from the REPO ROOT):
@@ -80,7 +80,7 @@
           - _recorder.litellm_params.turn_off_message_logging
           - _recorder.fallbacks == []
           - _judge.model == llm_router_routine_model
-          - _judge.fallbacks == []
+          - _judge.fallbacks == llm_router_d1_zdr_ladder_groups
           - _recorder.model == llm_router_small_model
           - _recorder_role_name not in _workstation_key.models
           - _recorder_key.models == [llm_router_small_model,
@@ -144,6 +144,9 @@
                  | combine({'model': llm_router_small_model,
                  'fallbacks': [llm_router_routine_model, llm_router_zdr_false_group_names | first]}))] }}
 
+    - name: Refresh cached router projections after fixture input changes [llm-roles-egress-1]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
     - name: The cloud rung is refused
       block:
         - name: Run the egress assert
@@ -156,29 +159,45 @@
           ansible.builtin.assert:
             quiet: true
             that:
-              - "(_llm_router_recorder_role_name ~ ' (estate)') in ansible_failed_result.msg"
+              - >-
+                (_llm_router_recorder_role_name ~ ' ('
+                ~ llm_roles.roles[_llm_router_recorder_role_name].egress ~ ')')
+                in ansible_failed_result.msg
 
-    # NEGATIVE: an `estate` role may not reach a cloud rung.
-    - name: Add a cloud rung to the judge chain
+    # NEGATIVE: a restricted role may not reach a non-ZDR cloud rung. The
+    # judge's egress comes from the role map, so the test follows the policy.
+    - name: The judge role is egress-restricted in the role map
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_roles.roles.judge.egress in ['none', 'estate', 'zdr']
+
+    # NEGATIVE: a ZDR role may not reach an unasserted external rung without a ZDR key.
+    - name: Add an unasserted rung to the judge chain
       ansible.builtin.set_fact:
         llm_router_role_deployments: >-
           {{ (llm_router_role_deployments | rejectattr('role', 'equalto', 'judge') | list)
              + [{'role': 'judge', 'model': llm_router_routine_model,
                  'fallbacks': [llm_router_small_model, llm_router_zdr_false_group_names | first]}] }}
 
-    - name: The cloud rung on the judge role is refused
+    - name: Refresh cached router projections after fixture input changes [llm-roles-egress-2]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: The unasserted rung on the judge role is refused
       block:
         - name: Run the egress assert
           ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-egress.yml"
         - name: Fail if the assert let it through
           ansible.builtin.fail:
-            msg: a judge chain with a cloud rung passed the egress assert
+            msg: a judge chain with an unasserted external rung passed the egress assert
       rescue:
         - name: The failure names the judge rung
           ansible.builtin.assert:
             quiet: true
             that:
-              - "'judge (estate)' in ansible_failed_result.msg"
+              - >-
+                ('judge (' ~ llm_roles.roles.judge.egress ~ ')')
+                in ansible_failed_result.msg
 
     # NEGATIVE: registry concurrency drifting from the catalog fails.
     - name: Drift the routine entry's concurrency from the catalog
@@ -197,6 +216,9 @@
           {%- endif -%}
           {%- endfor -%}
           {{ ns.entries }}
+
+    - name: Refresh cached router projections after fixture input changes [llm-roles-egress-3]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
 
     - name: The drift is refused
       block:
@@ -229,6 +251,9 @@
           {%- set ns.entries = ns.entries + [entry | combine(changes)] -%}
           {%- endfor -%}
           {{ ns.entries }}
+
+    - name: Refresh cached router projections after fixture input changes [llm-roles-egress-4]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
 
     - name: An unmarked disabled map model is refused
       block:

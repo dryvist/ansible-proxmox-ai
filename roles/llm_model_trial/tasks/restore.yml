@@ -1,0 +1,130 @@
+---
+- name: Stop the run-scoped candidate unit before restoring the baseline
+  ansible.builtin.systemd:
+    name: "{{ llm_model_trial_unit_name }}"
+    state: stopped
+  register: llm_model_trial_stop_result
+  failed_when: false
+
+- name: Verify the candidate unit is no longer active
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ llm_model_trial_unit_name }}"]
+  register: llm_model_trial_candidate_state
+  changed_when: false
+  failed_when: false
+
+- name: Remove the run-scoped candidate unit file
+  ansible.builtin.file:
+    path: "{{ llm_gpu_serving_systemd_dir }}/{{ llm_model_trial_unit_name }}"
+    state: absent
+  register: llm_model_trial_unit_remove
+  failed_when: false
+
+- name: Reload systemd after removing the run-scoped candidate unit
+  ansible.builtin.systemd:
+    daemon_reload: true
+  register: llm_model_trial_daemon_reload
+  failed_when: false
+
+- name: Always restore the exact recorded baseline serving unit
+  ansible.builtin.systemd:
+    name: "{{ llm_model_trial_baseline_unit }}"
+    state: started
+  register: llm_model_trial_baseline_start
+  failed_when: false
+  when: llm_model_trial_baseline_unit is defined
+
+- name: Verify restored baseline /v1/models after the trial
+  ansible.builtin.uri:
+    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_gpu_serving_api_port }}/v1/models"
+    return_content: true
+    status_code: 200
+  register: llm_model_trial_baseline_health
+  retries: "{{ llm_model_trial_health_retries }}"
+  delay: "{{ llm_model_trial_health_delay }}"
+  until: llm_model_trial_baseline_health.status | default(0) == 200
+  failed_when: false
+  when: llm_model_trial_baseline_unit is defined
+
+- name: Release this run's host lock after baseline restoration
+  ansible.builtin.systemd:
+    name: "{{ llm_model_trial_lock_unit_name }}"
+    state: stopped
+  register: llm_model_trial_lock_stop
+  failed_when: false
+  when: llm_model_trial_lock_acquired | default(false) | bool
+
+- name: Record the baseline restoration and transient unit cleanup proof
+  ansible.builtin.set_fact:
+    llm_model_trial_restore_proof:
+      attempted: "{{ llm_model_trial_baseline_unit is defined }}"
+      unit: "{{ llm_model_trial_baseline_unit | default(none) }}"
+      start_failed: "{{ llm_model_trial_baseline_start.failed | default(true) }}"
+      models_status: "{{ llm_model_trial_baseline_health.status | default(none) }}"
+      models: "{{ llm_model_trial_baseline_health.json | default({}) }}"
+      candidate_state: "{{ llm_model_trial_candidate_state.stdout | default('unknown') | trim }}"
+      candidate_stopped: >-
+        {{ llm_model_trial_candidate_state.stdout | default('unknown') | trim
+           in ['inactive', 'failed', 'unknown'] }}
+      unit_file_removed: "{{ not (llm_model_trial_unit_remove.failed | default(false)) }}"
+      systemd_reloaded: "{{ not (llm_model_trial_daemon_reload.failed | default(false)) }}"
+      lock_released: >-
+        {{ not (llm_model_trial_lock_stop.failed | default(false))
+           if llm_model_trial_lock_acquired | default(false) | bool else true }}
+      verified: >-
+        {{ none if llm_model_trial_baseline_unit is not defined else
+           (not (llm_model_trial_baseline_start.failed | default(true))
+            and llm_model_trial_baseline_health.status | default(0) == 200
+            and llm_model_trial_baseline_health.json.data | default([]) | length > 0
+            and llm_model_trial_candidate_state.stdout | default('unknown') | trim
+                in ['inactive', 'failed', 'unknown']
+            and not (llm_model_trial_unit_remove.failed | default(false))
+            and not (llm_model_trial_daemon_reload.failed | default(false))
+            and (not (llm_model_trial_lock_acquired | default(false) | bool)
+                 or not (llm_model_trial_lock_stop.failed | default(false)))) }}
+
+- name: Add restoration proof to successful trial facts
+  ansible.builtin.set_fact:
+    llm_model_trial_facts: >-
+      {{ llm_model_trial_facts
+         | combine({'baseline_restore': llm_model_trial_restore_proof}) }}
+  when: llm_model_trial_facts is defined
+
+- name: Write trial facts with baseline restoration evidence
+  ansible.builtin.copy:
+    content: "{{ llm_model_trial_facts | to_nice_json }}"
+    dest: "{{ llm_model_trial_artifact_path }}"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  when: llm_model_trial_facts is defined
+
+- name: Update protected failure evidence with baseline restoration outcome
+  ansible.builtin.copy:
+    content: >-
+      {{ llm_model_trial_failure_evidence
+         | combine({'baseline_restore': llm_model_trial_restore_proof})
+         | to_nice_json }}
+    dest: "{{ llm_model_trial_failure_artifact_path }}"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  when: llm_model_trial_failure_evidence is defined
+
+- name: Require the recorded baseline restore and health check to pass
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_restore_proof.verified
+    fail_msg: >-
+      Baseline restore or its /v1/models verification failed. The protected
+      controller artifact records the attempted restore and its result.
+    quiet: true
+  when: llm_model_trial_baseline_unit is defined
+
+- name: Export trial facts and endpoint for the next benchmark stage
+  ansible.builtin.set_stats:
+    data:
+      trial_facts: "{{ llm_model_trial_facts }}"
+      trial_endpoint_url: "{{ llm_model_trial_endpoint_url }}"
+      trial_facts_path: "{{ llm_model_trial_artifact_path }}"
+    aggregate: true

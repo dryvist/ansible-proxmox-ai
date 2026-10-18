@@ -10,10 +10,17 @@ nvidia_gpu_guest_venv: "{{ nvidia_gpu_guest_install_dir }}/venv"
 nvidia_gpu_guest_python: "3.12"
 nvidia_gpu_guest_uv_bin: /usr/local/bin/uv
 # renovate: datasource=github-releases depName=astral-sh/uv
-nvidia_gpu_guest_uv_version: "0.12.21"
+nvidia_gpu_guest_uv_version: "0.13.1"
 nvidia_gpu_guest_uv_install_url: "https://astral.sh/uv/{{ nvidia_gpu_guest_uv_version }}/install.sh"
 nvidia_gpu_guest_systemd_dir: /etc/systemd/system
 nvidia_gpu_guest_unit_prefix: llm-gpu-serving
+nvidia_gpu_guest_fan_control_enabled: false
+nvidia_gpu_guest_nvml_venv: "{{ nvidia_gpu_guest_install_dir }}/nvml"
+nvidia_gpu_guest_nvml_python: "{{ nvidia_gpu_guest_nvml_venv }}/bin/python"
+nvidia_gpu_guest_fan_control_script_path: /usr/local/libexec/nvidia-gpu-fan-control.py
+nvidia_gpu_guest_fan_control_unit_name: nvidia-gpu-fan-control.service
+# renovate: datasource=pypi depName=nvidia-ml-py
+nvidia_gpu_guest_nvml_version: "13.615.71"
 
 # A first start loads the model, compiles, and captures CUDA graphs before the
 # endpoint answers: 180 x 5 s allows 15 minutes. On failure the role shows the
@@ -45,7 +52,7 @@ nvidia_gpu_guest_uv_environment:
   HTTPS_PROXY: "{{ llamacpp_release_proxy_url }}"
 
 # renovate: datasource=pypi depName=huggingface-hub
-nvidia_gpu_guest_huggingface_hub_version: "2.1.1"
+nvidia_gpu_guest_huggingface_hub_version: "2.2.0"
 nvidia_gpu_guest_hf_home: "{{ nvidia_gpu_guest_home }}/.cache/huggingface"
 
 # Reuse the shared serving port; handlers ensure exactly one profile owns it.
@@ -54,24 +61,17 @@ nvidia_gpu_guest_api_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}
 # CUDA toolkit for kernels that still compile at runtime (FlashInfer, DeepGEMM),
 # the package set vLLM's own image installs. Same series as the node's toolkit;
 # the guest's vendor repository starts at 13.1.
-nvidia_gpu_guest_cuda_version: "13.2"
+nvidia_gpu_guest_cuda_version: "13.4"
 nvidia_gpu_guest_cuda_home: "/usr/local/cuda-{{ nvidia_gpu_guest_cuda_version }}"
 nvidia_gpu_guest_cuda_packages: >-
   {{ ['cuda-nvcc', 'cuda-cudart', 'cuda-nvrtc', 'cuda-nvrtc-dev', 'cuda-cuobjdump',
       'libcurand-dev', 'libcublas-dev']
      | map('regex_replace', '$', '-' ~ (nvidia_gpu_guest_cuda_version | replace('.', '-')))
-     | list + ['libnuma-dev', 'numactl'] }}
+     | list + ['libnuma-dev', 'numactl', 'ninja-build'] }}
 
 # The router registry owns model ids; serving profiles join to it by profile.
 nvidia_gpu_guest_registry_file: "{{ role_path | dirname | dirname }}/llm-models.d/60-gpu.yml"
-nvidia_gpu_guest_artifact_registry_file: "{{ role_path | dirname | dirname }}/llm-models.d/65-gpu-artifacts.yml"
-nvidia_gpu_guest_glm_artifact_registry_file: >-
-  {{ role_path | dirname | dirname }}/llm-models.d/66-gpu-artifacts-glm53flash.yml
-nvidia_gpu_guest_nvfp4_sweep_artifact_registry_file: >-
-  {{ role_path | dirname | dirname }}/llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml
-nvidia_gpu_guest_stage0_artifact_registry_file: >-
-  {{ role_path | dirname | dirname }}/llm-models.d/68-gpu-stage0-artifacts.yml
-
+nvidia_gpu_guest_matrix_registry_file: "{{ role_path | dirname | dirname }}/llm-models.d/61-gpu-matrix.yml"
 nvidia_gpu_guest_hf_bin: "{{ nvidia_gpu_guest_uv_tool_bin_dir }}/hf"
 
 # The host owns the kernel module. The shared userspace task reads its version

@@ -19,7 +19,7 @@ cd ansible-proxmox-ai
 direnv allow    # one-time per worktree — auto-activates the dev shell on cd
 
 # Install required Ansible Galaxy dependencies
-ansible-galaxy install -r requirements.yml
+ansible-galaxy install -r requirements.yml --force
 ```
 
 To activate the dev shell manually without direnv:
@@ -124,4 +124,4 @@ requests from `develop` into `main` in this repository; the Renovate checksum
 fix job caps at five. Required validation is aggregated by `Merge Gate`.
 Public pull-request CI stays on GitHub-hosted runners.
 
-See the canonical policy in the `dryvist/.github` README, “Ansible CI policy.”
+See the canonical policy in the `JacobPEvans/.github` README, “Ansible CI policy.”
