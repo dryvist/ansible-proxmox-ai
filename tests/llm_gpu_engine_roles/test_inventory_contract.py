@@ -138,6 +138,15 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
     assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
 
 
+def test_shared_llamacpp_group_uses_inventory_cache_or_existing_root_cache():
+    group_vars = _load(REPO_ROOT / "inventory/group_vars/llm_gpu_serving_llama_cpp_group.yml")
+    cache_path = group_vars["llm_gpu_serving_model_cache_mount_path"]
+    template = jinja2.Environment().from_string(cache_path)
+
+    assert template.render(container_models_cache_mount_path="") == "/var/cache"
+    assert template.render(container_models_cache_mount_path="/mnt/model-cache") == "/mnt/model-cache"
+
+
 def test_inventory_loader_assigns_selected_router_membership_and_retains_engine_identities():
     loader = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml")
     host_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
