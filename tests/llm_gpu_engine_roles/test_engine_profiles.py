@@ -106,7 +106,6 @@ def _render(profile_name: str, profile: dict) -> str:
             "vllm_serving_profile": resolved_profile,
             "vllm_serving_profile_registry_model": registry_model,
             "vllm_serving_profile_model_dir": f"/cache/models/{registry_model['artifact']['hf_repo']}",
-            "vllm_serving_request_timing_dir": "/opt/llm-gpu-serving/request-timing",
             "nvidia_gpu_guest_artifacts_by_id": {
                 artifact["artifact_id"]: artifact for artifact in _artifacts()
             },
