@@ -1,0 +1,58 @@
+---
+- name: Verify published router probe paths are required
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Extract the production probe paths assertion
+      ansible.builtin.set_fact:
+        _probe_paths_assertion_yaml: >-
+          {{ (lookup('ansible.builtin.file', playbook_dir ~
+                    '/../../inventory/load_tofu.yml') | from_yaml | first).tasks
+             | selectattr('name', 'equalto', 'Validate published router probe paths')
+             | first | to_nice_yaml }}
+
+    - name: Create a temporary task file
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .yml
+      register: _probe_paths_assertion_file
+
+    - name: Write the production probe paths assertion
+      ansible.builtin.copy:
+        dest: "{{ _probe_paths_assertion_file.path }}"
+        content: "{{ '- ' ~ (_probe_paths_assertion_yaml | trim | indent(2)) }}"
+        mode: '0600'
+
+    - name: Exercise the production assertion with absent and present constants
+      block:
+        - name: Confirm a missing constant fails with republish guidance
+          block:
+            - name: Run the production assertion without probe paths
+              ansible.builtin.include_tasks: "{{ _probe_paths_assertion_file.path }}"
+              vars:
+                tofu_data:
+                  constants: {}
+
+            - name: Fail if the production assertion accepted a missing constant
+              ansible.builtin.fail:
+                msg: The production assertion accepted missing router probe paths.
+          rescue:
+            - name: Confirm the production assertion rejected the missing constant
+              ansible.builtin.assert:
+                that:
+                  - ansible_failed_task.name == 'Validate published router probe paths'
+                  - "'Re-run the tofu-proxmox Terrakube workspace' in ansible_failed_result.msg"
+
+        - name: Confirm the published constant passes
+          ansible.builtin.include_tasks: "{{ _probe_paths_assertion_file.path }}"
+          vars:
+            tofu_data:
+              constants:
+                llm_router_probe_paths:
+                  liveliness: /health/liveliness
+                  readiness: /health/readiness
+      always:
+        - name: Remove the temporary task file
+          ansible.builtin.file:
+            path: "{{ _probe_paths_assertion_file.path }}"
+            state: absent

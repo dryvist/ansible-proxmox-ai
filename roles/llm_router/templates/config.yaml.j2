@@ -1,9 +1,15 @@
 {{ ansible_managed | comment }}
 # Managed LiteLLM proxy config. Models derive from llm-models.yml; credentials
 # resolve only through the systemd EnvironmentFile.
+{% set _deployment_tags_by_entry = llm_router_deployment_tags_by_entry -%}
+{% set _deployment_tags_by_model = llm_router_deployment_tags_by_model -%}
+{% set _vllm_max_input_tokens_by_model = _llm_router_vllm_max_input_tokens_by_model -%}
+{% set _fallback_map = llm_router_fallback_map -%}
+{% set _hermes_default_fallback_chain = _llm_router_m_hermes_default_fallback_chain -%}
+{% set _context_window_fallbacks = llm_router_context_window_fallbacks -%}
+{% set _rate_limit_retries_by_group = llm_router_rate_limit_retries_by_group -%}
+{% set _default_fallbacks = _llm_router_m_default_fallbacks -%}
 {% include 'model-list.yaml.j2' %}
-{# One evaluation: each lookup of the variable would rebuild the whole map. #}
-{% set _fallback_map = llm_router_fallback_map %}
 router_settings:
   routing_strategy: {{ llm_router_routing_strategy }}
   enable_tag_filtering: {{ llm_router_enable_tag_filtering | bool | to_json }}
@@ -26,7 +32,7 @@ router_settings:
 {% for alias, target in llm_router_model_group_aliases.items() %}
     {{ alias | to_json }}: {{ target | to_json }}
 {% endfor %}
-{% if llm_router_hermes_default_fallback_chain | length > 0 %}
+{% if _hermes_default_fallback_chain | length > 0 %}
   # The source-verified fallback key is the name the caller of that invocation
   # TYPED — captured on entry, so it is never the complexity-selected local
   # group. It is equally never an alias resolved to its target: model_group_alias
@@ -37,7 +43,7 @@ router_settings:
   # Only credential-backed provider groups render here, so no dead route or
   # duplicate local attempt is advertised.
   fallbacks:
-{% for _group in llm_router_hermes_default_fallback_chain %}
+{% for _group in _hermes_default_fallback_chain %}
     - {{ _group }}: {{ _fallback_map[_group] | to_json }}
 {% endfor %}
   # Embedding and OCR have no same-modality fallback chain.
@@ -70,7 +76,7 @@ router_settings:
   # A ZDR entry point additionally drops every rung without explicit ZDR
   # evidence, including the free and retains classes.
 {% for _name in llm_router_entry_point_names %}
-{% if _name not in llm_router_hermes_default_fallback_chain
+{% if _name not in _hermes_default_fallback_chain
       and _name not in llm_router_cross_modality_fail_fast_names
       and _name not in llm_router_local_only_fail_fast_names %}
     - {{ _name | to_json }}: {{ _fallback_map[_name] | to_json }}
@@ -78,7 +84,7 @@ router_settings:
 {% endfor %}
 {% endif %}
 {% endif %}
-{% if llm_router_context_window_fallbacks | length > 0 %}
+{% if _context_window_fallbacks | length > 0 %}
   # Escape hatch for the local legs, which serve a smaller context than the
   # primary. Rendered all-or-nothing on purpose: a key missing from a map that
   # EXISTS re-raises without ever consulting the ordinary fallbacks map, while
@@ -87,7 +93,7 @@ router_settings:
   #
   context_window_fallbacks:
 {% set _context_window_groups = [] %}
-{% for entry in llm_router_context_window_fallbacks %}
+{% for entry in _context_window_fallbacks %}
 {% for group, targets in entry.items() %}
 {% if group not in _context_window_groups %}
     - {{ group }}: {{ targets | to_json }}
@@ -152,13 +158,13 @@ router_settings:
     # admission budget (40-routing.yml) bounds retries x (retry_after +
     # stream_timeout) on every local rung.
     TimeoutErrorRetries: {{ llm_router_timeout_retries }}
-{% if llm_router_default_fallbacks | length > 0 %}
+{% if _default_fallbacks | length > 0 %}
   # Catch-all ladder for any name without its own fallbacks entry, so no
   # request can dead-end on a busy or failed rung: the free external rung,
   # then the paid one (55-roles.yml, llm_router_default_fallbacks).
-  default_fallbacks: {{ llm_router_default_fallbacks | to_json }}
+  default_fallbacks: {{ _default_fallbacks | to_json }}
 {% endif %}
-{% if llm_router_rate_limit_retries_by_group | length > 0 %}
+{% if _rate_limit_retries_by_group | length > 0 %}
   # Every group that carries a fallback chain advances on 429 instead of
   # sleeping on the busy slot: the chain rungs, the provider routers, and each
   # entry-point name above. The names the Hermes agents call
@@ -173,7 +179,7 @@ router_settings:
   # The global RateLimitErrorRetries above now governs only names with no
   # chain to hand over to.
   model_group_retry_policy:
-{% for group, retries in llm_router_rate_limit_retries_by_group.items() %}
+{% for group, retries in _rate_limit_retries_by_group.items() %}
     {{ group }}:
       RateLimitErrorRetries: {{ retries }}
 {% endfor %}
@@ -215,7 +221,7 @@ router_settings:
   # Deliberately no `fail_closed_budget_enforcement`: this proxy issues virtual
   # keys and most carry budgets, but fail-closed mode turns a simultaneous
   # Redis/database accounting outage into 503s for otherwise routable work.
-  # The benchmark key is intentionally unbudgeted; see README "Virtual keys".
+  # The inference-direct-only key is intentionally unbudgeted; see README "Virtual keys".
 
 {% include 'general-settings.yaml.j2' %}
 

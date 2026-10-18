@@ -49,31 +49,75 @@ def test_site_reaches_the_serving_playbook_without_a_tag_filter():
 
 def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
     all_vars = _load(REPO_ROOT / "inventory/group_vars/all.yml")
-    assert all_vars["llm_gpu_active_profiles_by_engine"] == {
-        "llama_cpp": "medium-b",
-        "vllm": "medium-a",
-    }
+    profiles_by_engine = all_vars["llm_gpu_active_profiles_by_engine"]
+    assert profiles_by_engine["llama_cpp"] == "medium-b"
+    llama_cpp_group = _load(
+        REPO_ROOT / "inventory/group_vars/llm_gpu_serving_llama_cpp_group.yml"
+    )
+    assert llama_cpp_group["llm_active_profile"] == "nemotron-bolt-64k-16"
+    generic_profiles = _load(
+        REPO_ROOT / "roles/llm_gpu_serving/defaults/main/10-profiles.yml"
+    )["llm_profiles"]
+    flash_next = generic_profiles["flash-next-small-128k-8"]
+    bolt_64k = generic_profiles["nemotron-bolt-64k-16"]
+    bolt_256k = generic_profiles["nemotron-bolt-256k-24"]
+    assert (bolt_64k["max_model_len"], bolt_64k["max_num_seqs"]) == (65536, 16)
+    assert (bolt_256k["max_model_len"], bolt_256k["max_num_seqs"]) == (262144, 24)
+    for profile in (bolt_64k, bolt_256k):
+        assert {
+            key: profile[key]
+            for key in ("engine", "flash_attention", "gpu_layers", "kv_cache_dtype")
+        } == {
+            key: flash_next[key]
+            for key in ("engine", "flash_attention", "gpu_layers", "kv_cache_dtype")
+        }
+    assert profiles_by_engine["vllm"] == "medium-a"
+    sglang_profiles = _load(REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml")[
+        "sglang_serving_profiles"
+    ]
+    assert sglang_profiles[profiles_by_engine["sglang"]]["engine"] == "sglang"
 
     template = jinja2.Environment().from_string(all_vars["llm_active_profile"])
 
-    def profile(engine: str | None, pair_present: bool) -> str:
+    def profile(engine: str | None, present_engines: set[str]) -> str:
         data = {} if engine is None else {"llm_gpu_engine": engine}
         hostvars = {"localhost": {"tofu_data": data}}
-        groups = {
-            "llm_gpu_engine_llama_cpp_group": ["llama-guest"] if pair_present else [],
-            "llm_gpu_engine_vllm_group": ["vllm-guest"] if pair_present else [],
-        }
+        groups = {f"llm_gpu_engine_{name}_group": [name] for name in present_engines}
         return template.render(
             hostvars=hostvars,
             groups=groups,
-            llm_gpu_active_profiles_by_engine=all_vars["llm_gpu_active_profiles_by_engine"],
+            llm_gpu_active_profiles_by_engine=profiles_by_engine,
         )
 
-    assert profile("llama_cpp", True) == "medium-b"
-    assert profile("vllm", True) == "medium-a"
-    # Until both replacement guests exist, preserve the current legacy profile.
-    assert profile("llama_cpp", False) == "medium-a"
-    assert profile(None, False) == "medium-a"
+    all_engines = {"llama_cpp", "vllm", "sglang", "strata"}
+    assert profile("llama_cpp", all_engines) == "medium-b"
+    assert profile("vllm", all_engines) == "medium-a"
+    assert profile("sglang", all_engines) == profiles_by_engine["sglang"]
+    assert profile("strata", all_engines) == "medium-a"
+    # Preserve the legacy profile if the selected engine guest is absent.
+    assert profile("sglang", {"llama_cpp", "vllm"}) == "medium-a"
+    assert profile(None, set()) == "medium-a"
+
+
+def test_bolt_profiles_use_the_shared_serving_role_and_selector():
+    plays = _load(GPU_ENGINE_PLAYBOOK)
+    llamacpp_play = next(
+        play for play in plays
+        if play.get("hosts") == "llm_gpu_serving_llama_cpp_group"
+    )
+    tasks = llamacpp_play["tasks"]
+    shared = next(
+        task for task in tasks
+        if task["name"] == "Converge Bolt through the shared profile selector"
+    )
+    specialized = next(
+        task for task in tasks
+        if task["name"].startswith("Converge llamacpp_serving")
+    )
+
+    assert shared["block"][1]["ansible.builtin.include_role"]["name"] == "llm_gpu_serving"
+    assert shared["when"] == "llm_active_profile in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24']"
+    assert specialized["when"] == "llm_active_profile not in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24']"
 
 
 def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostname():
@@ -93,17 +137,22 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
     assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
 
 
-def test_inventory_loader_assigns_selected_router_membership_and_retains_both_engine_identities():
+def test_inventory_loader_assigns_selected_router_membership_and_retains_engine_identities():
     loader = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml")
     host_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
     add_host = next(task["ansible.builtin.add_host"] for task in _walk(host_tasks) if "ansible.builtin.add_host" in task)
     groups = add_host["groups"]
 
-    assert "load_tofu_gpu_engine_pair_present" in groups
+    assert "load_tofu_gpu_engine_set_present" in groups
     assert "load_tofu_gpu_engine_selector == 'llama_cpp'" in groups
     assert "load_tofu_gpu_engine_selector == 'vllm'" in groups
+    assert "load_tofu_gpu_engine_selector == 'strata'" in groups
     assert "llm_gpu_engine_llama_cpp_group" in groups
     assert "llm_gpu_engine_vllm_group" in groups
+    assert "llm_gpu_engine_sglang_group" in groups
+    assert "llm_gpu_engine_strata_group" in groups
+    assert "llm_gpu_serving_sglang_group" in groups
+    assert "llm_gpu_serving_strata_group" in groups
     assert "llm_gpu_legacy_group" in groups
     assert "value.llm_gpu_engine_identity" in yaml.safe_dump(loader + host_tasks)
     selector = next(task for task in loader if task.get("name") == "Resolve the selector and declared GPU engine members")
@@ -111,7 +160,7 @@ def test_inventory_loader_assigns_selected_router_membership_and_retains_both_en
     assert "nvidia_gpu_group" in groups
     assert "'nvidia-gpu'" in groups
     assert "selectattr('value.llm_gpu_engine_identity', 'defined')" in members
-    assert "selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm'])" in members
+    assert "selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm', 'sglang', 'strata'])" in members
     assert "llm_gpu_group" in groups
 
 
@@ -126,14 +175,17 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
             "llm_gpu_legacy_group",
             "llm_gpu_serving_llama_cpp_group",
             "llm_gpu_serving_vllm_group",
+            "llm_gpu_serving_sglang_group",
+            "llm_gpu_serving_strata_group",
         }
     ]
 
-    assert len(gpu_plays) == 3
+    assert len(gpu_plays) == 5
     assert all(hosts.index(play["hosts"]) < router for play in gpu_plays)
     assert all("docker_engine" not in yaml.safe_dump(play) for play in gpu_plays)
 
     for play in gpu_plays:
+        assert "llm_gpu_serving" in play["tags"]
         if play["hosts"] == "llm_gpu_legacy_group":
             continue
         assert play["any_errors_fatal"] is True
@@ -143,7 +195,8 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
 
     router_play = next(play for play in plays if play.get("hosts") == "llm_router_group")
     router_pre_tasks = router_play["pre_tasks"]
-    assert router_play["serial"] == 1
+    assert "serial" not in router_play
+    assert router_play["any_errors_fatal"] is True
     assert router_play["max_fail_percentage"] == 0
     gate = next(
         index for index, task in enumerate(router_pre_tasks)

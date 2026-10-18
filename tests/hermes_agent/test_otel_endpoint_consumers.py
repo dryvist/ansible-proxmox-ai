@@ -46,6 +46,8 @@ REGISTRY_PROJECTIONS = {
     "llm_router_openrouter_models": [],
     "llm_router_opencode_models": [],
     "llm_router_hermes_cloud_models_credentialed": [],
+    "_llm_router_m_hermes_cloud_models_credentialed": [],
+    "_llm_router_m_resolved_credentials": {},
     "agentgateway_docker_roster_keys": {},
 }
 

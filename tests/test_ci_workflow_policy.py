@@ -10,6 +10,21 @@ CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
 WORKFLOWS = Path(__file__).parents[1] / ".github/workflows"
 
 
+def _job_steps(workflow: str, job: str) -> list[dict]:
+    """A job's steps with local composite actions (`uses: ./...`) expanded in place."""
+    def expand(steps: list[dict]) -> list[dict]:
+        out = []
+        for step in steps:
+            uses = step.get("uses", "")
+            if uses.startswith("./"):
+                action = yaml.safe_load((WORKFLOWS.parents[1] / uses / "action.yml").read_text())
+                out.extend(expand(action["runs"]["steps"]))
+            else:
+                out.append(step)
+        return out
+    return expand(yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"])
+
+
 def test_agent_ci_fix_runs_only_for_pull_request_ci_gate_runs() -> None:
     job = yaml.safe_load((WORKFLOWS / "agent-ci-fix.yml").read_text())["jobs"]["ci-fix"]
     assert "vars.AI_AGENT_CI_FIX_ENABLED == 'true'" in job["if"]
@@ -17,11 +32,11 @@ def test_agent_ci_fix_runs_only_for_pull_request_ci_gate_runs() -> None:
 
 
 @pytest.mark.parametrize("workflow", ["agent-ci-fix.yml", "agent-pr-review-responder.yml"])
-def test_agent_workflows_pin_the_shared_callee_to_a_commit(workflow: str) -> None:
+def test_agent_workflows_use_the_central_v1_callee(workflow: str) -> None:
     jobs = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"].values()
     uses = [job["uses"] for job in jobs if "uses" in job]
     assert uses
-    assert all(re.fullmatch(r"dryvist/ai-workflows/\.github/workflows/[\w.-]+@[0-9a-f]{40}", ref)
+    assert all(re.fullmatch(r"JacobPEvans/.github-ai/\.github/workflows/[\w.-]+@v1", ref)
                for ref in uses), uses
 
 
@@ -150,11 +165,9 @@ def test_reusable_calls_forward_the_timeout_input() -> None:
 @pytest.mark.parametrize(("workflow", "job"), [
     ("_data-contract.yml", "syntax-check"),
     ("_data-contract.yml", "verify-inventory-load"),
-    ("_llm-router-contract.yml", "llm-router-contract"),
-    ("_llm-router-contract.yml", "llm-router-registry-contract"),
 ])
 def test_ansible_install_uses_cached_pinned_ci_requirements(workflow: str, job: str) -> None:
-    steps = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"]
+    steps = _job_steps(workflow, job)
     setup = next(step for step in steps if step.get("uses", "").startswith("actions/setup-python@"))
     assert setup["with"]["cache"] == "pip"
     assert setup["with"]["cache-dependency-path"] == ".github/requirements-ci.txt"
@@ -170,17 +183,36 @@ def test_ansible_install_uses_cached_pinned_ci_requirements(workflow: str, job: 
 @pytest.mark.parametrize(("workflow", "job"), [
     ("_data-contract.yml", "syntax-check"),
     ("_data-contract.yml", "verify-inventory-load"),
-    ("_llm-router-contract.yml", "llm-router-contract"),
-    ("_llm-router-contract.yml", "llm-router-registry-contract"),
     ("_molecule.yml", "test"),
 ])
 def test_galaxy_install_skips_exact_cache_hits(workflow: str, job: str) -> None:
-    steps = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"]
+    steps = _job_steps(workflow, job)
     cache = next(step for step in steps if step.get("id") == "galaxy-cache")
     install = next(step for step in steps if "ansible-galaxy install --force -r requirements.yml"
                    == step.get("with", {}).get("command"))
     assert cache["uses"].startswith("actions/cache@")
     assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
+
+
+@pytest.mark.parametrize("job", [
+    "router-contract-dependencies", "llm-router-contract", "llm-router-registry-contract",
+])
+def test_router_jobs_share_the_cached_dependency_action(job: str) -> None:
+    steps = yaml.safe_load((WORKFLOWS / "_llm-router-contract.yml").read_text())["jobs"][job]["steps"]
+    assert any(step.get("uses") == "./.github/actions/router-deps" for step in steps)
+
+
+def test_router_dependency_action_caches_pinned_requirements() -> None:
+    steps = yaml.safe_load((WORKFLOWS.parent / "actions/router-deps/action.yml").read_text())["runs"]["steps"]
+    setup = next(step for step in steps if step.get("uses", "").startswith("actions/setup-python@"))
+    assert setup["with"]["cache"] == "pip"
+    assert setup["with"]["cache-dependency-path"] == ".github/requirements-ci.txt"
+    key = next(step for step in steps if step.get("id") == "key")
+    assert key["env"]["HASH"] == "${{ hashFiles('.github/requirements-ci.txt', 'requirements.yml') }}"
+    restore = next(step for step in steps if step.get("id") == "router-deps-cache")
+    assert restore["with"]["key"] == "${{ steps.key.outputs.key }}"
+    install = next(step for step in steps if step.get("uses", "").startswith("nick-fields/retry@"))
+    assert install["if"] == "steps.router-deps-cache.outputs.cache-hit != 'true'"
 
 
 def test_ci_requirements_pin_exact_versions() -> None:

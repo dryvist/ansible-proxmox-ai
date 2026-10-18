@@ -45,6 +45,21 @@ import yaml
 from _registry_retype_scan import REPO_ROOT, _Permissive, _literals, registry_values, scan
 
 
+def test_trial_rule_excludes_router_and_persistent_model_configuration() -> None:
+    """The single-run exception cannot introduce consumer-facing model config."""
+    policy = " ".join((REPO_ROOT / "AGENTS.md").read_text().split())
+    boundary = " ".join(
+        "The `llm-models.d/` registry is the sole source for consumer-facing names, "
+        "aliases, tiers, and persistent enabled/servable profiles. A single-run trial "
+        "endpoint with no router route, alias, tier, persistent profile, or consumer "
+        "selection may use model identity resolved at runtime; trial facts are stored "
+        "only in benchmark results. Promotion to consumer serving requires a registry record.".split()
+    )
+    assert boundary in policy
+    assert "Registering an alias as its own `model_list` deployment entry" in policy
+    assert "One physical entry per backend" in policy
+
+
 def test_zdr_true_registry_entries_name_the_provider_source() -> None:
     """An explicit ZDR claim must carry its source next to the field."""
     source_comments = (

@@ -25,12 +25,28 @@
     name: "{{ llm_router_service }}"
     state: restarted
     daemon_reload: true
+  when: not (llm_router_defer_restart | default(false) | bool)
+
+- name: Record deferred LiteLLM restart
+  ansible.builtin.set_fact:
+    llm_router_restart_pending: true
+  listen: Restart litellm
+  register: llm_router_deferred_restart_result
+  when: llm_router_defer_restart | default(false) | bool
 
 - name: Wait for LiteLLM liveness before syncing settings
   ansible.builtin.include_tasks: ../tasks/verify-liveness.yml
+  when: not (llm_router_defer_restart | default(false) | bool)
 
 - name: Sync router settings into the database
   ansible.builtin.include_tasks: ../tasks/sync-router-settings-request.yml
+  when: not (llm_router_defer_restart | default(false) | bool)
+
+- name: Record deferred router settings sync
+  ansible.builtin.set_fact:
+    llm_router_sync_settings_pending: true
+  listen: Sync router settings into the database
+  when: llm_router_defer_restart | default(false) | bool
 
 - name: Restart rsyslog
   ansible.builtin.systemd:

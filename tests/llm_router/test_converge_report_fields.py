@@ -6,11 +6,11 @@ import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 
-from test_price_map_reload import ROLE_ROOT, _debug_task_is_safe
+from test_price_map_reload import ROLE_ROOT, _debug_task_is_safe, _router_runtime_tasks
 
 
 def test_model_info_report_is_read_only_and_whitelists_aggregates():
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    tasks = _router_runtime_tasks()
     model_read = next(
         task for task in tasks if task.get("name") == "Read this router's model info rows"
     )
@@ -43,7 +43,7 @@ def test_model_info_report_is_read_only_and_whitelists_aggregates():
 
 
 def test_model_info_report_renders_with_the_real_templar():
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    tasks = _router_runtime_tasks()
     message = next(
         task for task in tasks if task.get("name") == "Report this router's model rows by provider and price"
     )["ansible.builtin.debug"]["msg"]

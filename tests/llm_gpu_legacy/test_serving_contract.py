@@ -57,7 +57,7 @@ def test_legacy_profile_switch_role_targets_only_the_legacy_nvidia_group():
     assert play["serial"] == 1
     assert play["hosts"] == "llm_gpu_legacy_group"
     assert "llm_gpu_serving" in play["tags"]
-    assert roles == ["llm_gpu_serving"]
+    assert roles == ["llm_gpu_serving", "nvidia_gpu_guest"]
 
 
 def test_legacy_and_replacement_engine_plays_precede_the_router_pool():
@@ -77,3 +77,10 @@ def test_legacy_play_does_not_override_the_shared_engine_profile_selector():
     assert "llm_active_profile" not in _legacy_play().get("vars", {})
     assert "llm_gpu_serving_model_cache_mount_path" not in text
     assert "llm_gpu_serving_model_origin_mount_path" not in text
+
+
+def test_shared_long_context_profile_skips_the_legacy_model_play():
+    play = next(play for play in _serving_plays() if play.get("hosts") == "llm_vllm_group")
+    converge = next(task for task in play["tasks"] if task.get("block"))
+
+    assert converge["when"] == "llm_active_profile != 'qwen38-27b-131k-1'"

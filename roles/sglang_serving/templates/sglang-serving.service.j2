@@ -1,0 +1,44 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=SGLang serving profile {{ sglang_serving_profile_name }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ nvidia_gpu_guest_user }}
+Group={{ nvidia_gpu_guest_group }}
+WorkingDirectory={{ nvidia_gpu_guest_data_dir }}
+Environment=HF_HOME={{ nvidia_gpu_guest_hf_home }}
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=CUDA_HOME={{ nvidia_gpu_guest_cuda_home }}
+Environment=PATH={{ nvidia_gpu_guest_cuda_home }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+ExecStart={{ nvidia_gpu_guest_venv }}/bin/python -m sglang.launch_server \
+  --model-path {{ sglang_serving_profile_model_dir }} \
+  --host {{ nvidia_gpu_guest_listen_host | default(ansible_facts.default_ipv4.address) }} \
+  --port {{ sglang_serving_profile.port }} \
+  --served-model-name {{ sglang_serving_profile_registry_model.upstream_model_id }} \
+  --context-length {{ sglang_serving_profile.max_model_len }} \
+  --max-running-requests {{ sglang_serving_profile.max_num_seqs }} \
+  --mem-fraction-static {{ sglang_serving_profile.mem_fraction_static }} \
+  --kv-cache-dtype {{ sglang_serving_profile.kv_cache_dtype }} \
+{% if sglang_serving_profile.ple_offload_embedding | default(false) %}
+  --ple-offload-embedding \
+{% endif %}
+{% if sglang_serving_profile.mtp | default(false) %}
+  --speculative-algorithm NEXTN \
+  --speculative-num-steps 3 \
+  --speculative-eagle-topk 1 \
+  --speculative-num-draft-tokens 4 \
+{% endif %}
+  --reasoning-parser {{ sglang_serving_profile.reasoning_parser }} \
+  --tool-call-parser {{ sglang_serving_profile.tool_call_parser }} \
+  --enable-metrics \
+  --enable-request-time-stats-logging
+
+[Install]
+WantedBy=multi-user.target

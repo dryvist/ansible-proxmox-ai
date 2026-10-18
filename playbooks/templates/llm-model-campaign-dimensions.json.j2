@@ -3,7 +3,7 @@
 {%- set gpu = _llm_campaign_gpu_metadata if _llm_campaign_gpu_metadata is defined else [] -%}
 {%- set processors = ansible_facts.processor | default([]) -%}
 {%- set service_unit = _llm_campaign_service_command.stdout | default('') if _llm_campaign_service_command is defined else '' -%}
-{%- set window_pattern = {'vllm': '--max-model-len[ =]+([0-9]+)', 'llama_cpp': '--ctx-size[ =]+([0-9]+)'}.get(engine) -%}
+{%- set window_pattern = {'vllm': '--max-model-len[ =]+([0-9]+)', 'llama_cpp': '--ctx-size[ =]+([0-9]+)', 'strata': '--max-context[ =]+([0-9]+)'}.get(engine) -%}
 {%- set window_matches = service_unit | regex_search(window_pattern, '\\1') if window_pattern and service_unit else none -%}
 {%- set hardware = {
   'accelerator_model': gpu[0] if gpu else none,
@@ -18,8 +18,9 @@
   'operating_system': ansible_facts.distribution ~ ' ' ~ ansible_facts.distribution_version,
   'kernel': ansible_facts.kernel | default(none),
   'driver_version': gpu[2] if gpu else none,
-  'engine': {'vllm': 'vLLM', 'llama_cpp': 'llama.cpp', 'mlx_lm': 'MLX'}.get(engine),
-  'backend': 'CUDA' if gpu else ('Metal' if engine == 'mlx_lm' else none),
+  'engine': {'vllm': 'vLLM', 'llama_cpp': 'llama.cpp', 'mlx_lm': 'MLX', 'mlx_vlm_native': 'MLX', 'vllm_mlx': 'MLX', 'strata': 'Strata'}.get(engine),
+  'engine_version': _llm_campaign_strata_version | default(none) if engine == 'strata' else none,
+  'backend': 'CUDA' if gpu else ('Metal' if engine in ['mlx_lm', 'mlx_vlm_native', 'vllm_mlx'] else none),
 } -%}
 {%- set model = {
   'id': _llm_campaign_model.artifact_id,
@@ -28,8 +29,12 @@
   'quantization': _llm_campaign_model.quantization | default(none),
 } -%}
 {%- set run = {
-  'allocated_context_tokens': (window_matches | first | int) if window_matches else none,
+  'allocated_context_tokens': (_llm_campaign_strata_context_tokens | int) if engine == 'strata' and _llm_campaign_strata_context_tokens is defined
+    else ((window_matches | first | int) if window_matches else none),
+  'prompt_tokens': _llm_campaign_context_value | int if engine == 'strata' else none,
   'output_tokens': _llm_campaign_run.output_tokens | int,
+  'batch_size': _llm_campaign_strata_batch_size | int if engine == 'strata' else none,
+  'speculative_mtp': true if engine == 'strata' else none,
   'concurrent_agents': _llm_campaign_concurrency_value | int,
   'repeats': _llm_campaign_run.repetitions | int,
 } -%}

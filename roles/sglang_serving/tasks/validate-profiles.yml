@@ -1,0 +1,39 @@
+---
+- name: Validate the active SGLang serving profile
+  ansible.builtin.assert:
+    that:
+      - sglang_serving_active_profile in sglang_serving_profiles
+      - sglang_serving_profiles[sglang_serving_active_profile].enabled | default(true)
+      - sglang_serving_profiles[sglang_serving_active_profile].engine == 'sglang'
+      - nvidia_gpu_guest_registry_by_profile[sglang_serving_active_profile].artifact.use == 'serving'
+      - >-
+        'sglang' in
+        nvidia_gpu_guest_registry_by_profile[sglang_serving_active_profile].artifact.engines
+      - sglang_serving_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+    fail_msg: >-
+      Select an enabled SGLang profile, provide its registered serving artifact,
+      and set a pinned stable SGLang version.
+    quiet: true
+
+- name: Validate every GPU serving profile
+  ansible.builtin.assert:
+    that:
+      - item.value.engine == 'sglang'
+      - item.key in nvidia_gpu_guest_registry_by_profile
+      - nvidia_gpu_guest_registry_by_profile[item.key].artifact.use == 'serving'
+      - >-
+        'sglang' in nvidia_gpu_guest_registry_by_profile[item.key].artifact.engines
+      - item.value.max_model_len | int > 0
+      - item.value.max_num_seqs | int > 0
+      - item.value.port | int > 0
+      - item.value.mem_fraction_static | float > 0
+      - item.value.mem_fraction_static | float <= 1
+      - item.value.kv_cache_dtype == 'fp8_e4m3'
+      - item.value.reasoning_parser | length > 0
+      - item.value.tool_call_parser | length > 0
+    fail_msg: "SGLang serving profile {{ item.key }} is incomplete or invalid."
+    quiet: true
+  loop: "{{ sglang_serving_profiles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.value.enabled | default(true)

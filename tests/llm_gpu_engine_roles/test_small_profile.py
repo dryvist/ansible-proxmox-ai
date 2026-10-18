@@ -59,10 +59,20 @@ def test_small_profile_renders_the_pinned_gguf_with_llama_cpp():
 def test_legacy_role_installs_vllm_and_its_toolchain_only_for_vllm_profiles():
     tasks = yaml.safe_load((LEGACY_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
     by_name = {task["name"]: task for task in tasks}
-    vllm_engine = "llm_profiles[llm_active_profile].engine == 'vllm'"
+    vllm_engine = "llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'"
 
     assert by_name["Install vLLM CUDA helper build prerequisites"]["when"] == vllm_engine
     assert by_name["Install the CUDA toolkit for runtime kernel compilation"]["when"] == vllm_engine
     assert by_name["Create the vLLM virtual environment"]["when"] == vllm_engine
     assert vllm_engine in by_name["Install the pinned vLLM build with SM120 b12x kernels"]["when"]
     assert vllm_engine in by_name["Put the vLLM and Hugging Face CLIs on the default PATH"]["when"]
+
+
+def test_vllm_venv_ownership_is_reset_before_the_install():
+    tasks = yaml.safe_load((LEGACY_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    names = [task.get("name") for task in tasks]
+    owner = tasks[names.index("Keep the vLLM virtual environment owned by the serving user")]
+
+    assert owner["ansible.builtin.file"]["recurse"] is True
+    assert owner["ansible.builtin.file"]["owner"] == "{{ llm_gpu_serving_user }}"
+    assert names.index(owner["name"]) < names.index("Install the pinned vLLM build with SM120 b12x kernels")

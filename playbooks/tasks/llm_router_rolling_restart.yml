@@ -1,0 +1,40 @@
+---
+# Body of the serial restart play in playbooks/llm-serving.yml.
+# Only pending members restart; every member still runs the runtime checks,
+# so a no-op converge still verifies the live pool.
+- name: Restart pending members and verify every member
+  block:
+    - name: Restart litellm
+      ansible.builtin.systemd:
+        name: "{{ llm_router_service }}"
+        state: restarted
+        daemon_reload: true
+      when: llm_router_restart_pending | default(false) | bool
+
+    - name: Wait for liveness before syncing router settings
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: verify-liveness.yml
+      when: llm_router_sync_settings_pending | default(false) | bool
+
+    - name: Sync router settings into the database
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: sync-router-settings-request.yml
+      when: llm_router_sync_settings_pending | default(false) | bool
+
+    - name: Verify the rendered router runtime
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: verify-runtime.yml
+  rescue:
+    - name: Record the failure for the end-of-run gate
+      ansible.builtin.include_tasks: record_isolated_failure.yml
+      vars:
+        _isolated_play_name: llm_router
+    - name: Stop the rolling converge at this member
+      ansible.builtin.fail:
+        msg: >-
+          llm_router failed on {{ inventory_hostname }}:
+          {{ ansible_failed_result.msg | default(ansible_failed_task.name | default('task failed')) }}.
+          Remaining pool members keep their previous config.

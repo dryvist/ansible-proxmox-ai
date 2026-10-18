@@ -65,6 +65,9 @@
       ansible.builtin.set_fact:
         llm_router_chatgpt_auth_file_present: true
 
+    - name: Refresh cached router projections after fixture input changes [admission-budget-and-ladder-1]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
     - name: Run the role's own admission-budget assert
       ansible.builtin.include_role:
         name: llm_router
@@ -157,13 +160,14 @@
       loop_control:
         label: "{{ item.role }}"
 
-    # judge carries egress `estate` in the role map (dryvist.homelab.llm_roles):
-    # its ladder is the Studio alone, with no external rung.
-    - name: The judge ladder carries no external rung
+    # The judge uses the standard ZDR chain within the shared fallback budget.
+    - name: The judge ladder uses the standard ZDR chain within the shared depth budget
       ansible.builtin.assert:
         quiet: true
         that:
-          - _judge.fallbacks == []
+          - _judge.fallbacks == llm_router_d1_zdr_ladder_groups
+          - _judge.fallbacks | length <= _config.router_settings.max_fallbacks | int
+          - _judge.fallbacks | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
       vars:
         _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'judge') | first }}"
 
@@ -197,6 +201,15 @@
       loop: "{{ llm_router_role_deployments | selectattr('role', 'in', ['embed', 'ocr']) | list }}"
       loop_control:
         label: "{{ item.role }}"
+
+    - name: Clear provider credentials before deriving the bare ladder
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets: {}
+
+    - name: Refresh cached router projections without provider credentials
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
 
     - name: Render again with no external credential at all
       ansible.builtin.set_fact:

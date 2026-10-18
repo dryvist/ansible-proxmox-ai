@@ -1,0 +1,74 @@
+---
+- name: Read the target GPU memory for profile admission
+  ansible.builtin.command:
+    argv:
+      - nvidia-smi
+      - --query-gpu=memory.total
+      - --format=csv,noheader,nounits
+  register: nvidia_gpu_guest_fit_gpu_query
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Resolve the active profile and declared guest memory
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_fit_artifact: >-
+      {{ nvidia_gpu_guest_registry_by_profile[nvidia_gpu_guest_active_profile].artifact }}
+    nvidia_gpu_guest_fit_profile: "{{ nvidia_gpu_guest_profiles[nvidia_gpu_guest_active_profile] }}"
+    nvidia_gpu_guest_fit_gpu_memory_mib: >-
+      {{ nvidia_gpu_guest_fit_gpu_query.stdout_lines | default([])
+         | map('trim') | map('int') | sum }}
+    nvidia_gpu_guest_fit_guest_memory_mb: >-
+      {{ hostvars.get('localhost', {}).get('tofu_data', {}).get('containers', {})
+         .get(inventory_hostname, {}).get('memory_mb', 0) | int }}
+
+- name: Calculate the active artifact memory requirements
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_fit_weights_bytes: >-
+      {{ nvidia_gpu_guest_fit_artifact.model_store_size_bytes | default(0) | int }}
+    nvidia_gpu_guest_fit_cpu_offload: >-
+      {{ (nvidia_gpu_guest_fit_profile.get('engram_config', {}).get('cpu_offload',
+           nvidia_gpu_guest_fit_profile.get('ple_offload_embedding', false))) | bool }}
+    nvidia_gpu_guest_fit_gpu_budget_bytes: >-
+      {{ (nvidia_gpu_guest_fit_gpu_memory_mib | int * 1048576
+          * (nvidia_gpu_guest_fit_profile.gpu_memory_utilization
+             | default(nvidia_gpu_guest_fit_profile.mem_fraction_static | default(1.0)) | float)) | int }}
+    nvidia_gpu_guest_fit_guest_memory_bytes: "{{ nvidia_gpu_guest_fit_guest_memory_mb | int * 1048576 }}"
+
+- name: Calculate GPU-resident and CPU-offloaded weight sizes
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_fit_gpu_weights_bytes: >-
+      {{ (nvidia_gpu_guest_fit_artifact.gpu_resident_size_bytes
+          if nvidia_gpu_guest_fit_cpu_offload | bool
+          else nvidia_gpu_guest_fit_weights_bytes) | default(0) | int }}
+    nvidia_gpu_guest_fit_cpu_weights_bytes: >-
+      {{ (nvidia_gpu_guest_fit_weights_bytes
+          - (nvidia_gpu_guest_fit_artifact.gpu_resident_size_bytes | default(0) | int))
+         if nvidia_gpu_guest_fit_cpu_offload | bool else 0 }}
+    nvidia_gpu_guest_fit_guest_budget_bytes: >-
+      {{ (nvidia_gpu_guest_fit_guest_memory_bytes | int * 0.9) | int }}
+
+- name: Assert active artifact weights fit GPU and guest RAM budgets
+  ansible.builtin.assert:
+    that:
+      - nvidia_gpu_guest_fit_gpu_query.rc == 0
+      - nvidia_gpu_guest_fit_gpu_memory_mib | int > 0
+      - nvidia_gpu_guest_fit_guest_memory_mb | int > 0
+      - nvidia_gpu_guest_fit_weights_bytes | int > 0
+      - >-
+        not (nvidia_gpu_guest_fit_cpu_offload | bool)
+        or nvidia_gpu_guest_fit_artifact.gpu_resident_size_bytes is defined
+      - nvidia_gpu_guest_fit_gpu_weights_bytes | int <= nvidia_gpu_guest_fit_gpu_budget_bytes | int
+      - nvidia_gpu_guest_fit_cpu_weights_bytes | int <= nvidia_gpu_guest_fit_guest_budget_bytes | int
+    fail_msg: >-
+      Artifact {{ nvidia_gpu_guest_fit_artifact.artifact_id }} weighs
+      {{ (nvidia_gpu_guest_fit_weights_bytes | int / 1073741824) | round(1) }} GiB
+      (GPU resident {{ (nvidia_gpu_guest_fit_gpu_weights_bytes | int / 1073741824) | round(1) }} GiB;
+      CPU offload {{ (nvidia_gpu_guest_fit_cpu_weights_bytes | int / 1073741824) | round(1) }} GiB).
+      GPU VRAM budget is
+      {{ ((nvidia_gpu_guest_fit_gpu_budget_bytes | int / 1073741824) | round(1))
+         if nvidia_gpu_guest_fit_gpu_query.rc == 0 else 'unavailable' }} GiB;
+      guest RAM budget is {{ (nvidia_gpu_guest_fit_guest_memory_bytes | int / 1073741824) | round(1) }} GiB
+      from the Tofu inventory, with {{ (nvidia_gpu_guest_fit_guest_budget_bytes | int / 1073741824) | round(1) }} GiB
+      available after the 10% engine reserve.
+    quiet: true

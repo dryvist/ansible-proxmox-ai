@@ -13,7 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_FILE = Path("roles/llamacpp_release/defaults/main/00-release.yml")
 HERMES_FILE = Path("roles/hermes_agent/defaults/main/10-installer-and-bundles.yml")
-FIXTURE = ROOT / "tests/llamacpp_release/fixtures/github-release-b11459.json"
+FIXTURE = ROOT / "tests/llamacpp_release/fixtures/github-release-b11669.json"
 BACKENDS = ("cpu", "vulkan", "rocm", "cuda", "cuda_runtime")
 
 

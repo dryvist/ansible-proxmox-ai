@@ -17,7 +17,7 @@ def test_shared_nvidia_role_has_no_engine_installation():
 
     assert any("nvidia userspace" in name for name in task_names)
     assert any("cuda toolkit" in name for name in task_names)
-    assert not any("vllm" in name or "llama.cpp" in name for name in task_names)
+    assert not any("vllm" in name or "sglang" in name or "llama.cpp" in name for name in task_names)
     assert "llm_gpu_serving_vllm_version" not in (shared / "defaults/main/00-core.yml").read_text()
     assert "llm_gpu_serving_llamacpp_asset_regex" not in (shared / "defaults/main/00-core.yml").read_text()
 
@@ -54,9 +54,53 @@ def test_engine_roles_own_only_their_profiles_and_selectors():
                 "nemotron-super-2x4096",
                 "muse-glimmer-30b",
                 "nemotron-lightning-30b-a3b",
+                "qwen38-64k-8-fp8-mtp",
+                "qwen38-64k-8-fp8-mtp0",
+                "qwen38-64k-8-fp8-mtp2",
+                "qwen38-64k-8-fp8-mtp4",
+                "qwen38-128k-2-fp8-mtp",
+                "qwen38-128k-11-fp8-mtp",
+                "qwen38-256k-1-fp8-mtp",
+                "qwen38-256k-5-fp8-mtp",
+                "qwen38-64k-16-fp8-mtp",
+                "flash-next-64k-8-fp8-mtp",
+                "flash-next-64k-8-fp8-mtp0",
+                "flash-next-64k-8-fp8-mtp2",
+                "flash-next-64k-8-fp8-mtp4",
+                "flash-next-262k-1-fp8",
+                "flash-next-262k-2-fp8",
+                "nemotron-lightning-256k-8-fp8",
+                "nemotron-lightning-1m-1-fp8",
+                "nemotron-lightning-1m-2-fp8",
+                "nemotron-super-vl-64k-8",
             },
         ),
-        ("llamacpp_serving", "llama_cpp", {"small", "medium-b", "16gb", "max", "glm-flash"}),
+        (
+            "llamacpp_serving",
+            "llama_cpp",
+            {
+                "small", "medium-b", "16gb", "max", "glm-flash",
+                "flash-next-gguf", "flash-next-gguf-262k-1", "flash-next-gguf-262k-2",
+            },
+        ),
+        (
+            "sglang_serving",
+            "sglang",
+            {
+                "qwen38-64k-1-fp8",
+                "qwen38-64k-4-fp8",
+                "qwen38-64k-8-fp8",
+                "qwen38-64k-1-fp8-mtp",
+                "qwen38-64k-4-fp8-mtp",
+                "qwen38-64k-8-fp8-mtp",
+                "flash-next-64k-1-fp8",
+                "flash-next-64k-4-fp8",
+                "flash-next-64k-8-fp8",
+                "flash-next-64k-1-fp8-mtp",
+                "flash-next-64k-4-fp8-mtp",
+                "flash-next-64k-8-fp8-mtp",
+            },
+        ),
     )
     for role, engine, expected_profiles in cases:
         role_root = ROLES / role
@@ -74,9 +118,13 @@ def test_engine_roles_own_only_their_profiles_and_selectors():
             for task in main_tasks
         )
 
+    legacy_profiles = _yaml(ROLES / "llm_gpu_serving/defaults/main/10-profiles.yml")["llm_profiles"]
+    assert {"nemotron-bolt-64k-16", "nemotron-bolt-256k-24"} <= set(legacy_profiles)
+
 
 def test_engine_installers_stay_separate_and_keep_shared_safety_tasks():
     vllm_install = (ROLES / "vllm_serving/tasks/install.yml").read_text()
+    sglang_install = (ROLES / "sglang_serving/tasks/install.yml").read_text()
     llama_install = (ROLES / "llamacpp_serving/tasks/install.yml").read_text()
 
     assert "vllm=={{ vllm_serving_version }}" in vllm_install
@@ -84,15 +132,22 @@ def test_engine_installers_stay_separate_and_keep_shared_safety_tasks():
     assert "llama-server" not in vllm_install
     assert "llama-server" in llama_install
     assert "vllm_serving_version" not in llama_install
+    assert "sglang=={{ sglang_serving_version }}" in sglang_install
+    assert "vllm" not in sglang_install
+    assert "llama-server" not in sglang_install
 
     vllm_unit = (ROLES / "vllm_serving/templates/vllm-serving.service.j2").read_text()
+    sglang_unit = (ROLES / "sglang_serving/templates/sglang-serving.service.j2").read_text()
     llama_unit = (ROLES / "llamacpp_serving/templates/llamacpp-serving.service.j2").read_text()
     assert "vllm serve" in vllm_unit
     assert "llama-server" not in vllm_unit
     assert "llamacpp_serving_server_bin" in llama_unit
     assert "vllm serve" not in llama_unit
+    assert "python -m sglang.launch_server" in sglang_unit
+    assert "vllm serve" not in sglang_unit
+    assert "llama-server" not in sglang_unit
 
-    for role in ("vllm_serving", "llamacpp_serving"):
+    for role in ("vllm_serving", "sglang_serving", "llamacpp_serving"):
         role_root = ROLES / role
         activate = (role_root / "tasks/activate.yml").read_text()
         assert "tasks_from: cache-sync.yml" in activate

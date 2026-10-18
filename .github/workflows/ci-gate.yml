@@ -2,7 +2,7 @@
 # CI Gate — wrapper around the shared ansible CI gate.
 #
 # ansible-lint and the standardized change filter live in
-# dryvist/.github/.github/workflows/_ansible-ci.yml so lint runs identically
+# JacobPEvans/.github/.github/workflows/_ansible-ci.yml so lint runs identically
 # across ansible-proxmox, ansible-splunk and this repo.
 #
 # Molecule stays LOCAL here: this repo's molecule job has a deliberate
@@ -42,7 +42,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: dryvist/.github/.github/workflows/_ansible-ci.yml@8c16f787ef11fec05a086bff364a3fc0e806452d # v1.18.0
+    uses: JacobPEvans/.github/.github/workflows/_ansible-ci.yml@v1
     with:
       # Molecule is owned locally (see header); the shared workflow runs lint only.
       molecule: false
@@ -111,12 +111,14 @@ jobs:
       molecule_contract_filters: |
         contract_only:
           - 'llm-models.d/**'
+          - 'roles/llm_model_trial/**'
           - 'roles/llm_router/**'
           - 'roles/hermes_agent/**'
           - 'tests/llm_router/**'
           - 'tests/hermes_agent/**'
           - 'tests/fixtures/llm-router-target-output.yml'
           - 'tests/llm_model_campaign/**'
+          - 'tests/llm_model_trial/**'
           - 'tests/test_contract_scope_selector.py'
           - 'tests/test_contract_scope_mapping.py'
           - 'tests/test_ci_workflow_policy.py'
@@ -128,6 +130,7 @@ jobs:
           - 'roles/langfuse_docker/**'
           - 'roles/llamacpp_serving/**'
           - 'roles/vllm_serving/**'
+          - 'roles/strata_serving/**'
           - 'roles/nvidia_gpu_guest/**'
           - 'tests/agent_concurrency/**'
           - 'tests/dify_docker/**'
@@ -142,9 +145,12 @@ jobs:
           - 'tests/openbao_secrets/**'
           - 'tests/inventory_load/**'
           - 'tests/repo_guards/**'
+          - 'tests/benchmark_run/**'
           - 'playbooks/llm-model-campaign-target.yml'
           - 'playbooks/tasks/llm-model-campaign-convert.yml'
           - 'playbooks/templates/llm-model-campaign-dimensions.json.j2'
+          - 'playbooks/benchmark-run.yml'
+          - 'playbooks/tasks/benchmark-run/**'
 
   # Data Contract runs the repo-wide contract suite. On develop PRs, select it
   # only for contract inputs; workflow-only edits still exercise the CI gate.
@@ -182,10 +188,19 @@ jobs:
           PUSH_HEAD: ${{ github.sha }}
         run: |
           if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
-             [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop ]] ||
-             [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
+             [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop ]]; then
             echo 'full_suite=true' >> "$GITHUB_OUTPUT"
             python .github/scripts/select-contract-scope.py --full --output "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
+            echo 'full_suite=true' >> "$GITHUB_OUTPUT"
+            git diff --name-only "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"
+            if grep -qvE '(^docs/|\.md$)' "$RUNNER_TEMP/changed-paths"; then
+              python .github/scripts/select-contract-scope.py --full --output "$GITHUB_OUTPUT"
+            else
+              python .github/scripts/select-contract-scope.py --full --skip-router --output "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
           echo 'full_suite=false' >> "$GITHUB_OUTPUT"
@@ -313,14 +328,14 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository) && 60 || 10 }}
     steps:
       - name: Set up Node for the shared result aggregator
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
 
       - name: Check out the shared result aggregator
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: dryvist/.github
+          repository: JacobPEvans/.github
           ref: 1ee6eaa788a7d713019c71493cd2a03b9021dc2a
           path: .gh-shared
           sparse-checkout: scripts/ci-gate-aggregate.mts

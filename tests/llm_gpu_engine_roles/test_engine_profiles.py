@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import jinja2
@@ -12,13 +13,11 @@ NVIDIA_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 VLLM_ROOT = REPO_ROOT / "roles/vllm_serving"
 LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 LEGACY_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
-ARTIFACT_FILES = (
-    REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
-    REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
-    REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
-    REPO_ROOT / "llm-models.d/68-gpu-stage0-artifacts.yml",
+REGISTRY_FILES = (
+    REPO_ROOT / "llm-models.d/60-gpu.yml",
+    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
 )
+ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 
 
 def _profiles() -> dict:
@@ -36,13 +35,23 @@ def _artifacts() -> list[dict]:
         artifact
         for path in ARTIFACT_FILES
         for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
-        if key.startswith("_llm_model_artifacts")
+        if key.startswith("_llm_model_artifacts") or key.endswith("_artifacts")
         for artifact in entries
     ]
 
 
+def _registry_entries() -> list[dict]:
+    return [
+        entry
+        for path in REGISTRY_FILES
+        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_registry_gpu")
+        for entry in entries
+    ]
+
+
 def _registry_profiles() -> dict:
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
+    entries = _registry_entries()
     artifacts = _artifacts()
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     return {
@@ -70,6 +79,8 @@ def _render(profile_name: str, profile: dict) -> str:
     )
     env.filters["comment"] = _comment_filter
     env.filters["mandatory"] = lambda value, message="": value
+    env.filters["to_json"] = json.dumps
+    env.filters["combine"] = lambda value, updates: {**value, **updates}
     resolved_profile = {
         **profile,
         "port": env.from_string(str(profile["port"])).render(nvidia_gpu_guest_api_port=10434),
@@ -81,6 +92,7 @@ def _render(profile_name: str, profile: dict) -> str:
         "nvidia_gpu_guest_user": "llm-gpu-serving",
         "nvidia_gpu_guest_group": "llm-gpu-serving",
         "nvidia_gpu_guest_data_dir": "/var/lib/llm-gpu-serving",
+        "nvidia_gpu_guest_model_cache_path": "/cache/models",
         "nvidia_gpu_guest_venv": "/opt/llm-gpu-serving/venv",
         "nvidia_gpu_guest_cuda_home": "/usr/local/cuda-X.Y",
         "nvidia_gpu_guest_hf_home": "HF_CACHE_HOME",
@@ -94,6 +106,9 @@ def _render(profile_name: str, profile: dict) -> str:
             "vllm_serving_profile": resolved_profile,
             "vllm_serving_profile_registry_model": registry_model,
             "vllm_serving_profile_model_dir": f"/cache/models/{registry_model['artifact']['hf_repo']}",
+            "nvidia_gpu_guest_artifacts_by_id": {
+                artifact["artifact_id"]: artifact for artifact in _artifacts()
+            },
         }
     else:
         template = "llamacpp-serving.service.j2"
@@ -138,8 +153,11 @@ def test_named_profiles_carry_the_serving_contract():
         "max": "llama_cpp",
         "glm-flash": "llama_cpp",
     }
-    assert set(_registry_profiles()) == set(profiles)
-    assert all(profile["enabled"] is True for profile in profiles.values())
+    # Registry equality across every engine lives in test_sglang_profiles.py.
+    assert {
+        name for name, profile in profiles.items() if profile.get("enabled", True)
+    } <= set(_registry_profiles())
+    assert all(profile["enabled"] is True for name, profile in profiles.items() if not name.startswith("flash-next-"))
     assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
     assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
     assert [profiles[name]["max_num_seqs"] for name in ("medium-a", "medium-b", "16gb", "max")] == [8, 8, 1, 1]
@@ -168,9 +186,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert all(artifact["model_task_source"] in {"model_card", "inferred"} for artifact in campaign_artifacts)
     assert all("model_task" not in artifact or "model_task_source" in artifact for artifact in artifacts)
 
-    registry_entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))[
-        "_llm_registry_gpu"
-    ]
+    registry_entries = _registry_entries()
     assert all("artifact_id" in entry for entry in registry_entries)
     assert all(
         not {"hf_repo", "include_globs", "format", "quantization"} & entry.keys()
@@ -184,7 +200,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert profiles["small"]["artifact_id"] == "qwen35-9b-q4-k-m"
     assert all(model["artifact"]["use"] == "serving" for model in profiles.values())
     assert profiles["small"]["artifact"]["engines"] == ["llama_cpp"]
-    assert profiles["medium-a"]["artifact"]["engines"] == ["vllm"]
+    assert profiles["medium-a"]["artifact"]["engines"] == ["vllm", "sglang"]
     assert profiles["medium-b"]["artifact"]["format"] == "GGUF"
     assert profiles["16gb"]["artifact"]["artifact_id"] == "qwen38-27b-ud-iq3-xxs"
     assert profiles["16gb"]["artifact"]["format"] == "GGUF"
@@ -207,7 +223,7 @@ def test_each_vllm_profile_renders_its_runtime_flags():
     profiles = _profiles()
     registry_profiles = _registry_profiles()
     for name, profile in profiles.items():
-        if profile["engine"] != "vllm":
+        if profile["engine"] != "vllm" or not profile.get("enabled", True):
             continue
         exec_start = _exec_start(_render(name, profile))
         registry_model_id = registry_profiles[name]["upstream_model_id"]
@@ -243,7 +259,7 @@ def test_vllm_profiles_leave_quantization_to_the_checkpoint():
 
 
 def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
-    for role_root in (VLLM_ROOT, LLAMACPP_ROOT):
+    for role_root in (VLLM_ROOT, REPO_ROOT / "roles/sglang_serving", LLAMACPP_ROOT):
         render_tasks = yaml.safe_load((role_root / "tasks/render-units.yml").read_text(encoding="utf-8"))
         main_tasks = yaml.safe_load((role_root / "tasks/main.yml").read_text(encoding="utf-8"))
         activate_tasks = yaml.safe_load((role_root / "tasks/activate.yml").read_text(encoding="utf-8"))

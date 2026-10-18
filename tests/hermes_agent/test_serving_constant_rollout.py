@@ -83,6 +83,10 @@ def test_published_concurrency_matches_every_selectable_active_gpu_profile() -> 
     for path, key in (
         (REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml", "vllm_serving_profiles"),
         (REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml", "llamacpp_serving_profiles"),
+        (
+            REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml",
+            "sglang_serving_profiles",
+        ),
     ):
         profiles.update(yaml.safe_load(path.read_text())[key])
 

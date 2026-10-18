@@ -58,17 +58,17 @@
         _class_scope_mismatches: >-
           {%- set _recorder = (llm_router_role_deployments
                 | selectattr('litellm_params.turn_off_message_logging', 'defined') | first).role -%}
-          {%- set _standard = ['sub', 'local', 'paid-zdr', 'free'] -%}
-          {%- set _all = ['sub', 'local', 'paid-zdr', 'free', 'retains'] -%}
-          {%- set _zdr = ['sub', 'local', 'paid-zdr'] -%}
+          {%- set _standard = ['local', 'sub', 'paid-zdr', 'free'] -%}
+          {%- set _all = ['local', 'sub', 'paid-zdr', 'free', 'retains'] -%}
+          {%- set _zdr = ['local', 'sub', 'paid-zdr'] -%}
           {%- set ns = namespace(rows=[]) -%}
           {%- for _key in _llm_router_declared_virtual_keys
                 if _key.alias in _target_aliases -%}
           {%- set _want = _standard if _key.alias in ['claude-code', 'codex', 'agy']
                 else _zdr if _key.alias == 'claude-llm'
                 else ['sub'] if _key.alias == 'claude-ocg'
-                else ['local'] if _key.alias in ['judge', _recorder, 'opencode', 'qwen-code']
-                else _zdr if _key.alias in ['hermes-private', 'donna']
+                else ['local'] if _key.alias in [_recorder, 'opencode', 'qwen-code']
+                else _zdr if _key.alias in ['judge', 'hermes-private', 'donna']
                 else _all -%}
           {%- if _key.allowed_classes | list != _want -%}
           {%- set ns.rows = ns.rows + [_key.alias] -%}
@@ -78,20 +78,26 @@
         _target_model_mismatches: >-
           {%- set _claude_llm = _llm_router_declared_virtual_keys
                 | selectattr('alias', 'equalto', 'claude-llm') | first -%}
-          {%- set _claude_ocg = _llm_router_declared_virtual_keys
+          {%- set _claude_ocg_effective = llm_router_virtual_keys
                 | selectattr('alias', 'equalto', 'claude-ocg') | first -%}
           {%- set _sandbox = _llm_router_declared_virtual_keys
                 | selectattr('alias', 'equalto', 'sandbox-agent') | first -%}
-          {%- set _go_groups = llm_router_opencode_models
-                | selectattr('client_model_id', 'match', '^go-')
-                | map(attribute='client_model_id') | list -%}
+          {%- set _judge = _llm_router_declared_virtual_keys
+                | selectattr('alias', 'equalto', 'judge') | first -%}
+          {%- set _opencode_zdr_groups = llm_router_opencode_models
+                | map(attribute='client_model_id')
+                | select('in', llm_router_d1_zdr_rungs_by_class['sub']) | list -%}
           {%- set _sandbox_expected = ([llm_router_small_model, llm_router_primary_model,
                 llm_router_large_model] + (llm_router_d1_all_key_groups
                 | difference(_llm_router_sandbox_agent_excluded_groups))) | unique | list -%}
           {{ (['claude-llm'] if _claude_llm.models | unique | sort !=
                 ([llm_router_small_model, llm_router_primary_model, llm_router_large_model]
                  + llm_router_d1_zdr_key_groups) | unique | sort else [])
-             + (['claude-ocg'] if _claude_ocg.models | sort != _go_groups | sort else [])
+             + (['claude-ocg'] if _opencode_zdr_groups | length == 0
+                or _claude_ocg_effective.models | sort != _opencode_zdr_groups | sort else [])
+             + (['judge'] if _judge.models | unique | sort !=
+                ([llm_router_small_model, llm_router_small_capability_name, 'judge']
+                 + llm_router_d1_zdr_ladder_groups) | unique | sort else [])
              + (['sandbox-agent'] if _sandbox.models | unique | sort != _sandbox_expected | sort
                 or (_sandbox.models | intersect(_llm_router_sandbox_agent_excluded_groups) | length > 0)
                 else []) }}
@@ -126,11 +132,12 @@
           {%- set _recorder = (llm_router_role_deployments
                 | selectattr('litellm_params.turn_off_message_logging', 'defined') | first).role -%}
           {%- set _specs = [
-                {'alias': 'judge', 'tags': ['&zdr', '!free', '!retains', '&local']},
+                {'alias': 'judge', 'tags': ['&zdr', '!free', '!retains']},
                 {'alias': _recorder, 'tags': ['&zdr', '!free', '!retains', '&local']},
                 {'alias': 'hermes-private', 'tags': ['&zdr', '!free', '!retains']},
                 {'alias': 'donna', 'tags': ['&zdr', '!free', '!retains']},
-                {'alias': 'claude-llm', 'tags': ['&zdr', '!free', '!retains']}] -%}
+                {'alias': 'claude-llm', 'tags': ['&zdr', '!free', '!retains']},
+                {'alias': 'claude-ocg', 'tags': ['&zdr', '!free', '!retains']}] -%}
           {%- set ns = namespace(rows=[]) -%}
           {%- for _spec in _specs -%}
           {%- set _key = _llm_router_declared_virtual_keys
@@ -215,7 +222,14 @@
             'router_key': 'fixture-sandbox-agent'}) }}
       no_log: true
 
-    - name: Refresh the virtual-key projection after sandbox delivery
+    - name: Refresh cached router projections after sandbox delivery
+      vars:
+        llm_router_zdr_unasserted_terminal_rungs: "{{ _active_zdr_unasserted_terminal_rungs }}"
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: Capture the virtual-key projection after sandbox delivery
       vars:
         llm_router_zdr_unasserted_terminal_rungs: "{{ _active_zdr_unasserted_terminal_rungs }}"
       ansible.builtin.set_fact:

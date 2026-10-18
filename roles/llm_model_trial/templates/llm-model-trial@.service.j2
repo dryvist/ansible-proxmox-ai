@@ -1,0 +1,71 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Run-scoped GPU model trial {{ llm_model_trial_id }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ llm_gpu_serving_user }}
+Group={{ llm_gpu_serving_group }}
+WorkingDirectory={{ llm_model_trial_model_dir }}
+Environment=HF_HOME={{ llm_gpu_serving_hf_home }}
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+{% if llm_model_trial_plan.engine == 'vllm' %}
+Environment=CUDA_HOME={{ llm_gpu_serving_cuda_home }}
+Environment=PATH={{ llm_gpu_serving_cuda_home }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart={{ llm_gpu_serving_venv }}/bin/vllm serve {{ llm_model_trial_model_dir | quote }} \
+  --host {{ llm_model_trial_bind_host }} \
+  --port {{ llm_model_trial_port }} \
+  --served-model-name {{ hf_repo }} \
+  --max-model-len {{ llm_model_trial_plan.context }} \
+  --max-num-seqs {{ llm_model_trial_plan.slots }} \
+  --gpu-memory-utilization {{ llm_model_trial_plan.flags.gpu_memory_utilization }} \
+{% if llm_model_trial_plan.flags.kv_cache_dtype is defined %}
+  --kv-cache-dtype {{ llm_model_trial_plan.flags.kv_cache_dtype }} \
+{% endif %}
+{% if llm_model_trial_plan.flags.quantization is defined %}
+  --quantization {{ llm_model_trial_plan.flags.quantization }} \
+{% endif %}
+{% if llm_model_trial_plan.flags.linear_backend is defined %}
+  --linear-backend {{ llm_model_trial_plan.flags.linear_backend }} \
+{% endif %}
+{% if llm_model_trial_plan.flags.moe_backend is defined %}
+  --moe-backend {{ llm_model_trial_plan.flags.moe_backend }} \
+{% endif %}
+{% if llm_model_trial_plan.flags.prefix_caching | default(false) | bool %}
+  --enable-prefix-caching \
+{% endif %}
+{% if llm_model_trial_plan.flags.speculative_config is defined %}
+  --speculative-config '{{ llm_model_trial_plan.flags.speculative_config | to_json }}' \
+{% endif %}
+{% if llm_model_trial_plan.flags.reasoning_parser is defined %}
+  --reasoning-parser {{ llm_model_trial_plan.flags.reasoning_parser }}
+{% endif %}
+{% else %}
+Environment=LD_LIBRARY_PATH={{ llm_gpu_serving_llamacpp_install_dir }}
+ExecStart={{ llm_gpu_serving_llamacpp_server_bin }} \
+  --model {{ (llm_model_trial_model_dir ~ '/' ~ llm_model_trial_plan.weight_files[0].path) | quote }} \
+  --host {{ llm_model_trial_bind_host }} \
+  --port {{ llm_model_trial_port }} \
+  --alias {{ hf_repo }} \
+  --ctx-size {{ llm_model_trial_plan.context | int * llm_model_trial_plan.slots | int }} \
+  --parallel {{ llm_model_trial_plan.slots }} \
+  --n-gpu-layers {{ llm_model_trial_plan.flags.gpu_layers }} \
+{% if llm_model_trial_plan.flags.flash_attention | default(false) | bool %}
+  --flash-attn on \
+{% endif %}
+{% if llm_model_trial_plan.flags.metrics | default(false) | bool %}
+  --metrics \
+{% endif %}
+{% if llm_model_trial_plan.flags.jinja | default(false) | bool %}
+  --jinja
+{% endif %}
+{% endif %}
+Restart=no
+TimeoutStartSec=600
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

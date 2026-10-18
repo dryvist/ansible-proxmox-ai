@@ -36,6 +36,20 @@
 #    the two-trees hazard patches_verify.yml exists to catch: the patch tasks
 #    rewrite the source tree while the daemon imports the copy. Editable makes
 #    the source tree the imported code, so that class of drift cannot occur.
+- name: Probe the Slack platform extra in the Hermes venv
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - import slack_bolt
+  register: hermes_agent_slack_extra_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+
 - name: Install the Slack platform extra into the Hermes venv
   ansible.builtin.command:
     cmd: >-
@@ -48,7 +62,12 @@
       'Installed' in hermes_agent_slack_extra_install.stderr
       or 'Uninstalled' in hermes_agent_slack_extra_install.stderr
     )
-  when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+  when:
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - >-
+      (hermes_agent_slack_extra_probe.rc | default(1)) != 0
+      or (hermes_agent_install.changed | default(false) | bool)
 
 # Upstream's OTLP export (monitoring.export.otlp, gateway_health_export) imports
 # the OpenTelemetry SDK and the OTLP/HTTP exporter and refuses to start without
@@ -239,13 +258,14 @@
     group: "{{ hermes_agent_user }}"
     mode: "0750"
 
+# Hermes tightens HERMES_HOME to 0700 at startup.
 - name: Ensure HERMES_HOME exists
   ansible.builtin.file:
     path: "{{ hermes_agent_hermes_home }}"
     state: directory
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
-    mode: "0750"
+    mode: "0700"
 
 - name: Ensure managed cron state directory exists
   ansible.builtin.file:

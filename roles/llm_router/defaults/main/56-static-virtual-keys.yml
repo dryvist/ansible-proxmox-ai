@@ -16,17 +16,22 @@ _llm_router_static_virtual_keys:
     value: "{{ bao_apps_secrets.langfuse_llm_router_key | default('', true) }}"
     models: "{{ _llm_router_key_scope_all }}"
     daily_budget: "{{ _llm_router_key_daily_budget }}"
-  # GPU model benchmark runs use their own scoped key. Intentionally no
+  # Direct inference routes use their own scoped key. Intentionally no
   # daily_budget: repeatable tests should not consume a caller budget.
-  - alias: benchmark
+  - alias: inference-direct-only
     value: >-
       {{ (bao_apps_secrets | default({})).get(
-           llm_router_key_catalog_facts.llm_router_key_catalog_source.benchmark_field, '')
-         if llm_router_gpu_models | length > 0 else '' }}
+           llm_router_key_catalog_facts.llm_router_key_catalog_source.inference_direct_only_field, '') }}
+    enabled: >-
+      {{ (bao_apps_secrets | default({})).get(
+           llm_router_key_catalog_facts.llm_router_key_catalog_source.inference_direct_only_field, '')
+         | string | length > 0 and llm_router_direct_route_aliases | length > 0 }}
     allowed_classes: [local]
-    models: "{{ [llm_router_small_model] }}"
+    models: "{{ llm_router_direct_route_aliases }}"
     models_authoritative: true
-    tags: ['&zdr', '!free']
+    tags: ['&local', '&zdr', '!free', '!retains']
+    metadata:
+      purpose: benchmark
     router_settings:
       enable_tag_filtering: true
   # Graph workers use local chat and embedding capabilities only.
@@ -152,7 +157,9 @@ _llm_router_static_virtual_keys:
   - alias: github-actions-pr-review
     value: "{{ bao_apps_secrets.github_actions_pr_review_llm_router_key | default('', true) }}"
     allowed_classes: [local]
-    models: "{{ [llm_router_primary_model] }}"
+    models: >-
+      {{ ([llm_router_primary_model, llm_router_review_aliases.private]
+          + llm_router_review_local_chain) | unique | list }}
     models_authoritative: true
     tags: ['&zdr', '!free', '!retains', '&local']
     metadata:

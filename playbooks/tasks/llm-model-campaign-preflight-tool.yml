@@ -112,6 +112,9 @@
     argv: [lm_eval, --help]
   register: _llm_campaign_lmeval_help
   changed_when: false
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+  vars:
+    ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
   when: _llm_campaign_run.executable == 'lm_eval'
 
 - name: Require every lm-eval option used by the selected recipe
@@ -126,9 +129,28 @@
       - _llm_campaign_lmeval_help.stdout is search('--batch_size')
       - _llm_campaign_lmeval_help.stdout is search('--apply_chat_template')
       - _llm_campaign_lmeval_help.stdout is search('--fewshot_as_multiturn')
+      - _llm_campaign_lmeval_help.stdout is search('--num_fewshot')
+      - _llm_campaign_lmeval_help.stdout is search('--metadata')
     fail_msg: "The installed lm-eval lacks one or more options declared by the recipe."
     quiet: true
   when: _llm_campaign_run.executable == 'lm_eval'
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+  vars:
+    ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
+
+- name: Require explicit lm-eval unsafe-code acknowledgement for code recipes
+  ansible.builtin.assert:
+    that:
+      - _llm_campaign_lmeval_help.stdout is search('--confirm_run_unsafe_code')
+      - "'--confirm_run_unsafe_code' in _llm_campaign_run.argv"
+    fail_msg: "The code-evaluation recipe must explicitly acknowledge execution of generated code."
+    quiet: true
+  when:
+    - _llm_campaign_run.executable == 'lm_eval'
+    - _llm_campaign_run.code_eval | default(false)
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+  vars:
+    ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
 
 - name: Inspect the installed EvalScope command surface
   ansible.builtin.command:
