@@ -154,10 +154,7 @@ def test_inventory_loader_assigns_selected_router_membership_and_retains_engine_
     assert "llm_gpu_engine_strata_group" in groups
     assert "llm_gpu_serving_sglang_group" in groups
     assert "llm_gpu_serving_strata_group" in groups
-    assert "llm_active_profile | default('') == 'qwen38-27b-131k-1'" in groups
-    assert "item.value.llm_gpu_engine_identity | default('') == ''" in groups
-    assert "'nvidia-gpu' in (item.value.tags | default([]))" in groups
-    assert "'llm-vllm' in (item.value.tags | default([]))" in groups
+    assert "add_profile_guest_groups.yml" in yaml.safe_dump(loader)
     assert "llm_gpu_legacy_group" in groups
     assert "value.llm_gpu_engine_identity" in yaml.safe_dump(loader + host_tasks)
     selector = next(task for task in loader if task.get("name") == "Resolve the selector and declared GPU engine members")
@@ -170,37 +167,28 @@ def test_inventory_loader_assigns_selected_router_membership_and_retains_engine_
 
 
 def test_qwen131k_routes_only_unassigned_vllm_tagged_guests_to_llama_cpp_profile():
-    inventory_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
+    profile_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_profile_guest_groups.yml")
     add_host = next(
         task["ansible.builtin.add_host"]
-        for task in _walk(inventory_tasks)
+        for task in _walk(profile_tasks)
         if "ansible.builtin.add_host" in task
     )
+    conditions = next(task["when"] for task in _walk(profile_tasks) if "ansible.builtin.add_host" in task)
+    loader = yaml.safe_dump(_load(REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml"))
     environment = jinja2.Environment()
-    environment.filters["intersect"] = lambda left, right: [item for item in left if item in right]
-    environment.filters["bool"] = bool
-    template = environment.from_string(add_host["groups"])
 
-    def groups(tags: list[str], identity: str, profile: str, selector: str) -> list[str]:
-        rendered = template.render(
-            item={"key": "fixture", "value": {"tags": tags, "llm_gpu_engine_identity": identity}},
-            _ai_agent_by_container={},
-            _llm_cpu_pool_tags=[],
-            load_tofu_gpu_engine_set_present=True,
-            load_tofu_gpu_engine_selector=selector,
-            llm_active_profile=profile,
-        )
-        return yaml.safe_load(rendered)
+    def selected(tags: list[str], identity: str, profile: str) -> bool:
+        context = {
+            "item": {"key": "fixture", "value": {"tags": tags, "llm_gpu_engine_identity": identity}},
+            "llm_active_profile": profile,
+        }
+        return all(environment.compile_expression(condition)(context) for condition in conditions)
 
-    assert "llm_gpu_serving_llama_cpp_group" in groups(
-        ["nvidia-gpu", "llm-vllm"], "", "qwen38-27b-131k-1", "llama_cpp"
-    )
-    assert "llm_gpu_serving_llama_cpp_group" not in groups(
-        ["nvidia-gpu", "llm-vllm"], "vllm", "qwen38-27b-131k-1", "vllm"
-    )
-    assert "llm_gpu_serving_llama_cpp_group" not in groups(
-        ["nvidia-gpu", "llm-vllm"], "", "", "llama_cpp"
-    )
+    assert add_host["groups"] == "llm_gpu_serving_llama_cpp_group"
+    assert "add_profile_guest_groups.yml" in loader
+    assert selected(["nvidia-gpu", "llm-vllm"], "", "qwen38-27b-131k-1")
+    assert not selected(["nvidia-gpu", "llm-vllm"], "vllm", "qwen38-27b-131k-1")
+    assert not selected(["nvidia-gpu", "llm-vllm"], "", "")
 
 
 def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
