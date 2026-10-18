@@ -122,6 +122,7 @@ HERMES_UI_TIMEOUT = (
     "${{ (matrix.scenario == 'hermes_ui' && inputs.timeout_minutes < 25) && 25 || inputs.timeout_minutes }}"
 )
 ROUTER_TIMEOUT = "${{ inputs.timeout_minutes < 30 && 30 || inputs.timeout_minutes }}"
+ROUTER_DEPENDENCIES_TIMEOUT = "${{ github.event_name == 'pull_request' && 5 || inputs.timeout_minutes }}"
 
 
 @pytest.mark.parametrize(("scenario", "caller", "expected"), [
@@ -140,6 +141,17 @@ def test_router_contract_timeout_is_thirty_or_preserves_the_caller(caller: int, 
     assert _evaluate_timeout(ROUTER_TIMEOUT, {"inputs.timeout_minutes": caller}) == expected
 
 
+@pytest.mark.parametrize(("event", "caller", "expected"), [
+    ("pull_request", 10, 5),
+    ("workflow_call", 10, 10),
+])
+def test_router_dependency_timeout_is_five_minutes_for_pull_requests(
+    event: str, caller: int, expected: int
+) -> None:
+    context = {"github.event_name": event, "inputs.timeout_minutes": caller}
+    assert _evaluate_timeout(ROUTER_DEPENDENCIES_TIMEOUT, context) == expected
+
+
 @pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda path: path.name)
 def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
     for name, job in yaml.safe_load(path.read_text())["jobs"].items():
@@ -148,6 +160,8 @@ def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
             allowed = {PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"}
             if (path.name, name) == ("_molecule.yml", "test"):
                 allowed = {HERMES_UI_TIMEOUT}
+            elif (path.name, name) == ("_llm-router-contract.yml", "router-contract-dependencies"):
+                allowed = {ROUTER_DEPENDENCIES_TIMEOUT}
             elif (path.name, name) == ("_llm-router-contract.yml", "llm-router-contract"):
                 allowed = {ROUTER_TIMEOUT}
             assert value in allowed, f"{path.name}:{name}"
