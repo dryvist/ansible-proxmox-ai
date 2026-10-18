@@ -11,7 +11,7 @@
       metrics_url={{ _benchmark_run_kvo_metrics_url | quote }}
       mkdir -p "$metrics_dir"
       rm -f "$stop_file"
-      printf 'timestamp_utc\tphase\tmemory_current_bytes\n' > "$memory_file"
+      printf 'timestamp_utc\tphase\tmemory_current_bytes\tgpu_memory_used_mib\n' > "$memory_file"
 
       capture_sample() {
         phase="$1"
@@ -21,11 +21,16 @@
           --fail --silent --show-error --max-time 5 \
           "$metrics_url" \
           > "$metrics_dir/{{ benchmark_run_request.run_id }}-$phase-$timestamp.prom"
-        printf '%s\t%s\t' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase" \
-          >> "$memory_file"
-        /usr/bin/timeout --signal=TERM --kill-after=1s 10s \
+        memory_current=$(/usr/bin/timeout --signal=TERM --kill-after=1s 10s \
           pct exec "$gpu_guest_vmid" -- /usr/bin/cat \
-          /sys/fs/cgroup/memory.current >> "$memory_file"
+          /sys/fs/cgroup/memory.current)
+        gpu_memory_used=$(/usr/bin/timeout --signal=TERM --kill-after=1s 10s \
+          pct exec "$gpu_guest_vmid" -- nvidia-smi \
+          --query-gpu=memory.used --format=csv,noheader,nounits \
+          | head -n 1 | tr -d '[:space:]')
+        printf '%s\t%s\t%s\t%s\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase" \
+          "$memory_current" "$gpu_memory_used" >> "$memory_file"
       }
 
       capture_sample before

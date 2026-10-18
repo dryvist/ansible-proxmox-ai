@@ -78,7 +78,7 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     assert "--selective_evaluate" in official_argv
     assert any("--check_gt_only" in task.get("ansible.builtin.command", {}).get("argv", []) for task in tasks)
     assert load_tasks("promptfoo.yml")[0]["no_log"] is True
-    assert load_tasks("vllm-serve.yml")[0]["no_log"] is True
+    assert load_tasks("cache-run-with-metrics.yml")[0]["no_log"] is True
 
     promptfoo = load_tasks("promptfoo.yml")[0]["ansible.builtin.command"]["argv"]
     npx_index = promptfoo.index("/usr/local/bin/npx")
@@ -188,15 +188,21 @@ def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
         if "_benchmark_run_campaign_dimensions" in task.get("ansible.builtin.set_fact", {})
     )
     assert "patches" in str(dimensions["ansible.builtin.set_fact"])
+    assert "moe_cpu_offload" in str(dimensions["ansible.builtin.set_fact"])
+    assert "host_ram_limit_gib" in str(dimensions["ansible.builtin.set_fact"])
+    assert "kv_pool_tokens" in str(dimensions["ansible.builtin.set_fact"])
 
 
 def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
-    argv = load_tasks("vllm-serve.yml")[0]["ansible.builtin.command"]["argv"]
+    tasks = load_tasks("vllm-serve.yml")
+    argv = tasks[1]["ansible.builtin.set_fact"]["_benchmark_run_kvo_argv"]
+    assert argv[:4] == ["/usr/bin/timeout", "--signal=TERM", "--kill-after=10s", "1200s"]
     assert argv[argv.index("--entrypoint") + 1] == "vllm"
     assert "--ignore-eos" in argv
     assert argv[argv.index("--metric-percentiles") + 1] == "50,90,99"
     assert "--save-detailed" in argv
     assert "--burstiness" in argv
+    assert tasks[-1]["ansible.builtin.import_tasks"] == "cache-run-with-metrics.yml"
 
     prepare = load_tasks("prepare.yml")
     assert any("engine uptime" in task.get("name", "").lower() for task in prepare)
@@ -238,6 +244,8 @@ def test_cache_tier_cells_use_upstream_tools_and_preserve_telemetry() -> None:
         "sleep 1",
         "metrics_url",
         "memory.current",
+        "nvidia-smi",
+        "gpu_memory_used_mib",
         "capture_sample before",
         "capture_sample after",
     ):
