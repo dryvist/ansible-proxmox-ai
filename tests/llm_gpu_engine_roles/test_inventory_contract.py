@@ -177,7 +177,7 @@ def test_qwen131k_routes_only_unassigned_vllm_tagged_guests_to_llama_cpp_profile
     loader = yaml.safe_dump(_load(REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml"))
     environment = jinja2.Environment()
 
-    def selected(tags: list[str], identity: str, profile: str) -> bool:
+    def selected(tags: list[str], identity: str | None, profile: str) -> bool:
         context = {
             "item": {"key": "fixture", "value": {"tags": tags, "llm_gpu_engine_identity": identity}},
             "llm_active_profile": profile,
@@ -187,6 +187,7 @@ def test_qwen131k_routes_only_unassigned_vllm_tagged_guests_to_llama_cpp_profile
     assert add_host["groups"] == "llm_gpu_serving_llama_cpp_group"
     assert "add_profile_guest_groups.yml" in loader
     assert selected(["nvidia-gpu", "llm-vllm"], "", "qwen38-27b-131k-1")
+    assert selected(["nvidia-gpu", "llm-vllm"], None, "qwen38-27b-131k-1")
     assert not selected(["nvidia-gpu", "llm-vllm"], "vllm", "qwen38-27b-131k-1")
     assert not selected(["nvidia-gpu", "llm-vllm"], "", "")
 
