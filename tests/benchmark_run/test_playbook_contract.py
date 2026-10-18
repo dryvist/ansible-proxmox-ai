@@ -176,6 +176,8 @@ def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
     prepare = load_tasks("prepare.yml")
     assert any(task.get("ansible.builtin.import_tasks") == "patch-metadata.yml" for task in prepare)
     assert any("campaign-dimensions.json" in str(task) for task in prepare)
+    # A skipped register is still defined; non-Promptfoo suites skip the items checksum.
+    assert "_benchmark_run_items_checksum is not skipped" in str(prepare)
     metadata = load_tasks("patch-metadata.yml")
     assert any("pveversion" in str(task) for task in metadata)
     assert any("nvidia-smi" in str(task) for task in metadata)
