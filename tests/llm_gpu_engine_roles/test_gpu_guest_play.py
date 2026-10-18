@@ -88,14 +88,15 @@ def test_serving_plays_apply_the_selected_engine_role_to_one_guest_at_a_time() -
         if host_group == "llm_gpu_serving_llama_cpp_group":
             bolt = next(
                 task for task in play["tasks"]
-                if task["name"] == "Converge Bolt through the shared profile selector"
+                if task["name"] == "Converge shared llama.cpp profiles through the selector"
             )
             specialized = next(
                 task for task in play["tasks"]
                 if task["name"].startswith("Converge llamacpp_serving")
             )
-            assert bolt["when"] == "llm_active_profile in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24']"
-            assert specialized["when"] == "llm_active_profile not in ['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24']"
+            shared_profiles = "['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24', 'qwen38-27b-131k-1']"
+            assert bolt["when"] == f"llm_active_profile in {shared_profiles}"
+            assert specialized["when"] == f"llm_active_profile not in {shared_profiles}"
 
 
 def test_serving_play_precedes_the_router_pool() -> None:
