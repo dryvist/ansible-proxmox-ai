@@ -39,8 +39,9 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
         "flash-next-gguf",
         "nemotron-super-vl-64k-8",
         "nemotron-bolt-64k-16",
+        "moe1-qwen36-n14-s1",
     }
-    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 767_860_222_506
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 789_994_751_498
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {

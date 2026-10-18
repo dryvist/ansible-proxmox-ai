@@ -78,7 +78,7 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     assert "--selective_evaluate" in official_argv
     assert any("--check_gt_only" in task.get("ansible.builtin.command", {}).get("argv", []) for task in tasks)
     assert load_tasks("promptfoo.yml")[0]["no_log"] is True
-    assert load_tasks("vllm-serve.yml")[0]["no_log"] is True
+    assert load_tasks("cache-run-with-metrics.yml")[0]["no_log"] is True
 
     promptfoo = load_tasks("promptfoo.yml")[0]["ansible.builtin.command"]["argv"]
     npx_index = promptfoo.index("/usr/local/bin/npx")
@@ -91,14 +91,14 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     assert any("BENCHMARK_CHAT_TEMPLATE_KWARGS" in argument for argument in promptfoo)
 
     prepare = load_tasks("prepare.yml")
-    uv_check = next(task for task in prepare if task["name"] == "Verify the pinned uv release in the selected client")
-    node_check = next(task for task in prepare if task["name"] == "Verify the pinned Node release in the selected client")
+    uv_check = next(task for task in prepare if task.get("register") == "_benchmark_run_uv_version")
+    node_check = next(task for task in prepare if task.get("register") == "_benchmark_run_node_version")
     assert uv_check["ansible.builtin.command"]["argv"][-2] == "/usr/local/bin/uv"
     assert node_check["ansible.builtin.command"]["argv"][-2] == "/usr/local/bin/node"
-    engine_probe = next(task for task in prepare if task["name"] == "Verify the selected engine from inside the benchmark client")
+    engine_probe = next(task for task in prepare if task.get("register") == "_benchmark_run_engine_probe")
     assert engine_probe["ansible.builtin.command"]["argv"][4] == "/usr/bin/curl"
     assert engine_probe["when"] == "benchmark_run_request.suite != 'promptfoo-echo-smoke'"
-    engine_metrics = next(task for task in prepare if task["name"] == "Read the engine process start time from metrics")
+    engine_metrics = next(task for task in prepare if task.get("register") == "_benchmark_run_engine_start_time")
     assert "/usr/bin/curl" in engine_metrics["ansible.builtin.shell"]["cmd"]
 
 
@@ -116,9 +116,7 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
     prepare = load_tasks("prepare.yml")
     assert any("benchmark-client" in task.get("name", "") for task in prepare)
     assert any("engine" in task.get("name", "").lower() for task in prepare)
-    running_assert = next(
-        task for task in prepare if task["name"] == "Assert the selected client is running"
-    )
+    running_assert = next(task for task in prepare if "_benchmark_run_client_status.stdout" in str(task))
     assert running_assert["ansible.builtin.assert"]["that"] == [
         "_benchmark_run_client_status.stdout | trim == 'status: running'"
     ]
@@ -188,15 +186,21 @@ def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
         if "_benchmark_run_campaign_dimensions" in task.get("ansible.builtin.set_fact", {})
     )
     assert "patches" in str(dimensions["ansible.builtin.set_fact"])
+    assert "moe_cpu_offload" in str(dimensions["ansible.builtin.set_fact"])
+    assert "host_ram_limit_gib" in str(dimensions["ansible.builtin.set_fact"])
+    assert "kv_pool_tokens" in str(dimensions["ansible.builtin.set_fact"])
 
 
 def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
-    argv = load_tasks("vllm-serve.yml")[0]["ansible.builtin.command"]["argv"]
+    tasks = load_tasks("vllm-serve.yml")
+    argv = tasks[1]["ansible.builtin.set_fact"]["_benchmark_run_kvo_argv"]
+    assert argv[:4] == ["/usr/bin/timeout", "--signal=TERM", "--kill-after=10s", "1200s"]
     assert argv[argv.index("--entrypoint") + 1] == "vllm"
     assert "--ignore-eos" in argv
     assert argv[argv.index("--metric-percentiles") + 1] == "50,90,99"
     assert "--save-detailed" in argv
     assert "--burstiness" in argv
+    assert tasks[-1]["ansible.builtin.import_tasks"] == "cache-run-with-metrics.yml"
 
     prepare = load_tasks("prepare.yml")
     assert any("engine uptime" in task.get("name", "").lower() for task in prepare)
@@ -238,6 +242,8 @@ def test_cache_tier_cells_use_upstream_tools_and_preserve_telemetry() -> None:
         "sleep 1",
         "metrics_url",
         "memory.current",
+        "nvidia-smi",
+        "gpu_memory_used_mib",
         "capture_sample before",
         "capture_sample after",
     ):
@@ -250,8 +256,13 @@ def test_cache_tier_cells_use_upstream_tools_and_preserve_telemetry() -> None:
     assert any("tooling.json" in str(task) for task in sources)
 
     prepare = load_tasks("prepare.yml")
-    assert any("/metrics" in str(task) and "before a cache cell" in task.get("name", "") for task in prepare)
-    assert any("memory.current" in str(task) and "before a cache cell" in task.get("name", "") for task in prepare)
+    metrics_probe = next(task for task in prepare if task.get("register") == "_benchmark_run_kvo_metrics_probe")
+    memory_probe = next(task for task in prepare if task.get("register") == "_benchmark_run_kvo_memory_probe")
+    assert "/metrics" in str(metrics_probe)
+    assert "memory.current" in str(memory_probe)
+    for probe in (metrics_probe, memory_probe):
+        assert "lmcache-multi-round-qa" in str(probe.get("when"))
+        assert "vllm-multi-turn" in str(probe.get("when"))
 
     execute = load_tasks("execute.yml")[0]
     always = execute["always"]

@@ -95,7 +95,16 @@ def test_serving_plays_apply_the_selected_engine_role_to_one_guest_at_a_time() -
                 task for task in play["tasks"]
                 if task["name"].startswith("Converge llamacpp_serving")
             )
-            shared_profiles = "['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24', 'qwen38-27b-131k-1']"
+            shared_profiles = "llm_gpu_shared_llamacpp_profiles"
+            assert play["vars"][shared_profiles] == [
+                "nemotron-bolt-64k-16",
+                "nemotron-bolt-256k-24",
+                "qwen38-27b-131k-1",
+                "moe1-qwen36-n14-s1",
+                "moe1-qwen36-n16-s2",
+                "moe1-bolt-n38-s1",
+                "moe1-bolt-n40-s2",
+            ]
             assert bolt["when"] == f"llm_active_profile in {shared_profiles}"
             assert specialized["when"] == f"llm_active_profile not in {shared_profiles}"
 

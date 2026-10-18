@@ -1,64 +1,64 @@
 ---
-- name: Read the selected client's Proxmox configuration
+- name: Read selected client config
   ansible.builtin.command:
     argv: [pct, config, "{{ benchmark_run_request.client_vmid }}"]
   register: _benchmark_run_client_config
   changed_when: false
 
-- name: Require a benchmark-client tag on the selected LXC
+- name: Require benchmark-client tag
   ansible.builtin.assert:
     that:
       - >-
         'benchmark-client' in
         (_benchmark_run_client_config.stdout
          | regex_findall('(?m)^tags: *(.+)$') | first | default('') | split(';'))
-    fail_msg: "The selected LXC must carry the benchmark-client tag."
+    fail_msg: "Selected LXC lacks the benchmark-client tag."
     quiet: true
 
-- name: Require the selected client to be running
+- name: Require running benchmark client
   ansible.builtin.command:
     argv: [pct, status, "{{ benchmark_run_request.client_vmid }}"]
   register: _benchmark_run_client_status
   changed_when: false
 
-- name: Assert the selected client is running
+- name: Assert benchmark client is running
   ansible.builtin.assert:
     that:
       - "_benchmark_run_client_status.stdout | trim == 'status: running'"
-    fail_msg: "The benchmark client must be running before a suite can start."
+    fail_msg: "Benchmark client is not running."
     quiet: true
 
-- name: Verify the pinned uv release in the selected client
+- name: Verify pinned uv in selected client
   ansible.builtin.command:
     argv: [pct, exec, "{{ benchmark_run_request.client_vmid }}", --, /usr/local/bin/uv, --version]
   register: _benchmark_run_uv_version
   changed_when: false
   when: benchmark_run_request.suite == 'bigcodebench-hard'
 
-- name: Require the pinned uv release
+- name: Require pinned uv
   ansible.builtin.assert:
     that:
       - _benchmark_run_uv_version.stdout | trim == 'uv ' ~ benchmark_run_request.uv_version
-    fail_msg: "The client uv version must match the benchmark-run pin."
+    fail_msg: "Client uv version differs from the benchmark-run pin."
     quiet: true
   when: benchmark_run_request.suite == 'bigcodebench-hard'
 
-- name: Verify the pinned Node release in the selected client
+- name: Verify pinned Node in selected client
   ansible.builtin.command:
     argv: [pct, exec, "{{ benchmark_run_request.client_vmid }}", --, /usr/local/bin/node, --version]
   register: _benchmark_run_node_version
   changed_when: false
   when: benchmark_run_request.suite is match('^promptfoo-')
 
-- name: Require the pinned Node release
+- name: Require pinned Node
   ansible.builtin.assert:
     that:
       - _benchmark_run_node_version.stdout | trim == 'v' ~ benchmark_run_request.node_version
-    fail_msg: "The client Node.js version must match the benchmark-run pin."
+    fail_msg: "Client Node.js version differs from the benchmark-run pin."
     quiet: true
   when: benchmark_run_request.suite is match('^promptfoo-')
 
-- name: Verify the pinned Docker sandbox image for BigCodeBench
+- name: Verify pinned BigCodeBench sandbox image
   ansible.builtin.command:
     argv:
       - pct
@@ -73,17 +73,17 @@
   changed_when: false
   when: benchmark_run_request.suite == 'bigcodebench-hard'
 
-- name: Require the pre-pulled Docker sandbox image
+- name: Require pre-pulled BigCodeBench image
   ansible.builtin.assert:
     that:
       - _benchmark_run_sandbox_image.rc == 0
     fail_msg: >-
-      The pinned BigCodeBench sandbox image is absent; add its digest-pinned
-      reference to the benchmark-client images survey before this run.
+      Pinned BigCodeBench sandbox image is absent; add its digest-pinned
+      reference to the benchmark-client image survey.
     quiet: true
   when: benchmark_run_request.suite == 'bigcodebench-hard'
 
-- name: Verify the pre-pulled pinned vLLM client image
+- name: Verify pinned vLLM client image
   ansible.builtin.command:
     argv:
       - pct
@@ -101,18 +101,18 @@
       'vllm-sweep', 'lmcache-multi-round-qa', 'vllm-multi-turn'
     ]
 
-- name: Require the pinned vLLM client image
+- name: Require pinned vLLM client image
   ansible.builtin.assert:
     that:
       - _benchmark_run_vllm_image.rc == 0
-    fail_msg: The pinned vLLM client image is absent from the selected client.
+    fail_msg: Pinned vLLM client image is absent from the selected client.
     quiet: true
   when: >-
     benchmark_run_request.suite in [
       'vllm-sweep', 'lmcache-multi-round-qa', 'vllm-multi-turn'
     ]
 
-- name: Set paths for this run on the node and client
+- name: Set node and client run paths
   ansible.builtin.set_fact:
     _benchmark_run_node_scratch: "/var/tmp/benchmark-run/{{ benchmark_run_request.run_id }}"
     _benchmark_run_client_root: "/var/lib/benchmark-client/{{ benchmark_run_request.run_id }}"
@@ -121,7 +121,7 @@
       /var/lib/benchmark-results/{{ benchmark_run_request.run_id }}/{{ benchmark_run_request.suite }}
     _benchmark_run_client_archive: "/tmp/benchmark-run-{{ benchmark_run_request.run_id }}.tar.gz"
 
-- name: Create the node scratch and artifact directories
+- name: Create node work directories
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
@@ -131,7 +131,7 @@
     - "{{ _benchmark_run_node_artifact }}"
     - "{{ _benchmark_run_node_scratch }}/telemetry"
 
-- name: Create the suite and input directories inside the client
+- name: Create client result and input directories
   ansible.builtin.command:
     argv:
       - pct
@@ -145,19 +145,19 @@
       - "{{ _benchmark_run_client_root }}/artifacts"
   changed_when: true
 
-- name: Stage and verify the pinned cache benchmark tools
+- name: Stage pinned cache tools
   ansible.builtin.import_tasks: cache-tools.yml
   when: >-
     benchmark_run_request.suite in ['lmcache-multi-round-qa', 'vllm-multi-turn']
 
-- name: Require the runner timeout utility for bounded cache cells
+- name: Require runner timeout utility
   ansible.builtin.command:
     argv: [test, -x, /usr/bin/timeout]
   changed_when: false
   when: >-
-    benchmark_run_request.suite in ['lmcache-multi-round-qa', 'vllm-multi-turn']
+    benchmark_run_request.suite in ['vllm-sweep', 'lmcache-multi-round-qa', 'vllm-multi-turn']
 
-- name: Verify the engine metrics endpoint before a cache cell
+- name: Verify engine metrics endpoint
   ansible.builtin.command:
     argv:
       - pct
@@ -180,9 +180,9 @@
   failed_when: _benchmark_run_kvo_metrics_probe.rc != 0
   no_log: true
   when: >-
-    benchmark_run_request.suite in ['lmcache-multi-round-qa', 'vllm-multi-turn']
+    benchmark_run_request.suite in ['vllm-sweep', 'lmcache-multi-round-qa', 'vllm-multi-turn']
 
-- name: Verify guest cgroup memory is readable before a cache cell
+- name: Verify guest cgroup memory readability
   ansible.builtin.command:
     argv:
       - pct
@@ -198,9 +198,9 @@
     _benchmark_run_kvo_memory_probe.stdout | trim is not match('^[0-9]+$')
   no_log: true
   when: >-
-    benchmark_run_request.suite in ['lmcache-multi-round-qa', 'vllm-multi-turn']
+    benchmark_run_request.suite in ['vllm-sweep', 'lmcache-multi-round-qa', 'vllm-multi-turn']
 
-- name: Verify the selected engine from inside the benchmark client
+- name: Verify engine from benchmark client
   ansible.builtin.command:
     argv:
       - pct
@@ -221,14 +221,14 @@
   no_log: true
   when: benchmark_run_request.suite != 'promptfoo-echo-smoke'
 
-- name: Read the Proxmox node uptime at benchmark block start
+- name: Read node uptime at benchmark block start
   ansible.builtin.command:
     argv: [cut, -d, " ", -f1, /proc/uptime]
   register: _benchmark_run_host_uptime
   changed_when: false
   failed_when: false
 
-- name: Read the engine process start time from metrics
+- name: Read engine process start time
   ansible.builtin.shell:
     cmd: >-
       set -o pipefail &&
@@ -243,14 +243,14 @@
   failed_when: false
   no_log: true
 
-- name: Read the current epoch for uptime derivation
+- name: Read epoch for uptime derivation
   ansible.builtin.command:
     argv: [date, +%s]
   register: _benchmark_run_now
   changed_when: false
   when: _benchmark_run_engine_start_time.stdout | trim | length > 0
 
-- name: Record nullable host and engine uptime values
+- name: Record nullable host and engine uptime
   ansible.builtin.set_fact:
     _benchmark_run_host_uptime_s: >-
       {{ (_benchmark_run_host_uptime.stdout | trim | regex_search('^[0-9]+'))
@@ -272,7 +272,7 @@
       {{ none if (_benchmark_run_engine_start_time.stdout | trim | length > 0)
          else 'Engine metrics did not expose process_start_time_seconds.' }}
 
-- name: Report uptime tags at benchmark block start
+- name: Report uptime tags
   ansible.builtin.debug:
     msg: >-
       host_uptime_s={{ _benchmark_run_host_uptime_s | default(none) }}
@@ -282,17 +282,17 @@
       engine_uptime_s={{ _benchmark_run_engine_uptime_s | default(none) }}
       engine_uptime_reason={{ _benchmark_run_engine_uptime_reason }}
 
-- name: Collect patch and package metadata for publication
+- name: Collect patch and package metadata
   ansible.builtin.import_tasks: patch-metadata.yml
 
-- name: Download the immutable Promptfoo config to the selected node
+- name: Download immutable Promptfoo config
   ansible.builtin.get_url:
     url: "{{ benchmark_run_request.items_file }}"
     dest: "{{ _benchmark_run_node_scratch }}/{{ benchmark_run_request.items_file | urlsplit('path') | basename }}"
     mode: "0644"
   when: benchmark_run_request.suite is match('^promptfoo-')
 
-- name: Record the staged Promptfoo config checksum
+- name: Record Promptfoo config checksum
   ansible.builtin.command:
     argv:
       - sha256sum
@@ -301,7 +301,7 @@
   changed_when: false
   when: benchmark_run_request.suite is match('^promptfoo-')
 
-- name: Copy the Promptfoo config into the selected client
+- name: Copy Promptfoo config to client
   ansible.builtin.command:
     argv:
       - pct
@@ -312,7 +312,7 @@
   changed_when: true
   when: benchmark_run_request.suite is match('^promptfoo-')
 
-- name: Write run metadata for the client
+- name: Write client run metadata
   ansible.builtin.copy:
     dest: "{{ _benchmark_run_node_scratch }}/run.json"
     mode: "0640"
@@ -359,6 +359,8 @@
         'kv_offload_cpu_gib': benchmark_run_request.kv_offload_cpu_gib,
         'kv_offload_disk_gib': benchmark_run_request.kv_offload_disk_gib,
         'weight_cpu_offload_gib': benchmark_run_request.weight_cpu_offload_gib,
+        'moe_cpu_offload': benchmark_run_request.moe_cpu_offload,
+        'moe_cpu_layers': benchmark_run_request.moe_cpu_layers,
         'llamacpp_cache_ram_mib': benchmark_run_request.llamacpp_cache_ram_mib,
         'gpu_memory_utilization': benchmark_run_request.gpu_memory_utilization,
         'max_num_batched_tokens': benchmark_run_request.max_num_batched_tokens,
@@ -377,17 +379,17 @@
         'gutenberg_sha256': benchmark_run_request.gutenberg_sha256,
       } | to_nice_json }}
 
-- name: Write campaign dimensions for the publisher
+- name: Write publisher campaign dimensions
   ansible.builtin.copy:
     dest: "{{ _benchmark_run_node_scratch }}/campaign-dimensions.json"
     mode: "0640"
     content: >-
       {{ {
         'campaign_dimensions': _benchmark_run_campaign_dimensions,
-        'dimension_null_reasons': {}
+        'dimension_null_reasons': _benchmark_run_campaign_dimension_null_reasons
       } | to_nice_json }}
 
-- name: Copy run metadata into the selected client
+- name: Copy run metadata to client
   ansible.builtin.command:
     argv:
       - pct
@@ -397,7 +399,7 @@
       - "{{ _benchmark_run_client_root }}/run.json"
   changed_when: true
 
-- name: Copy campaign dimensions into the selected client
+- name: Copy campaign dimensions to client
   ansible.builtin.command:
     argv:
       - pct

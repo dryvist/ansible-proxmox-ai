@@ -152,6 +152,10 @@
 - name: Build publisher dimensions
   ansible.builtin.set_fact:
     _benchmark_run_campaign_dimensions:
+      hardware:
+        host_ram_limit_gib: >-
+          {{ benchmark_run_request.host_ram_limit_gib
+             if benchmark_run_request.host_ram_limit_gib | float > 0 else none }}
       software:
         operating_system: >-
           {{ _benchmark_run_gpu_guest_os.stdout_lines
@@ -165,3 +169,42 @@
              | regex_replace('release ', '') }}
       run:
         patches: "{{ _benchmark_run_patch_records }}"
+        prefix_cache: "{{ benchmark_run_request.prefix_caching }}"
+        kv_offload_backend: "{{ benchmark_run_request.kv_offload_backend }}"
+        kv_offload_cpu_gib: "{{ benchmark_run_request.kv_offload_cpu_gib }}"
+        kv_offload_disk_gib: "{{ benchmark_run_request.kv_offload_disk_gib }}"
+        weight_cpu_offload_gib: "{{ benchmark_run_request.weight_cpu_offload_gib }}"
+        moe_cpu_offload: "{{ benchmark_run_request.moe_cpu_offload }}"
+        moe_cpu_layers: "{{ benchmark_run_request.moe_cpu_layers }}"
+        llamacpp_cache_ram_mib: "{{ benchmark_run_request.llamacpp_cache_ram_mib }}"
+        gpu_memory_utilization: >-
+          {{ benchmark_run_request.gpu_memory_utilization
+             if benchmark_run_request.gpu_memory_utilization | float > 0 else none }}
+        max_num_batched_tokens: >-
+          {{ benchmark_run_request.max_num_batched_tokens
+             if benchmark_run_request.max_num_batched_tokens | int > 0 else none }}
+        kv_pool_tokens: >-
+          {{ benchmark_run_request.gpu_kv_capacity_tokens
+             if benchmark_run_request.gpu_kv_capacity_tokens | int > 0 else none }}
+        cache_workload: "{{ benchmark_run_request.cache_workload }}"
+        num_users: "{{ benchmark_run_request.num_users }}"
+        num_rounds: "{{ benchmark_run_request.num_rounds }}"
+        shared_prompt_tokens: "{{ benchmark_run_request.shared_prompt_tokens }}"
+        user_history_tokens: "{{ benchmark_run_request.user_history_tokens }}"
+        output_tokens: "{{ benchmark_run_request.answer_tokens }}"
+        request_rate: >-
+          {{ benchmark_run_request.request_rate | float
+             if benchmark_run_request.request_rate | string != 'inf' else none }}
+    _benchmark_run_campaign_dimension_null_reasons: >-
+      {{ {
+        'hardware.host_ram_limit_gib': 'NOT_CAPTURED'
+        if benchmark_run_request.host_ram_limit_gib | float <= 0 else none,
+        'run.gpu_memory_utilization': 'NOT_APPLICABLE_ENGINE'
+        if benchmark_run_request.gpu_memory_utilization | float <= 0 else none,
+        'run.max_num_batched_tokens': 'NOT_APPLICABLE_ENGINE'
+        if benchmark_run_request.max_num_batched_tokens | int <= 0 else none,
+        'run.kv_pool_tokens': 'ENGINE_STARTUP_LOG_NOT_CAPTURED'
+        if benchmark_run_request.gpu_kv_capacity_tokens | int <= 0 else none,
+        'run.request_rate': 'INFINITE_REQUEST_RATE'
+        if benchmark_run_request.request_rate | string == 'inf' else none
+      } | dict2items | rejectattr('value', 'equalto', none) | items2dict }}

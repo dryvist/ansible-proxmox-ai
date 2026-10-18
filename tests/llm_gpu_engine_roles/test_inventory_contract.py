@@ -129,7 +129,16 @@ def test_shared_llama_cpp_profiles_use_the_shared_serving_role_and_selector():
         task.get("ansible.builtin.include_tasks") == "retire-legacy-llama-swap.yml"
         for task in legacy_main
     )
-    shared_profiles = "['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24', 'qwen38-27b-131k-1']"
+    shared_profiles = "llm_gpu_shared_llamacpp_profiles"
+    assert llamacpp_play["vars"][shared_profiles] == [
+        "nemotron-bolt-64k-16",
+        "nemotron-bolt-256k-24",
+        "qwen38-27b-131k-1",
+        "moe1-qwen36-n14-s1",
+        "moe1-qwen36-n16-s2",
+        "moe1-bolt-n38-s1",
+        "moe1-bolt-n40-s2",
+    ]
     assert shared["when"] == f"llm_active_profile in {shared_profiles}"
     assert specialized["when"] == f"llm_active_profile not in {shared_profiles}"
 

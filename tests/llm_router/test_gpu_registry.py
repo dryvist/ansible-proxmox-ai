@@ -31,6 +31,8 @@ MATRIX_PROFILES = {
     "flash-next-gguf", "flash-next-gguf-262k-1", "flash-next-gguf-262k-2",
     "flash-next-small-128k-8",
     "nemotron-bolt-64k-16", "nemotron-bolt-256k-24",
+    "moe1-qwen36-n14-s1", "moe1-qwen36-n16-s2",
+    "moe1-bolt-n38-s1", "moe1-bolt-n40-s2",
 }
 RETIRED_FLASH_NEXT_NVFP4_PROFILES = {
     "flash-next-64k-1-fp8-mtp",
