@@ -79,6 +79,12 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
     prepare = load_tasks("prepare.yml")
     assert any("benchmark-client" in task.get("name", "") for task in prepare)
     assert any("engine" in task.get("name", "").lower() for task in prepare)
+    running_assert = next(
+        task for task in prepare if task["name"] == "Assert the selected client is running"
+    )
+    assert running_assert["ansible.builtin.assert"]["that"] == [
+        "_benchmark_run_client_status.stdout | trim == 'status: running'"
+    ]
 
     execute = load_tasks("execute.yml")
     names = [task.get("name", "") for task in execute[0]["block"] + execute[0]["always"]]
