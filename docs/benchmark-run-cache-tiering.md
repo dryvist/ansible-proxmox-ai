@@ -15,6 +15,8 @@ the cell and every 15 seconds during it, along with
 `/sys/fs/cgroup/memory.current`. The tool timer is limited to 18 minutes; the
 runner allows up to 79 more seconds for warm-up and command setup. Before and
 after captures are bounded, keeping the cell below its 20-minute cap.
+Use a fresh `run_id` for every invocation; the telemetry stop marker remains in
+that run's directory and an existing marker makes the sampler fail closed.
 
 The LMCache CSV contains one record per request. `question_id == 1` is the first
 round; later `question_id` values are subsequent rounds. The vLLM cross-check

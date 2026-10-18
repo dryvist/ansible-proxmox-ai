@@ -236,6 +236,9 @@ def test_cache_tier_cells_use_upstream_tools_and_preserve_telemetry() -> None:
     assert "--max-active-conversations" in vllm_argv
 
     sampler = load_tasks("cache-run-with-metrics.yml")[0]["ansible.builtin.shell"]["cmd"]
+    assert 'if [[ -e "$stop_file" ]]' in sampler
+    assert "use a new run_id" in sampler
+    assert "rm -f" not in sampler
     for expected in (
         "next_sample=$((SECONDS + 15))",
         "next_sample=$((next_sample + 15))",
