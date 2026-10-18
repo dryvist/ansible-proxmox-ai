@@ -132,7 +132,15 @@ def test_qwen38_long_context_profiles_render_through_legacy_units():
         "qwen38-128k-11-fp8-mtp": (131072, 11),
         "qwen38-256k-1-fp8-mtp": (262144, 1),
         "qwen38-256k-5-fp8-mtp": (262144, 5),
+        "qwen38-256k-kvoff0": (262144, 5),
+        "qwen38-256k-kvoff24": (262144, 5),
+        "qwen38-256k-kvoffmax": (262144, 5),
         "qwen38-64k-16-fp8-mtp": (65536, 16),
+    }
+    offload_sizes = {
+        "qwen38-256k-kvoff0": 0,
+        "qwen38-256k-kvoff24": 24,
+        "qwen38-256k-kvoffmax": 52.81,
     }
 
     for name, (max_model_len, max_num_seqs) in expected.items():
@@ -143,5 +151,12 @@ def test_qwen38_long_context_profiles_render_through_legacy_units():
         assert f"--max-num-seqs {max_num_seqs}" in exec_start
         assert "--kv-cache-dtype fp8" in exec_start
         assert "--quantization modelopt" in exec_start
+        assert "--enable-prefix-caching" in exec_start
         rendered = json.loads(exec_start.split("--speculative-config '", 1)[1].split("'", 1)[0])
         assert rendered == {"method": "mtp", "num_speculative_tokens": 3}
+        if name in offload_sizes and offload_sizes[name] == 0:
+            assert "--kv-offloading-size" not in exec_start
+            assert "--kv-offloading-backend" not in exec_start
+        elif name in offload_sizes:
+            assert f"--kv-offloading-size {offload_sizes[name]}" in exec_start
+            assert "--kv-offloading-backend native" in exec_start

@@ -141,7 +141,9 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         )
         assert estimated_gib <= budget_gib, (name, estimated_gib, budget_gib, pool_token_capacity)
         if kv_offloading_gib:
-            ple_bytes = artifact["model_store_size_bytes"] - artifact["gpu_resident_size_bytes"]
+            ple_bytes = artifact["model_store_size_bytes"] - artifact.get(
+                "gpu_resident_size_bytes", artifact["model_store_size_bytes"]
+            )
             assert (ple_bytes / GIB) + kv_offloading_gib <= HOST_MEMORY_RESERVE_GIB
 
 

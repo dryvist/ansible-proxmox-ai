@@ -22,6 +22,7 @@ MATRIX_PROFILES = {
     "qwen38-64k-8-fp8-mtp4",
     "qwen38-128k-2-fp8-mtp", "qwen38-128k-11-fp8-mtp",
     "qwen38-256k-1-fp8-mtp", "qwen38-256k-5-fp8-mtp",
+    "qwen38-256k-kvoff0", "qwen38-256k-kvoff24", "qwen38-256k-kvoffmax",
     "qwen38-64k-16-fp8-mtp",
     "flash-next-64k-8-fp8-mtp0", "flash-next-64k-8-fp8-mtp2", "flash-next-64k-8-fp8-mtp4",
     "flash-next-262k-1-fp8", "flash-next-262k-2-fp8",
