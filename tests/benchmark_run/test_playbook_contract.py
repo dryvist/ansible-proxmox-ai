@@ -85,6 +85,11 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     node_check = next(task for task in prepare if task["name"] == "Verify the pinned Node release in the selected client")
     assert uv_check["ansible.builtin.command"]["argv"][-2] == "/usr/local/bin/uv"
     assert node_check["ansible.builtin.command"]["argv"][-2] == "/usr/local/bin/node"
+    engine_probe = next(task for task in prepare if task["name"] == "Verify the selected engine from inside the benchmark client")
+    assert engine_probe["ansible.builtin.command"]["argv"][4] == "/usr/bin/curl"
+    assert engine_probe["when"] == "benchmark_run_request.suite != 'promptfoo-echo-smoke'"
+    engine_metrics = next(task for task in prepare if task["name"] == "Read the engine process start time from metrics")
+    assert "/usr/bin/curl" in engine_metrics["ansible.builtin.shell"]["cmd"]
 
 
 def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
@@ -109,7 +114,9 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
         "return_code",
         "stdout_line_count",
         "stderr_line_count",
+        "promptfoo_pass_summary",
     }
+    assert "regex_search('[0-9]+ passed')" in safe_summary["promptfoo_pass_summary"]
 
 
 def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
