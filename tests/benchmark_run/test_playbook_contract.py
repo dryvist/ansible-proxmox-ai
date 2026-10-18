@@ -93,6 +93,11 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
 
 
 def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    assert plays[2]["hosts"] == "{{ node | default('localhost') }}"
+    run_tasks = plays[2]["tasks"][0]
+    assert run_tasks["delegate_to"] == "benchmark-run-node"
+
     prepare = load_tasks("prepare.yml")
     assert any("benchmark-client" in task.get("name", "") for task in prepare)
     assert any("engine" in task.get("name", "").lower() for task in prepare)
@@ -108,7 +113,12 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
     assert any("Archive the raw suite output" in name for name in names)
     assert any("Copy the raw result archive" in name for name in names)
 
-    safe_summary = execute[0]["always"][0]["ansible.builtin.debug"]["msg"]
+    promptfoo_summary = execute[0]["always"][0]
+    assert promptfoo_summary["name"] == "Read a safe Promptfoo pass count from its JSON output"
+    assert promptfoo_summary["ansible.builtin.command"]["argv"][4] == "/usr/local/bin/node"
+    assert "results.stats.successes" in promptfoo_summary["ansible.builtin.command"]["argv"][-1]
+    assert "passed" in promptfoo_summary["ansible.builtin.command"]["argv"][-1]
+    safe_summary = execute[0]["always"][1]["ansible.builtin.debug"]["msg"]
     assert set(safe_summary) == {
         "suite",
         "return_code",
@@ -116,7 +126,7 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
         "stderr_line_count",
         "promptfoo_pass_summary",
     }
-    assert "regex_search('[0-9]+ passed')" in safe_summary["promptfoo_pass_summary"]
+    assert "_benchmark_run_promptfoo_summary.stdout" in safe_summary["promptfoo_pass_summary"]
 
 
 def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
