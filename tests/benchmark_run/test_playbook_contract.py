@@ -180,6 +180,11 @@ def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
     assert any("pveversion" in str(task) for task in metadata)
     assert any("nvidia-smi" in str(task) for task in metadata)
     assert any("nvcc" in str(task) for task in metadata)
+    patch_assert = next(task for task in metadata if "ansible.builtin.assert" in task)
+    # ansible-core 2.19+ rejects a non-boolean conditional; regex_search returns the match string.
+    for condition in patch_assert["ansible.builtin.assert"]["that"]:
+        if "regex_search(" in condition:
+            assert condition.endswith("is not none"), condition
     dimensions = next(
         task
         for task in metadata
