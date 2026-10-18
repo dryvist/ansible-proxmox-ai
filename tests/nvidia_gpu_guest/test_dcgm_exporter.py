@@ -99,3 +99,12 @@ def test_legacy_vulkan_path_installs_dcgm_exporter_when_nvidia_is_exposed():
     }
     assert "llama_cpp_gpu_backend == 'vulkan'" in install["when"]
     assert "llama_cpp_nvidia_exposure.results[0].stat.exists" in install["when"][1]
+    assert "distribution_major_version" in install["when"][2]
+
+
+def test_dcgm_exporter_skips_debian_releases_without_an_upstream_package():
+    main = _load(ROLE / "tasks/main.yml")
+    install = next(
+        task for task in main if task.get("ansible.builtin.include_tasks") == "install-dcgm-exporter.yml"
+    )
+    assert "distribution_major_version'] | int < 13" in install["when"]
