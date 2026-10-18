@@ -93,6 +93,7 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
         "medium-a",
         "medium-b",
         "16gb",
+        "qwen38-27b-131k-1",
         "max",
         "glm-flash",
         "qwen38-16k-1-auto",
