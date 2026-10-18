@@ -1,0 +1,167 @@
+---
+- name: Read installed Proxmox package versions
+  ansible.builtin.command:
+    argv: [pveversion, -v]
+  register: _benchmark_run_proxmox_packages
+  changed_when: false
+
+- name: Read the running Proxmox kernel version
+  ansible.builtin.command:
+    argv: [uname, -r]
+  register: _benchmark_run_proxmox_kernel
+  changed_when: false
+
+- name: Read the NVIDIA driver version from the Proxmox node
+  ansible.builtin.command:
+    argv:
+      - nvidia-smi
+      - --query-gpu=driver_version
+      - --format=csv,noheader
+  register: _benchmark_run_proxmox_driver
+  changed_when: false
+
+- name: Read the GPU guest operating system
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.gpu_guest_vmid }}"
+      - --
+      - cat
+      - /etc/os-release
+  register: _benchmark_run_gpu_guest_os
+  changed_when: false
+
+- name: Read GPU guest package versions
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.gpu_guest_vmid }}"
+      - --
+      - /bin/bash
+      - -c
+      - >-
+        dpkg-query -W -f='${Package}=${Version}\n'
+        | grep -E '^(base-files|libc6|nvidia|libcuda|cuda)'
+        | sort
+  register: _benchmark_run_gpu_guest_packages
+  changed_when: false
+
+- name: Read the NVIDIA driver version from the GPU guest
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.gpu_guest_vmid }}"
+      - --
+      - nvidia-smi
+      - --query-gpu=driver_version
+      - --format=csv,noheader
+  register: _benchmark_run_gpu_guest_driver
+  changed_when: false
+
+- name: Read the CUDA toolkit version from the GPU guest
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.gpu_guest_vmid }}"
+      - --
+      - /usr/local/cuda/bin/nvcc
+      - --version
+  register: _benchmark_run_cuda_toolkit
+  changed_when: false
+
+- name: Read the benchmark client operating system
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - cat
+      - /etc/os-release
+  register: _benchmark_run_client_os
+  changed_when: false
+
+- name: Read benchmark client package versions
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - /bin/bash
+      - -c
+      - >-
+        dpkg-query -W -f='${Package}=${Version}\n'
+        | grep -E '^(base-files|libc6|ca-certificates|docker.io|python3)'
+        | sort
+  register: _benchmark_run_client_packages
+  changed_when: false
+
+- name: Require patch metadata for the measured software path
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_proxmox_packages.stdout | trim | length > 0
+      - _benchmark_run_proxmox_kernel.stdout | trim | length > 0
+      - _benchmark_run_proxmox_driver.stdout_lines | unique | length == 1
+      - _benchmark_run_gpu_guest_os.stdout | regex_search('(?m)^PRETTY_NAME=')
+      - _benchmark_run_gpu_guest_packages.stdout | trim | length > 0
+      - _benchmark_run_gpu_guest_driver.stdout_lines | unique | length == 1
+      - _benchmark_run_cuda_toolkit.stdout | regex_search('release [0-9]+[.][0-9]+')
+      - _benchmark_run_client_os.stdout | regex_search('(?m)^PRETTY_NAME=')
+      - _benchmark_run_client_packages.stdout | trim | length > 0
+    fail_msg: >-
+      The benchmark patch record is incomplete; refusing to run without package
+      and driver versions.
+    quiet: true
+
+- name: Build the patch record
+  ansible.builtin.set_fact:
+    _benchmark_run_patch_records:
+      - id: proxmox-packages
+        revision: "{{ _benchmark_run_proxmox_packages.stdout | trim | replace('\n', ';') }}"
+        enabled: true
+      - id: proxmox-kernel
+        revision: "{{ _benchmark_run_proxmox_kernel.stdout | trim }}"
+        enabled: true
+      - id: nvidia-driver
+        revision: "{{ _benchmark_run_proxmox_driver.stdout_lines | first | trim }}"
+        enabled: true
+      - id: gpu-guest-packages
+        revision: >-
+          {{ (_benchmark_run_gpu_guest_os.stdout_lines
+              | select('match', '^PRETTY_NAME=') | first
+              | regex_replace('^PRETTY_NAME=', '') | trim('"')) }};
+          {{ _benchmark_run_gpu_guest_packages.stdout | trim | replace('\n', ';') }};
+          driver={{ _benchmark_run_gpu_guest_driver.stdout_lines | first | trim }};
+          cuda={{ _benchmark_run_cuda_toolkit.stdout
+              | regex_search('release [0-9]+[.][0-9]+')
+              | regex_replace('release ', '') }}
+        enabled: true
+      - id: benchmark-client-packages
+        revision: >-
+          {{ (_benchmark_run_client_os.stdout_lines
+              | select('match', '^PRETTY_NAME=') | first
+              | regex_replace('^PRETTY_NAME=', '') | trim('"')) }};
+          {{ _benchmark_run_client_packages.stdout | trim | replace('\n', ';') }}
+        enabled: true
+
+- name: Build publisher dimensions
+  ansible.builtin.set_fact:
+    _benchmark_run_campaign_dimensions:
+      software:
+        operating_system: >-
+          {{ _benchmark_run_gpu_guest_os.stdout_lines
+             | select('match', '^PRETTY_NAME=') | first
+             | regex_replace('^PRETTY_NAME=', '') | trim('"') }}
+        kernel: "{{ _benchmark_run_proxmox_kernel.stdout | trim }}"
+        driver_version: "{{ _benchmark_run_proxmox_driver.stdout_lines | first | trim }}"
+        cuda_toolkit_version: >-
+          {{ _benchmark_run_cuda_toolkit.stdout
+             | regex_search('release [0-9]+[.][0-9]+')
+             | regex_replace('release ', '') }}
+      run:
+        patches: "{{ _benchmark_run_patch_records }}"

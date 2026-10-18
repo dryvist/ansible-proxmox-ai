@@ -134,6 +134,42 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
     assert "_benchmark_run_promptfoo_summary.stdout" in safe_summary["promptfoo_pass_summary"]
 
 
+def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    first_run_task = plays[2]["tasks"][0]["block"][0]
+    assert first_run_task["ansible.builtin.import_tasks"] == "tasks/benchmark-run/upgrade.yml"
+    assert first_run_task["when"] == "benchmark_run_request.upgrade | bool"
+
+    preflight = load_tasks("preflight.yml")
+    required = preflight[0]["ansible.builtin.assert"]["that"]
+    assert any("gpu_guest_vmid" in check for check in required)
+    assert any("default('true')" in check for check in required)
+    request = next(task for task in preflight if task.get("ansible.builtin.add_host"))
+    assert request["ansible.builtin.add_host"]["benchmark_run_request"]["upgrade"] == (
+        "{{ (upgrade | default('true') | string | lower) != 'false' }}"
+    )
+
+    upgrade = load_tasks("upgrade.yml")
+    assert any("apt-get" in str(task.get("ansible.builtin.command", {}).get("argv", [])) for task in upgrade)
+    assert any("full-upgrade" in str(task) for task in upgrade)
+    package_upgrade = next(task for task in upgrade if task["name"] == "Upgrade all GPU guest packages")
+    assert "not ansible_check_mode" in package_upgrade["when"]
+
+    prepare = load_tasks("prepare.yml")
+    assert any(task.get("ansible.builtin.import_tasks") == "patch-metadata.yml" for task in prepare)
+    assert any("campaign-dimensions.json" in str(task) for task in prepare)
+    metadata = load_tasks("patch-metadata.yml")
+    assert any("pveversion" in str(task) for task in metadata)
+    assert any("nvidia-smi" in str(task) for task in metadata)
+    assert any("nvcc" in str(task) for task in metadata)
+    dimensions = next(
+        task
+        for task in metadata
+        if "_benchmark_run_campaign_dimensions" in task.get("ansible.builtin.set_fact", {})
+    )
+    assert "patches" in str(dimensions["ansible.builtin.set_fact"])
+
+
 def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
     argv = load_tasks("vllm-serve.yml")[0]["ansible.builtin.command"]["argv"]
     assert argv[argv.index("--entrypoint") + 1] == "vllm"
