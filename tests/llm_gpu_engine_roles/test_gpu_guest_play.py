@@ -69,7 +69,7 @@ def _walk(node):
 
 def test_serving_plays_apply_the_selected_engine_role_to_one_guest_at_a_time() -> None:
     expected_roles = {
-        "llm_gpu_serving_llama_cpp_group": ["llm_gpu_serving", "llamacpp_serving"],
+        "llm_gpu_serving_llama_cpp_group": ["llama_cpp", "llm_gpu_serving", "llamacpp_serving"],
         "llm_gpu_serving_vllm_group": ["vllm_serving"],
         "llm_gpu_serving_sglang_group": ["sglang_serving"],
         "llm_gpu_serving_strata_group": ["strata_serving"],
