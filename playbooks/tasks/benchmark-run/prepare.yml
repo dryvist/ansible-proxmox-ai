@@ -222,6 +222,9 @@
       engine_uptime_s={{ _benchmark_run_engine_uptime_s | default(none) }}
       engine_uptime_reason={{ _benchmark_run_engine_uptime_reason }}
 
+- name: Collect patch and package metadata for publication
+  ansible.builtin.import_tasks: patch-metadata.yml
+
 - name: Download the immutable Promptfoo config to the selected node
   ansible.builtin.get_url:
     url: "{{ benchmark_run_request.items_file }}"
@@ -275,6 +278,8 @@
         'guest_uptime_reason': _benchmark_run_guest_uptime_reason,
         'engine_uptime_s': _benchmark_run_engine_uptime_s | default(none),
         'engine_uptime_reason': _benchmark_run_engine_uptime_reason,
+        'patches': _benchmark_run_patch_records,
+        'campaign_dimensions': _benchmark_run_campaign_dimensions,
         'publish': false,
         'items_file_sha256': (_benchmark_run_items_checksum.stdout.split()[0]
           if _benchmark_run_items_checksum is defined else none),
@@ -285,6 +290,16 @@
         'vllm_client_image': benchmark_run_request.vllm_client_image,
       } | to_nice_json }}
 
+- name: Write campaign dimensions for the publisher
+  ansible.builtin.copy:
+    dest: "{{ _benchmark_run_node_scratch }}/campaign-dimensions.json"
+    mode: "0640"
+    content: >-
+      {{ {
+        'campaign_dimensions': _benchmark_run_campaign_dimensions,
+        'dimension_null_reasons': {}
+      } | to_nice_json }}
+
 - name: Copy run metadata into the selected client
   ansible.builtin.command:
     argv:
@@ -293,4 +308,14 @@
       - "{{ benchmark_run_request.client_vmid }}"
       - "{{ _benchmark_run_node_scratch }}/run.json"
       - "{{ _benchmark_run_client_root }}/run.json"
+  changed_when: true
+
+- name: Copy campaign dimensions into the selected client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ benchmark_run_request.client_vmid }}"
+      - "{{ _benchmark_run_node_scratch }}/campaign-dimensions.json"
+      - "{{ _benchmark_run_client_root }}/campaign-dimensions.json"
   changed_when: true
