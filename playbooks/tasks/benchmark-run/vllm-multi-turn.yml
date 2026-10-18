@@ -1,0 +1,66 @@
+---
+- name: Build the upstream vLLM multi-turn cross-check command
+  ansible.builtin.set_fact:
+    _benchmark_run_kvo_metrics_url: >-
+      {{ benchmark_run_request.engine_url | urlsplit('scheme') }}://{{
+        benchmark_run_request.engine_url | urlsplit('netloc') }}/metrics
+    _benchmark_run_kvo_argv:
+      - /usr/bin/timeout
+      - --signal=TERM
+      - --kill-after=10s
+      - "{{ benchmark_run_request.duration_seconds + 79 }}s"
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - docker
+      - run
+      - --rm
+      - --pull=never
+      - --network
+      - host
+      - -v
+      - "{{ _benchmark_run_client_root }}/inputs/kvo:/work/kvo:ro"
+      - -v
+      - "{{ _benchmark_run_client_result }}:/out"
+      - --workdir
+      - /work/kvo/vllm
+      - --entrypoint
+      - python
+      - "{{ benchmark_run_request.vllm_client_image }}"
+      - /work/kvo/vllm/benchmark_serving_multi_turn.py
+      - --input-file
+      - /work/kvo/vllm/generate_multi_turn.json
+      - --output-file
+      - "/out/{{ benchmark_run_request.run_id }}-conversations.json"
+      - --stats-json-output
+      - "/out/{{ benchmark_run_request.run_id }}-stats.json"
+      - --model
+      - "{{ benchmark_run_request.tokenizer }}"
+      - --served-model-name
+      - "{{ benchmark_run_request.model }}"
+      - --url
+      - >-
+        {{ benchmark_run_request.engine_url | urlsplit('scheme') }}://{{
+          benchmark_run_request.engine_url | urlsplit('netloc') }}
+      - --num-clients
+      - "{{ benchmark_run_request.num_users }}"
+      - --max-active-conversations
+      - "{{ benchmark_run_request.num_users }}"
+      - --max-num-requests
+      - "{{ benchmark_run_request.num_users * benchmark_run_request.num_rounds }}"
+      - --max-turns
+      - "{{ benchmark_run_request.num_rounds * 2 }}"
+      - --limit-min-tokens
+      - "{{ benchmark_run_request.answer_tokens }}"
+      - --limit-max-tokens
+      - "{{ benchmark_run_request.answer_tokens }}"
+      - --request-rate
+      - >-
+        {{ (benchmark_run_request.request_rate | float /
+            benchmark_run_request.num_users | float) | string }}
+      - --seed
+      - "{{ benchmark_run_request.seed }}"
+
+- name: Run vLLM multi-turn W2 cross-check with native telemetry snapshots
+  ansible.builtin.import_tasks: cache-run-with-metrics.yml

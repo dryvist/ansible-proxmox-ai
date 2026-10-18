@@ -5,6 +5,7 @@ import yaml
 ROOT = Path(__file__).parents[2]
 PLAYBOOK = ROOT / "playbooks/benchmark-run.yml"
 TASKS = ROOT / "playbooks/tasks/benchmark-run"
+SERVING_DEFAULTS = ROOT / "roles/vllm_serving/defaults/main/00-engine.yml"
 
 
 def load_tasks(name: str) -> list[dict[str, object]]:
@@ -16,7 +17,16 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     vars_ = plays[1]["vars"]
     assert vars_["_benchmark_run_evalscope_version"] == "1.13.0"
     assert vars_["_benchmark_run_promptfoo_version"] == "0.124.1"
-    assert vars_["_benchmark_run_vllm_client_image"] == "vllm/vllm-openai-cpu:v0.31.0"
+    assert vars_["_benchmark_run_lmcache_version"] == "0.5.5"
+    assert vars_["_benchmark_run_vllm_client_version"] == "{{ vllm_serving_version }}"
+    assert vars_["_benchmark_run_vllm_client_image"] == (
+        "vllm/vllm-openai-cpu:v{{ vllm_serving_version }}"
+    )
+    serving = yaml.safe_load(SERVING_DEFAULTS.read_text())
+    assert "../roles/vllm_serving/defaults/main/00-engine.yml" in plays[1]["vars_files"]
+    assert "vllm_serving_version" in serving
+    playbook_text = PLAYBOOK.read_text()
+    assert "renovate: datasource=github-releases depName=LMCache/LMCache" in playbook_text
 
     preflight = load_tasks("preflight.yml")
     request_assert = preflight[0]["ansible.builtin.assert"]["that"]
@@ -118,18 +128,30 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
     assert any("Archive the raw suite output" in name for name in names)
     assert any("Copy the raw result archive" in name for name in names)
 
-    promptfoo_summary = execute[0]["always"][0]
+    promptfoo_summary = next(
+        task
+        for task in execute[0]["always"]
+        if task.get("name") == "Read a safe Promptfoo pass count from its JSON output"
+    )
     assert promptfoo_summary["name"] == "Read a safe Promptfoo pass count from its JSON output"
     assert promptfoo_summary["ansible.builtin.command"]["argv"][4] == "/usr/local/bin/node"
     assert "results.stats.successes" in promptfoo_summary["ansible.builtin.command"]["argv"][-1]
     assert "passed" in promptfoo_summary["ansible.builtin.command"]["argv"][-1]
-    safe_summary = execute[0]["always"][1]["ansible.builtin.debug"]["msg"]
+    safe_summary_task = next(
+        task
+        for task in execute[0]["always"]
+        if task.get("name") == "Emit a safe suite summary to the Semaphore task log"
+    )
+    safe_summary = safe_summary_task["ansible.builtin.debug"]["msg"]
     assert set(safe_summary) == {
         "suite",
         "return_code",
         "stdout_line_count",
         "stderr_line_count",
         "promptfoo_pass_summary",
+        "workload_id",
+        "kv_arm",
+        "cache_workload",
     }
     assert "_benchmark_run_promptfoo_summary.stdout" in safe_summary["promptfoo_pass_summary"]
 
@@ -145,9 +167,7 @@ def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
     assert any("gpu_guest_vmid" in check for check in required)
     assert any("default('true')" in check for check in required)
     request = next(task for task in preflight if task.get("ansible.builtin.add_host"))
-    assert request["ansible.builtin.add_host"]["benchmark_run_request"]["upgrade"] == (
-        "{{ (upgrade | default('true') | string | lower) != 'false' }}"
-    )
+    assert "false if suite in" in request["ansible.builtin.add_host"]["benchmark_run_request"]["upgrade"]
 
     upgrade = load_tasks("upgrade.yml")
     assert any("apt-get" in str(task.get("ansible.builtin.command", {}).get("argv", [])) for task in upgrade)
@@ -181,3 +201,59 @@ def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
     prepare = load_tasks("prepare.yml")
     assert any("engine uptime" in task.get("name", "").lower() for task in prepare)
     assert any("host and engine uptime" in task.get("name", "").lower() for task in prepare)
+
+
+def test_cache_tier_cells_use_upstream_tools_and_preserve_telemetry() -> None:
+    preflight = load_tasks("preflight.yml")
+    cache_validation = next(task for task in preflight if task["name"] == "Validate cache-tier benchmark inputs")
+    assertions = cache_validation["ansible.builtin.assert"]["that"]
+    assert any("user_history_tokens | int >= 32768" in assertion for assertion in assertions)
+    assert any("num_rounds | int >= 6" in assertion for assertion in assertions)
+    assert any("answer_tokens | int == 512" in assertion for assertion in assertions)
+    assert any("workload_id == 'W2'" in assertion for assertion in assertions)
+
+    lmcache = load_tasks("lmcache-multi-round-qa.yml")
+    lmcache_argv = lmcache[0]["ansible.builtin.set_fact"]["_benchmark_run_kvo_argv"]
+    assert "/metrics" in lmcache[0]["ansible.builtin.set_fact"]["_benchmark_run_kvo_metrics_url"]
+    assert "/work/kvo/lmcache/multi-round-qa.py" in lmcache_argv
+    assert "/usr/bin/timeout" in lmcache_argv
+    assert "--shared-system-prompt" in lmcache_argv
+    assert "--user-history-prompt" in lmcache_argv
+    assert "--enforce-strict-concurrent-users" in lmcache_argv
+    assert "--time" in lmcache_argv
+
+    vllm = load_tasks("vllm-multi-turn.yml")
+    vllm_argv = vllm[0]["ansible.builtin.set_fact"]["_benchmark_run_kvo_argv"]
+    assert "/metrics" in vllm[0]["ansible.builtin.set_fact"]["_benchmark_run_kvo_metrics_url"]
+    assert "/work/kvo/vllm/benchmark_serving_multi_turn.py" in vllm_argv
+    assert "/usr/bin/timeout" in vllm_argv
+    assert "--stats-json-output" in vllm_argv
+    assert "--max-turns" in vllm_argv
+    assert "--max-active-conversations" in vllm_argv
+
+    sampler = load_tasks("cache-run-with-metrics.yml")[0]["ansible.builtin.shell"]["cmd"]
+    for expected in (
+        "next_sample=$((SECONDS + 15))",
+        "next_sample=$((next_sample + 15))",
+        "sleep 1",
+        "metrics_url",
+        "memory.current",
+        "capture_sample before",
+        "capture_sample after",
+    ):
+        assert expected in sampler
+
+    sources = load_tasks("cache-tools.yml")
+    assert any("LMCache/LMCache/v" in str(task) and "multi_round_qa" in str(task) for task in sources)
+    assert any("vllm-project/vllm/v" in str(task) and "multi_turn" in str(task) for task in sources)
+    assert any("--help" in task.get("ansible.builtin.command", {}).get("argv", []) for task in sources)
+    assert any("tooling.json" in str(task) for task in sources)
+
+    prepare = load_tasks("prepare.yml")
+    assert any("/metrics" in str(task) and "before a cache cell" in task.get("name", "") for task in prepare)
+    assert any("memory.current" in str(task) and "before a cache cell" in task.get("name", "") for task in prepare)
+
+    execute = load_tasks("execute.yml")[0]
+    always = execute["always"]
+    assert any("Copy cache-cell telemetry snapshots" in task.get("name", "") for task in always)
+    assert any("Archive the raw suite output" in task.get("name", "") for task in always)
