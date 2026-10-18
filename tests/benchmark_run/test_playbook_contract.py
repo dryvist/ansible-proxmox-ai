@@ -16,7 +16,7 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     vars_ = plays[1]["vars"]
     assert vars_["_benchmark_run_evalscope_version"] == "1.13.0"
     assert vars_["_benchmark_run_promptfoo_version"] == "0.124.1"
-    assert vars_["_benchmark_run_vllm_client_image"] == "vllm/vllm-openai-cpu:v0.31.0-x86_64"
+    assert vars_["_benchmark_run_vllm_client_image"] == "vllm/vllm-openai-cpu:v0.31.0"
 
     preflight = load_tasks("preflight.yml")
     request_assert = preflight[0]["ansible.builtin.assert"]["that"]
