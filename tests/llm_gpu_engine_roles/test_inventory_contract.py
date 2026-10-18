@@ -115,7 +115,20 @@ def test_shared_llama_cpp_profiles_use_the_shared_serving_role_and_selector():
         if task["name"].startswith("Converge llamacpp_serving")
     )
 
-    assert shared["block"][1]["ansible.builtin.include_role"]["name"] == "llm_gpu_serving"
+    shared_roles = [
+        task["ansible.builtin.include_role"]
+        for task in shared["block"]
+        if "ansible.builtin.include_role" in task
+    ]
+    assert shared_roles == [
+        {"name": "llama_cpp", "tasks_from": "retire-legacy-llama-swap.yml"},
+        {"name": "llm_gpu_serving"},
+    ]
+    legacy_main = _load(REPO_ROOT / "roles/llama_cpp/tasks/main.yml")
+    assert any(
+        task.get("ansible.builtin.include_tasks") == "retire-legacy-llama-swap.yml"
+        for task in legacy_main
+    )
     shared_profiles = "['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24', 'qwen38-27b-131k-1']"
     assert shared["when"] == f"llm_active_profile in {shared_profiles}"
     assert specialized["when"] == f"llm_active_profile not in {shared_profiles}"
