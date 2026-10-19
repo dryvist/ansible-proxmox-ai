@@ -261,21 +261,14 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
 def test_route_order_reuse_is_limited_to_distinct_gpu_profiles() -> None:
     orders: dict[tuple[str, int], list[dict]] = {}
     for entry in _entries():
-        route_group = entry.get("route_group")
-        if route_group is None:
-            continue
-        orders.setdefault((route_group, entry["order"]), []).append(entry)
-
+        if route_group := entry.get("route_group"):
+            orders.setdefault((route_group, entry["order"]), []).append(entry)
     for (route_group, order), entries in orders.items():
-        if len(entries) < 2:
-            continue
         profiles = [entry.get("profile") for entry in entries]
-        assert all(isinstance(profile, str) and profile for profile in profiles), (
-            f"{route_group} order {order} has a collision without explicit profiles"
-        )
-        assert len(set(profiles)) == len(profiles), (
-            f"{route_group} order {order} is reused by the same GPU profile"
-        )
+        if len(entries) > 1:
+            assert all(profiles) and len(set(profiles)) == len(profiles), (
+                f"{route_group} order {order} must use distinct profiles"
+            )
 
 
 def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
