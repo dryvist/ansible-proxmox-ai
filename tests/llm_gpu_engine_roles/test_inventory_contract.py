@@ -160,6 +160,13 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
     assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
 
 
+def test_co_resident_gpu_host_selects_the_eight_slot_main_and_small_profile():
+    host_vars = _load(REPO_ROOT / "inventory/host_vars/llm-blackwell-7-96GB-medium.yml")
+
+    assert host_vars["llm_active_profile"] == "qwen38-139k-8-fp8-mtp"
+    assert host_vars["llm_gpu_serving_co_resident_profiles"] == ["small-c4-64k"]
+
+
 def test_shared_llamacpp_group_uses_inventory_cache_or_existing_root_cache():
     group_vars = _load(REPO_ROOT / "inventory/group_vars/llm_gpu_serving_llama_cpp_group.yml")
     cache_path = group_vars["llm_gpu_serving_model_cache_mount_path"]

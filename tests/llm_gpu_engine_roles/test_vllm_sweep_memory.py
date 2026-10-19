@@ -61,6 +61,7 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
     } | {
         (131072, 2, "fp8"),
         (131072, 11, "fp8"),
+        (142336, 8, "fp8"),
         (262144, 5, "fp8"),
         (65536, 16, "fp8"),
     }
@@ -145,6 +146,32 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
                 "gpu_resident_size_bytes", artifact["model_store_size_bytes"]
             )
             assert (ple_bytes / GIB) + kv_offloading_gib <= HOST_MEMORY_RESERVE_GIB
+
+
+def test_co_resident_qwen38_profile_uses_the_largest_two_percent_safe_context():
+    profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    artifacts = {artifact["artifact_id"]: artifact for artifact in _artifacts()}
+    profile = profiles["qwen38-139k-8-fp8-mtp"]
+    artifact = artifacts["qwen38-27b-nvfp4"]
+    measured_pool_tokens = 1_480_000
+    utilization_delta = 0.85 - profile["gpu_memory_utilization"]
+    bytes_per_fp8_token = artifact["kv_cache_bytes_per_token_bf16"] / 2
+    projected_pool_tokens = floor(
+        measured_pool_tokens
+        - (GPU_MEMORY_GIB * GIB * utilization_delta / bytes_per_fp8_token)
+    )
+    allocated_tokens = profile["max_model_len"] * profile["max_num_seqs"]
+
+    assert profile["max_model_len"] % 1024 == 0
+    assert profile["max_model_len"] <= 262144
+    assert profile["max_num_seqs"] == 8
+    assert profile["kv_cache_dtype"] == "fp8"
+    assert profile["quantization"] == "modelopt"
+    assert profile["speculative_config"] == {"method": "mtp", "num_speculative_tokens": 3}
+    assert profile["gpu_memory_utilization"] == 0.75
+    assert allocated_tokens <= projected_pool_tokens
+    assert projected_pool_tokens - allocated_tokens >= projected_pool_tokens * 0.02
+    assert (profile["max_model_len"] + 1024) * profile["max_num_seqs"] > projected_pool_tokens * 0.98
 
 
 def test_sweep_artifact_sizes_match_the_hugging_face_reads():

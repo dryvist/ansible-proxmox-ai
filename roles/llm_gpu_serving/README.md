@@ -141,6 +141,24 @@ artifact straight into the local cache and verifies it there. Callers that only 
 `llm_gpu_serving_cache_sync_notify_service` unset; the normal role sets it to
 `true` so changed local model files restart serving.
 
+### Co-resident small GPU profile
+
+The legacy GPU serving role can run a second llama.cpp profile beside the main
+vLLM profile. Set `llm_gpu_serving_co_resident_profiles: [small-c4-64k]` in a
+single guest's host vars to opt in; the host selects
+`qwen38-139k-8-fp8-mtp` as its eight-slot main profile. The role downloads the
+pinned Qwen3.5-9B Q4_K_M artifact through its existing cache-sync task, then
+starts `llm-gpu-serving-small-c4-64k.service` on the next port after
+`service_ports.llm_fast_api`. It probes `/v1/models` on both services before
+the router renders the GPU deployment at order 1; the CPU small-pool member
+remains order 3.
+
+The main vLLM profile uses 75% of the 96 GiB device, leaving 24 GiB outside its
+allocation for the small engine. Its 142,336-token maximum and eight slots
+consume 1,138,688 KV tokens, below the estimated 1.165M-token pool after
+reducing utilization from 85%; the profile also carries a 12 GiB vLLM runtime
+reserve. This estimate is a configuration screen, not measured live acceptance.
+
 ## Stress window
 
 Run `template 76` with `llm_gpu_serving_paused=true`, then `template 18` with

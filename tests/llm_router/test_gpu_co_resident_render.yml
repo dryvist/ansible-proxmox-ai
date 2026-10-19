@@ -1,0 +1,117 @@
+---
+- name: Verify co-resident GPU routing and CPU fallback order
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+        llm_cpu_scaler:
+          tags:
+            nine_b: cpu-small
+      containers:
+        cpu-small:
+          ip: 127.0.0.1
+          tags: [cpu-small]
+    bao_apps_secrets: {}
+    bao_local_llm_secrets: {}
+    llm_router_subdomain: pve.example.test
+    llm_large_serving_host: llm-large
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer
+    llm_router_llm_gpu_base_url: http://gpu-fixture.pve.example.test:10434/v1
+    llm_router_llm_gpu_co_resident_base_url: http://gpu-fixture.pve.example.test:10435/v1
+    llm_router_llm_vllm_base_url: http://gpu-fixture.pve.example.test:10434/v1
+    llm_router_llm_fast_base_url: http://llm-fast.pve.example.test:10434/v1
+    llm_router_llm_light_base_url: http://llm-light.pve.example.test:10434/v1
+    ai_router_request_timeout_seconds: 2400
+    ai_router_retry_after_seconds: 2
+    hermes_goal_judge_model: judge
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+  tasks:
+    - name: Add the opted-in GPU member
+      ansible.builtin.add_host:
+        name: gpu-fixture
+        groups: llm_gpu_group
+        ansible_connection: local
+        llm_active_profile: qwen38-139k-8-fp8-mtp
+        llm_gpu_serving_co_resident_profiles: [small-c4-64k]
+
+    - name: Load router role defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Provide the synthetic router subdomain
+      ansible.builtin.set_fact:
+        llm_router_subdomain: pve.example.test
+
+    - name: Load the registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Enable GPU profile projections
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+
+    - name: Refresh derived router inputs
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render the router configuration
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Route the co-resident small model first and retain the CPU fallback
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_gpu_models | map(attribute='profile') | list | sort == ['qwen38-139k-8-fp8-mtp', 'small-c4-64k']
+          - _small_members | length >= 2
+          - _gpu_small.litellm_params.order | int == 1
+          - _cpu_small.litellm_params.order | int == 3
+          - _gpu_small.litellm_params.api_base == llm_router_llm_gpu_co_resident_base_url
+          - _gpu_small.litellm_params.max_parallel_requests | int == 4
+          - _main.litellm_params.api_base == llm_router_llm_gpu_base_url
+        fail_msg: >-
+          gpu={{ llm_router_gpu_models }}, small={{ _small_members }}
+      vars:
+        _small_members: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', 'small') | list }}
+        _gpu_small: >-
+          {{ _small_members
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_gpu_co_resident_base_url)
+             | first }}
+        _cpu_small: >-
+          {{ _small_members | selectattr('litellm_params.model', 'equalto', 'openai/qwen3.5-9b') | first }}
+        _main: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', 'medium')
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_gpu_base_url) | first }}
+
+    - name: Provide successful listings from both GPU engines
+      ansible.builtin.set_fact:
+        _llm_router_gpu_models_response:
+          status: 200
+          json:
+            data: [{id: fixture-main-model}]
+        _llm_router_gpu_co_resident_models_response:
+          status: 200
+          json:
+            data: [{id: fixture-small-model}]
+
+    - name: Combine the two engine listings for registry parity
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-gpu-probe.yml"
+
+    - name: Verify both engine listings are included in the serving probe
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_gpu_probe.state == 'verified'
+          - _llm_router_gpu_probe.status | int == 200
+          - _llm_router_gpu_probe.ids | sort == ['fixture-main-model', 'fixture-small-model']

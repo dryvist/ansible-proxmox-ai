@@ -20,7 +20,9 @@
     label: "{{ item }}"
   when:
     - not (llm_gpu_serving_render_only | default(false))
-    - item != llm_active_profile
+    - >-
+      (llm_gpu_serving_paused | default(false) | bool)
+      or (item != llm_active_profile and item not in llm_gpu_serving_co_resident_profiles)
 
 - name: Start the active GPU serving profile
   ansible.builtin.systemd:
@@ -28,4 +30,15 @@
     state: "{{ 'stopped' if llm_gpu_serving_paused | default(false) | bool else 'restarted' }}"
     enabled: true
     daemon_reload: true
+  when: not (llm_gpu_serving_render_only | default(false))
+
+- name: Start selected co-resident GPU serving profiles
+  ansible.builtin.systemd:
+    name: "{{ llm_gpu_serving_unit_prefix }}-{{ item }}.service"
+    state: "{{ 'stopped' if llm_gpu_serving_paused | default(false) | bool else 'restarted' }}"
+    enabled: true
+    daemon_reload: true
+  loop: "{{ llm_gpu_serving_co_resident_profiles }}"
+  loop_control:
+    label: "{{ item }}"
   when: not (llm_gpu_serving_render_only | default(false))

@@ -171,6 +171,7 @@
   notify:
     - Stop every other GPU serving profile before switching
     - Start the active GPU serving profile
+    - Start selected co-resident GPU serving profiles
 
 - name: Put the vLLM and Hugging Face CLIs on the default PATH
   ansible.builtin.file:
@@ -293,6 +294,7 @@
           notify:
             - Stop every other GPU serving profile before switching
             - Start the active GPU serving profile
+            - Start selected co-resident GPU serving profiles
 
         - name: Record the installed llama.cpp asset name
           ansible.builtin.copy:
@@ -331,6 +333,27 @@
     nvidia_gpu_guest_registry_by_profile: "{{ llm_gpu_serving_registry_by_profile }}"
   when: not (llm_gpu_serving_render_only | default(false) | bool)
 
+- name: Assert the co-resident GPU reserve remains available outside vLLM
+  ansible.builtin.assert:
+    that:
+      - >-
+        (nvidia_gpu_guest_fit_gpu_memory_mib | int / 1024)
+        * (1 - llm_gpu_serving_profiles[llm_active_profile].gpu_memory_utilization | float)
+        >= (llm_gpu_serving_profiles[item].gpu_memory_reserve_gib | float)
+      - llm_gpu_serving_profiles[item].max_num_seqs | int == 4
+      - llm_gpu_serving_profiles[item].max_model_len | int == 65536
+      - llm_gpu_serving_profiles[item].kv_cache_dtype == 'q8_0'
+    fail_msg: >-
+      Co-resident profile {{ item }} requires {{ llm_gpu_serving_profiles[item].gpu_memory_reserve_gib }} GiB
+      outside the vLLM allocation, and must keep four 65,536-token Q8_0 slots.
+    quiet: true
+  loop: "{{ llm_gpu_serving_co_resident_profiles }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - not (llm_gpu_serving_render_only | default(false) | bool)
+    - llm_gpu_serving_co_resident_profiles | length > 0
+
 - name: Resolve active profile model paths
   ansible.builtin.set_fact:
     llm_gpu_serving_health_host: >-
@@ -347,14 +370,28 @@
   vars:
     llm_gpu_serving_cache_sync_notify_service: true
 
+- name: Cache each selected co-resident profile's registered model artifact
+  ansible.builtin.include_tasks: cache-sync.yml
+  loop: "{{ llm_gpu_serving_co_resident_profiles }}"
+  loop_control:
+    loop_var: llm_gpu_serving_cache_sync_profile
+    label: "{{ llm_gpu_serving_cache_sync_profile }}"
+  vars:
+    llm_gpu_serving_cache_sync_artifact_id: >-
+      {{ llm_gpu_serving_registry_by_profile[llm_gpu_serving_cache_sync_profile].artifact.artifact_id }}
+    llm_gpu_serving_cache_sync_notify_service: true
+
 - name: Retire units for disabled GPU serving profiles
   ansible.builtin.include_tasks: retire-disabled-profile.yml
   loop: "{{ llm_gpu_serving_profiles | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
-  when:
-    - not (llm_gpu_serving_render_only | default(false))
-    - not (item.value.enabled | default(true))
+  when: >-
+    not (llm_gpu_serving_render_only | default(false))
+    and (not (item.value.enabled | default(true))
+         or (item.value.co_resident_only | default(false)
+             and item.key not in llm_gpu_serving_co_resident_profiles
+             and item.key != llm_active_profile))
 
 - name: Render one systemd unit for each GPU serving profile
   ansible.builtin.include_tasks: render-units.yml
@@ -368,9 +405,12 @@
       - "{{ llm_gpu_serving_unit_prefix }}-{{ item.key }}.service"
   register: llm_gpu_serving_profile_state
   changed_when: >-
-    (item.key == llm_active_profile and
-     (llm_gpu_serving_paused | default(false) | bool) == (llm_gpu_serving_profile_state.rc == 0)) or
-    (item.key != llm_active_profile and llm_gpu_serving_profile_state.rc == 0)
+    (((item.key == llm_active_profile or item.key in llm_gpu_serving_co_resident_profiles)
+      and (llm_gpu_serving_paused | default(false) | bool)
+          == (llm_gpu_serving_profile_state.rc == 0))
+     or (item.key != llm_active_profile
+         and item.key not in llm_gpu_serving_co_resident_profiles
+         and llm_gpu_serving_profile_state.rc == 0))
   failed_when: llm_gpu_serving_profile_state.rc not in [0, 3, 4]
   loop: "{{ llm_gpu_serving_profiles | dict2items }}"
   loop_control:
@@ -379,6 +419,7 @@
   notify:
     - Stop every other GPU serving profile before switching
     - Start the active GPU serving profile
+    - Start selected co-resident GPU serving profiles
 
 - name: Apply pending GPU serving service changes
   ansible.builtin.meta: flush_handlers
@@ -386,3 +427,18 @@
 - name: Wait for the active GPU serving profile to answer
   ansible.builtin.include_tasks: health-check.yml
   when: not (llm_gpu_serving_paused | default(false) | bool)
+
+- name: Wait for every selected co-resident GPU profile to answer
+  ansible.builtin.uri:
+    url: "http://{{ llm_gpu_serving_health_host }}:{{ llm_gpu_serving_profiles[item].port }}/v1/models"
+    status_code: 200
+  register: llm_gpu_serving_co_resident_health
+  retries: "{{ llm_gpu_serving_health_retries }}"
+  delay: "{{ llm_gpu_serving_health_delay }}"
+  until: llm_gpu_serving_co_resident_health.status == 200
+  loop: "{{ llm_gpu_serving_co_resident_profiles }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - not ansible_check_mode
+    - not (llm_gpu_serving_paused | default(false) | bool)

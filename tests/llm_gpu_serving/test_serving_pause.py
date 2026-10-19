@@ -83,6 +83,7 @@ def test_pause_and_resume_reconcile_service_state_and_keep_the_health_gate():
                 **{
                     role["active_profile"]: "active",
                     role["state_register"]: {"rc": rc},
+                    "llm_gpu_serving_co_resident_profiles": [],
                     PAUSE_VAR: paused,
                 },
             )
