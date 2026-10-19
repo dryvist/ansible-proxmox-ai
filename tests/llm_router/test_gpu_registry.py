@@ -64,7 +64,13 @@ LEGACY_DEFAULTS = REPO_ROOT / "roles/llm_gpu_serving/defaults/main/10-profiles.y
 
 
 def _serving_profiles() -> dict:
-    vllm = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    vllm_core = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))[
+        "vllm_serving_profiles_core"
+    ]
+    vllm_families = yaml.safe_load(
+        VLLM_DEFAULTS.with_name("11-profile-families.yml").read_text(encoding="utf-8")
+    )["vllm_serving_profiles_specialized"]
+    vllm = {**vllm_core, **vllm_families}
     llamacpp = yaml.safe_load(LLAMACPP_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
     sglang = yaml.safe_load(SGLANG_DEFAULTS.read_text(encoding="utf-8"))["sglang_serving_profiles"]
     legacy = yaml.safe_load(LEGACY_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]

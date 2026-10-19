@@ -9,7 +9,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 PROFILE_DEFAULTS = {
-    **yaml.safe_load((REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml").read_text(encoding="utf-8"))["vllm_serving_profiles"],
+    **yaml.safe_load((REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml").read_text(encoding="utf-8"))["vllm_serving_profiles_core"],
+    **yaml.safe_load((REPO_ROOT / "roles/vllm_serving/defaults/main/11-profile-families.yml").read_text(encoding="utf-8"))["vllm_serving_profiles_specialized"],
     **yaml.safe_load((REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml").read_text(encoding="utf-8"))["llamacpp_serving_profiles"],
 }
 REGISTRY_FILES = (

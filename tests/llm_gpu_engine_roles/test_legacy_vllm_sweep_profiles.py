@@ -10,6 +10,7 @@ import yaml
 from test_engine_profiles import (
     LEGACY_ROOT,
     VLLM_ROOT,
+    _vllm_profiles as load_vllm_profiles,
     _comment_filter,
     _exec_start,
     _registry_profiles,
@@ -19,9 +20,7 @@ TEST_API_PORT = "TEST_API_PORT"
 
 
 def _vllm_profiles() -> dict:
-    return yaml.safe_load(
-        (VLLM_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8")
-    )["vllm_serving_profiles"]
+    return load_vllm_profiles()
 
 
 def _sweep_profiles() -> dict:
@@ -77,7 +76,9 @@ def test_legacy_loader_uses_the_vllm_definitions_for_the_selected_profile():
     load = next(task for task in tasks if task.get("name") == "Load shared vLLM profile definitions")
     merge = next(task for task in tasks if task.get("name") == "Add the selected vLLM profile to legacy serving")
 
-    assert "vllm_serving/defaults/main/10-profiles.yml" in load["ansible.builtin.include_vars"]["file"]
+    include_vars = load["ansible.builtin.include_vars"]
+    assert "vllm_serving/defaults/main" in include_vars["dir"]
+    assert include_vars["files_matching"] == "^(10-profiles|11-profile-families)\\.yml$"
     defaults = yaml.safe_load((LEGACY_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8"))
     assert defaults["llm_gpu_serving_profiles"] == "{{ llm_profiles }}"
     profile_map = merge["ansible.builtin.set_fact"]["llm_gpu_serving_profiles"]

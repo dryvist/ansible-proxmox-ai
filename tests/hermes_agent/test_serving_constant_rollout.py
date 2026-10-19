@@ -80,8 +80,16 @@ def test_published_concurrency_matches_every_selectable_active_gpu_profile() -> 
     """The shared serving constant follows the slots in the active profile selector."""
     all_vars = _group_vars()
     profiles = {}
+    vllm_dir = REPO_ROOT / "roles/vllm_serving/defaults/main"
+    profiles.update(
+        {
+            **yaml.safe_load((vllm_dir / "10-profiles.yml").read_text())["vllm_serving_profiles_core"],
+            **yaml.safe_load((vllm_dir / "11-profile-families.yml").read_text())[
+                "vllm_serving_profiles_specialized"
+            ],
+        }
+    )
     for path, key in (
-        (REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml", "vllm_serving_profiles"),
         (REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml", "llamacpp_serving_profiles"),
         (
             REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml",
