@@ -7,6 +7,7 @@ is set, so each profile's entry must carry it into the rendered config.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from functools import lru_cache
@@ -69,6 +70,15 @@ def _serving_profiles() -> dict:
     return {**legacy, **vllm, **llamacpp, **sglang}
 
 
+def _combine(original: dict, update: dict, recursive: bool = False) -> dict:
+    merged = dict(original)
+    for key, value in update.items():
+        if recursive and isinstance(merged.get(key), dict) and isinstance(value, dict):
+            value = _combine(merged[key], value, recursive=True)
+        merged[key] = value
+    return merged
+
+
 def _render(models: list[dict]) -> list[dict]:
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(TEMPLATE_DIR),
@@ -76,6 +86,11 @@ def _render(models: list[dict]) -> list[dict]:
         undefined=jinja2.StrictUndefined,
     )
     env.filters["to_json"] = json.dumps
+    env.filters["combine"] = _combine
+    env.filters["to_nice_yaml"] = lambda value, indent=2, sort_keys=True: yaml.safe_dump(
+        value, default_flow_style=False, indent=indent, sort_keys=sort_keys
+    )
+    env.tests["search"] = lambda value, pattern: re.search(pattern, value) is not None
     env.globals.update(
         litellm_model=lambda model: model.get(
             "litellm_model_name", f"{model['provider']}/{model['client_model_id']}"

@@ -59,6 +59,8 @@ See [prompt ownership and removal criteria](../../docs/LLM_ROUTER_PROMPTS.md).
 The router projects each physical backend once and exposes stable consumer
 roles through aliases. See [LLM Router tiers](../../docs/LLM_ROUTER_TIERS.md)
 for the backend map, routing behavior, and Pro6000 profile contract.
+Local Qwen3.8 and Flash-Next deployments send `enable_thinking: true` without
+an effort override, preserving each model's default depth (maximum for Qwen3.8).
 
 ## OpenRouter egress tier (optional, one provider key)
 
