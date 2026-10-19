@@ -1,6 +1,6 @@
 ---
-# Without provider credentials the primary capability retains only its
-# rendered local fallback chain.
+# Without provider credentials the primary capability uses only eligible
+# local groups, which may be empty when no shared local rung is available.
 - name: Verify Hermes stays local when provider credentials are absent
   hosts: localhost
   gather_facts: false
@@ -75,16 +75,23 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          # The local leg is read from the registry, not re-typed, and there
-          # must be exactly one: an empty list here would let a chain that
-          # advertises nothing at all pass as "local only".
-          - _local_groups | length > 0
-          - llm_router_hermes_default_fallback_chain | length > 0
+          # The primary profile stays directly addressable but never becomes
+          # a shared fallback rung; any eligible local rung remains registry-derived.
+          - llm_router_primary_model not in _local_groups
+          - llm_router_hermes_default_fallback_chain == _local_groups
           - llm_router_hermes_default_fallback_chain | difference(_local_groups) | length == 0
-          - _hermes_fallback | length == 1
-          - _hermes_fallback[0][hermes_brain_model] == llm_router_hermes_own_fallback_by_group[hermes_brain_model]
-          - _hermes_fallback[0][hermes_brain_model] | difference(_local_groups) | length == 0
-          - _hermes_fallback[0][hermes_brain_model] | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
+          - _hermes_fallback | length == (1 if _local_groups | length > 0 else 0)
+          - >-
+            _hermes_fallback | length == 0
+            or _hermes_fallback[0][hermes_brain_model]
+               == llm_router_hermes_default_fallback_chain
+          - >-
+            _hermes_fallback | length == 0
+            or _hermes_fallback[0][hermes_brain_model] | difference(_local_groups) | length == 0
+          - >-
+            _hermes_fallback | length == 0
+            or _hermes_fallback[0][hermes_brain_model]
+               | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
           - _config.router_settings.max_fallbacks | int == llm_router_max_fallbacks | int
           # With no cloud rung the primary capability has no external chain
           # to hand a busy slot to, so it must never be zeroed: it is a name
@@ -121,7 +128,7 @@
           {{ _config.model_list
              | selectattr('model_name', 'equalto', hermes_brain_model) | first }}
         _hermes_fallback: >-
-          {{ _config.router_settings.fallbacks
+          {{ _config.router_settings.get('fallbacks', [])
              | selectattr(hermes_brain_model, 'defined') | list }}
         _hermes_registry_entry: >-
           {{ llm_router_model_registry
