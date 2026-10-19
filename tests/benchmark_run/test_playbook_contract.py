@@ -207,7 +207,7 @@ def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
     assert argv[argv.index("--metric-percentiles") + 1] == "50,90,99"
     assert "--save-detailed" in argv
     assert "--burstiness" in argv
-    assert tasks[-1]["ansible.builtin.import_tasks"] == "cache-run-with-metrics.yml"
+    assert tasks[-1]["ansible.builtin.include_tasks"] == "cache-run-with-metrics.yml"
 
     prepare = load_tasks("prepare.yml")
     assert any("engine uptime" in task.get("name", "").lower() for task in prepare)
