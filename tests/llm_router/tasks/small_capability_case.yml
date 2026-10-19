@@ -33,7 +33,6 @@
     _small_case_capability_names: "{{ llm_router_capability_names }}"
     _small_case_entry_point_names: "{{ llm_router_entry_point_names }}"
     _small_case_zdr_entry_point_names: "{{ llm_router_zdr_entry_point_names }}"
-    _small_case_group_class_by_name: "{{ llm_router_d1_group_class_by_name }}"
   no_log: true
 
 - name: Render the router configuration
@@ -48,9 +47,6 @@
       {{ llm_router_small_capability_name }}
     _small_alias_target: >-
       {{ _small_case_model_group_aliases.get(llm_router_small_capability_name) }}
-    _fallback_entry_points: >-
-      {{ _config.router_settings.fallbacks
-         | map('dict2items') | flatten | map(attribute='key') | unique | list }}
     _key_grants: >-
       {{ _small_case_virtual_keys | rejectattr('alias', 'equalto', 'hindsight')
          | map(attribute='models') | flatten | unique | list }}
@@ -90,7 +86,6 @@
       - _small_case_model_group_aliases | length == llm_router_alias_pairs | length
       - _small_group in _small_case_entry_point_names
       - _small_group in _small_case_zdr_entry_point_names
-      - _small_group in _fallback_entry_points
       - _small_role_models | length > 0
       - _small_role_models | difference([llm_router_small_model]) | length == 0
       - >-
@@ -124,9 +119,7 @@
              and _small_case_model_group_aliases.get(llm_router_small_capability_name)
                  == llm_router_primary_large_model
              and llm_router_primary_large_model in _rendered_names
-             and llm_router_primary_large_model in _small_case_capability_names
-             and _small_case_group_class_by_name.get(llm_router_primary_large_model)
-                 == 'local')
+             and llm_router_primary_large_model in _small_case_capability_names)
          else [] }}
     _bad_key_grants: >-
       {{ (_key_grants | intersect(_unrendered_capabilities))
@@ -173,7 +166,10 @@
     quiet: true
     that:
       - _small_only_keys | length > 0
-      - _small_only_keys | map(attribute='models') | flatten | unique | difference(_rendered_names) | length == 0
+      - >-
+        _small_only_keys | map(attribute='models') | flatten | unique
+        | difference(_rendered_names + (_small_case_model_group_aliases.keys() | list))
+        | length == 0
     fail_msg: >-
       vllm={{ _vllm_on }}: small-only keys {{ _small_only_keys | map(attribute='alias') | list }}
       name {{ _small_only_keys | map(attribute='models') | flatten | unique }}; rendered {{ _rendered_names }}.

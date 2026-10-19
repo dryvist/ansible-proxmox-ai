@@ -1,0 +1,156 @@
+---
+- name: Render local context-window admission for a shared route group
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets: {}
+    bao_local_llm_secrets: {}
+    llm_router_subdomain: router.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    llm_router_llm_large_base_url: http://localhost:11434/v1
+    llm_router_llm_fast_base_url: http://localhost:10434/v1
+    llm_router_llm_light_base_url: http://localhost:11434/v1
+    llm_router_llm_vllm_base_url: http://localhost:8000/v1
+    llm_router_llm_gpu_base_url: http://localhost:8000/v1
+    llm_large_serving_host: llm-large
+    ai_router_request_timeout_seconds: 2400
+    ai_router_retry_after_seconds: 2
+    hermes_brain_model: medium
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Add an inventory-backed GPU member
+      ansible.builtin.add_host:
+        name: llm-gpu-context-fixture
+        groups: llm_gpu_group
+        ansible_connection: local
+
+    - name: Load role defaults and registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Select GPU members for the context-window fixture
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_active_profile: medium-a
+
+    - name: Refresh cached router projections after fixture input changes [context-window-filter-1]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render the real router config
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Select the shared medium group and its widest member
+      ansible.builtin.set_fact:
+        _medium_members: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
+        _narrow_member: >-
+          {{ (_config.model_list
+              | selectattr('model_name', 'equalto', llm_router_primary_model) | list
+              | sort(attribute='model_info.max_input_tokens') | first) }}
+        _wide_member: >-
+          {{ (_config.model_list
+              | selectattr('model_name', 'equalto', llm_router_primary_model) | list
+              | sort(attribute='model_info.max_input_tokens') | last) }}
+        _gpu_source: "{{ llm_router_gpu_models | first }}"
+
+    - name: Select the request size and GPU deployment model
+      ansible.builtin.set_fact:
+        _gpu_model: >-
+          {{ _gpu_source.litellm_model_name
+             | default(_gpu_source.provider ~ '/' ~ _gpu_source.upstream_model_id) }}
+        _request_tokens: >-
+          {{ (_narrow_member.model_info.max_input_tokens | int) + 1 }}
+
+    - name: Keep the rendered request eligible only for the wider member
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.router_settings.enable_pre_call_checks | bool
+          - _medium_members | length == 2
+          - _wide_member.model_info.max_input_tokens | int > _narrow_member.model_info.max_input_tokens | int
+          - _narrow_members | length == 1
+          - _eligible_members | length == 1
+          - _narrow_members[0].model_info.max_input_tokens | int < _request_tokens | int
+          - _eligible_members[0].model_info.max_input_tokens | int >= _request_tokens | int
+          - _eligible_members[0].litellm_params.model == _gpu_model
+        fail_msg: >-
+          Rendered context-window members did not isolate the wider backend.
+        success_msg: >-
+          Pre-call checks are enabled; one medium member is over the request window
+          and the wider GPU member remains eligible.
+      vars:
+        _narrow_members: >-
+          {{ _medium_members
+             | selectattr('model_info.max_input_tokens', 'lt', _request_tokens | int)
+             | list }}
+        _eligible_members: >-
+          {{ _medium_members
+             | selectattr('model_info.max_input_tokens', 'ge', _request_tokens | int)
+             | list }}
+
+    - name: Select all local rendered deployments
+      ansible.builtin.set_fact:
+        _local_deployments: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'in', _local_base_urls)
+             | rejectattr('model_name', 'equalto', '*')
+             | list }}
+      vars:
+        _local_base_urls: >-
+          {{ [llm_router_llm_large_base_url, llm_router_llm_fast_base_url,
+              llm_router_llm_light_base_url, llm_router_llm_vllm_base_url,
+              llm_router_llm_gpu_base_url] }}
+
+    - name: Check every local rendered window against its registry source
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _local_deployments | length > 0
+          - _window_mismatches | length == 0
+        fail_msg: "Local deployment context windows missing or inaccurate: {{ _window_mismatches }}"
+        success_msg: "Every rendered local deployment advertises its projected input window."
+      vars:
+        _window_mismatches: >-
+          {%- set ns = namespace(errors=[]) -%}
+          {%- for deployment in _local_deployments -%}
+          {%- set found = namespace(value=false) -%}
+          {%- for model in llm_router_registry_enabled -%}
+          {%- set upstream = model.litellm_model_name
+               | default(model.provider ~ '/' ~ model.upstream_model_id) -%}
+          {%- if deployment.litellm_params.model == upstream -%}
+          {%- set found.value = true -%}
+          {%- set expected = _llm_router_vllm_max_input_tokens_by_model.get(
+                model.client_model_id, model.context_window | default(none)) -%}
+          {%- set actual = deployment.model_info.max_input_tokens | default(none) -%}
+          {%- if expected is none or actual is none or actual | int != expected | int -%}
+          {%- set ns.errors = ns.errors + [deployment.model_name ~ '=' ~ (actual | string)] -%}
+          {%- endif -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- if not found.value
+                and deployment.model_info.max_input_tokens | default(none) is none -%}
+          {%- set ns.errors = ns.errors + [deployment.model_name ~ '=missing'] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.errors }}
