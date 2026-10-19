@@ -17,7 +17,7 @@
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_servable_probe_plan.yml -i localhost, -c local
 
-- name: Add an inventory member for the opted-in local endpoint probe
+- name: Supply an inventory member for any enabled local endpoint probe
   hosts: localhost
   gather_facts: false
   tasks:
@@ -50,7 +50,6 @@
     bao_local_llm_secrets:
       OPENROUTER_API_KEY: fixture-key-not-a-secret
     bao_apps_secrets: {}
-    llm_router_llm_vllm_enabled: true
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -79,11 +78,12 @@
           {{ llm_router_remote_probes | length }} endpoint(s) planned, each with
           the ids registered against it.
 
-    - name: Pre-render probes are projected from registry opt-ins with their own timeout
+    - name: Pre-render probes include active opt-ins and exclude disabled opt-ins
       ansible.builtin.assert:
         quiet: true
         that:
-          - _precheck_models | length > 0
+          - _disabled_precheck_models | length > 0
+          - llm_router_probe_prechecks | length == _precheck_models | length
           - >-
             llm_router_probe_prechecks | map(attribute='model') | list
             == _precheck_models | map(attribute='upstream_model_id') | list
@@ -91,14 +91,25 @@
             llm_router_probe_prechecks | map(attribute='first_byte_timeout') | list
             == _precheck_models | map(attribute='first_byte_timeout') | list
           - llm_router_probe_prechecks | rejectattr('endpoint') | list | length == 0
+          - >-
+            _disabled_precheck_models | map(attribute='upstream_model_id') | list
+            | intersect(llm_router_probe_prechecks | map(attribute='model') | list)
+            | length == 0
         fail_msg: >-
-          Pre-render probe rows must follow the registry opt-in, upstream id,
-          endpoint and per-deployment timeout: {{ llm_router_probe_prechecks }}.
-        success_msg: Registry pre-render probes carry each opted-in model and timeout.
+          Pre-render probes must match active opt-ins and exclude disabled ones:
+          active={{ _precheck_models | map(attribute='upstream_model_id') | list }};
+          disabled={{ _disabled_precheck_models | map(attribute='upstream_model_id') | list }};
+          planned={{ llm_router_probe_prechecks }}.
+        success_msg: The probe plan follows active registry opt-ins and excludes disabled opt-ins.
       vars:
         _precheck_models: >-
           {{ llm_router_registry_enabled | selectattr('probe_before_render', 'defined')
              | selectattr('probe_before_render') | list }}
+        _disabled_precheck_models: >-
+          {{ llm_router_model_registry | selectattr('probe_before_render', 'defined')
+             | selectattr('probe_before_render')
+             | rejectattr('client_model_id', 'in', llm_router_registry_enabled
+                         | map(attribute='client_model_id') | list) | list }}
 
     - name: The subscription tier's registered ids are grouped under its own listing URL
       ansible.builtin.assert:
