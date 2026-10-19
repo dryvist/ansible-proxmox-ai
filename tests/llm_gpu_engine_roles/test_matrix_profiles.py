@@ -4,12 +4,10 @@ from pathlib import Path
 
 import yaml
 
-from test_engine_profiles import _artifacts
+from test_engine_profiles import _artifacts, _vllm_profiles
 
 ROOT = Path(__file__).resolve().parents[2]
-VLLM_PROFILES = yaml.safe_load(
-    (ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml").read_text()
-)["vllm_serving_profiles"]
+VLLM_PROFILES = _vllm_profiles()
 GPU_MATRIX = yaml.safe_load((ROOT / "llm-models.d/61-gpu-matrix.yml").read_text())[
     "_llm_registry_gpu_matrix"
 ]

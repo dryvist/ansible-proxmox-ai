@@ -64,7 +64,13 @@ LEGACY_DEFAULTS = REPO_ROOT / "roles/llm_gpu_serving/defaults/main/10-profiles.y
 
 
 def _serving_profiles() -> dict:
-    vllm = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    vllm_core = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))[
+        "vllm_serving_profiles_core"
+    ]
+    vllm_families = yaml.safe_load(
+        VLLM_DEFAULTS.with_name("11-profile-families.yml").read_text(encoding="utf-8")
+    )["vllm_serving_profiles_specialized"]
+    vllm = {**vllm_core, **vllm_families}
     llamacpp = yaml.safe_load(LLAMACPP_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
     sglang = yaml.safe_load(SGLANG_DEFAULTS.read_text(encoding="utf-8"))["sglang_serving_profiles"]
     legacy = yaml.safe_load(LEGACY_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
@@ -93,7 +99,9 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert defaults["llm_router_gpu_profiles_enabled"] is False
     assert {entry["profile"] for entry in entries} == ({
         "small",
+        "small-c4-64k",
         "medium-a",
+        "qwen38-96k-11-fp8-mtp",
         "medium-b",
         "16gb",
         "qwen38-27b-131k-1",
@@ -153,6 +161,19 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert small_artifact["engines"] == ["llama_cpp"]
     assert small_artifact["gguf_file"] == "Qwen3.5-9B-Q4_K_M.gguf"
 
+    co_resident = next(entry for entry in entries if entry["profile"] == "small-c4-64k")
+    co_resident_profile = serving_profiles["small-c4-64k"]
+    assert co_resident["artifact_id"] == small["artifact_id"]
+    assert co_resident["route_group"] == "small"
+    assert co_resident["order"] == 1
+    assert co_resident["max_parallel_requests"] == 4
+    assert co_resident["context_window"] + co_resident["max_output_tokens"] == 65536
+    assert co_resident_profile["engine"] == "llama_cpp"
+    assert co_resident_profile["max_model_len"] == 65536
+    assert co_resident_profile["max_num_seqs"] == 4
+    assert co_resident_profile["kv_cache_dtype"] == "q8_0"
+    assert co_resident_profile["gpu_memory_reserve_gib"] == 24
+
     for entry in entries:
         assert entry["provider"] == "hosted_vllm"
         assert entry["tier"] == "gpu"
@@ -197,11 +218,14 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert all(not aliases for aliases in aliases_by_profile.values())
     assert {entry["profile"]: entry.get("route_group") for entry in entries} == {
         "small": "small",
+        "small-c4-64k": "small",
         "medium-a": "medium",
-        **{entry["profile"]: None for entry in entries if entry["profile"] not in {"small", "medium-a"}},
+        "qwen38-96k-11-fp8-mtp": "medium",
+        **{entry["profile"]: None for entry in entries
+           if entry["profile"] not in {"small", "small-c4-64k", "medium-a", "qwen38-96k-11-fp8-mtp"}},
     }
 
-    # medium-a stays the active eight-slot production profile, outside the sweep matrix.
+    # The standalone medium-a profile keeps its eight-slot settings outside the sweep matrix.
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
     qwen_artifact = artifacts_by_id[qwen_profile["artifact_id"]]
     medium_a_serving = serving_profiles[qwen_profile["profile"]]
@@ -213,14 +237,36 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert medium_a_serving["kv_cache_dtype"] == "auto"
     assert qwen_profile["context_window"] + qwen_profile["max_output_tokens"] == medium_a_serving["max_model_len"]
 
-    # Legacy rows carry their input and output windows; catalog rows use the
-    # profile's complete model limit against the artifact context ceiling.
+    co_resident_main = next(entry for entry in entries if entry["profile"] == "qwen38-96k-11-fp8-mtp")
+    co_resident_main_profile = serving_profiles[co_resident_main["profile"]]
+    assert co_resident_main_profile["max_model_len"] == 98_304
+    assert co_resident_main_profile["max_num_seqs"] == 11
+    assert co_resident_main_profile["gpu_memory_utilization"] == 0.75
+    assert co_resident_main_profile["kv_cache_dtype"] == "fp8"
+    assert co_resident_main["context_window"] == 90_112
+    assert co_resident_main["max_output_tokens"] == 8_192
+    assert co_resident_main["max_parallel_requests"] == 11
+    assert co_resident_main["context_window"] + co_resident_main["max_output_tokens"] == 98_304
+
     for entry in entries:
         profile = serving_profiles[entry["profile"]]
         if "catalog_profile" in entry:
             assert profile["max_model_len"] <= artifacts_by_id[entry["artifact_id"]]["context_window_tokens"]
         else:
             assert entry["context_window"] + entry["max_output_tokens"] <= profile["max_model_len"]
+
+
+def test_route_order_reuse_is_limited_to_distinct_gpu_profiles() -> None:
+    orders: dict[tuple[str, int], list[dict]] = {}
+    for entry in _entries():
+        if route_group := entry.get("route_group"):
+            orders.setdefault((route_group, entry["order"]), []).append(entry)
+    for (route_group, order), entries in orders.items():
+        profiles = [entry.get("profile") for entry in entries]
+        if len(entries) > 1:
+            assert all(profiles) and len(set(profiles)) == len(profiles), (
+                f"{route_group} order {order} must use distinct profiles"
+            )
 
 
 def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
@@ -244,6 +290,7 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
     assert caps == expected_caps
 
     assert caps["medium-a"] == 64
+    assert caps["qwen38-96k-11-fp8-mtp"] == 11
 
 
 def test_router_consumes_the_shared_gpu_profile_projection() -> None:

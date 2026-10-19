@@ -20,10 +20,18 @@ REGISTRY_FILES = (
 ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 
 
-def _profiles() -> dict:
-    vllm = yaml.safe_load((VLLM_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8"))[
-        "vllm_serving_profiles"
+def _vllm_profiles() -> dict:
+    core = yaml.safe_load((VLLM_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8"))[
+        "vllm_serving_profiles_core"
     ]
+    families = yaml.safe_load(
+        (VLLM_ROOT / "defaults/main/11-profile-families.yml").read_text(encoding="utf-8")
+    )["vllm_serving_profiles_specialized"]
+    return {**core, **families}
+
+
+def _profiles() -> dict:
+    vllm = _vllm_profiles()
     llamacpp = yaml.safe_load(
         (LLAMACPP_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8")
     )["llamacpp_serving_profiles"]

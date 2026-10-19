@@ -63,7 +63,13 @@ def _entries() -> list[dict]:
 
 
 def _serving_profiles() -> dict:
-    vllm = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    vllm_core = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))[
+        "vllm_serving_profiles_core"
+    ]
+    vllm_families = yaml.safe_load(
+        VLLM_DEFAULTS.with_name("11-profile-families.yml").read_text(encoding="utf-8")
+    )["vllm_serving_profiles_specialized"]
+    vllm = {**vllm_core, **vllm_families}
     llamacpp = yaml.safe_load(LLAMACPP_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
     sglang = yaml.safe_load(SGLANG_DEFAULTS.read_text(encoding="utf-8"))["sglang_serving_profiles"]
     legacy = yaml.safe_load(LEGACY_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
@@ -102,6 +108,8 @@ def _render(models: list[dict]) -> list[dict]:
         llm_router_gpu_models=models,
         llm_router_deployment_tags_by_entry={f"{m['client_model_id']}|{m['tier']}": [] for m in models},
         llm_router_llm_gpu_base_url="http://placeholder/v1",
+        llm_router_llm_gpu_co_resident_base_url="http://placeholder:10435/v1",
+        llm_router_gpu_co_resident_profiles=[m["profile"] for m in models if m.get("profile") == "small-c4-64k"],
         llm_router_light_api_key="placeholder",
     )
     return yaml.safe_load("model_list:\n" + text)["model_list"]
@@ -125,6 +133,15 @@ def test_each_profile_renders_its_name_into_model_info():
         )
         assert rendered[0]["model_info"]["profile"] == entry["profile"]
         assert rendered[0]["model_name"] == entry.get("route_group", entry["client_model_id"])
+
+
+def test_co_resident_profile_uses_the_second_inventory_derived_port():
+    entry = next(entry for entry in _entries() if entry["profile"] == "small-c4-64k")
+
+    rendered = _render([entry])[0]
+
+    assert rendered["litellm_params"]["api_base"] == "http://placeholder:10435/v1"
+    assert rendered["litellm_params"]["max_parallel_requests"] == 4
 
 
 def test_a_deployment_without_a_profile_renders_no_profile_marker():
