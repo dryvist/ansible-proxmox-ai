@@ -12,20 +12,24 @@ llama_cpp_parallel: 2
 llama_cpp_models_max: 1
 
 _llama_cpp_vllm_dense_entry: >-
-  {{ llm_router_model_registry | selectattr('tier', 'equalto', 'vllm') | first }}
+  {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list | first)
+     | default({}) }}
 _llama_cpp_vllm_dense_artifact: >-
-  {{ llm_router_model_artifacts_by_id[_llama_cpp_vllm_dense_entry.artifact_id] }}
-llama_cpp_catalog_lookup_names:
-  - "{{ _llama_cpp_vllm_dense_entry.client_model_id }}"
+  {{ llm_router_model_artifacts_by_id.get(_llama_cpp_vllm_dense_entry.get('artifact_id', ''), {}) }}
+llama_cpp_catalog_lookup_names: >-
+  {{ [_llama_cpp_vllm_dense_entry.client_model_id]
+     if _llama_cpp_vllm_dense_entry else [] }}
 
-llama_cpp_ctx_size: "{{ _llama_cpp_vllm_dense_entry.context_window }}"
-llama_cpp_models:
-  - name: "{{ _llama_cpp_vllm_dense_entry.client_model_id }}"
-    aliases: []
-    hf_repo: "{{ _llama_cpp_vllm_dense_artifact.hf_repo }}"
-    gguf: "{{ _llama_cpp_vllm_dense_artifact.include_globs | first }}"
-    param_billions: 9
-    embeddings: false
+llama_cpp_ctx_size: "{{ _llama_cpp_vllm_dense_entry.get('context_window', 0) }}"
+llama_cpp_models: >-
+  {{ [{
+       'name': _llama_cpp_vllm_dense_entry.client_model_id,
+       'aliases': [],
+       'hf_repo': _llama_cpp_vllm_dense_artifact.hf_repo,
+       'gguf': _llama_cpp_vllm_dense_artifact.include_globs | first,
+       'param_billions': 9,
+       'embeddings': false,
+     }] if _llama_cpp_vllm_dense_entry else [] }}
 
 systemd_restart_policy_services:
   - llama-server

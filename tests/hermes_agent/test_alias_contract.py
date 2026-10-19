@@ -47,7 +47,10 @@ def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> 
     # The public name reads the once-evaluated fact; the data is defined under the _source name.
     seeded = {entry["role"]: entry for entry in defaults["_llm_router_role_deployments_source"]}
     assert set(seeded) == {"judge", "recorder"}
-    small_group = next(entry["route_group"] for entry in local_entries if entry["tier"] == "vllm")
+    small_group = next(entry["route_group"] for entry in local_entries if entry["tier"] == "cpu-9b")
+    assert aliases["fast"] == small_group
+    assert aliases["cheap"] == small_group
+    assert aliases["goal-judge"] == small_group
     assert seeded["judge"]["model"] == "{{ llm_router_small_model }}"
     assert seeded["judge"]["litellm_params"]["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
     assert seeded["recorder"]["model"] == "{{ llm_router_small_model }}"

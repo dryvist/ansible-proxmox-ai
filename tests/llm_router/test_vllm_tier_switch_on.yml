@@ -20,6 +20,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -38,21 +45,23 @@
     - name: Produce the fully credentialed render with the tier on
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
 
-    - name: The vLLM tier renders under its registry-owned capability group
+    - name: Enabled vLLM models render and the CPU small capability remains available
       ansible.builtin.assert:
         quiet: true
         that:
-          - _tier_groups | length > 0
           - _tier_groups | difference(_rendered_names) | length == 0
-          - llm_router_vllm_models | length > 0
+          - _tier_groups | difference(_vllm_route_groups) | length == 0
+          - _vllm_route_groups | difference(_tier_groups) | length == 0
           - _rendered_vllm_members | length == llm_router_vllm_models | length
+          - _small_cpu | length == 1
+          - _small_cpu | map(attribute='litellm_params.order') | map('int') | list == [3]
+          - llm_router_small_model in _rendered_names
           - llm_router_local_fallback_groups | length > 0
         fail_msg: >-
-          With llm_router_llm_vllm_enabled true, capability groups
-          ({{ _tier_groups | join(', ') }}) must render with their vLLM members;
-          missing groups={{ _tier_groups | difference(_rendered_names) }},
-          missing members={{ llm_router_vllm_models | length - _rendered_vllm_members | length }}.
-        success_msg: "Tier on: all vLLM members render under their capability groups."
+          Enabled vLLM groups={{ _tier_groups }}, registry projection={{ _vllm_route_groups }},
+          rendered small CPU member={{ _small_cpu }},
+          missing vLLM members={{ llm_router_vllm_models | length - _rendered_vllm_members | length }}.
+        success_msg: "The CPU small member and any enabled vLLM members render from the registry."
       vars:
         _tier_groups: >-
           {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm')
@@ -69,3 +78,10 @@
           {{ _config.model_list
              | selectattr('model_name', 'in', _tier_groups)
              | selectattr('litellm_params.model', 'in', _expected_vllm_models) | list }}
+        _vllm_route_groups: >-
+          {{ llm_router_vllm_models | map(attribute='route_group') | unique | list }}
+        _small_cpu: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', llm_router_small_model)
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_cpu_9b_backend_urls[0])
+             | list }}

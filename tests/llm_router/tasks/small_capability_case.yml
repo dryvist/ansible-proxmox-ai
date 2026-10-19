@@ -1,5 +1,5 @@
 ---
-# One vllm rung state for test_small_capability_fallback.yml (_vllm_on).
+# One disabled-vLLM state for test_small_capability_fallback.yml (_vllm_on).
 - name: Set the vllm rung state
   ansible.builtin.set_fact:
     llm_router_llm_vllm_enabled: "{{ _vllm_on }}"
@@ -45,8 +45,9 @@
       {{ _config.model_list | map(attribute='model_name') | unique | list }}
     _small_group: >-
       {{ llm_router_small_capability_name }}
-    _small_alias_target: >-
-      {{ _small_case_model_group_aliases.get(llm_router_small_capability_name) }}
+    _small_members: >-
+      {{ _config.model_list
+         | selectattr('model_name', 'equalto', llm_router_small_capability_name) | list }}
     _key_grants: >-
       {{ _small_case_virtual_keys | rejectattr('alias', 'equalto', 'hindsight')
          | map(attribute='models') | flatten | unique | list }}
@@ -79,28 +80,25 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - (_small_group in _rendered_names) == (_vllm_on | bool)
-      - llm_router_small_model == (_small_group if _vllm_on | bool else llm_router_primary_large_model)
+      - not (_vllm_on | bool)
+      - llm_router_vllm_models | length == 0
+      - _small_group in _rendered_names
+      - llm_router_small_model == _small_group
       - llm_router_small_model in _rendered_names
-      - (_small_group in _small_case_model_group_aliases) == (not (_vllm_on | bool))
+      - _small_group not in _small_case_model_group_aliases
       - _small_case_model_group_aliases | length == llm_router_alias_pairs | length
+      - _small_case_model_group_aliases.fast == _small_group
+      - _small_case_model_group_aliases.cheap == _small_group
+      - _small_case_model_group_aliases['goal-judge'] == _small_group
+      - _small_members | length == 1
+      - _small_members | map(attribute='litellm_params.order') | map('int') | list == [3]
+      - _small_members | map(attribute='litellm_params.api_base') | list == llm_router_cpu_9b_backend_urls
       - _small_group in _small_case_entry_point_names
       - _small_group in _small_case_zdr_entry_point_names
       - _small_role_models | length > 0
       - _small_role_models | difference([llm_router_small_model]) | length == 0
-      - >-
-        _vllm_on | bool
-        or (_small_alias_target == llm_router_primary_large_model
-            and _small_alias_target in _rendered_names
-            and _small_alias_target in _small_case_capability_names
-            and _small_group not in _rendered_names)
-      - >-
-        not (_vllm_on | bool)
-        or (_small_group not in _small_case_model_group_aliases
-            and _small_group in _rendered_names)
     fail_msg: >-
-      vllm={{ _vllm_on }}: small model {{ llm_router_small_model }}, rendered
-      {{ _rendered_names }}.
+      vllm={{ _vllm_on }}: small members={{ _small_members }}, aliases={{ _small_case_model_group_aliases }}.
 
 - name: Assert aliases and key grants name rendered capabilities
   ansible.builtin.assert:

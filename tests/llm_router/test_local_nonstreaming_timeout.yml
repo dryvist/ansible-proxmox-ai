@@ -33,6 +33,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -61,10 +68,10 @@
         name: llm_router
         tasks_from: registry.yml
 
-    - name: Model a successful local 4080 precheck without making a request
+    - name: Set vLLM availability from the enabled registry without making a request
       ansible.builtin.set_fact:
-        llm_router_llm_vllm_enabled: true
-        llm_router_vllm_precheck_passed: true
+        llm_router_llm_vllm_enabled: "{{ llm_router_vllm_models | length > 0 }}"
+        llm_router_vllm_precheck_passed: "{{ llm_router_vllm_models | length > 0 }}"
 
     # Models an inventoried vLLM serving host the way a real converge has one
     # (inventory/group_vars/llm_vllm_group.yml), so the template's
@@ -80,6 +87,7 @@
         groups: llm_vllm_group
         llama_cpp_parallel: 1
         llama_cpp_prefill_tokens_per_second: 120
+      when: llm_router_vllm_models | length > 0
 
     - name: Render the real config.yaml.j2 template into a string
       ansible.builtin.set_fact:
@@ -230,5 +238,6 @@
     # fit inside the window and was admitted. On the NEW render
     # (prefill-budget-derived), it must be skipped.
 
-    - name: Check the vLLM tier's rendered max_input_tokens
+    - name: Check the vLLM tier's rendered max_input_tokens when a vLLM model is enabled
       ansible.builtin.include_tasks: tasks/vllm_max_input_tokens_contract.yml
+      when: llm_router_vllm_models | length > 0
