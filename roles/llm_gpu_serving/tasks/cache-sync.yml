@@ -222,9 +222,21 @@
 
 # A profile converge replaces the running server anyway, so it clears its own
 # GPU work here; every other caller keeps the strict idle-GPU check below.
+- name: Find every installed GPU serving unit before a profile switch downloads an artifact
+  ansible.builtin.find:
+    paths: "{{ llm_gpu_serving_systemd_dir }}"
+    patterns: "{{ llm_gpu_serving_unit_prefix }}-*.service"
+  register: llm_gpu_serving_cache_sync_installed_units
+  when:
+    - llm_gpu_serving_cache_sync_operation == 'download'
+    - llm_gpu_serving_cache_sync_download_pending | bool
+    - llm_gpu_serving_cache_sync_notify_service | default(false) | bool
+
+# Units outside this profile map (a removed sweep profile, another engine role's
+# unit) keep the GPU busy too, so they are stopped with the mapped ones.
 - name: Stop this role's serving units before a profile switch downloads an artifact
   ansible.builtin.systemd:
-    name: "{{ llm_gpu_serving_unit_prefix }}-{{ item.key }}.service"
+    name: "{{ llm_gpu_serving_unit_prefix }}-{{ item }}.service"
     state: stopped
   register: llm_gpu_serving_cache_sync_stop_serving
   notify:
@@ -233,9 +245,12 @@
   failed_when:
     - llm_gpu_serving_cache_sync_stop_serving.failed | default(false)
     - "'Could not find the requested service' not in (llm_gpu_serving_cache_sync_stop_serving.msg | default(''))"
-  loop: "{{ llm_gpu_serving_profiles | dict2items }}"
+  loop: >-
+    {{ llm_gpu_serving_cache_sync_installed_units.files | default([]) | map(attribute='path') | map('basename')
+       | map('regex_replace', '^' ~ llm_gpu_serving_unit_prefix ~ '-', '') | map('regex_replace', '[.]service$', '')
+       | union(llm_gpu_serving_profiles | list) | list }}
   loop_control:
-    label: "{{ item.key }}"
+    label: "{{ item }}"
   when:
     - llm_gpu_serving_cache_sync_operation == 'download'
     - llm_gpu_serving_cache_sync_download_pending | bool
