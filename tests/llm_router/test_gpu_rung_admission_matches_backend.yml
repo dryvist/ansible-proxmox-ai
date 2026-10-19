@@ -19,6 +19,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -107,6 +114,27 @@
     - name: Parse the rendered config as YAML
       ansible.builtin.set_fact:
         _config: "{{ _rendered_config | from_yaml }}"
+
+    - name: The disabled GPU tier leaves the CPU small route in place
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not llm_router_llm_vllm_enabled | bool
+          - llm_router_vllm_models | length == 0
+          - llm_router_small_model == llm_router_small_capability_name
+          - _small_members | length == 1
+          - _small_members | map(attribute='litellm_params.order') | map('int') | list == [3]
+          - _small_members | map(attribute='litellm_params.api_base') | list == llm_router_cpu_9b_backend_urls
+          - llm_router_model_group_aliases.fast == llm_router_small_model
+          - llm_router_model_group_aliases.cheap == llm_router_small_model
+          - llm_router_model_group_aliases['goal-judge'] == llm_router_small_model
+        fail_msg: >-
+          The disabled GPU tier must retain the registry-backed CPU small member
+          and its stable aliases; members={{ _small_members }}.
+      vars:
+        _small_members: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', llm_router_small_model) | list }}
 
     - name: Select the 4080 capability deployments
       ansible.builtin.set_fact:
