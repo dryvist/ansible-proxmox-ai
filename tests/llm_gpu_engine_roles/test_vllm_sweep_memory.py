@@ -61,7 +61,7 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
     } | {
         (131072, 2, "fp8"),
         (131072, 11, "fp8"),
-        (142336, 8, "fp8"),
+        (98304, 11, "fp8"),
         (262144, 5, "fp8"),
         (65536, 16, "fp8"),
     }
@@ -100,7 +100,11 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         artifact = artifacts_by_id[entry["artifact_id"]]
         assert entry["enabled"] is False
         assert entry["servable"] is False
-        assert entry["max_parallel_requests"] == 64
+        assert entry["max_parallel_requests"] == (
+            64
+            if entry["client_model_id"].startswith("gpu-sweep-") or name == "medium-a"
+            else profile["max_num_seqs"]
+        )
         assert entry["context_window"] + entry["max_output_tokens"] == profile["max_model_len"]
 
         gpu_resident_size = artifact.get("gpu_resident_size_bytes", artifact["model_store_size_bytes"])
@@ -148,10 +152,10 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
             assert (ple_bytes / GIB) + kv_offloading_gib <= HOST_MEMORY_RESERVE_GIB
 
 
-def test_co_resident_qwen38_profile_uses_the_largest_two_percent_safe_context():
+def test_co_resident_qwen38_profile_fits_eleven_sessions_within_the_estimated_pool():
     profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
     artifacts = {artifact["artifact_id"]: artifact for artifact in _artifacts()}
-    profile = profiles["qwen38-139k-8-fp8-mtp"]
+    profile = profiles["qwen38-96k-11-fp8-mtp"]
     artifact = artifacts["qwen38-27b-nvfp4"]
     measured_pool_tokens = 1_480_000
     utilization_delta = 0.85 - profile["gpu_memory_utilization"]
@@ -162,16 +166,17 @@ def test_co_resident_qwen38_profile_uses_the_largest_two_percent_safe_context():
     )
     allocated_tokens = profile["max_model_len"] * profile["max_num_seqs"]
 
+    assert profile["max_model_len"] == 98_304
     assert profile["max_model_len"] % 1024 == 0
-    assert profile["max_model_len"] <= 262144
-    assert profile["max_num_seqs"] == 8
+    assert profile["max_num_seqs"] == 11
     assert profile["kv_cache_dtype"] == "fp8"
     assert profile["quantization"] == "modelopt"
     assert profile["speculative_config"] == {"method": "mtp", "num_speculative_tokens": 3}
     assert profile["gpu_memory_utilization"] == 0.75
+    assert allocated_tokens == 1_081_344
     assert allocated_tokens <= projected_pool_tokens
-    assert projected_pool_tokens - allocated_tokens >= projected_pool_tokens * 0.02
-    assert (profile["max_model_len"] + 1024) * profile["max_num_seqs"] > projected_pool_tokens * 0.98
+    assert projected_pool_tokens - allocated_tokens >= projected_pool_tokens * 0.07
+    assert profile["max_model_len"] * 12 > projected_pool_tokens
 
 
 def test_sweep_artifact_sizes_match_the_hugging_face_reads():

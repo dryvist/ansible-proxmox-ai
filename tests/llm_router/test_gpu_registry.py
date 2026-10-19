@@ -95,7 +95,7 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
         "small",
         "small-c4-64k",
         "medium-a",
-        "qwen38-139k-8-fp8-mtp",
+        "qwen38-96k-11-fp8-mtp",
         "medium-b",
         "16gb",
         "qwen38-27b-131k-1",
@@ -214,12 +214,12 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
         "small": "small",
         "small-c4-64k": "small",
         "medium-a": "medium",
-        "qwen38-139k-8-fp8-mtp": "medium",
+        "qwen38-96k-11-fp8-mtp": "medium",
         **{entry["profile"]: None for entry in entries
-           if entry["profile"] not in {"small", "small-c4-64k", "medium-a", "qwen38-139k-8-fp8-mtp"}},
+           if entry["profile"] not in {"small", "small-c4-64k", "medium-a", "qwen38-96k-11-fp8-mtp"}},
     }
 
-    # medium-a stays the active eight-slot production profile, outside the sweep matrix.
+    # The standalone medium-a profile keeps its eight-slot settings outside the sweep matrix.
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
     qwen_artifact = artifacts_by_id[qwen_profile["artifact_id"]]
     medium_a_serving = serving_profiles[qwen_profile["profile"]]
@@ -231,13 +231,16 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert medium_a_serving["kv_cache_dtype"] == "auto"
     assert qwen_profile["context_window"] + qwen_profile["max_output_tokens"] == medium_a_serving["max_model_len"]
 
-    co_resident_main = next(entry for entry in entries if entry["profile"] == "qwen38-139k-8-fp8-mtp")
+    co_resident_main = next(entry for entry in entries if entry["profile"] == "qwen38-96k-11-fp8-mtp")
     co_resident_main_profile = serving_profiles[co_resident_main["profile"]]
-    assert co_resident_main_profile["max_model_len"] == 142336
-    assert co_resident_main_profile["max_num_seqs"] == 8
+    assert co_resident_main_profile["max_model_len"] == 98_304
+    assert co_resident_main_profile["max_num_seqs"] == 11
     assert co_resident_main_profile["gpu_memory_utilization"] == 0.75
     assert co_resident_main_profile["kv_cache_dtype"] == "fp8"
-    assert co_resident_main["context_window"] + co_resident_main["max_output_tokens"] == 142336
+    assert co_resident_main["context_window"] == 90_112
+    assert co_resident_main["max_output_tokens"] == 8_192
+    assert co_resident_main["max_parallel_requests"] == 11
+    assert co_resident_main["context_window"] + co_resident_main["max_output_tokens"] == 98_304
 
     # Legacy rows carry their input and output windows; catalog rows use the
     # profile's complete model limit against the artifact context ceiling.
@@ -262,7 +265,7 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
         entry["profile"]
         for entry in entries
         if entry["client_model_id"].startswith("gpu-sweep-")
-    } | {"medium-a", "qwen38-139k-8-fp8-mtp"}
+    } | {"medium-a"}
     expected_caps = {
         name: 64 if name in admission_profiles else serving_profiles[name]["max_num_seqs"]
         for name in caps
@@ -270,6 +273,7 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
     assert caps == expected_caps
 
     assert caps["medium-a"] == 64
+    assert caps["qwen38-96k-11-fp8-mtp"] == 11
 
 
 def test_router_consumes_the_shared_gpu_profile_projection() -> None:
