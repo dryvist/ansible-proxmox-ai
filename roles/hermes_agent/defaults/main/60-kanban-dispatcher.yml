@@ -62,37 +62,9 @@ hermes_agent_kanban_goal_max_turns: 8
 # unjudged turn.
 hermes_agent_cron_goal_mode_jobs:
   - splunk-triage
-# THIS IS THE REAL JUDGE. It is what config.yaml.j2 renders into
-# auxiliary.goal_judge.model, and since 2026-08-15 it reads the `goal-judge`
-# router alias — the design this fabric always intended, unblocked at last.
-#
-# WHY IT WAS PINNED TO THE WORKER UNTIL NOW. The design intent was never in
-# doubt (all.yml argues it well: same-model judging is self-preference bias,
-# and two roles on one model serialize against a single serving slot).
-# `hermes_goal_judge_model` has named the alias for exactly that reason all
-# along. What blocked the flip was residency: `goal-judge` resolved to the 9B,
-# which llama-swap held swap-class at ttl=900, and its MEASURED ~79s cold load
-# meant the first judge call after any eviction simply failed. At the 2-3 goal
-# cards/hour this fabric drains, that was nearly every call. Measured live
-# 2026-08: four attempts through the alias over ~13 min returned two 429s and
-# two ~197s empty responses — never a completion.
-#
-# WHAT CHANGED. The serving host went to maxResidentWorkers = 2 (nix-darwin
-# 2.36.0), so `goal-judge` now points at Qwen3.6-35B-A3B-4bit, which is pinned
-# RESIDENT (ttl=0) and cannot be evicted. Cold load is gone — not shortened,
-# gone — and judge and worker are separate resident workers with their own
-# slots, so they no longer contend. That was always the stated precondition for
-# this flip, and it is a module change that landed, not a value someone raised.
-#
-# THE TWO-RESOLVER TRAP, now closed — worth keeping, because it cost a
-# misdiagnosis once. `goal-judge` is resolved by two independent systems:
-#   * the LiteLLM router, from this registry's model_group_alias;
-#   * llama-swap on the serving host, from its OWN alias table.
-# Those pointed at DIFFERENT models for a while (router -> 9B, llama-swap ->
-# the resident worker), so a warmup log showing climbing cold-load times was
-# read as evidence about the judge when it was about the worker. They now name
-# the same physical model on both sides, by design. If you move the judge, move
-# BOTH or the trap reopens.
+# Hermes goal evaluations use the `judge` router role. The `goal-judge`
+# compatibility alias is separate and resolves through the registry's `small`
+# route group.
 #
 # THE TIMEOUT BELOW IS NOT RE-TUNED HERE, deliberately. 150s was derived from a
 # measured distribution of this very model serving as the worker (61h, n=4,178:
