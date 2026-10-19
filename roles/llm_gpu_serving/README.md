@@ -153,8 +153,8 @@ starts `llm-gpu-serving-small-c4-64k.service` on the next port after
 the router renders the GPU deployment at order 1; the CPU small-pool member
 remains order 4.
 
-The main vLLM profile uses 75% of the 96 GiB device, leaving 24 GiB outside its
-allocation for the small engine. Its 98,304-token maximum includes an 8,192-token
+The main vLLM profile uses 75% of the device, leaving about 24 GiB outside its
+allocation; the small engine requires 20 GiB of it. Its 98,304-token maximum includes an 8,192-token
 output budget, so the registry advertises 90,112 input tokens. Eleven slots
 consume 1,081,344 KV tokens, leaving about 84,000 tokens (roughly 7%) in the
 estimated 1.165M-token pool after reducing utilization from 85%; twelve slots

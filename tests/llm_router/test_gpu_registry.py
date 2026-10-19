@@ -172,7 +172,7 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert co_resident_profile["max_model_len"] == 65536
     assert co_resident_profile["max_num_seqs"] == 4
     assert co_resident_profile["kv_cache_dtype"] == "q8_0"
-    assert co_resident_profile["gpu_memory_reserve_gib"] == 24
+    assert co_resident_profile["gpu_memory_reserve_gib"] == 20
 
     for entry in entries:
         assert entry["provider"] == "hosted_vllm"
