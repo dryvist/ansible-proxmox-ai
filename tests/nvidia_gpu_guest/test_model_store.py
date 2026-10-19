@@ -99,7 +99,9 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     verify_tasks = yaml.safe_load(
         (SHARED_ROOT / "tasks/verify-model-store-origin-repo.yml").read_text(encoding="utf-8")
     )
-    seed_playbook = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text(encoding="utf-8"))[0]
+    seed_plays = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text(encoding="utf-8"))
+    assert seed_plays[0]["ansible.builtin.import_playbook"] == "../inventory/load_tofu.yml"
+    seed_playbook = seed_plays[1]
     preview = next(
         task
         for task in cache_tasks
