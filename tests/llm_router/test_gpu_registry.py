@@ -248,8 +248,6 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert co_resident_main["max_parallel_requests"] == 11
     assert co_resident_main["context_window"] + co_resident_main["max_output_tokens"] == 98_304
 
-    # Legacy rows carry their input and output windows; catalog rows use the
-    # profile's complete model limit against the artifact context ceiling.
     for entry in entries:
         profile = serving_profiles[entry["profile"]]
         if "catalog_profile" in entry:
