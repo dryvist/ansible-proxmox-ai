@@ -171,10 +171,16 @@ llm_router_capability_members: >-
 llm_router_rendered_capability_names: >-
   {{ llm_router_capability_members | map(attribute='route_group') | unique | list }}
 llm_router_capability_registry_members: >-
-  {{ llm_router_model_registry
-     | selectattr('tier', 'in', llm_router_local_registry_tiers)
-     | selectattr('route_group', 'defined')
-     | sort(attribute='order') | list }}
+  {%- set ns = namespace(members=[]) -%}
+  {%- for m in llm_router_model_registry
+        | selectattr('tier', 'in', llm_router_local_registry_tiers)
+        | selectattr('route_group', 'defined') -%}
+  {%- if not (m.co_resident_only | default(false) | bool)
+        or m.profile in llm_router_gpu_co_resident_profiles -%}
+  {%- set ns.members = ns.members + [m] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.members | sort(attribute='order') | list }}
 
 # The SAME prefill-derived cap model-list.yaml.j2 applies to every
 # vllm/hermes-local deployment: the smaller of the context window and what
