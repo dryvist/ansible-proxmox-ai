@@ -70,6 +70,12 @@
         _aliases: "{{ llm_router_model_group_aliases }}"
         _alias_pairs: "{{ llm_router_alias_pairs }}"
 
+    - name: Capture the rendered small capability members
+      ansible.builtin.set_fact:
+        _small_members: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', llm_router_small_model) | list }}
+
     - name: Capture the rendered capability model names
       ansible.builtin.set_fact:
         _rendered_capability_names: >-
@@ -86,6 +92,9 @@
           - _capabilities | symmetric_difference(_expected_capabilities) | length == 0
           - _registry_local_capability_names | symmetric_difference(_capabilities) | length == 0
           - _rendered_capability_names | symmetric_difference(_capabilities) | length == 0
+          - _small_members | length == 1
+          - _small_members | map(attribute='litellm_params.order') | map('int') | list == [3]
+          - _small_members | map(attribute='litellm_params.api_base') | list == llm_router_cpu_9b_backend_urls
           - _aliases | length == 12 + llm_router_direct_route_aliases | length
           - _aliases | length == _alias_pairs | length
           - _aliases.keys() | symmetric_difference(_expected_aliases) | length == 0
@@ -106,6 +115,7 @@
           - llm_router_enforce_fallback_model_access | bool
         fail_msg: >-
           capability names={{ _capabilities }}, aliases={{ _aliases }},
+          small members={{ _small_members }},
           rendered aliases={{ _config.router_settings.model_group_alias }}
       vars:
         _expected_capabilities: >-

@@ -1,5 +1,5 @@
 ---
-- name: Verify inactive profiles stay out while the dedicated small route remains
+- name: Verify inactive profiles stay out and the small selector falls back
   hosts: localhost
   gather_facts: false
   vars:
@@ -55,14 +55,15 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: Only the registry-probed local small deployment remains active
+    - name: Inactive profiles leave the small selector on the primary route
       ansible.builtin.assert:
         quiet: true
         that:
           - llm_router_gpu_models | length == 0
           - _config.model_list | selectattr('model_info.profile', 'defined') | list | length == 0
           - _small_members | length == 1
-          - _small_members[0].litellm_params.order | int == 1
+          - llm_router_small_model == llm_router_primary_large_model
+          - _small_members[0].litellm_params.order | int == 2
           - _medium_members | length == 1
           - _medium_members[0].litellm_params.order | int == 2
           - _config.router_settings.model_group_alias == llm_router_model_group_aliases

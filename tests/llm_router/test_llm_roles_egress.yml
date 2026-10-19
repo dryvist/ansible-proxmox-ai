@@ -49,25 +49,20 @@
       ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/{{ item }}"
       loop: [assert-llm-roles.yml, assert-egress.yml]
 
-    - name: Resolve the small role-map model through its capability projection
-      ansible.builtin.set_fact:
-        _small_capability_deployment: >-
-          {{ llm_router_capability_members
-             | selectattr('route_group', 'equalto', llm_router_small_model)
-             | selectattr('catalog_model_name', 'equalto',
-                 llm_roles.models[llm_roles.roles.small.model].id)
-             | first }}
-
     - name: The client-facing small capability uses active registry members
       ansible.builtin.assert:
         quiet: true
         that:
           - llm_router_routine_model == llm_router_small_model
           - llm_router_small_model != llm_router_primary_model
-          - _small_members | length > 0
+          - _small_members | length == 1
+          - _small_members | map(attribute='order') | map('int') | list == [3]
+          - llm_router_model_group_aliases.fast == llm_router_small_capability_name
+          - llm_router_model_group_aliases.cheap == llm_router_small_capability_name
+          - llm_router_model_group_aliases['goal-judge'] == llm_router_small_capability_name
           - _mapped_fast_model not in llm_router_servable_models
       vars:
-        _mapped_fast_model: "{{ _small_capability_deployment.catalog_model_name }}"
+        _mapped_fast_model: "{{ llm_roles.models[llm_roles.roles.fast.model].id }}"
         _small_members: >-
           {{ llm_router_capability_members
              | selectattr('route_group', 'equalto', llm_router_small_model) | list }}
@@ -239,13 +234,14 @@
             llm_router_model_registry: "{{ _shipped_model_registry }}"
 
     # NEGATIVE: a disabled map model must carry the explicit standby marker.
-    - name: Remove parked markers and disable the selected capability deployment
+    - name: Remove parked markers and disable the role-map selected model
       ansible.builtin.set_fact:
         llm_router_model_registry: >-
           {%- set ns = namespace(entries=[]) -%}
           {%- for entry in llm_router_model_registry -%}
           {%- set changes = {'standby': false} -%}
-          {%- if entry.client_model_id == _small_capability_deployment.client_model_id -%}
+          {%- if (entry.catalog_model_name | default(''))
+                 == llm_roles.models[llm_roles.roles.small.model].id -%}
           {%- set changes = changes | combine({'enabled': false, 'servable': false}) -%}
           {%- endif -%}
           {%- set ns.entries = ns.entries + [entry | combine(changes)] -%}
@@ -267,6 +263,4 @@
           ansible.builtin.assert:
             quiet: true
             that:
-              - _mapped_fast_model in ansible_failed_result.msg
-          vars:
-            _mapped_fast_model: "{{ _small_capability_deployment.catalog_model_name }}"
+              - llm_roles.models[llm_roles.roles.small.model].id in ansible_failed_result.msg
