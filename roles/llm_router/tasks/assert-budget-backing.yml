@@ -3,6 +3,88 @@
 # assert and prove the failure path, rather than restating its condition where
 # the two could drift apart. Imported by assert.yml.
 
+# The file is imported once per host in a normal converge. Standalone contract
+# tests may import it again after changing facts, so each import snapshots the
+# current inputs before the asserts reuse their results.
+- name: Materialize budget assertion source projections
+  ansible.builtin.set_fact:
+    _llm_router_budget_assert_virtual_keys: "{{ llm_router_virtual_keys | default([]) }}"
+    _llm_router_budget_assert_key_scope: "{{ _llm_router_key_scope_all | default([]) | list }}"
+    _llm_router_budget_assert_cloud_models: "{{ _llm_router_m_hermes_cloud_models_credentialed | default([]) }}"
+  no_log: true
+
+- name: Materialize budget assertion result lists
+  ansible.builtin.set_fact:
+    # Gated on an actual monthly_budget being declared, NOT on any cloud
+    # fallback group existing — hermes-cloud-free deliberately has no budget
+    # (a free preset has no spend to bound), and the local (hermes-local) tier
+    # never carries one either, so neither should force a Redis requirement.
+    # The default([]) guards above cover a test that imports this file
+    # standalone, without ever loading the model registry.
+    _llm_router_budgeted_groups: >-
+      {%- set _out = [] -%}
+      {%- for _m in _llm_router_budget_assert_cloud_models
+           if _m.monthly_budget is defined or _m.max_budget is defined -%}
+      {%- set _discard = _out.append(_m.fallback_group | default(_m.route_group)) -%}
+      {%- endfor -%}
+      {{ _out | unique | list }}
+    # `| float > 0`, never `equalto(0)` — the same numeric coercion
+    # seed-keys.yml's own body already uses. A YAML string re-quoting of a
+    # Jinja reference (`"{{ _llm_router_key_daily_budget }}"`, the
+    # workstation entries in 56b-workstation-keys.yml) can fold that value to the
+    # STRING '0' rather than the int/float 0, and `equalto(0)` never matches
+    # a string against a number — every such key would then count as
+    # budgeted even with no database, defeating the key-budget assert.
+    _llm_router_budgeted_key_aliases: >-
+      {%- set _out = [] -%}
+      {%- for _k in _llm_router_budget_assert_virtual_keys -%}
+      {%- if (_k.daily_budget | default(0) | float) > 0 -%}
+      {%- set _discard = _out.append(_k.alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ _out }}
+    # Same `| float` coercion as _llm_router_budgeted_key_aliases, for the same reason.
+    _llm_router_oversized_key_budgets: >-
+      {%- set _ceiling = llm_router_openrouter_budget_limit | default(0) | float -%}
+      {%- set _out = [] -%}
+      {%- for _k in _llm_router_budget_assert_virtual_keys -%}
+      {%- set _budget = _k.daily_budget | default(0) | float -%}
+      {%- if _budget > 0 and _budget >= _ceiling -%}
+      {%- set _discard = _out.append(_k.alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ _out }}
+    # Same superset test as the scope itself: a key whose model list covers
+    # every entry _llm_router_key_scope_all names — the id set a human chat UI
+    # may select from — is full-scope, whether or not it happens to be built
+    # FROM that exact variable.
+    #
+    # Gated on llm_router_db_host directly (the same self-arming gate every
+    # budget here uses): with no router database, 56-virtual-keys.yml's
+    # _llm_router_key_daily_budget derivation is HONESTLY 0 for every key,
+    # full-scope or not, matching "no budget claimed" rather than the defect
+    # this assert exists to catch. Only once a database exists does a
+    # full-scope key with no budget mean anything.
+    _llm_router_unbudgeted_full_scope_keys: >-
+      {%- set _full = _llm_router_budget_assert_key_scope -%}
+      {%- set _out = [] -%}
+      {%- if (llm_router_db_host | default('') | trim | length > 0) -%}
+      {%- for _k in _llm_router_budget_assert_virtual_keys -%}
+      {%- if _full | length > 0
+         and (_full | difference(_k.models | default([]))) | length == 0
+         and (_k.daily_budget | default(0) | float) <= 0 -%}
+      {%- set _discard = _out.append(_k.alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {{ _out }}
+  no_log: true
+
+- name: Materialize budget assertion booleans
+  ansible.builtin.set_fact:
+    _llm_router_any_deployment_budget: "{{ _llm_router_budgeted_groups | length > 0 }}"
+    _llm_router_any_key_budget: "{{ _llm_router_budgeted_key_aliases | length > 0 }}"
+
 - name: Assert a rendered spend budget is backed by a shared store
   ansible.builtin.assert:
     quiet: true
@@ -33,23 +115,6 @@
          if ((llm_router_openrouter_budget_limit | default(0) | float > 0)
              or _llm_router_any_deployment_budget)
          else 'No spend budget configured; nothing to back.' }}
-  vars:
-    # Gated on an actual monthly_budget being declared, NOT on any cloud
-    # fallback group existing — hermes-cloud-free deliberately has no budget
-    # (a free preset has no spend to bound), and the local (hermes-local) tier
-    # never carries one either, so neither should force a Redis requirement.
-    # default([]) guards a test that imports this file standalone, without
-    # ever loading the model registry (test_budget_requires_store.yml) — an
-    # ungraceful undefined here breaks fail_msg/success_msg rendering even
-    # when the that: clause itself would have passed.
-    _llm_router_budgeted_groups: >-
-      {%- set _out = [] -%}
-      {%- for _m in (_llm_router_m_hermes_cloud_models_credentialed | default([]))
-           if _m.monthly_budget is defined or _m.max_budget is defined -%}
-      {%- set _discard = _out.append(_m.fallback_group | default(_m.route_group)) -%}
-      {%- endfor -%}
-      {{ _out | unique | list }}
-    _llm_router_any_deployment_budget: "{{ _llm_router_budgeted_groups | length > 0 }}"
 
 # Per-KEY budgets are a different backing store than provider/deployment
 # budgets above: LiteLLM persists a key's spend and max_budget in its own
@@ -78,23 +143,6 @@
       {{ 'Every rendered key budget is backed by the router database.'
          if _llm_router_any_key_budget
          else 'No key budget configured; nothing to back.' }}
-  vars:
-    # `| float > 0`, never `equalto(0)` — the same numeric coercion
-    # seed-keys.yml's own body already uses. A YAML string re-quoting of a
-    # Jinja reference (`"{{ _llm_router_key_daily_budget }}"`, the
-    # workstation entries in 56b-workstation-keys.yml) can fold that value to the
-    # STRING '0' rather than the int/float 0, and `equalto(0)` never matches
-    # a string against a number — every such key would then count as
-    # budgeted even with no database, defeating this very assert.
-    _llm_router_budgeted_key_aliases: >-
-      {%- set _out = [] -%}
-      {%- for _k in (llm_router_virtual_keys | default([])) -%}
-      {%- if (_k.daily_budget | default(0) | float) > 0 -%}
-      {%- set _discard = _out.append(_k.alias) -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {{ _out }}
-    _llm_router_any_key_budget: "{{ _llm_router_budgeted_key_aliases | length > 0 }}"
 
 # A key budget at or above the provider's own weekly ceiling defeats the
 # reason a per-key cap exists at all: one caller could then drain the whole
@@ -116,20 +164,6 @@
       reason per-key budgets exist. Lower the key's daily_budget in
       56-virtual-keys.yml.
     success_msg: "Every key budget is strictly below the provider's weekly ceiling."
-  vars:
-    # Same `| float` coercion as _llm_router_budgeted_key_aliases above, for
-    # the same reason — a stringified '0' would otherwise be excluded from
-    # neither this list nor that one by an equalto/numeric-comparison test.
-    _llm_router_oversized_key_budgets: >-
-      {%- set _ceiling = llm_router_openrouter_budget_limit | default(0) | float -%}
-      {%- set _out = [] -%}
-      {%- for _k in (llm_router_virtual_keys | default([])) -%}
-      {%- set _budget = _k.daily_budget | default(0) | float -%}
-      {%- if _budget > 0 and _budget >= _ceiling -%}
-      {%- set _discard = _out.append(_k.alias) -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {{ _out }}
 
 # "No single caller can drain the whole provider ceiling by itself" (the
 # reason per-key budgets exist at all) only holds if every key that CAN reach
@@ -150,32 +184,6 @@
       could drain the whole provider ceiling — exactly what per-key budgets
       exist to prevent. Add a daily_budget in 56-virtual-keys.yml.
     success_msg: "Every full-model-scope key declares a budget."
-  vars:
-    # Same superset test as the scope itself: a key whose model list covers
-    # every entry _llm_router_key_scope_all names — the id set a human chat UI
-    # may select from — is full-scope, whether or not it happens to be built
-    # FROM that exact variable.
-    #
-    # Gated on llm_router_db_host directly (the same self-arming gate every
-    # budget here uses), inline rather than through an intermediate templated
-    # var: with no router database, 56-virtual-keys.yml's
-    # _llm_router_key_daily_budget derivation is HONESTLY 0 for every key,
-    # full-scope or not, matching "no budget claimed" rather than the defect
-    # this assert exists to catch. Only once a database exists does a
-    # full-scope key with no budget mean anything.
-    _llm_router_unbudgeted_full_scope_keys: >-
-      {%- set _full = _llm_router_key_scope_all | default([]) | list -%}
-      {%- set _out = [] -%}
-      {%- if (llm_router_db_host | default('') | trim | length > 0) -%}
-      {%- for _k in (llm_router_virtual_keys | default([])) -%}
-      {%- if _full | length > 0
-         and (_full | difference(_k.models | default([]))) | length == 0
-         and (_k.daily_budget | default(0) | float) <= 0 -%}
-      {%- set _discard = _out.append(_k.alias) -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {%- endif -%}
-      {{ _out }}
 
 # Naming a host is not reaching it. roles/redis makes AUTH mandatory and has no
 # passwordless branch, so an empty password here does not degrade to an
@@ -208,16 +216,3 @@
          if ((llm_router_openrouter_budget_limit | default(0) | float > 0)
              or _llm_router_any_deployment_budget)
          else 'No spend budget configured; no credential needed.' }}
-  vars:
-    # default([]) guards a test that imports this file standalone, without
-    # ever loading the model registry (test_budget_requires_store.yml) — an
-    # ungraceful undefined here breaks fail_msg/success_msg rendering even
-    # when the that: clause itself would have passed.
-    _llm_router_budgeted_groups: >-
-      {%- set _out = [] -%}
-      {%- for _m in (_llm_router_m_hermes_cloud_models_credentialed | default([]))
-           if _m.monthly_budget is defined or _m.max_budget is defined -%}
-      {%- set _discard = _out.append(_m.fallback_group | default(_m.route_group)) -%}
-      {%- endfor -%}
-      {{ _out | unique | list }}
-    _llm_router_any_deployment_budget: "{{ _llm_router_budgeted_groups | length > 0 }}"
