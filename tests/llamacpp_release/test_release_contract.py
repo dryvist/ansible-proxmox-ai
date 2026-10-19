@@ -87,7 +87,10 @@ def test_shared_download_uses_the_pinned_checksum_and_requires_apt_proxy():
 
 def test_all_three_installers_use_markers_and_never_query_release_api():
     cases = (
-        ("roles/llm_gpu_serving/tasks/main.yml", "llm_gpu_serving_llamacpp_asset_marker"),
+        (
+            "roles/llm_gpu_serving/tasks/install-llamacpp-release.yml",
+            "llm_gpu_serving_llamacpp_asset_marker",
+        ),
         ("roles/llamacpp_serving/tasks/install.yml", "llamacpp_serving_asset_marker"),
         ("roles/llama_cpp/tasks/install-release.yml", "llama_cpp_llamacpp_asset_marker"),
     )
@@ -98,7 +101,7 @@ def test_all_three_installers_use_markers_and_never_query_release_api():
         assert marker in text
 
     installers = {
-        "roles/llm_gpu_serving/tasks/main.yml": (
+        "roles/llm_gpu_serving/tasks/install-llamacpp-release.yml": (
             "llamacpp_release_cuda_sha256",
             "llamacpp_release_cuda_runtime_sha256",
         ),
