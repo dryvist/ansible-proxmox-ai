@@ -41,5 +41,10 @@ def test_router_render_is_parallel_and_only_pending_restarts_roll() -> None:
     assert restart["hosts"] == "llm_router_group"
     assert restart["serial"] == 1
     assert "when" not in restart_block
-    assert "llm_router_restart_pending" in steps["Restart litellm"]["when"]
+    restart_task = steps["Restart litellm"]
+    assert restart_task["ansible.builtin.include_role"] == {
+        "name": "llm_router",
+        "tasks_from": "restart.yml",
+    }
+    assert restart_task["when"] == "llm_router_restart_pending | default(false) | bool"
     assert "when" not in steps["Verify the rendered router runtime"]
