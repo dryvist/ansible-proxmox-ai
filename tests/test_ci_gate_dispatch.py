@@ -82,13 +82,19 @@ def test_actual_scope_step_dispatches_full_or_focused(
     assert all(set(shard) == {"name", "playbooks"} for shard in shards)
 
 
-@pytest.mark.parametrize(("job_name", "preserved_conditions"), [
-    ("data-contract", [
+def test_data_contract_starts_beside_lint_on_contract_scope_alone() -> None:
+    job = yaml.safe_load(CI_GATE.read_text())["jobs"]["data-contract"]
+    assert job["needs"] == "contract-scope"
+    for condition in [
         "always()",
         "needs.contract-scope.result == 'success'",
         "needs.contract-scope.outputs.full_suite == 'true'",
         "github.event_name != 'push'",
-    ]),
+    ]:
+        assert condition in job["if"]
+
+
+@pytest.mark.parametrize(("job_name", "preserved_conditions"), [
     ("molecule", [
         "github.event_name == 'pull_request'",
         "github.event.pull_request.base.ref == 'main'",
