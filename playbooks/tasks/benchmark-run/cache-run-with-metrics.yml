@@ -11,7 +11,12 @@
       metrics_url={{ _benchmark_run_kvo_metrics_url | quote }}
       mkdir -p "$metrics_dir"
       rm -f "$stop_file"
-      printf 'timestamp_utc\tphase\tmemory_current_bytes\tgpu_memory_used_mib\n' > "$memory_file"
+      {
+        printf '%s\t' \
+          'timestamp_utc' 'phase' 'memory_current_bytes' 'gpu_memory_used_mib' \
+          'memory_max_bytes' 'memory_peak_bytes'
+        printf '%s\n' 'vllm_main_process_rss_kib'
+      } > "$memory_file"
 
       capture_sample() {
         phase="$1"
@@ -21,16 +26,36 @@
           --fail --silent --show-error --max-time 5 \
           "$metrics_url" \
           > "$metrics_dir/{{ benchmark_run_request.run_id }}-$phase-$timestamp.prom"
-        memory_current=$(/usr/bin/timeout --signal=TERM --kill-after=1s 10s \
-          pct exec "$gpu_guest_vmid" -- /usr/bin/cat \
-          /sys/fs/cgroup/memory.current)
+        guest_sample=$(/usr/bin/timeout --signal=TERM --kill-after=1s 10s \
+          pct exec "$gpu_guest_vmid" -- /bin/bash -s <<'GUEST'
+      set -euo pipefail
+      memory_current=$(/usr/bin/cat /sys/fs/cgroup/memory.current)
+      memory_max=$(/usr/bin/cat /sys/fs/cgroup/memory.max)
+      memory_peak=$(/usr/bin/cat /sys/fs/cgroup/memory.peak)
+      vllm_units=$(/usr/bin/systemctl list-units --type=service --state=running \
+        --no-legend --plain | /usr/bin/awk '$1 ~ /^llm-gpu-serving-.*\.service$/ { print $1 }')
+      vllm_unit_count=$(printf '%s\n' "$vllm_units" | /usr/bin/awk 'NF { count++ } END { print count + 0 }')
+      [[ "$vllm_unit_count" -eq 1 ]]
+      vllm_unit=$(printf '%s\n' "$vllm_units" | /usr/bin/awk 'NF { print; exit }')
+      vllm_pid=$(/usr/bin/systemctl show "$vllm_unit" --property=MainPID --value)
+      [[ "$vllm_pid" =~ ^[0-9]+$ && "$vllm_pid" -gt 0 ]]
+      vllm_rss_kib=$(/usr/bin/awk '/^VmRSS:/ { print $2; found = 1; exit } END { if (!found) exit 1 }' \
+        "/proc/$vllm_pid/status")
+      [[ "$vllm_rss_kib" =~ ^[0-9]+$ ]]
+      printf '%s\t%s\t%s\t%s' "$memory_current" "$memory_max" \
+        "$memory_peak" "$vllm_rss_kib"
+      GUEST
+        )
+        IFS=$'\t' read -r memory_current memory_max memory_peak vllm_rss_kib <<< "$guest_sample"
+        [[ "$memory_max" =~ ^[0-9]+$ && "$memory_peak" =~ ^[0-9]+$ ]]
         gpu_memory_used=$(/usr/bin/timeout --signal=TERM --kill-after=1s 10s \
           pct exec "$gpu_guest_vmid" -- nvidia-smi \
           --query-gpu=memory.used --format=csv,noheader,nounits \
           | head -n 1 | tr -d '[:space:]')
-        printf '%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
           "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase" \
-          "$memory_current" "$gpu_memory_used" >> "$memory_file"
+          "$memory_current" "$gpu_memory_used" "$memory_max" \
+          "$memory_peak" "$vllm_rss_kib" >> "$memory_file"
       }
 
       capture_sample before

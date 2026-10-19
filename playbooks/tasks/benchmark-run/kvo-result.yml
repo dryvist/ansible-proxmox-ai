@@ -1,0 +1,273 @@
+---
+- name: Summarize the LMCache cache-tier cell from its CSV and metric snapshots
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - docker
+      - run
+      - --rm
+      - --pull=never
+      - --network
+      - host
+      - -v
+      - "{{ _benchmark_run_client_result }}:/out:ro"
+      - --workdir
+      - /out
+      - --entrypoint
+      - python
+      - "{{ benchmark_run_request.vllm_client_image }}"
+      - -c
+      - |
+        import csv, glob, json, math, os, re, statistics, sys
+
+        cfg = json.loads(sys.argv[1])
+        csv_path = os.path.join('/out', sys.argv[2])
+        telemetry_dir = os.path.join('/out', 'telemetry')
+
+        def number(value):
+            try:
+                result = float(value)
+            except (TypeError, ValueError):
+                return None
+            return result if math.isfinite(result) else None
+
+        def percentile(values, p):
+            values = sorted(value for value in values if value is not None)
+            if not values:
+                return None
+            position = (len(values) - 1) * p
+            lower = int(position)
+            upper = min(lower + 1, len(values) - 1)
+            return values[lower] + (values[upper] - values[lower]) * (position - lower)
+
+        rows = []
+        with open(csv_path, newline='', encoding='utf-8') as source:
+            for row in csv.DictReader(source):
+                parsed = {key: number(row.get(key)) for key in (
+                    'prompt_tokens', 'generation_tokens', 'ttft', 'generation_time',
+                    'question_id', 'launch_time', 'finish_time')}
+                if parsed['question_id'] is not None:
+                    parsed['question_id'] = int(parsed['question_id'])
+                    rows.append(parsed)
+        if not rows:
+            raise SystemExit('LMCache summary CSV contains no completed requests')
+
+        by_round = {}
+        for row in rows:
+            by_round.setdefault(row['question_id'], []).append(row)
+        round_results = []
+        for question_id, requests in sorted(by_round.items()):
+            ttft = [row['ttft'] * 1000 for row in requests if row['ttft'] is not None]
+            tpot = [row['generation_time'] * 1000 / row['generation_tokens']
+                    for row in requests if row['generation_time'] is not None and
+                    row['generation_tokens'] and row['generation_tokens'] > 0]
+            starts = [row['launch_time'] for row in requests if row['launch_time'] is not None]
+            finishes = [row['finish_time'] for row in requests if row['finish_time'] is not None]
+            span = max(finishes) - min(starts) if starts and finishes else 0
+            round_results.append({
+                'round': question_id,
+                'ttft_p50_ms': percentile(ttft, 0.50),
+                'ttft_p99_ms': percentile(ttft, 0.99),
+                'tpot_p50_ms_per_token': percentile(tpot, 0.50),
+                'tpot_p99_ms_per_token': percentile(tpot, 0.99),
+                'throughput_tokens_per_s': sum(row['generation_tokens'] or 0
+                                               for row in requests) / span if span > 0 else None,
+            })
+
+        all_ttft = [row['ttft'] * 1000 for row in rows if row['ttft'] is not None]
+        first_ttft = [row['ttft'] * 1000 for row in rows
+                      if row['question_id'] == 1 and row['ttft'] is not None]
+        later_ttft = [row['ttft'] * 1000 for row in rows
+                      if row['question_id'] > 1 and row['ttft'] is not None]
+        all_tpot = [row['generation_time'] * 1000 / row['generation_tokens']
+                    for row in rows if row['generation_time'] is not None and
+                    row['generation_tokens'] and row['generation_tokens'] > 0]
+        starts = [row['launch_time'] for row in rows if row['launch_time'] is not None]
+        finishes = [row['finish_time'] for row in rows if row['finish_time'] is not None]
+        span = max(finishes) - min(starts) if starts and finishes else 0
+
+        samples = []
+        cache_config = None
+        prom_pattern = re.compile(r'^([A-Za-z_:][A-Za-z0-9_:]*)(?:\{([^}]*)\})?\s+([-+0-9.eE]+)')
+        label_pattern = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="((?:\\.|[^"])*)"')
+        for path in sorted(glob.glob(os.path.join(telemetry_dir, cfg['run_id'] + '-*.prom'))):
+            phase = os.path.basename(path)[len(cfg['run_id']) + 1:].split('-', 1)[0]
+            with open(path, encoding='utf-8') as source:
+                for line in source:
+                    match = prom_pattern.match(line.strip())
+                    if not match:
+                        continue
+                    name, raw_labels, raw_value = match.groups()
+                    value = number(raw_value)
+                    if value is None:
+                        continue
+                    labels = dict(label_pattern.findall(raw_labels or ''))
+                    samples.append((phase, name, labels, value))
+                    if name == 'vllm:cache_config_info' and cache_config is None:
+                        if 'num_gpu_blocks' in labels and 'block_size' in labels:
+                            cache_config = {
+                                'num_gpu_blocks': int(labels['num_gpu_blocks']),
+                                'block_size': int(labels['block_size']),
+                            }
+        if not cache_config or not cache_config['num_gpu_blocks'] or not cache_config['block_size']:
+            raise SystemExit('vllm:cache_config_info with num_gpu_blocks and block_size is missing')
+
+        def metric_totals(phase):
+            totals = {}
+            for sample_phase, name, _labels, value in samples:
+                if sample_phase == phase:
+                    totals[name] = totals.get(name, 0.0) + value
+            return totals
+
+        before = metric_totals('before')
+        after = metric_totals('after')
+        metric_names = set(before) | set(after)
+
+        def counter_delta(predicate):
+            names = [name for name in metric_names if predicate(name.lower())]
+            if not names:
+                return None
+            deltas = [after.get(name, 0.0) - before.get(name, 0.0) for name in names]
+            return sum(deltas) if all(delta >= 0 for delta in deltas) else None
+
+        prefix_queries = counter_delta(lambda name: 'prefix_cache_queries' in name)
+        prefix_hits = counter_delta(lambda name: 'prefix_cache_hits' in name)
+        prefix_rate = prefix_hits / prefix_queries if prefix_queries and prefix_queries > 0 else None
+        external_hit_names = [name for name in metric_names
+                              if ('external' in name.lower() or 'lmcache' in name.lower())
+                              and 'hit' in name.lower() and not name.lower().endswith('_bucket')]
+        external_hits = counter_delta(lambda name: name in {item.lower() for item in external_hit_names})
+        external_query_names = [name for name in metric_names
+                                if ('external' in name.lower() or 'lmcache' in name.lower())
+                                and any(term in name.lower() for term in ('quer', 'request', 'lookup'))
+                                and 'hit' not in name.lower()]
+        external_queries = counter_delta(lambda name: name in {item.lower() for item in external_query_names})
+        external_rate = (
+            external_hits / external_queries
+            if external_hits is not None and external_queries and external_queries > 0
+            else None
+        )
+        external_metrics = {
+            name: {'before': before.get(name), 'after': after.get(name),
+                   'delta': after.get(name, 0.0) - before.get(name, 0.0)}
+            for name in sorted(metric_names)
+            if any(term in name.lower() for term in ('external', 'lmcache', 'prefix_cache', 'kv_offload'))
+        }
+        kv_usage = [value for _phase, name, _labels, value in samples
+                    if 'kv_cache_usage_perc' in name]
+        preemptions = counter_delta(lambda name: 'preempt' in name and
+                                    not any(term in name for term in ('_bucket', '_created')))
+        idle_medians = [value for _phase, name, labels, value in samples
+                        if 'kv_block_idle_before_evict' in name and labels.get('quantile') == '0.5']
+        idle_medians = [value for value in idle_medians if value is not None]
+
+        memory_path = os.path.join(telemetry_dir, cfg['run_id'] + '-cgroup-memory.tsv')
+        memory_rows = []
+        with open(memory_path, newline='', encoding='utf-8') as source:
+            for row in csv.DictReader(source, delimiter='\t'):
+                parsed = {key: number(row.get(key)) for key in (
+                    'memory_current_bytes', 'memory_max_bytes', 'memory_peak_bytes',
+                    'vllm_main_process_rss_kib')}
+                if parsed['memory_current_bytes'] is not None:
+                    memory_rows.append(parsed)
+        if not memory_rows:
+            raise SystemExit('cgroup/RSS telemetry has no numeric samples')
+        gib = 1024 ** 3
+        memory_max = max(row['memory_max_bytes'] for row in memory_rows if row['memory_max_bytes'] is not None)
+        memory_peak = max(row['memory_peak_bytes'] for row in memory_rows if row['memory_peak_bytes'] is not None)
+        rss_peak = max(row['vllm_main_process_rss_kib'] for row in memory_rows
+                       if row['vllm_main_process_rss_kib'] is not None)
+        result = {
+            'suite': cfg['suite'], 'arm': cfg['kv_arm'], 'workload': cfg['workload_id'],
+            'run_id': cfg['run_id'], 'seed': cfg.get('seed'),
+            'host_ram_limit_gib': cfg['host_ram_limit_gib'],
+            'prefix_caching': cfg['prefix_caching'],
+            'kv_offload_backend': cfg['kv_offload_backend'],
+            'kv_offload_cpu_gib': cfg['kv_offload_cpu_gib'],
+            'kv_offload_disk_gib': cfg['kv_offload_disk_gib'],
+            'weight_cpu_offload_gib': cfg['weight_cpu_offload_gib'],
+            'llamacpp_cache_ram_mib': cfg['llamacpp_cache_ram_mib'],
+            'gpu_memory_utilization': cfg['gpu_memory_utilization'],
+            'max_num_batched_tokens': cfg['max_num_batched_tokens'],
+            'cache_workload': cfg['cache_workload'], 'num_users': cfg['num_users'],
+            'num_rounds': cfg['num_rounds'], 'shared_prompt_tokens': cfg['shared_prompt_tokens'],
+            'user_history_tokens': cfg['user_history_tokens'], 'answer_tokens': cfg['answer_tokens'],
+            'request_rate': cfg['request_rate'], 'duration_seconds': cfg['duration_seconds'],
+            'gpu_kv_capacity_tokens': cache_config['num_gpu_blocks'] * cache_config['block_size'],
+            'cache_config_info': cache_config,
+            'gpu_guest_cgroup_memory_max_bytes': int(memory_max),
+            'gpu_guest_cgroup_memory_peak_bytes': int(memory_peak),
+            'gpu_guest_cgroup_memory_max_gib': memory_max / gib,
+            'gpu_guest_cgroup_memory_peak_gib': memory_peak / gib,
+            'vllm_process_rss_peak_kib': int(rss_peak),
+            'vllm_process_rss_peak_gib': rss_peak * 1024 / gib,
+            'host_ram_peak_gib': max(row['memory_current_bytes'] for row in memory_rows) / gib,
+            'csv_request_count': len(rows),
+            'ttft_first_round_p50_ms': percentile(first_ttft, 0.50),
+            'ttft_later_rounds_p50_ms': percentile(later_ttft, 0.50),
+            'ttft_later_rounds_p99_ms': percentile(later_ttft, 0.99),
+            'ttft_mean_ms': statistics.mean(all_ttft) if all_ttft else None,
+            'tpot_p50_ms_per_token': percentile(all_tpot, 0.50),
+            'tpot_p99_ms_per_token': percentile(all_tpot, 0.99),
+            'throughput_tokens_per_s': (
+                sum(row['generation_tokens'] or 0 for row in rows) / span if span > 0 else None
+            ),
+            'requests_per_s': len(rows) / span if span > 0 else None,
+            'ttft_by_round': round_results,
+            'prefix_cache_hit_rate': prefix_rate,
+            'external_prefix_cache_hit_rate': external_rate,
+            'external_prefix_cache_hits': external_hits,
+            'external_prefix_cache_metric_deltas': external_metrics,
+            'kv_cache_usage_peak': max(kv_usage) if kv_usage else None,
+            'kv_block_idle_before_evict_p50_s': statistics.median(idle_medians) if idle_medians else None,
+            'preemptions': preemptions,
+            'cache_metric_snapshot_count': sum(
+                1 for path in glob.glob(
+                    os.path.join(telemetry_dir, cfg['run_id'] + '-*.prom')
+                )
+            ),
+            'ambient_temp_f': 80, 'gpu_power_limit_w': 300, 'gpu_fan_percent': 100,
+        }
+        print(json.dumps(result, separators=(',', ':'), allow_nan=False))
+      - >-
+        {{ {
+          'suite': benchmark_run_request.suite,
+          'run_id': benchmark_run_request.run_id,
+          'kv_arm': benchmark_run_request.kv_arm,
+          'workload_id': benchmark_run_request.workload_id,
+          'host_ram_limit_gib': benchmark_run_request.host_ram_limit_gib,
+          'prefix_caching': benchmark_run_request.prefix_caching,
+          'kv_offload_backend': benchmark_run_request.kv_offload_backend,
+          'kv_offload_cpu_gib': benchmark_run_request.kv_offload_cpu_gib,
+          'kv_offload_disk_gib': benchmark_run_request.kv_offload_disk_gib,
+          'weight_cpu_offload_gib': benchmark_run_request.weight_cpu_offload_gib,
+          'llamacpp_cache_ram_mib': benchmark_run_request.llamacpp_cache_ram_mib,
+          'gpu_memory_utilization': benchmark_run_request.gpu_memory_utilization,
+          'max_num_batched_tokens': benchmark_run_request.max_num_batched_tokens,
+          'cache_workload': benchmark_run_request.cache_workload,
+          'num_users': benchmark_run_request.num_users,
+          'num_rounds': benchmark_run_request.num_rounds,
+          'shared_prompt_tokens': benchmark_run_request.shared_prompt_tokens,
+          'user_history_tokens': benchmark_run_request.user_history_tokens,
+          'answer_tokens': benchmark_run_request.answer_tokens,
+          'request_rate': benchmark_run_request.request_rate,
+          'duration_seconds': benchmark_run_request.duration_seconds,
+          'seed': benchmark_run_request.seed
+        } | to_json }}
+      - "{{ benchmark_run_request.run_id }}-summary.csv"
+  register: _benchmark_run_kvo_result
+  changed_when: false
+  failed_when: _benchmark_run_kvo_result.rc != 0
+  when:
+    - benchmark_run_request.suite == 'lmcache-multi-round-qa'
+    - _benchmark_run_suite.rc | default(1) == 0
+
+- name: Emit the KVO result JSON line to the Semaphore task log
+  ansible.builtin.debug:
+    msg: "KVO_RESULT {{ _benchmark_run_kvo_result.stdout | trim }}"
+  when: >-
+    _benchmark_run_kvo_result is defined and
+    _benchmark_run_kvo_result.rc | default(1) == 0
