@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize(("missing_profile", "expected_rc"), [(None, 0), ("16gb", 2)])
 def test_seed_coverage_accepts_the_catalog_and_rejects_a_missing_profile(tmp_path, missing_profile, expected_rc):
-    seed = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text())[0]
+    seed = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text())[1]
     tasks = seed["pre_tasks"][3:]
     for task in tasks:
         include = task.get("ansible.builtin.include_vars")
@@ -64,7 +64,7 @@ def _include_roles(node):
 
 
 def test_seed_filter_selects_only_the_requested_registered_artifact(tmp_path):
-    seed = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text())[0]
+    seed = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text())[1]
     tasks = seed["pre_tasks"][3:]
     for task in tasks:
         include = task.get("ansible.builtin.include_vars")
