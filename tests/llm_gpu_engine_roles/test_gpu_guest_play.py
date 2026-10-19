@@ -15,6 +15,7 @@ LLAMACPP_ROLE_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 VLLM_ROLE_ROOT = REPO_ROOT / "roles/vllm_serving"
 SGLANG_ROLE_ROOT = REPO_ROOT / "roles/sglang_serving"
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
+LLAMACPP_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-llama-cpp.yml"
 GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
 LLM_GPU_SERVING_ROLE_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
@@ -30,7 +31,9 @@ def _serving_plays() -> list[dict]:
     plays = []
     for play in _load(SERVING_PLAYBOOK):
         imported = play.get("import_playbook", play.get("ansible.builtin.import_playbook"))
-        if imported == GPU_ENGINE_PLAYBOOK.name:
+        if imported == LLAMACPP_PLAYBOOK.name:
+            plays.extend(_load(LLAMACPP_PLAYBOOK))
+        elif imported == GPU_ENGINE_PLAYBOOK.name:
             plays.extend(_load(GPU_ENGINE_PLAYBOOK))
         else:
             plays.append(play)
@@ -125,7 +128,10 @@ def test_site_reaches_the_serving_playbook_without_a_tag_filter() -> None:
 
 
 def test_profile_comes_from_the_shared_selector_not_a_new_variable() -> None:
-    text = "\n".join(path.read_text(encoding="utf-8") for path in (SERVING_PLAYBOOK, GPU_ENGINE_PLAYBOOK))
+    text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (SERVING_PLAYBOOK, LLAMACPP_PLAYBOOK, GPU_ENGINE_PLAYBOOK)
+    )
     all_vars = _load(REPO_ROOT / "inventory/group_vars/all.yml")
     selector_expression = all_vars["llm_active_profile"]
 

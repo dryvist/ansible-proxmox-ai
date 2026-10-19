@@ -8,6 +8,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
+LLAMACPP_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-llama-cpp.yml"
 GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 
 
@@ -29,7 +30,9 @@ def _serving_plays() -> list[dict]:
     plays = []
     for play in _load(SERVING_PLAYBOOK):
         imported = play.get("import_playbook", play.get("ansible.builtin.import_playbook"))
-        if imported == GPU_ENGINE_PLAYBOOK.name:
+        if imported == LLAMACPP_PLAYBOOK.name:
+            plays.extend(_load(LLAMACPP_PLAYBOOK))
+        elif imported == GPU_ENGINE_PLAYBOOK.name:
             plays.extend(_load(GPU_ENGINE_PLAYBOOK))
         else:
             plays.append(play)
@@ -71,7 +74,8 @@ def test_legacy_and_replacement_engine_plays_precede_the_router_pool():
 
 def test_legacy_play_does_not_override_the_shared_engine_profile_selector():
     text = "\n".join(
-        path.read_text(encoding="utf-8") for path in (SERVING_PLAYBOOK, GPU_ENGINE_PLAYBOOK)
+        path.read_text(encoding="utf-8")
+        for path in (SERVING_PLAYBOOK, LLAMACPP_PLAYBOOK, GPU_ENGINE_PLAYBOOK)
     )
 
     assert "llm_active_profile" not in _legacy_play().get("vars", {})
@@ -83,4 +87,7 @@ def test_shared_long_context_profile_skips_the_legacy_model_play():
     play = next(play for play in _serving_plays() if play.get("hosts") == "llm_vllm_group")
     converge = next(task for task in play["tasks"] if task.get("block"))
 
-    assert converge["when"] == "llm_active_profile != 'qwen38-27b-131k-1'"
+    assert converge["when"] == [
+        "llm_active_profile != 'qwen38-27b-131k-1'",
+        "llama_cpp_models | length > 0",
+    ]
