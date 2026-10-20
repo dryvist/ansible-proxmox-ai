@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.0...v2.4.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* include localhost in effective Ansible limits ([#1635](https://github.com/dryvist/ansible-proxmox-ai/issues/1635)) ([79dbaed](https://github.com/dryvist/ansible-proxmox-ai/commit/79dbaede10e1f993232fb7dc5bc6a688e11fe6ce))
+
 ## [2.4.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.3.0...v2.4.0) (2026-10-20)
 
 
