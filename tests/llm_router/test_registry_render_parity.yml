@@ -92,6 +92,28 @@
         success_msg: >-
           All OLD entries remain catalogued and none is enabled or rendered.
 
+    - name: Keep disabled large-tier entries out of rendered routes
+      vars:
+        _disabled_large_entries: >-
+          {{ llm_router_model_registry
+             | selectattr('tier', 'equalto', 'local-large')
+             | rejectattr('enabled', 'equalto', true) | list }}
+        _disabled_large_ids: >-
+          {{ _disabled_large_entries | map(attribute='client_model_id') | list }}
+        _rendered_model_names: >-
+          {{ _llm_router_parity_config.model_list
+             | default([]) | map(attribute='model_name') | list }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _disabled_large_entries | length > 0
+          - _disabled_large_ids | intersect(_rendered_model_names) | length == 0
+        fail_msg: >-
+          Disabled large-tier entries must remain catalogued but absent from
+          the rendered routes.
+        success_msg: >-
+          Disabled large-tier entries remain absent from rendered routes.
+
     - name: The shipping registry really does exercise both tiers this guard covers
       # Guards against the whole test going vacuous: if the registry ever
       # rendered nothing, every difference() above would be empty and the
