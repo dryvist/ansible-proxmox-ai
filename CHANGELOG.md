@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.1...v2.4.2) (2026-10-20)
+
+
+### Bug Fixes
+
+* **deps:** require amazon.aws 11.3.0 without deprecated text imports ([#1638](https://github.com/dryvist/ansible-proxmox-ai/issues/1638)) ([b0888df](https://github.com/dryvist/ansible-proxmox-ai/commit/b0888df20f87655cdfe28df0ca37b02e042042bc))
+* **llm-models:** register large-tier ids as disabled ([#1641](https://github.com/dryvist/ansible-proxmox-ai/issues/1641)) ([a4231f4](https://github.com/dryvist/ansible-proxmox-ai/commit/a4231f457c0da8e6c0b5735226561d946d52732c))
+
 ## [2.4.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.0...v2.4.1) (2026-10-20)
 
 
