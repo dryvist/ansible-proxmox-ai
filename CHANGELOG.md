@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.3...v2.4.4) (2026-10-20)
+
+
+### Bug Fixes
+
+* **llama_cpp:** register light-tier GGUF artifacts ([#1648](https://github.com/dryvist/ansible-proxmox-ai/issues/1648)) ([acfed38](https://github.com/dryvist/ansible-proxmox-ai/commit/acfed38ce400fb9b5f6215fbc1483b75402470ba))
+
 ## [2.4.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.2...v2.4.3) (2026-10-20)
 
 
