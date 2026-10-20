@@ -184,6 +184,10 @@ class RunAnsibleGuardContract(RunnerSandboxBase):
                 ),
             ),
             (("--limit", "group,localhost"), ("--limit", "group,localhost")),
+            (
+                ("--limit", "all:!down"),
+                ("--limit", "all:!down", "--limit", "all,!down,localhost"),
+            ),
         )
         for supplied, expected in cases:
             with self.subTest(supplied=supplied):

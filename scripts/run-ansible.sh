@@ -222,7 +222,7 @@ for a in "$@"; do
   [[ $a == --limit=* ]] && LIMIT_VAL="${a#--limit=}"
   prev="$a"
 done
-[[ -n $LIMIT_VAL && ",${LIMIT_VAL//:/,}," != *,localhost,* ]] && set -- "$@" --limit "${LIMIT_VAL},localhost"
+[[ -n $LIMIT_VAL && ",${LIMIT_VAL//:/,}," != *,localhost,* ]] && set -- "$@" --limit "${LIMIT_VAL//:/,},localhost"
 set +e
 ansible-playbook "$PLAYBOOK" "$@" 2>&1 | tee "$LOG_FILE"
 STATUS=${PIPESTATUS[0]}
