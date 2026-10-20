@@ -1,0 +1,108 @@
+---
+- name: Verify local Qwen3.8 reasoning defaults and the judge override
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets: {}
+    bao_local_llm_secrets: {}
+    llm_router_subdomain: router.example.test
+    llm_large_serving_host: llm-large
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    llm_router_llm_gpu_base_url: "http://localhost:10434/v1"
+    llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
+    llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_light_base_url: "http://localhost:10434/v1"
+    ai_router_request_timeout_seconds: 2400
+    ai_router_retry_after_seconds: 2
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+  tasks:
+    - name: Add a synthetic inventory GPU member
+      ansible.builtin.add_host:
+        name: llm-gpu-fixture
+        groups: llm_gpu_group
+        ansible_connection: local
+
+    - name: Load the role defaults and registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Set required render fixture values
+      ansible.builtin.set_fact:
+        llm_router_subdomain: router.example.test
+        hermes_goal_judge_model: judge
+
+    - name: Load the fabric model registry
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Select the Qwen3.8 medium GPU profile
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_active_profile: medium-a
+
+    - name: Refresh cached router projections
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render the managed router config
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Model the Qwen3.8 route names from the enabled registry entries
+      ansible.builtin.set_fact:
+        _qwen_large: >-
+          {{ llm_router_large_models
+             | selectattr('upstream_model_id', 'search', 'Qwen3[.]8(-|$)') | first }}
+        _qwen_gpu: >-
+          {{ llm_router_gpu_models
+             | selectattr('upstream_model_id', 'search', 'Qwen3[.]8(-|$)') | first }}
+        _judge_role: >-
+          {{ llm_router_role_deployments
+             | selectattr('role', 'equalto', 'judge') | first }}
+
+    - name: Collect the rendered Qwen3.8 deployments and direct routes
+      ansible.builtin.set_fact:
+        _qwen_names: >-
+          {{ [_qwen_large.route_group, _qwen_gpu.route_group]
+             + _qwen_large.direct_route_aliases
+             + _qwen_gpu.direct_route_aliases }}
+
+    - name: Select all rendered Qwen3.8 deployments and direct routes
+      ansible.builtin.set_fact:
+        _qwen_deployments: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _qwen_names) | list }}
+
+    - name: Render thinking as a nested mapping on every Qwen3.8 local route
+      ansible.builtin.assert:
+        that:
+          - llm_router_gpu_models | length == 1
+          - _qwen_deployments | length >= 3
+          - >-
+            _qwen_deployments
+            | selectattr('litellm_params.extra_body.chat_template_kwargs', 'mapping')
+            | list | length == _qwen_deployments | length
+          - >-
+            _qwen_deployments
+            | selectattr('litellm_params.extra_body.chat_template_kwargs.enable_thinking', 'equalto', true)
+            | list | length == _qwen_deployments | length
+          - _judge_role.litellm_params.extra_body.chat_template_kwargs.enable_thinking is sameas false
+        success_msg: >-
+          Qwen local extra_body={{ _qwen_deployments
+          | map(attribute='litellm_params.extra_body') | list
+          | to_nice_yaml(indent=2, sort_keys=false) }}
+        fail_msg: >-
+          Qwen deployments={{ _qwen_deployments }}, judge={{ _judge_role }}

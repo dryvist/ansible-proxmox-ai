@@ -13,7 +13,7 @@ REGISTRY_FILES = (
     REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
 )
 ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
-PROFILE_FILE = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
+PROFILE_DIR = REPO_ROOT / "roles/vllm_serving/defaults/main"
 GIB = 2**30
 GPU_MEMORY_GIB = 96
 HOST_MEMORY_RESERVE_GIB = 64
@@ -28,6 +28,16 @@ TARGET_MEDIUM_A_ARGS = {
 }
 
 
+def _profiles() -> dict:
+    core = yaml.safe_load((PROFILE_DIR / "10-profiles.yml").read_text(encoding="utf-8"))[
+        "vllm_serving_profiles_core"
+    ]
+    families = yaml.safe_load((PROFILE_DIR / "11-profile-families.yml").read_text(encoding="utf-8"))[
+        "vllm_serving_profiles_specialized"
+    ]
+    return {**core, **families}
+
+
 def _artifacts() -> list[dict]:
     return [
         artifact
@@ -39,7 +49,7 @@ def _artifacts() -> list[dict]:
 
 
 def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
-    profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    profiles = _profiles()
     matrix = {
         (profiles[name]["max_model_len"], profiles[name]["max_num_seqs"], profiles[name]["kv_cache_dtype"])
         for name in profiles
@@ -61,6 +71,7 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
     } | {
         (131072, 2, "fp8"),
         (131072, 11, "fp8"),
+        (98304, 11, "fp8"),
         (262144, 5, "fp8"),
         (65536, 16, "fp8"),
     }
@@ -73,7 +84,7 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
 
 
 def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
-    profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    profiles = _profiles()
     entries = [
         entry
         for path in REGISTRY_FILES
@@ -99,7 +110,11 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         artifact = artifacts_by_id[entry["artifact_id"]]
         assert entry["enabled"] is False
         assert entry["servable"] is False
-        assert entry["max_parallel_requests"] == 64
+        assert entry["max_parallel_requests"] == (
+            64
+            if entry["client_model_id"].startswith("gpu-sweep-") or name == "medium-a"
+            else profile["max_num_seqs"]
+        )
         assert entry["context_window"] + entry["max_output_tokens"] == profile["max_model_len"]
 
         gpu_resident_size = artifact.get("gpu_resident_size_bytes", artifact["model_store_size_bytes"])
@@ -141,8 +156,37 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         )
         assert estimated_gib <= budget_gib, (name, estimated_gib, budget_gib, pool_token_capacity)
         if kv_offloading_gib:
-            ple_bytes = artifact["model_store_size_bytes"] - artifact["gpu_resident_size_bytes"]
+            ple_bytes = artifact["model_store_size_bytes"] - artifact.get(
+                "gpu_resident_size_bytes", artifact["model_store_size_bytes"]
+            )
             assert (ple_bytes / GIB) + kv_offloading_gib <= HOST_MEMORY_RESERVE_GIB
+
+
+def test_co_resident_qwen38_profile_fits_eleven_sessions_within_the_estimated_pool():
+    profiles = _profiles()
+    artifacts = {artifact["artifact_id"]: artifact for artifact in _artifacts()}
+    profile = profiles["qwen38-96k-11-fp8-mtp"]
+    artifact = artifacts["qwen38-27b-nvfp4"]
+    measured_pool_tokens = 1_480_000
+    utilization_delta = 0.85 - profile["gpu_memory_utilization"]
+    bytes_per_fp8_token = artifact["kv_cache_bytes_per_token_bf16"] / 2
+    projected_pool_tokens = floor(
+        measured_pool_tokens
+        - (GPU_MEMORY_GIB * GIB * utilization_delta / bytes_per_fp8_token)
+    )
+    allocated_tokens = profile["max_model_len"] * profile["max_num_seqs"]
+
+    assert profile["max_model_len"] == 98_304
+    assert profile["max_model_len"] % 1024 == 0
+    assert profile["max_num_seqs"] == 11
+    assert profile["kv_cache_dtype"] == "fp8"
+    assert profile["quantization"] == "modelopt"
+    assert profile["speculative_config"] == {"method": "mtp", "num_speculative_tokens": 3}
+    assert profile["gpu_memory_utilization"] == 0.75
+    assert allocated_tokens == 1_081_344
+    assert allocated_tokens <= projected_pool_tokens
+    assert projected_pool_tokens - allocated_tokens >= projected_pool_tokens * 0.07
+    assert profile["max_model_len"] * 12 > projected_pool_tokens
 
 
 def test_sweep_artifact_sizes_match_the_hugging_face_reads():
@@ -180,7 +224,7 @@ def test_sweep_artifact_sizes_match_the_hugging_face_reads():
 
 
 def test_nvfp4_mtp_profiles_enable_fp8_kv_and_mtp():
-    profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    profiles = _profiles()
     for family in ("qwen38", "flash-next"):
         profile = profiles[f"{family}-64k-8-fp8-mtp"]
         assert profile["max_model_len"] == 65536

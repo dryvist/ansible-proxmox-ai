@@ -39,8 +39,9 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
         "flash-next-gguf",
         "nemotron-super-vl-64k-8",
         "nemotron-bolt-64k-16",
+        "moe1-qwen36-n14-s1",
     }
-    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 767_860_222_506
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 789_994_751_498
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {
@@ -98,7 +99,9 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     verify_tasks = yaml.safe_load(
         (SHARED_ROOT / "tasks/verify-model-store-origin-repo.yml").read_text(encoding="utf-8")
     )
-    seed_playbook = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text(encoding="utf-8"))[0]
+    seed_plays = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text(encoding="utf-8"))
+    assert seed_plays[0]["ansible.builtin.import_playbook"] == "../inventory/load_tofu.yml"
+    seed_playbook = seed_plays[1]
     preview = next(
         task
         for task in cache_tasks

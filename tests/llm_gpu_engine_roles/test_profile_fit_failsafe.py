@@ -1,6 +1,7 @@
 """Exercise profile-fit admission against registered artifact sizes."""
 
 from pathlib import Path
+import json
 
 import jinja2
 import yaml
@@ -70,6 +71,66 @@ def test_qwen38_131k_profile_fits_the_4080_guest_weight_admission():
     assert facts["nvidia_gpu_guest_fit_gpu_weights_bytes"] < 16 * GIB
     assert facts["nvidia_gpu_guest_fit_guest_memory_bytes"] == 13 * 1024**3
     assert facts["nvidia_gpu_guest_fit_cpu_weights_bytes"] == 0
+
+
+def test_moe1_profile_weight_splits_fit_the_4080_guest_weight_admission():
+    expected = {
+        "moe1-qwen36-n14-s1": (15_322_979_296, 6_811_549_696),
+        "moe1-qwen36-n16-s2": (14_349_900_768, 7_784_628_224),
+        "moe1-bolt-n38-s1": (15_776_808_960, 6_241_517_568),
+        "moe1-bolt-n40-s2": (15_378_874_368, 6_639_452_160),
+    }
+    for name, (gpu_bytes, cpu_bytes) in expected.items():
+        facts, results = _evaluate_facts(name, gpu_memory_mib=16376, guest_memory_mb=13312)
+        assert all(results), (name, facts, results)
+        assert facts["nvidia_gpu_guest_fit_gpu_weights_bytes"] == gpu_bytes
+        assert facts["nvidia_gpu_guest_fit_cpu_weights_bytes"] == cpu_bytes
+        assert facts["nvidia_gpu_guest_fit_gpu_weights_bytes"] < 16 * GIB
+        assert facts["nvidia_gpu_guest_fit_cpu_weights_bytes"] < facts["nvidia_gpu_guest_fit_guest_budget_bytes"]
+        assert facts["nvidia_gpu_guest_fit_guest_budget_bytes"] == 13312 * 1048576 - 1610612736
+
+
+def test_moe1_shared_units_render_the_registered_cpu_offload_flags():
+    profiles = _profiles_by_name()
+    expected = {
+        "moe1-qwen36-n14-s1": 14,
+        "moe1-qwen36-n16-s2": 16,
+        "moe1-bolt-n38-s1": 38,
+        "moe1-bolt-n40-s2": 40,
+    }
+    environment = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(ROOT / "roles/llm_gpu_serving/templates"),
+        trim_blocks=True,
+        undefined=jinja2.StrictUndefined,
+    )
+    environment.filters["comment"] = lambda value: "# " + str(value)
+    environment.filters["mandatory"] = lambda value, message="": value
+    environment.filters["to_json"] = json.dumps
+
+    for name, layers in expected.items():
+        profile = profiles[name]
+        registry = _registry_profiles()[name]
+        unit = environment.get_template("llm-gpu-serving.service.j2").render(
+            ansible_managed="Managed by Ansible",
+            ansible_facts={"default_ipv4": {"address": "LISTEN_ADDRESS"}},
+            llm_gpu_serving_user="llm-gpu-serving",
+            llm_gpu_serving_group="llm-gpu-serving",
+            llm_gpu_serving_data_dir="/var/lib/llm-gpu-serving",
+            llm_gpu_serving_hf_home="HF_CACHE_HOME",
+            llm_gpu_serving_profile_name=name,
+            llm_gpu_serving_profile={**profile, "port": 10434},
+            llm_gpu_serving_profile_registry_model=registry,
+            llm_gpu_serving_profile_model_dir=f"/cache/models/{registry['artifact']['hf_repo']}",
+            llm_gpu_serving_llamacpp_install_dir="/opt/llm-gpu-serving/llama.cpp",
+            llm_gpu_serving_llamacpp_server_bin="/opt/llm-gpu-serving/llama.cpp/llama-server",
+        )
+        command = unit.split("ExecStart=", maxsplit=1)[1].split("\n\n[Install]", maxsplit=1)[0]
+        command = " ".join(command.replace("\\\n", " ").split())
+        assert profile["max_model_len"] == 66560
+        assert f"--n-cpu-moe {layers}" in command
+        assert "--cache-ram 1024" in command
+        assert "--cache-type-k q8_0 --cache-type-v q8_0" in command
+        assert "--mmproj" not in command
 
 
 def test_flash_next_nvfp4_mtp_is_rejected_by_the_guest_ram_budget():

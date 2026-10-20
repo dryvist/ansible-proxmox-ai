@@ -50,10 +50,15 @@
         quiet: true
         that:
           - llm_router_local_only_fail_fast_names | sort == _local_roles | sort
-          - _empty_fallbacks | length == _local_roles | length
+          - >-
+            _empty_fallbacks | length
+            == (_local_roles | length
+                if _config.router_settings.get('default_fallbacks', []) | length > 0
+                else 0)
           - _local_keys | map(attribute='alias') | sort == _local_roles | sort
-          - _local_keys | selectattr('allowed_classes', 'equalto', ['local']) | list | length == _local_keys | length
           - _local_keys | map(attribute='models') | flatten | intersect(_cloud_groups) | length == 0
+          - _recorder_key.allowed_classes == ['local']
+          - _recorder_key.models | intersect(_cloud_groups) | length == 0
           - _judge.fallbacks == llm_router_d1_zdr_ladder_groups
           - _judge_key.allowed_classes == _llm_router_consumer_classes_zdr
           - _judge_key.models | intersect(_unsafe_rungs) | length == 0
@@ -67,11 +72,12 @@
           {{ llm_router_role_deployments | selectattr('fallbacks', 'equalto', [])
              | map(attribute='role') | list }}
         _empty_fallbacks: >-
-          {{ _config.router_settings.fallbacks | map('dict2items') | flatten
+          {{ _config.router_settings.get('fallbacks', []) | map('dict2items') | flatten
              | selectattr('key', 'in', llm_router_local_only_fail_fast_names)
              | selectattr('value', 'equalto', []) | list }}
         _local_keys: >-
           {{ _keys | selectattr('alias', 'in', _local_roles) | list }}
+        _recorder_key: "{{ _keys | selectattr('alias', 'equalto', 'recorder') | first }}"
         _judge: >-
           {{ llm_router_role_deployments
              | selectattr('role', 'equalto', hermes_goal_judge_model) | first }}

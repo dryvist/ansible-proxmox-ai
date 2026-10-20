@@ -26,6 +26,13 @@
           llm_fast_api: 10434
           ollama_api: 11434
           otel_traces_http: 4318
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -105,15 +112,15 @@
              | rejectattr('model_info.disable_background_health_check')
              | map(attribute='model_name') | list }}
 
-    - name: The dedicated vLLM tier stays probeable — no swap, nothing to evict
+    - name: Active vLLM deployments stay probeable — no swap, nothing to evict
       ansible.builtin.assert:
         quiet: true
         that:
-          - _vllm_entries | length > 0
+          - _vllm_entries | length == llm_router_vllm_models | length
           - _excluded_vllm | length == 0
         fail_msg: >-
-          Expected at least one vLLM-tier deployment, none excluded from
-          background health checks; got {{ _vllm_entries | map(attribute='model_name') | list }}
+          Active vLLM deployments={{ llm_router_vllm_models | length }} but
+          rendered entries={{ _vllm_entries | map(attribute='model_name') | list }}
           with {{ _excluded_vllm }} incorrectly excluded. The vLLM guest is a
           single dedicated deployment with nothing to swap or evict, so
           disable_background_health_check should never apply to it.

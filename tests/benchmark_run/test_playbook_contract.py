@@ -5,6 +5,7 @@ import yaml
 ROOT = Path(__file__).parents[2]
 PLAYBOOK = ROOT / "playbooks/benchmark-run.yml"
 TASKS = ROOT / "playbooks/tasks/benchmark-run"
+SERVING_DEFAULTS = ROOT / "roles/vllm_serving/defaults/main/00-engine.yml"
 
 
 def load_tasks(name: str) -> list[dict[str, object]]:
@@ -16,7 +17,16 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     vars_ = plays[1]["vars"]
     assert vars_["_benchmark_run_evalscope_version"] == "1.13.0"
     assert vars_["_benchmark_run_promptfoo_version"] == "0.124.1"
-    assert vars_["_benchmark_run_vllm_client_image"] == "vllm/vllm-openai-cpu:v0.31.0"
+    assert vars_["_benchmark_run_lmcache_version"] == "0.5.5"
+    assert vars_["_benchmark_run_vllm_client_version"] == "{{ vllm_serving_version }}"
+    assert vars_["_benchmark_run_vllm_client_image"] == (
+        "vllm/vllm-openai-cpu:v{{ vllm_serving_version }}-x86_64"
+    )
+    serving = yaml.safe_load(SERVING_DEFAULTS.read_text())
+    assert "../roles/vllm_serving/defaults/main/00-engine.yml" in plays[1]["vars_files"]
+    assert "vllm_serving_version" in serving
+    playbook_text = PLAYBOOK.read_text()
+    assert "renovate: datasource=github-releases depName=LMCache/LMCache" in playbook_text
 
     preflight = load_tasks("preflight.yml")
     request_assert = preflight[0]["ansible.builtin.assert"]["that"]
@@ -68,7 +78,7 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     assert "--selective_evaluate" in official_argv
     assert any("--check_gt_only" in task.get("ansible.builtin.command", {}).get("argv", []) for task in tasks)
     assert load_tasks("promptfoo.yml")[0]["no_log"] is True
-    assert load_tasks("vllm-serve.yml")[0]["no_log"] is True
+    assert load_tasks("cache-run-with-metrics.yml")[0]["no_log"] is True
 
     promptfoo = load_tasks("promptfoo.yml")[0]["ansible.builtin.command"]["argv"]
     npx_index = promptfoo.index("/usr/local/bin/npx")
@@ -81,14 +91,14 @@ def test_runner_has_pinned_bigcodebench_and_promptfoo_paths() -> None:
     assert any("BENCHMARK_CHAT_TEMPLATE_KWARGS" in argument for argument in promptfoo)
 
     prepare = load_tasks("prepare.yml")
-    uv_check = next(task for task in prepare if task["name"] == "Verify the pinned uv release in the selected client")
-    node_check = next(task for task in prepare if task["name"] == "Verify the pinned Node release in the selected client")
+    uv_check = next(task for task in prepare if task.get("register") == "_benchmark_run_uv_version")
+    node_check = next(task for task in prepare if task.get("register") == "_benchmark_run_node_version")
     assert uv_check["ansible.builtin.command"]["argv"][-2] == "/usr/local/bin/uv"
     assert node_check["ansible.builtin.command"]["argv"][-2] == "/usr/local/bin/node"
-    engine_probe = next(task for task in prepare if task["name"] == "Verify the selected engine from inside the benchmark client")
+    engine_probe = next(task for task in prepare if task.get("register") == "_benchmark_run_engine_probe")
     assert engine_probe["ansible.builtin.command"]["argv"][4] == "/usr/bin/curl"
     assert engine_probe["when"] == "benchmark_run_request.suite != 'promptfoo-echo-smoke'"
-    engine_metrics = next(task for task in prepare if task["name"] == "Read the engine process start time from metrics")
+    engine_metrics = next(task for task in prepare if task.get("register") == "_benchmark_run_engine_start_time")
     assert "/usr/bin/curl" in engine_metrics["ansible.builtin.shell"]["cmd"]
 
 
@@ -106,9 +116,7 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
     prepare = load_tasks("prepare.yml")
     assert any("benchmark-client" in task.get("name", "") for task in prepare)
     assert any("engine" in task.get("name", "").lower() for task in prepare)
-    running_assert = next(
-        task for task in prepare if task["name"] == "Assert the selected client is running"
-    )
+    running_assert = next(task for task in prepare if "_benchmark_run_client_status.stdout" in str(task))
     assert running_assert["ansible.builtin.assert"]["that"] == [
         "_benchmark_run_client_status.stdout | trim == 'status: running'"
     ]
@@ -118,18 +126,30 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
     assert any("Archive the raw suite output" in name for name in names)
     assert any("Copy the raw result archive" in name for name in names)
 
-    promptfoo_summary = execute[0]["always"][0]
+    promptfoo_summary = next(
+        task
+        for task in execute[0]["always"]
+        if task.get("name") == "Read a safe Promptfoo pass count from its JSON output"
+    )
     assert promptfoo_summary["name"] == "Read a safe Promptfoo pass count from its JSON output"
     assert promptfoo_summary["ansible.builtin.command"]["argv"][4] == "/usr/local/bin/node"
     assert "results.stats.successes" in promptfoo_summary["ansible.builtin.command"]["argv"][-1]
     assert "passed" in promptfoo_summary["ansible.builtin.command"]["argv"][-1]
-    safe_summary = execute[0]["always"][1]["ansible.builtin.debug"]["msg"]
+    safe_summary_task = next(
+        task
+        for task in execute[0]["always"]
+        if task.get("name") == "Emit a safe suite summary to the Semaphore task log"
+    )
+    safe_summary = safe_summary_task["ansible.builtin.debug"]["msg"]
     assert set(safe_summary) == {
         "suite",
         "return_code",
         "stdout_line_count",
         "stderr_line_count",
         "promptfoo_pass_summary",
+        "workload_id",
+        "kv_arm",
+        "cache_workload",
     }
     assert "_benchmark_run_promptfoo_summary.stdout" in safe_summary["promptfoo_pass_summary"]
 
@@ -145,9 +165,7 @@ def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
     assert any("gpu_guest_vmid" in check for check in required)
     assert any("default('true')" in check for check in required)
     request = next(task for task in preflight if task.get("ansible.builtin.add_host"))
-    assert request["ansible.builtin.add_host"]["benchmark_run_request"]["upgrade"] == (
-        "{{ (upgrade | default('true') | string | lower) != 'false' }}"
-    )
+    assert "false if suite in" in request["ansible.builtin.add_host"]["benchmark_run_request"]["upgrade"]
 
     upgrade = load_tasks("upgrade.yml")
     assert any("apt-get" in str(task.get("ansible.builtin.command", {}).get("argv", [])) for task in upgrade)
@@ -158,25 +176,38 @@ def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
     prepare = load_tasks("prepare.yml")
     assert any(task.get("ansible.builtin.import_tasks") == "patch-metadata.yml" for task in prepare)
     assert any("campaign-dimensions.json" in str(task) for task in prepare)
+    # A skipped register is still defined; non-Promptfoo suites skip the items checksum.
+    assert "_benchmark_run_items_checksum is not skipped" in str(prepare)
     metadata = load_tasks("patch-metadata.yml")
     assert any("pveversion" in str(task) for task in metadata)
     assert any("nvidia-smi" in str(task) for task in metadata)
     assert any("nvcc" in str(task) for task in metadata)
+    patch_assert = next(task for task in metadata if "ansible.builtin.assert" in task)
+    # ansible-core 2.19+ rejects a non-boolean conditional; regex_search returns the match string.
+    for condition in patch_assert["ansible.builtin.assert"]["that"]:
+        if "regex_search(" in condition:
+            assert condition.endswith("is not none"), condition
     dimensions = next(
         task
         for task in metadata
         if "_benchmark_run_campaign_dimensions" in task.get("ansible.builtin.set_fact", {})
     )
     assert "patches" in str(dimensions["ansible.builtin.set_fact"])
+    assert "moe_cpu_offload" in str(dimensions["ansible.builtin.set_fact"])
+    assert "host_ram_limit_gib" in str(dimensions["ansible.builtin.set_fact"])
+    assert "kv_pool_tokens" in str(dimensions["ansible.builtin.set_fact"])
 
 
 def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
-    argv = load_tasks("vllm-serve.yml")[0]["ansible.builtin.command"]["argv"]
+    tasks = load_tasks("vllm-serve.yml")
+    argv = tasks[1]["ansible.builtin.set_fact"]["_benchmark_run_kvo_argv"]
+    assert argv[:4] == ["/usr/bin/timeout", "--signal=TERM", "--kill-after=10s", "1200s"]
     assert argv[argv.index("--entrypoint") + 1] == "vllm"
     assert "--ignore-eos" in argv
     assert argv[argv.index("--metric-percentiles") + 1] == "50,90,99"
     assert "--save-detailed" in argv
     assert "--burstiness" in argv
+    assert tasks[-1]["ansible.builtin.include_tasks"] == "cache-run-with-metrics.yml"
 
     prepare = load_tasks("prepare.yml")
     assert any("engine uptime" in task.get("name", "").lower() for task in prepare)

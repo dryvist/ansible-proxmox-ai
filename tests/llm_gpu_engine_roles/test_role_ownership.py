@@ -60,8 +60,12 @@ def test_engine_roles_own_only_their_profiles_and_selectors():
                 "qwen38-64k-8-fp8-mtp4",
                 "qwen38-128k-2-fp8-mtp",
                 "qwen38-128k-11-fp8-mtp",
+                "qwen38-96k-11-fp8-mtp",
                 "qwen38-256k-1-fp8-mtp",
                 "qwen38-256k-5-fp8-mtp",
+                "qwen38-256k-kvoff0",
+                "qwen38-256k-kvoff24",
+                "qwen38-256k-kvoffmax",
                 "qwen38-64k-16-fp8-mtp",
                 "flash-next-64k-8-fp8-mtp",
                 "flash-next-64k-8-fp8-mtp0",
@@ -105,7 +109,14 @@ def test_engine_roles_own_only_their_profiles_and_selectors():
     for role, engine, expected_profiles in cases:
         role_root = ROLES / role
         defaults = _yaml(role_root / "defaults/main/10-profiles.yml")
-        profiles = defaults[f"{role}_profiles"]
+        if role == "vllm_serving":
+            families = _yaml(role_root / "defaults/main/11-profile-families.yml")
+            profiles = {
+                **defaults["vllm_serving_profiles_core"],
+                **families["vllm_serving_profiles_specialized"],
+            }
+        else:
+            profiles = defaults[f"{role}_profiles"]
 
         assert "llm_gpu_active_profiles_by_engine" in defaults[f"{role}_active_profile"]
         assert set(profiles) == expected_profiles

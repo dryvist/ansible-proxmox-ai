@@ -39,14 +39,17 @@
         success_msg: "D1 groups render in class order and capabilities select ordered backend members."
       vars:
         _hermes_fallback: >-
-          {{ _config.router_settings.fallbacks
+          {{ _config.router_settings.get('fallbacks', [])
              | map('dict2items') | flatten
              | selectattr('key', 'equalto', llm_router_primary_model)
-             | map(attribute='value') | first }}
-        # The primary's own fallback is the ladder tail after it; rungs ordered
-        # before it (subscription class) are not revisited.
+             | map(attribute='value') | first | default([]) }}
+        # A primary in the ladder skips rungs ordered before it; a primary
+        # outside the shared ladder starts at its first rung.
         _expected_hermes_fallback: >-
-          {{ llm_router_d1_ladder_groups[llm_router_d1_ladder_groups.index(llm_router_primary_model) + 1:]
+          {{ (llm_router_d1_ladder_groups[
+                llm_router_d1_ladder_groups.index(llm_router_primary_model) + 1:]
+              if llm_router_primary_model in llm_router_d1_ladder_groups
+              else llm_router_d1_ladder_groups)
              | reject('in', _active_zdr_unasserted_terminal_rungs) | list }}
         _primary_members: >-
           {{ _config.model_list

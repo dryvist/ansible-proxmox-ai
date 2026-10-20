@@ -1,11 +1,14 @@
 {# Pro6000 model deployments, split from model-list.yaml.j2 at the GPU-tier seam. #}
+{% from 'model-list-extra-body.yaml.j2' import local_extra_body with context %}
   {% set _deployment_tags_by_entry = _deployment_tags_by_entry | default(llm_router_deployment_tags_by_entry) -%}# --- Pro6000 profiles: separate models on one inventory-backed guest ---
 {% for m in llm_router_gpu_models %}
   - model_name: {{ m.route_group | default(m.client_model_id) }}
     litellm_params:
       model: {{ litellm_model(m) }}
       tags: {{ _deployment_tags_by_entry[m.client_model_id ~ '|' ~ m.tier] | to_json }}
-      api_base: {{ llm_router_llm_gpu_base_url }}
+      api_base: {{ llm_router_llm_gpu_co_resident_base_url
+        if m.profile in llm_router_gpu_co_resident_profiles
+        else llm_router_llm_gpu_base_url }}
       api_key: {{ llm_router_light_api_key }}
       use_chat_completions_api: true
       max_parallel_requests: {{ m.max_parallel_requests | default(1) }}
@@ -13,6 +16,7 @@
       order: {{ m.order }}
 {% endif %}
 {{ local_bounds(m) }}
+{{ local_extra_body(m) }}
       input_cost_per_token: {{ m.input_cost_per_token | default(0) }}
       output_cost_per_token: {{ m.output_cost_per_token | default(0) }}
     model_info:

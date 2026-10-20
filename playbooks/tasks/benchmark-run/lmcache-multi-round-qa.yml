@@ -1,0 +1,55 @@
+---
+- name: Build the upstream LMCache multi-round QA command
+  ansible.builtin.set_fact:
+    _benchmark_run_kvo_metrics_url: >-
+      {{ benchmark_run_request.engine_url | urlsplit('scheme') }}://{{
+        benchmark_run_request.engine_url | urlsplit('netloc') }}/metrics
+    _benchmark_run_kvo_argv:
+      - /usr/bin/timeout
+      - --signal=TERM
+      - --kill-after=10s
+      - "{{ benchmark_run_request.duration_seconds + 79 }}s"
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - docker
+      - run
+      - --rm
+      - --pull=never
+      - --network
+      - host
+      - -v
+      - "{{ _benchmark_run_client_root }}/inputs/kvo:/work/kvo:ro"
+      - -v
+      - "{{ _benchmark_run_client_result }}:/out"
+      - --workdir
+      - /work/kvo/lmcache
+      - --entrypoint
+      - python
+      - "{{ benchmark_run_request.vllm_client_image }}"
+      - /work/kvo/lmcache/multi-round-qa.py
+      - --num-users
+      - "{{ benchmark_run_request.num_users }}"
+      - --shared-system-prompt
+      - "{{ benchmark_run_request.shared_prompt_tokens }}"
+      - --user-history-prompt
+      - "{{ benchmark_run_request.user_history_tokens }}"
+      - --answer-len
+      - "{{ benchmark_run_request.answer_tokens }}"
+      - --num-rounds
+      - "{{ benchmark_run_request.num_rounds }}"
+      - --qps
+      - "{{ benchmark_run_request.request_rate }}"
+      - --model
+      - "{{ benchmark_run_request.model }}"
+      - --base-url
+      - "{{ benchmark_run_request.engine_url }}"
+      - --time
+      - "{{ benchmark_run_request.duration_seconds }}"
+      - --output
+      - "/out/{{ benchmark_run_request.run_id }}-summary.csv"
+      - --enforce-strict-concurrent-users
+
+- name: Run LMCache multi-round QA with native telemetry snapshots
+  ansible.builtin.include_tasks: cache-run-with-metrics.yml

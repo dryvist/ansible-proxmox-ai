@@ -4,12 +4,10 @@ from pathlib import Path
 
 import yaml
 
-from test_engine_profiles import _artifacts
+from test_engine_profiles import _artifacts, _vllm_profiles
 
 ROOT = Path(__file__).resolve().parents[2]
-VLLM_PROFILES = yaml.safe_load(
-    (ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml").read_text()
-)["vllm_serving_profiles"]
+VLLM_PROFILES = _vllm_profiles()
 GPU_MATRIX = yaml.safe_load((ROOT / "llm-models.d/61-gpu-matrix.yml").read_text())[
     "_llm_registry_gpu_matrix"
 ]
@@ -37,6 +35,9 @@ def test_long_context_profiles_match_card_limits_and_memory_targets():
             "qwen38-128k-11-fp8-mtp",
             "qwen38-256k-1-fp8-mtp",
             "qwen38-256k-5-fp8-mtp",
+            "qwen38-256k-kvoff0",
+            "qwen38-256k-kvoff24",
+            "qwen38-256k-kvoffmax",
         )
     }
     flash = [
@@ -77,6 +78,22 @@ def test_long_context_profiles_match_card_limits_and_memory_targets():
         assert profile["kv_cache_dtype"] == qwen_mtp["kv_cache_dtype"] == "fp8"
         assert profile["speculative_config"] == qwen_mtp["speculative_config"]
         assert "hf_overrides" not in profile and not profile.get("allow_long_max_model_len")
+
+    assert {
+        name: VLLM_PROFILES[name].get("kv_offloading_size", 0)
+        for name in (
+            "qwen38-256k-kvoff0",
+            "qwen38-256k-kvoff24",
+            "qwen38-256k-kvoffmax",
+        )
+    } == {
+        "qwen38-256k-kvoff0": 0,
+        "qwen38-256k-kvoff24": 24,
+        "qwen38-256k-kvoffmax": 52.81,
+    }
+    assert VLLM_PROFILES["qwen38-256k-kvoff0"].get("kv_offloading_backend") is None
+    assert VLLM_PROFILES["qwen38-256k-kvoff24"]["kv_offloading_backend"] == "native"
+    assert VLLM_PROFILES["qwen38-256k-kvoffmax"]["kv_offloading_backend"] == "native"
 
     qwen_matrix = {entry["profile"]: entry for entry in GPU_MATRIX}
     for name, profile in {

@@ -64,9 +64,8 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
   package for SM120 kernel support in one uv command for vLLM profiles.
 - Installs the Renovate-pinned llama.cpp CUDA assets from the shared
   `llamacpp_release` contract only when the recorded asset changes.
-- Seeds `model_store: true` artifacts from the base registry and NVFP4 sweep
-  shards into the declared origin with immutable Hub revisions. The GLM shard is
-  not seeded. The seed playbook
+- Seeds `model_store: true` artifacts from the model registry into the declared
+  origin with immutable Hub revisions. The GLM shard is not seeded. The seed playbook
   checks for running GPU compute applications before each download and verifies
   every populated repository with Hub checksums.
 - Pulls the active profile's registered repository from the origin into the
@@ -82,15 +81,16 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
 
 ## Profiles
 
-`llm_profiles` defines five entries: `small`, `medium-a`, `medium-b`, `max`,
-and `glm-flash`. All five are enabled so the profile switch can select any of
-them. `glm-flash` is a separate llama.cpp profile for the pinned GLM-5.3-Flash
-UD-IQ1_S artifact; its router entry remains disabled until it is validated.
+The original `llm_profiles` entries are `small`, `medium-a`, `medium-b`, `max`,
+and `glm-flash`. `glm-flash` is a separate llama.cpp profile for the pinned
+GLM-5.3-Flash UD-IQ1_S artifact; its router entry remains disabled until it is
+validated.
 Runtime serving settings live here; model bytes, Hub repository, include
 globs, file format, quantization, engine support, GGUF file name, and use are
 defined once in `llm-models.d/65-gpu-artifacts.yml`,
 `llm-models.d/66-gpu-artifacts-glm53flash.yml`, and
-`llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml`. The router profile
+`llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml` and
+`llm-models.d/69-gpu-artifacts-matrix.yml`. The router profile
 registry links to those records by `artifact_id` and stays `enabled: false`,
 `servable: false` until a serving floor is measured. The shared GPU registry
 also contains the `16gb` llama.cpp candidate owned by `llamacpp_serving`; this
@@ -110,6 +110,28 @@ Optional `kv_cache_dtype` becomes `--cache-type-k`/`--cache-type-v`,
 `reasoning_format` becomes `--reasoning-format`, and `extra_args` is appended
 verbatim. Select the active entry with `llm_active_profile`.
 
+### MoE CPU expert-offload profiles
+
+The four `moe1-*` profiles serve pinned text GGUFs with `--n-cpu-moe`, q8_0 KV,
+flash attention, a 1,024 MiB prompt cache, and 66,560 tokens per slot. The
+context covers a 65,536-token prompt and 1,024 generated tokens. Their model
+registry entries remain disabled until the measured serving floor is accepted.
+
+The CPU expert bytes below come from each pinned GGUF tensor index. GPU-resident
+bytes equal the GGUF file size minus those CPU expert tensors.
+
+| Profile | CPU layers N | Slots | CPU expert bytes | GPU-resident bytes |
+| --- | ---: | ---: | ---: | ---: |
+| `moe1-qwen36-n14-s1` | 14 | 1 | 6,811,549,696 | 15,322,979,296 |
+| `moe1-qwen36-n16-s2` | 16 | 2 | 7,784,628,224 | 14,349,900,768 |
+| `moe1-bolt-n38-s1` | 38 | 1 | 6,241,517,568 | 15,776,808,960 |
+| `moe1-bolt-n40-s2` | 40 | 2 | 6,639,452,160 | 15,378,874,368 |
+
+The selected layer counts leave at least about 1 GiB beyond q8_0 KV for compute
+buffers at the configured slot count. The profile-fit guard checks each split
+against available GPU memory and leaves at least 1.5 GiB of guest RAM beyond the
+CPU expert weights.
+
 The reusable cache-sync task accepts `llm_gpu_serving_cache_sync_artifact_id`
 and resolves its repository, revision, and include globs from the artifact
 registry. Its default `pull` mode copies from the origin to the local cache;
@@ -118,6 +140,26 @@ populate the origin. With no origin declared, either mode downloads the pinned
 artifact straight into the local cache and verifies it there. Callers that only stage a campaign artifact leave
 `llm_gpu_serving_cache_sync_notify_service` unset; the normal role sets it to
 `true` so changed local model files restart serving.
+
+### Co-resident small GPU profile
+
+The legacy GPU serving role can run a second llama.cpp profile beside the main
+vLLM profile. Set `llm_gpu_serving_co_resident_profiles: [small-c4-64k]` in a
+single guest's host vars to opt in; the host selects
+`qwen38-96k-11-fp8-mtp` as its eleven-slot main profile. The role downloads the
+pinned Qwen3.5-9B Q4_K_M artifact through its existing cache-sync task, then
+starts `llm-gpu-serving-small-c4-64k.service` on the next port after
+`service_ports.llm_fast_api`. It probes `/v1/models` on both services before
+the router renders the GPU deployment at order 1; the CPU small-pool member
+remains order 4.
+
+The main vLLM profile uses 75% of the device, leaving about 24 GiB outside its
+allocation; the small engine requires 20 GiB of it. Its 98,304-token maximum includes an 8,192-token
+output budget, so the registry advertises 90,112 input tokens. Eleven slots
+consume 1,081,344 KV tokens, leaving about 84,000 tokens (roughly 7%) in the
+estimated 1.165M-token pool after reducing utilization from 85%; twelve slots
+exceed the estimate. The profile also carries a 12 GiB vLLM runtime reserve.
+This estimate is a configuration screen, not measured live acceptance.
 
 ## Stress window
 

@@ -1,5 +1,5 @@
 ---
-- name: Verify inactive profiles stay out while the dedicated small route remains
+- name: Verify inactive profiles stay out and the small selector falls back
   hosts: localhost
   gather_facts: false
   vars:
@@ -12,6 +12,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_apps_secrets: {}
     bao_local_llm_secrets: {}
     llm_router_subdomain: "pve.example.test"
@@ -55,25 +62,22 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: Only the registry-probed local small deployment remains active
+    - name: Inactive GPU profiles leave the CPU small member available
       ansible.builtin.assert:
         quiet: true
         that:
           - llm_router_gpu_models | length == 0
           - _config.model_list | selectattr('model_info.profile', 'defined') | list | length == 0
           - _small_members | length == 1
-          - _small_members[0].litellm_params.order | int == 1
-          - _medium_members | length == 1
-          - _medium_members[0].litellm_params.order | int == 2
+          - llm_router_small_model == llm_router_small_capability_name
+          - _small_members[0].litellm_params.order | int == 3
+          - _small_members[0].litellm_params.api_base in llm_router_cpu_9b_backend_urls
           - _config.router_settings.model_group_alias == llm_router_model_group_aliases
         fail_msg: >-
-          active profiles={{ llm_router_gpu_models }}, small={{ _small_members }},
-          medium={{ _medium_members }}
+          active profiles={{ llm_router_gpu_models }}, small={{ _small_members }}
       vars:
         _small_members: >-
           {{ _config.model_list | selectattr('model_name', 'equalto', llm_router_small_model) | list }}
-        _medium_members: >-
-          {{ _config.model_list | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
 
     - name: Model the stored role deployments on the configured GPU backend
       ansible.builtin.set_fact:

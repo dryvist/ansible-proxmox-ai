@@ -1,0 +1,107 @@
+---
+- name: Run the pinned cache benchmark with 15-second engine and cgroup capture
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      metrics_dir={{ (_benchmark_run_node_scratch ~ '/telemetry') | quote }}
+      stop_file="$metrics_dir/{{ benchmark_run_request.run_id }}.stop"
+      memory_file="$metrics_dir/{{ benchmark_run_request.run_id }}-cgroup-memory.tsv"
+      client_vmid={{ benchmark_run_request.client_vmid | string | quote }}
+      gpu_guest_vmid={{ benchmark_run_request.gpu_guest_vmid | string | quote }}
+      metrics_url={{ _benchmark_run_kvo_metrics_url | quote }}
+      mkdir -p "$metrics_dir"
+      rm -f "$stop_file"
+      {
+        printf '%s\t' \
+          'timestamp_utc' 'phase' 'memory_current_bytes' 'gpu_memory_used_mib' \
+          'memory_max_bytes' 'memory_peak_bytes'
+        printf '%s\n' 'vllm_main_process_rss_kib'
+      } > "$memory_file"
+
+      capture_sample() {
+        phase="$1"
+        timestamp="$(date -u +%Y%m%dT%H%M%S%N)"
+        /usr/bin/timeout --signal=TERM --kill-after=1s 10s \
+          pct exec "$client_vmid" -- /usr/bin/curl \
+          --fail --silent --show-error --max-time 5 \
+          "$metrics_url" \
+          > "$metrics_dir/{{ benchmark_run_request.run_id }}-$phase-$timestamp.prom"
+        guest_sample=$(/usr/bin/timeout --signal=TERM --kill-after=1s 10s \
+          pct exec "$gpu_guest_vmid" -- /bin/bash -s <<'GUEST'
+      set -euo pipefail
+      vllm_units=$(/usr/bin/systemctl list-units --type=service --state=running \
+        --no-legend --plain | /usr/bin/awk '$1 ~ /^llm-gpu-serving-.*\.service$/ { print $1 }')
+      vllm_unit_count=$(printf '%s\n' "$vllm_units" | /usr/bin/awk 'NF { count++ } END { print count + 0 }')
+      [[ "$vllm_unit_count" -eq 1 ]]
+      vllm_unit=$(printf '%s\n' "$vllm_units" | /usr/bin/awk 'NF { print; exit }')
+      vllm_pid=$(/usr/bin/systemctl show "$vllm_unit" --property=MainPID --value)
+      [[ "$vllm_pid" =~ ^[0-9]+$ && "$vllm_pid" -gt 0 ]]
+      vllm_rss_kib=$(/usr/bin/awk '/^VmRSS:/ { print $2; found = 1; exit } END { if (!found) exit 1 }' \
+        "/proc/$vllm_pid/status")
+      [[ "$vllm_rss_kib" =~ ^[0-9]+$ ]]
+      printf '%s' "$vllm_rss_kib"
+      GUEST
+        )
+        vllm_rss_kib=$guest_sample
+        # The guest sees its lxc/<vmid>/ns child, whose memory.max is "max"; the limit lives one level up.
+        guest_cgroup="/sys/fs/cgroup/lxc/$gpu_guest_vmid"
+        memory_current=$(/usr/bin/cat "$guest_cgroup/memory.current")
+        memory_max=$(/usr/bin/cat "$guest_cgroup/memory.max")
+        memory_peak=$(/usr/bin/cat "$guest_cgroup/memory.peak")
+        [[ "$memory_max" =~ ^[0-9]+$ && "$memory_peak" =~ ^[0-9]+$ ]]
+        gpu_memory_used=$(/usr/bin/timeout --signal=TERM --kill-after=1s 10s \
+          pct exec "$gpu_guest_vmid" -- nvidia-smi \
+          --query-gpu=memory.used --format=csv,noheader,nounits \
+          | head -n 1 | tr -d '[:space:]')
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase" \
+          "$memory_current" "$gpu_memory_used" "$memory_max" \
+          "$memory_peak" "$vllm_rss_kib" >> "$memory_file"
+      }
+
+      capture_sample before
+      (
+        set -euo pipefail
+        next_sample=$((SECONDS + 15))
+        while [[ ! -e "$stop_file" ]]; do
+          while (( SECONDS < next_sample )); do
+            [[ -e "$stop_file" ]] && exit 0
+            sleep 1
+          done
+          [[ -e "$stop_file" ]] && break
+          capture_sample during
+          next_sample=$((next_sample + 15))
+        done
+      ) &
+      sampler_pid=$!
+
+      cleanup() {
+        runner_rc=$?
+        trap - EXIT INT TERM
+        set +e
+        touch "$stop_file"
+        wait "$sampler_pid"
+        sampler_rc=$?
+        capture_sample after
+        after_rc=$?
+        rm -f "$stop_file"
+        if [[ "$runner_rc" -eq 0 ]]; then
+          if [[ "$sampler_rc" -ne 0 ]]; then
+            runner_rc=$sampler_rc
+          elif [[ "$after_rc" -ne 0 ]]; then
+            runner_rc=$after_rc
+          fi
+        fi
+        exit "$runner_rc"
+      }
+      trap cleanup EXIT
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+
+      {{ _benchmark_run_kvo_argv | map('quote') | join(' ') }}
+  args:
+    executable: /bin/bash
+  register: _benchmark_run_suite
+  changed_when: true
+  failed_when: _benchmark_run_suite.rc != 0
+  no_log: true

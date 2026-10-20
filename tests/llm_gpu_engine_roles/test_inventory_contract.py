@@ -129,7 +129,16 @@ def test_shared_llama_cpp_profiles_use_the_shared_serving_role_and_selector():
         task.get("ansible.builtin.include_tasks") == "retire-legacy-llama-swap.yml"
         for task in legacy_main
     )
-    shared_profiles = "['nemotron-bolt-64k-16', 'nemotron-bolt-256k-24', 'qwen38-27b-131k-1']"
+    shared_profiles = "llm_gpu_shared_llamacpp_profiles"
+    assert llamacpp_play["vars"][shared_profiles] == [
+        "nemotron-bolt-64k-16",
+        "nemotron-bolt-256k-24",
+        "qwen38-27b-131k-1",
+        "moe1-qwen36-n14-s1",
+        "moe1-qwen36-n16-s2",
+        "moe1-bolt-n38-s1",
+        "moe1-bolt-n40-s2",
+    ]
     assert shared["when"] == f"llm_active_profile in {shared_profiles}"
     assert specialized["when"] == f"llm_active_profile not in {shared_profiles}"
 
@@ -149,6 +158,13 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
     groups = add_host["groups"]
     assert "'llm-gpu-small' in (item.value.tags | default([]))" in groups
     assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
+
+
+def test_co_resident_gpu_host_selects_the_eleven_slot_main_and_small_profile():
+    host_vars = _load(REPO_ROOT / "inventory/host_vars/llm-blackwell-7-96GB-medium.yml")
+
+    assert host_vars["llm_active_profile"] == "qwen38-96k-11-fp8-mtp"
+    assert host_vars["llm_gpu_serving_co_resident_profiles"] == ["small-c4-64k"]
 
 
 def test_shared_llamacpp_group_uses_inventory_cache_or_existing_root_cache():

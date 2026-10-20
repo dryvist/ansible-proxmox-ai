@@ -15,6 +15,44 @@
       directory, and set a pinned vLLM version.
     quiet: true
 
+- name: Validate the selected co-resident GPU profiles
+  ansible.builtin.assert:
+    that:
+      - llm_gpu_serving_co_resident_profiles is sequence
+      - llm_gpu_serving_co_resident_profiles is not string
+      - llm_gpu_serving_co_resident_profiles | unique | list | length == llm_gpu_serving_co_resident_profiles | length
+      - llm_gpu_serving_co_resident_profiles | difference(llm_gpu_serving_profiles.keys() | list) | length == 0
+      - llm_active_profile not in llm_gpu_serving_co_resident_profiles
+      - not (llm_gpu_serving_profiles[llm_active_profile].co_resident_only | default(false) | bool)
+      - >-
+        llm_gpu_serving_co_resident_profiles
+        | difference(llm_gpu_serving_profiles | dict2items
+                    | selectattr('value.co_resident_only', 'defined')
+                    | selectattr('value.co_resident_only')
+                    | map(attribute='key') | list) | length == 0
+      - >-
+        llm_gpu_serving_co_resident_profiles | length == 0
+        or llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'
+      - >-
+        llm_gpu_serving_co_resident_profiles | length == 0
+        or (llm_gpu_serving_profiles[llm_active_profile].gpu_memory_utilization | float <= 0.75
+            and llm_gpu_serving_profiles[llm_active_profile].max_model_len | int <= 262144)
+      - >-
+        llm_gpu_serving_co_resident_profiles
+        | map('extract', llm_gpu_serving_profiles) | map(attribute='port') | map('int') | unique | list | length
+        == llm_gpu_serving_co_resident_profiles | length
+      - >-
+        llm_gpu_serving_co_resident_profiles | length == 0
+        or (llm_gpu_serving_profiles[llm_active_profile].port | int
+            not in (llm_gpu_serving_profiles | dict2items
+                    | selectattr('key', 'in', llm_gpu_serving_co_resident_profiles)
+                    | map(attribute='value.port') | map('int') | list))
+    fail_msg: >-
+      Select unique co-resident-only profiles that use ports distinct from the
+      active profile. The co-resident GPU configuration requires a vLLM main
+      profile with utilization at or below 0.75.
+    quiet: true
+
 - name: Inspect the supplied writable model cache directory
   ansible.builtin.stat:
     path: "{{ llm_gpu_serving_model_cache_mount_path }}"
@@ -38,6 +76,17 @@
       - item.value.max_model_len | int > 0
       - item.value.max_num_seqs | int > 0
       - item.value.port | int > 0
+      - item.value.moe_cpu_offload | default('none') in ['none', 'ncmoe', 'cpumoe']
+      - >-
+        item.value.moe_cpu_offload | default('none') != 'ncmoe'
+        or (item.value.moe_cpu_layers | default(0) | int > 0
+            and item.value.moe_gpu_resident_size_bytes | default(0) | int > 0)
+      - >-
+        item.value.moe_cpu_offload | default('none') != 'cpumoe'
+        or item.value.moe_cpu_layers | default(0) | int == 0
+      - >-
+        item.value.llamacpp_cache_ram_mib is not defined
+        or item.value.llamacpp_cache_ram_mib | int > 0
       - >-
         item.value.engine != 'vllm'
         or (item.value.linear_backend in ['auto', 'b12x']

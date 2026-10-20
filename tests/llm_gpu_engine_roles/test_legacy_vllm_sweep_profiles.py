@@ -10,6 +10,7 @@ import yaml
 from test_engine_profiles import (
     LEGACY_ROOT,
     VLLM_ROOT,
+    _vllm_profiles as load_vllm_profiles,
     _comment_filter,
     _exec_start,
     _registry_profiles,
@@ -19,9 +20,7 @@ TEST_API_PORT = "TEST_API_PORT"
 
 
 def _vllm_profiles() -> dict:
-    return yaml.safe_load(
-        (VLLM_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8")
-    )["vllm_serving_profiles"]
+    return load_vllm_profiles()
 
 
 def _sweep_profiles() -> dict:
@@ -77,7 +76,9 @@ def test_legacy_loader_uses_the_vllm_definitions_for_the_selected_profile():
     load = next(task for task in tasks if task.get("name") == "Load shared vLLM profile definitions")
     merge = next(task for task in tasks if task.get("name") == "Add the selected vLLM profile to legacy serving")
 
-    assert "vllm_serving/defaults/main/10-profiles.yml" in load["ansible.builtin.include_vars"]["file"]
+    include_vars = load["ansible.builtin.include_vars"]
+    assert "vllm_serving/defaults/main" in include_vars["dir"]
+    assert include_vars["files_matching"] == "^(10-profiles|11-profile-families)\\.yml$"
     defaults = yaml.safe_load((LEGACY_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8"))
     assert defaults["llm_gpu_serving_profiles"] == "{{ llm_profiles }}"
     profile_map = merge["ansible.builtin.set_fact"]["llm_gpu_serving_profiles"]
@@ -132,7 +133,15 @@ def test_qwen38_long_context_profiles_render_through_legacy_units():
         "qwen38-128k-11-fp8-mtp": (131072, 11),
         "qwen38-256k-1-fp8-mtp": (262144, 1),
         "qwen38-256k-5-fp8-mtp": (262144, 5),
+        "qwen38-256k-kvoff0": (262144, 5),
+        "qwen38-256k-kvoff24": (262144, 5),
+        "qwen38-256k-kvoffmax": (262144, 5),
         "qwen38-64k-16-fp8-mtp": (65536, 16),
+    }
+    offload_sizes = {
+        "qwen38-256k-kvoff0": 0,
+        "qwen38-256k-kvoff24": 24,
+        "qwen38-256k-kvoffmax": 52.81,
     }
 
     for name, (max_model_len, max_num_seqs) in expected.items():
@@ -143,5 +152,12 @@ def test_qwen38_long_context_profiles_render_through_legacy_units():
         assert f"--max-num-seqs {max_num_seqs}" in exec_start
         assert "--kv-cache-dtype fp8" in exec_start
         assert "--quantization modelopt" in exec_start
+        assert "--enable-prefix-caching" in exec_start
         rendered = json.loads(exec_start.split("--speculative-config '", 1)[1].split("'", 1)[0])
         assert rendered == {"method": "mtp", "num_speculative_tokens": 3}
+        if name in offload_sizes and offload_sizes[name] == 0:
+            assert "--kv-offloading-size" not in exec_start
+            assert "--kv-offloading-backend" not in exec_start
+        elif name in offload_sizes:
+            assert f"--kv-offloading-size {offload_sizes[name]}" in exec_start
+            assert "--kv-offloading-backend native" in exec_start

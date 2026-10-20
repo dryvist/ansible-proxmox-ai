@@ -7,6 +7,7 @@ is set, so each profile's entry must carry it into the rendered config.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from functools import lru_cache
@@ -62,11 +63,26 @@ def _entries() -> list[dict]:
 
 
 def _serving_profiles() -> dict:
-    vllm = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    vllm_core = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))[
+        "vllm_serving_profiles_core"
+    ]
+    vllm_families = yaml.safe_load(
+        VLLM_DEFAULTS.with_name("11-profile-families.yml").read_text(encoding="utf-8")
+    )["vllm_serving_profiles_specialized"]
+    vllm = {**vllm_core, **vllm_families}
     llamacpp = yaml.safe_load(LLAMACPP_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
     sglang = yaml.safe_load(SGLANG_DEFAULTS.read_text(encoding="utf-8"))["sglang_serving_profiles"]
     legacy = yaml.safe_load(LEGACY_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
     return {**legacy, **vllm, **llamacpp, **sglang}
+
+
+def _combine(original: dict, update: dict, recursive: bool = False) -> dict:
+    merged = dict(original)
+    for key, value in update.items():
+        if recursive and isinstance(merged.get(key), dict) and isinstance(value, dict):
+            value = _combine(merged[key], value, recursive=True)
+        merged[key] = value
+    return merged
 
 
 def _render(models: list[dict]) -> list[dict]:
@@ -76,6 +92,11 @@ def _render(models: list[dict]) -> list[dict]:
         undefined=jinja2.StrictUndefined,
     )
     env.filters["to_json"] = json.dumps
+    env.filters["combine"] = _combine
+    env.filters["to_nice_yaml"] = lambda value, indent=2, sort_keys=True: yaml.safe_dump(
+        value, default_flow_style=False, indent=indent, sort_keys=sort_keys
+    )
+    env.tests["search"] = lambda value, pattern: re.search(pattern, value) is not None
     env.globals.update(
         litellm_model=lambda model: model.get(
             "litellm_model_name", f"{model['provider']}/{model['client_model_id']}"
@@ -87,6 +108,8 @@ def _render(models: list[dict]) -> list[dict]:
         llm_router_gpu_models=models,
         llm_router_deployment_tags_by_entry={f"{m['client_model_id']}|{m['tier']}": [] for m in models},
         llm_router_llm_gpu_base_url="http://placeholder/v1",
+        llm_router_llm_gpu_co_resident_base_url="http://placeholder:10435/v1",
+        llm_router_gpu_co_resident_profiles=[m["profile"] for m in models if m.get("profile") == "small-c4-64k"],
         llm_router_light_api_key="placeholder",
     )
     return yaml.safe_load("model_list:\n" + text)["model_list"]
@@ -110,6 +133,15 @@ def test_each_profile_renders_its_name_into_model_info():
         )
         assert rendered[0]["model_info"]["profile"] == entry["profile"]
         assert rendered[0]["model_name"] == entry.get("route_group", entry["client_model_id"])
+
+
+def test_co_resident_profile_uses_the_second_inventory_derived_port():
+    entry = next(entry for entry in _entries() if entry["profile"] == "small-c4-64k")
+
+    rendered = _render([entry])[0]
+
+    assert rendered["litellm_params"]["api_base"] == "http://placeholder:10435/v1"
+    assert rendered["litellm_params"]["max_parallel_requests"] == 4
 
 
 def test_a_deployment_without_a_profile_renders_no_profile_marker():

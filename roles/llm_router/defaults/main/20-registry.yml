@@ -21,13 +21,9 @@ llm_router_registry_dir: "{{ role_path | dirname | dirname }}/llm-models.d"
 # llm_gpu_group, so both the router and secret-prefetch play see the switch.
 llm_router_gpu_profiles_enabled: false
 
-# The Studio's resident registry entries remain available as direct routes;
-# this switch only controls whether they join shared fallback ladders. Derive
-# the default from the existing enabled resident set so routing stays the same
-# unless an operator drains the Studio profiles explicitly.
-llm_router_studio_profiles_enabled: >-
-  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'local-large')
-     | list | length > 0 }}
+# Resident registry entries remain available as direct routes, but stay out of
+# shared fallback ladders unless an operator explicitly enables them.
+llm_router_studio_profiles_enabled: false
 
 llm_router_model_registry: >-
   {{ _llm_registry_large + _llm_registry_light + _llm_registry_cpu_pool
@@ -36,10 +32,17 @@ llm_router_model_registry: >-
      + _llm_registry_opencode + _llm_registry_hermes_cloud
      + _llm_registry_openrouter }}
 
+llm_router_gpu_active_profile: >-
+  {{ hostvars[groups['llm_gpu_group'][0]].get('llm_active_profile', llm_active_profile | default(''))
+     if groups.get('llm_gpu_group', []) | length > 0 else llm_active_profile | default('') }}
+llm_router_gpu_co_resident_profiles: >-
+  {{ hostvars[groups['llm_gpu_group'][0]].get('llm_gpu_serving_co_resident_profiles', [])
+     if groups.get('llm_gpu_group', []) | length > 0 else [] }}
+
 # Only active entries reach the rendered config or any derived contract. The
 # GPU candidates stay hidden until the single switch above is true; when active,
-# the projection includes only llm_active_profile because one endpoint serves
-# one selected profile at a time.
+# the projection includes the active profile and explicitly selected
+# co-resident profiles, each on its own port.
 # cpu-moe / cpu-9b also require inventory-backed api_base URLs — without them
 # the template renders nothing and registry/render parity fails loudly.
 _llm_router_registry_enabled_source: >-
@@ -50,7 +53,8 @@ _llm_router_registry_enabled_source: >-
   {%- if llm_router_gpu_profiles_enabled | bool
        and (groups['llm_gpu_group'] | default([]) | length) > 0
        and m.route_group is defined
-       and m.profile == (llm_active_profile | default('')) -%}
+       and (m.profile == llm_router_gpu_active_profile
+            or m.profile in llm_router_gpu_co_resident_profiles) -%}
   {%- set ns.out = ns.out + [m | combine({'enabled': true, 'servable': true})] -%}
   {%- endif -%}
   {%- elif m.enabled -%}
@@ -167,10 +171,16 @@ llm_router_capability_members: >-
 llm_router_rendered_capability_names: >-
   {{ llm_router_capability_members | map(attribute='route_group') | unique | list }}
 llm_router_capability_registry_members: >-
-  {{ llm_router_model_registry
-     | selectattr('tier', 'in', llm_router_local_registry_tiers)
-     | selectattr('route_group', 'defined')
-     | sort(attribute='order') | list }}
+  {%- set ns = namespace(members=[]) -%}
+  {%- for m in llm_router_model_registry
+        | selectattr('tier', 'in', llm_router_local_registry_tiers)
+        | selectattr('route_group', 'defined') -%}
+  {%- if not (m.co_resident_only | default(false) | bool)
+        or m.profile in llm_router_gpu_co_resident_profiles -%}
+  {%- set ns.members = ns.members + [m] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.members | sort(attribute='order') | list }}
 
 # The SAME prefill-derived cap model-list.yaml.j2 applies to every
 # vllm/hermes-local deployment: the smaller of the context window and what

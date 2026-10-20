@@ -83,6 +83,9 @@ _llm_router_gpu_servable_models_source: >-
   {{ llm_router_gpu_models | selectattr('servable', 'defined')
      | selectattr('servable') | map(attribute='route_group') | unique | list }}
 llm_router_gpu_servable_models: "{{ _llm_router_m_gpu_servable_models }}"
+llm_router_gpu_co_resident_models: >-
+  {{ llm_router_gpu_models
+     | selectattr('profile', 'in', llm_router_gpu_co_resident_profiles) | list }}
 _llm_router_all_servable_models_source: >-
   {{ (llm_router_servable_route_groups + llm_router_gpu_servable_models) | unique
      | reject('equalto', none) | list }}
@@ -93,7 +96,7 @@ llm_router_all_servable_models: "{{ _llm_router_m_all_servable_models }}"
 # require the inventory-backed endpoint.
 llm_router_direct_gpu_models: >-
   {{ (llm_router_model_registry | selectattr('tier', 'equalto', 'gpu')
-      | selectattr('profile', 'equalto', llm_active_profile | default(''))
+      | selectattr('profile', 'equalto', llm_router_gpu_active_profile)
       | selectattr('direct_route_aliases', 'defined') | list)
      if (llm_router_gpu_profiles_enabled | default(false) | bool
          and groups['llm_gpu_group'] | default([]) | length > 0) else [] }}
@@ -133,14 +136,24 @@ _llm_router_long_context_alias_ids_source: >-
      | map(attribute='client_model_id') | list }}
 llm_router_long_context_alias_ids: "{{ _llm_router_m_long_context_alias_ids }}"
 
-# Every enabled servable entry contributes only its route_group. GPU entries
-# join this set only while their inventory profile is active.
+# Stable aliases belong to a route group, not to the endpoint currently
+# selected to serve it. Keep enabled local declarations in the projection even
+# when their inventory-backed endpoint is absent; the target below resolves to
+# an active member of the same group, or the existing local fallback. Other
+# tiers still contribute only while the registry loader admits them.
 llm_router_alias_pairs: >-
   {%- set ns = namespace(pairs=[]) -%}
-  {%- set _entries = ((llm_router_registry_enabled | selectattr('servable', 'defined')
-       | selectattr('servable') | list)
-      + (llm_router_registry_enabled
-         | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) | list)) -%}
+  {%- set _local_entries = (llm_router_model_registry
+       | selectattr('tier', 'in', llm_router_local_registry_tiers)
+       | selectattr('enabled')
+       | selectattr('servable', 'defined') | selectattr('servable') | list) -%}
+  {%- set _other_entries = (llm_router_registry_enabled
+       | rejectattr('tier', 'in', llm_router_local_registry_tiers)
+       | selectattr('servable', 'defined') | selectattr('servable') | list) -%}
+  {%- set _entries = (_local_entries + _other_entries
+       + (llm_router_registry_enabled
+          | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) | list))
+       | unique(attribute='client_model_id') | list -%}
   {%- for _entry in _entries | selectattr('stable_aliases', 'defined') -%}
   {%- for _alias in _entry.stable_aliases -%}
   {%- set _target = _entry.route_group | default(_entry.client_model_id) -%}

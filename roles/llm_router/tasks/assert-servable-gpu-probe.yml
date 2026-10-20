@@ -3,18 +3,25 @@
   ansible.builtin.set_fact:
     _llm_router_gpu_probe:
       state: >-
-        {{ 'not_deployed' if llm_router_gpu_models | default([]) | length == 0
+        {{ 'not_deployed'
+           if llm_router_gpu_models | default([]) | length == 0
            else ('verified'
-                 if ((_llm_router_gpu_models_response | default({}, true)).status
-                     | default(0) | int) == 200
+                 if _llm_router_gpu_probe_statuses | reject('equalto', 200) | list | length == 0
                  else ('rejected'
-                       if ((_llm_router_gpu_models_response | default({}, true)).status
-                           | default(0) | int) in [401, 403]
-                       else ('not_found'
-                             if ((_llm_router_gpu_models_response | default({}, true)).status
-                                 | default(0) | int) == 404
-                             else 'unreachable'))) }}
-      status: "{{ (_llm_router_gpu_models_response | default({}, true)).status | default(0) | int }}"
+                       if _llm_router_gpu_probe_statuses | intersect([401, 403]) | length > 0
+                       else ('not_found' if 404 in _llm_router_gpu_probe_statuses else 'unreachable'))) }}
+      status: "{{ _llm_router_gpu_probe_statuses | reject('equalto', 200) | list | first | default(200) }}"
       ids: >-
-        {{ ((_llm_router_gpu_models_response | default({}, true)).json | default({}, true)).get('data', [])
-           | map(attribute='id') | list }}
+        {%- set ns = namespace(ids=[]) -%}
+        {%- for response in [_llm_router_gpu_models_response | default({}, true),
+                             _llm_router_gpu_co_resident_models_response | default({}, true)] -%}
+        {%- if response.status | default(0) | int == 200 -%}
+        {%- set ns.ids = ns.ids + (response.json | default({}, true)).get('data', []) | map(attribute='id') | list -%}
+        {%- endif -%}
+        {%- endfor -%}
+        {{ ns.ids | unique | list }}
+  vars:
+    _llm_router_gpu_probe_statuses: >-
+      {{ [(_llm_router_gpu_models_response | default({}, true)).status | default(0) | int]
+         + ([(_llm_router_gpu_co_resident_models_response | default({}, true)).status | default(0) | int]
+            if llm_router_gpu_co_resident_models | default([]) | length > 0 else []) }}

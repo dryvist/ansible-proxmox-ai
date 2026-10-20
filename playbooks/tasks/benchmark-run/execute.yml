@@ -13,7 +13,122 @@
       ansible.builtin.import_tasks: vllm-serve.yml
       when: benchmark_run_request.suite == 'vllm-sweep'
 
+    - name: Run an LMCache multi-round QA cell
+      ansible.builtin.import_tasks: lmcache-multi-round-qa.yml
+      when: benchmark_run_request.suite == 'lmcache-multi-round-qa'
+
+    - name: Run the vLLM multi-turn cross-check
+      ansible.builtin.import_tasks: vllm-multi-turn.yml
+      when: benchmark_run_request.suite == 'vllm-multi-turn'
+
   always:
+    - name: Find cache-cell telemetry snapshots on the selected node
+      ansible.builtin.find:
+        paths: "{{ _benchmark_run_node_scratch }}/telemetry"
+        file_type: file
+      register: _benchmark_run_kvo_telemetry_files
+      when: >-
+        benchmark_run_request.suite in ['vllm-sweep', 'lmcache-multi-round-qa', 'vllm-multi-turn']
+
+    - name: Create the cache-cell telemetry directory in the client
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ benchmark_run_request.client_vmid }}"
+          - --
+          - mkdir
+          - -p
+          - "{{ _benchmark_run_client_result }}/telemetry"
+      changed_when: true
+      when:
+        - benchmark_run_request.suite in ['vllm-sweep', 'lmcache-multi-round-qa', 'vllm-multi-turn']
+        - _benchmark_run_kvo_telemetry_files.matched | default(0) | int > 0
+
+    - name: Copy cache-cell telemetry snapshots into the client archive
+      ansible.builtin.command:
+        argv:
+          - pct
+          - push
+          - "{{ benchmark_run_request.client_vmid }}"
+          - "{{ item.path }}"
+          - "{{ _benchmark_run_client_result }}/telemetry/{{ item.path | basename }}"
+      loop: "{{ _benchmark_run_kvo_telemetry_files.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      changed_when: true
+      when: >-
+        benchmark_run_request.suite in ['vllm-sweep', 'lmcache-multi-round-qa', 'vllm-multi-turn']
+
+    - name: Emit the KVO result JSON line to the Semaphore task log
+      ansible.builtin.import_tasks: kvo-result.yml
+
+    - name: Calculate peak guest RAM and GPU memory from resource samples
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail && awk -F '\t' 'NR > 1 && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ {
+          if (!count || $3 > ram) ram = $3;
+          if (!count || $4 > gpu) gpu = $4;
+          count++
+          } END { if (!count) exit 1; printf "%.0f %.0f", ram, gpu }'
+          {{ (_benchmark_run_node_scratch ~ '/telemetry/' ~
+              benchmark_run_request.run_id ~ '-cgroup-memory.tsv') | quote }}
+        executable: /bin/bash
+      register: _benchmark_run_resource_peaks
+      changed_when: false
+      failed_when: _benchmark_run_resource_peaks.rc != 0
+      no_log: true
+      when: benchmark_run_request.suite == 'vllm-sweep'
+
+    - name: Require the configured guest RAM headroom through the fixed-length cell
+      ansible.builtin.assert:
+        that:
+          - >-
+            benchmark_run_request.host_ram_limit_gib | float * 1073741824
+            - _benchmark_run_resource_peaks.stdout.split()[0] | float
+            >= 1610612736
+        fail_msg: >-
+          The fixed-length MoE cell used less than 1.5 GiB of guest RAM headroom;
+          the cell's result is not accepted.
+        quiet: true
+      when:
+        - benchmark_run_request.suite == 'vllm-sweep'
+        - benchmark_run_request.moe_cpu_offload in ['ncmoe', 'cpumoe']
+
+    - name: Add measured resource peaks to publisher dimensions
+      ansible.builtin.set_fact:
+        _benchmark_run_campaign_dimensions: >-
+          {{ _benchmark_run_campaign_dimensions | combine({
+            'resource': {
+              'host_ram_peak_gib': (_benchmark_run_resource_peaks.stdout.split()[0] | float / 1073741824),
+              'accelerator_memory_peak_gb':
+                (_benchmark_run_resource_peaks.stdout.split()[1] | float * 1048576 / 1000000000)
+            }
+          }, recursive=true) }}
+      when: benchmark_run_request.suite == 'vllm-sweep'
+
+    - name: Write publisher dimensions with measured resource peaks
+      ansible.builtin.copy:
+        dest: "{{ _benchmark_run_node_scratch }}/campaign-dimensions.json"
+        mode: "0640"
+        content: >-
+          {{ {
+            'campaign_dimensions': _benchmark_run_campaign_dimensions,
+            'dimension_null_reasons': _benchmark_run_campaign_dimension_null_reasons
+          } | to_nice_json }}
+      when: benchmark_run_request.suite == 'vllm-sweep'
+
+    - name: Copy measured publisher dimensions into the client archive
+      ansible.builtin.command:
+        argv:
+          - pct
+          - push
+          - "{{ benchmark_run_request.client_vmid }}"
+          - "{{ _benchmark_run_node_scratch }}/campaign-dimensions.json"
+          - "{{ _benchmark_run_client_root }}/campaign-dimensions.json"
+      changed_when: true
+      when: benchmark_run_request.suite == 'vllm-sweep'
+
     - name: Read a safe Promptfoo pass count from its JSON output
       ansible.builtin.command:
         argv:
@@ -39,6 +154,9 @@
           return_code: "{{ _benchmark_run_suite.rc | default('unknown') }}"
           stdout_line_count: "{{ _benchmark_run_suite.stdout_lines | default([]) | length }}"
           stderr_line_count: "{{ _benchmark_run_suite.stderr_lines | default([]) | length }}"
+          workload_id: "{{ benchmark_run_request.workload_id | default('not applicable') }}"
+          kv_arm: "{{ benchmark_run_request.kv_arm | default('not applicable') }}"
+          cache_workload: "{{ benchmark_run_request.cache_workload | default('not applicable') }}"
           promptfoo_pass_summary: >-
             {{ (_benchmark_run_promptfoo_summary.stdout | default('not reported', true))
                if benchmark_run_request.suite is match('^promptfoo-')
