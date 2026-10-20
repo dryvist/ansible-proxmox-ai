@@ -9,11 +9,12 @@
 # least-privilege Doppler handling (it maps only the secret the scenarios
 # consume into the test step, never inject-env-vars). Routing it through the
 # shared molecule (which uses inject-env-vars) would regress that. So the
-# shared workflow runs lint only (molecule:false) and this wrapper keeps
+# shared CI workflow runs lint only (molecule:false), while a parallel changes
+# call runs the same filters and this wrapper keeps
 # _molecule.yml and _data-contract.yml local, aggregating everything in its
-# own required "Merge Gate". The molecule job gates on the shared workflow's
-# exported filter outputs (one change-detection definition) and skips when the
-# shared workflow marks a develop pull request tiny. Data-contract gates only on
+# own required "Merge Gate". The molecule job gates on the changes call's
+# filter outputs and skips when the
+# changes workflow marks a develop pull request tiny. Data-contract gates only on
 # the contract-scope job's outputs, so it starts beside lint instead of after
 # it. Installer-sha always runs.
 #
@@ -46,13 +47,13 @@ jobs:
     with:
       # Molecule is owned locally (see header); the shared workflow runs lint only.
       molecule: false
-      # Which scenarios a change touches. The shared workflow turns this into
+      # Which scenarios a change touches. The changes call turns this into
       # its `molecule_scenarios` output, which the local molecule job below
-      # consumes — one change-detection definition, same as the filter outputs.
+      # consumes.
       #
       # Each entry lists the scenario's transitive role closure plus its own
       # directory. Changes to shared workflow inputs widen centrally.
-      molecule_scenario_filters: |
+      molecule_scenario_filters: &molecule_scenario_filters |
         agent_guest:
           - 'roles/agent_guest/**'
           - 'roles/ai_runner/**'
@@ -108,7 +109,7 @@ jobs:
       # These paths have contract coverage in the Data Contract workflow
       # above. The shared selector narrows only when every changed Ansible
       # path matches; unlisted paths still select the full Molecule matrix.
-      molecule_contract_filters: |
+      molecule_contract_filters: &molecule_contract_filters |
         contract_only:
           - 'llm-models.d/**'
           - 'roles/llm_model_trial/**'
@@ -151,6 +152,14 @@ jobs:
           - 'playbooks/templates/llm-model-campaign-dimensions.json.j2'
           - 'playbooks/benchmark-run.yml'
           - 'playbooks/tasks/benchmark-run/**'
+
+  changes:
+    name: Detect Changes
+    uses: JacobPEvans/.github/.github/workflows/_ansible-changes.yml@v1
+    with:
+      molecule: false
+      molecule_scenario_filters: *molecule_scenario_filters
+      molecule_contract_filters: *molecule_contract_filters
 
   # Data Contract runs the repo-wide contract suite. On develop PRs, select it
   # only for contract inputs; workflow-only edits still exercise the CI gate.
@@ -268,21 +277,21 @@ jobs:
 
   molecule:
     name: Molecule
-    needs: ci
+    needs: changes
     if: >-
-      needs.ci.outputs.tiny != 'true' &&
+      needs.changes.outputs.tiny != 'true' &&
       github.event_name == 'pull_request' &&
       (
         github.event.pull_request.base.ref == 'main' ||
-        needs.ci.outputs.molecule == 'true'
+        needs.changes.outputs.molecule == 'true'
       ) &&
       (
         github.event.pull_request.base.ref == 'main' ||
-        needs.ci.outputs.molecule_scenarios != '[]'
+        needs.changes.outputs.molecule_scenarios != '[]'
       )
     uses: ./.github/workflows/_molecule.yml
     with:
-      scenarios: ${{ needs.ci.outputs.molecule_scenarios }}
+      scenarios: ${{ needs.changes.outputs.molecule_scenarios }}
       full_suite: ${{ github.event.pull_request.base.ref == 'main' }}
       # 15: every scenario but hermes_ui fits; hermes_ui ran past 15 minutes
       # twice on 2026-10-12, so _molecule.yml raises that job alone to 25.
@@ -318,7 +327,7 @@ jobs:
 
   gate:
     name: Merge Gate
-    needs: [ci, contract-scope, data-contract, molecule, installer-sha]
+    needs: [ci, changes, contract-scope, data-contract, molecule, installer-sha]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.event_name == 'pull_request' && 5 || 10 }}
