@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.4.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.3.0...v2.4.0) (2026-10-20)
+
+
+### Features
+
+* **benchmark-run:** add cache-tier suites and telemetry ([#1607](https://github.com/dryvist/ansible-proxmox-ai/issues/1607)) ([7a07cdc](https://github.com/dryvist/ansible-proxmox-ai/commit/7a07cdcb258abcd5a3a84973e94281433ffbe314))
+* **llama-cpp:** add MoE expert-offload profiles ([#1608](https://github.com/dryvist/ansible-proxmox-ai/issues/1608)) ([1436981](https://github.com/dryvist/ansible-proxmox-ai/commit/1436981a7ae2786176c394afa48bc89c7af1c196))
+* **llm_gpu_serving:** configure Qwen3.8-27B for 96k and 11 slots ([#1622](https://github.com/dryvist/ansible-proxmox-ai/issues/1622)) ([71478c2](https://github.com/dryvist/ansible-proxmox-ai/commit/71478c2a6b9cdbe9abae76643c1223a912e2c663))
+* **llm_router:** send enable_thinking true to local Qwen routes ([#1621](https://github.com/dryvist/ansible-proxmox-ai/issues/1621)) ([8762a55](https://github.com/dryvist/ansible-proxmox-ai/commit/8762a5593cc2209be9389194c27ab73cd9cbab8b))
+* **vllm:** add Qwen3.8 KV offload profiles ([#1606](https://github.com/dryvist/ansible-proxmox-ai/issues/1606)) ([6c82538](https://github.com/dryvist/ansible-proxmox-ai/commit/6c82538c1539fd0b062f06558a5bce4906041ad6))
+
+
+### Bug Fixes
+
+* **benchmark-run:** include the cache run task so skipped suites keep the result ([#1620](https://github.com/dryvist/ansible-proxmox-ai/issues/1620)) ([aa45c57](https://github.com/dryvist/ansible-proxmox-ai/commit/aa45c57d332efaa88fb0156d43af69b226c2b1a7))
+* **benchmark-run:** log KVO cell measurements ([#1616](https://github.com/dryvist/ansible-proxmox-ai/issues/1616)) ([c2bba2f](https://github.com/dryvist/ansible-proxmox-ai/commit/c2bba2f41df3968d1f928bcab971ff4212193b90))
+* **benchmark-run:** make patch-metadata asserts boolean ([#1610](https://github.com/dryvist/ansible-proxmox-ai/issues/1610)) ([0d5b86d](https://github.com/dryvist/ansible-proxmox-ai/commit/0d5b86db5996c14e4cc7264c72d97b1b4a783af7))
+* **benchmark-run:** read guest memory limits from the node cgroup ([#1619](https://github.com/dryvist/ansible-proxmox-ai/issues/1619)) ([b12a695](https://github.com/dryvist/ansible-proxmox-ai/commit/b12a695a196bd72c33d282f10d764c9561512ebe))
+* **benchmark-run:** treat a skipped items checksum as absent ([#1612](https://github.com/dryvist/ansible-proxmox-ai/issues/1612)) ([39a1ef4](https://github.com/dryvist/ansible-proxmox-ai/commit/39a1ef40c877f9af97b44a13fdf56dab96855777))
+* **llm-gpu-serving:** leave main-profile slot count out of co-resident validation ([#1629](https://github.com/dryvist/ansible-proxmox-ai/issues/1629)) ([ccf97bf](https://github.com/dryvist/ansible-proxmox-ai/commit/ccf97bfa24db5df40408906834fb7034d104322d))
+* **llm-gpu-serving:** size the small co-resident engine reserve to the real device memory ([#1630](https://github.com/dryvist/ansible-proxmox-ai/issues/1630)) ([bc0c7be](https://github.com/dryvist/ansible-proxmox-ai/commit/bc0c7be8f9a9a9914e11dba1640279edaa4e426c))
+* **llm-gpu-serving:** stop serving units outside the profile map before a download ([#1631](https://github.com/dryvist/ansible-proxmox-ai/issues/1631)) ([74680df](https://github.com/dryvist/ansible-proxmox-ai/commit/74680df0f480f3e0ab43c8b3afa534944314ae1a))
+* **llm-models:** disable mimo-9b and move its aliases ([#1623](https://github.com/dryvist/ansible-proxmox-ai/issues/1623)) ([4d1a1b1](https://github.com/dryvist/ansible-proxmox-ai/commit/4d1a1b17b49cbfba831d4f4b05c612d5f6138f4a))
+* **llm-router:** digest repeated database-exception alerts ([#1632](https://github.com/dryvist/ansible-proxmox-ai/issues/1632)) ([17bc1d6](https://github.com/dryvist/ansible-proxmox-ai/commit/17bc1d6b003f41ed5b1208f6e2d4dc6003912eb6))
+* **llm-router:** keep local profiles out of shared fallback ladders by default ([#1624](https://github.com/dryvist/ansible-proxmox-ai/issues/1624)) ([311cf56](https://github.com/dryvist/ansible-proxmox-ai/commit/311cf569b293e586e746e18299bb59df0d35fd18))
+* **llm-router:** restart through the role task ([1177656](https://github.com/dryvist/ansible-proxmox-ai/commit/1177656e68d6688f6fa43d88bb7f68edbc3eb625))
+* **llm-router:** route restarts through the role task ([#1625](https://github.com/dryvist/ansible-proxmox-ai/issues/1625)) ([1177656](https://github.com/dryvist/ansible-proxmox-ai/commit/1177656e68d6688f6fa43d88bb7f68edbc3eb625))
+* **model-store:** load the published inventory before seeding ([#1615](https://github.com/dryvist/ansible-proxmox-ai/issues/1615)) ([577d46b](https://github.com/dryvist/ansible-proxmox-ai/commit/577d46b577f2b0746973197b9ed6e780c8d98fcd))
+* **nvidia-gpu-guest:** skip the DCGM exporter on Debian 13 guests ([#1611](https://github.com/dryvist/ansible-proxmox-ai/issues/1611)) ([1860385](https://github.com/dryvist/ansible-proxmox-ai/commit/1860385c69fb71e4751e458dab15d178812f2be7))
+* **openbao_secrets:** fetch the sandbox-agent router key by default ([#1613](https://github.com/dryvist/ansible-proxmox-ai/issues/1613)) ([edd9f96](https://github.com/dryvist/ansible-proxmox-ai/commit/edd9f96296b61298b831bb149428f6d124a6affe))
+* **openbao_secrets:** leave the sandbox-agent path unfetched until the apps grant exists ([#1614](https://github.com/dryvist/ansible-proxmox-ai/issues/1614)) ([ad25e67](https://github.com/dryvist/ansible-proxmox-ai/commit/ad25e6730a31fd4bf404dd849dcfc202e50f3cc5))
+
+
+### Performance
+
+* **llm_router:** materialize budget assertion projections ([#1628](https://github.com/dryvist/ansible-proxmox-ai/issues/1628)) ([e09d3eb](https://github.com/dryvist/ansible-proxmox-ai/commit/e09d3eb22cf60bdbe380877574085e7c689c81ba))
+
 ## [2.3.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.2.0...v2.3.0) (2026-10-18)
 
 
