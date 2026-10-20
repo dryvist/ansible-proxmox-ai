@@ -98,8 +98,8 @@ def test_data_contract_starts_beside_lint_on_contract_scope_alone() -> None:
     ("molecule", [
         "github.event_name == 'pull_request'",
         "github.event.pull_request.base.ref == 'main'",
-        "needs.ci.outputs.molecule == 'true'",
-        "needs.ci.outputs.molecule_scenarios != '[]'",
+        "needs.changes.outputs.molecule == 'true'",
+        "needs.changes.outputs.molecule_scenarios != '[]'",
     ]),
 ])
 def test_tiny_shared_output_gates_local_heavy_jobs_without_dropping_existing_conditions(
@@ -107,10 +107,18 @@ def test_tiny_shared_output_gates_local_heavy_jobs_without_dropping_existing_con
 ) -> None:
     job = yaml.safe_load(CI_GATE.read_text())["jobs"][job_name]
     needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
-    assert "ci" in needs
-    assert "needs.ci.outputs.tiny != 'true'" in job["if"]
+    assert "changes" in needs
+    assert "needs.changes.outputs.tiny != 'true'" in job["if"]
     for condition in preserved_conditions:
         assert condition in job["if"]
+    assert "needs.changes.outputs.molecule_scenarios" in job["with"]["scenarios"]
+
+
+def test_changes_reuses_ci_filter_maps_by_yaml_alias() -> None:
+    jobs = yaml.safe_load(CI_GATE.read_text())["jobs"]
+    assert jobs["changes"]["uses"] == "JacobPEvans/.github/.github/workflows/_ansible-changes.yml@v1"
+    for name in ("molecule_scenario_filters", "molecule_contract_filters"):
+        assert jobs["changes"]["with"][name] is jobs["ci"]["with"][name]
 
 
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
@@ -132,6 +140,7 @@ def test_actual_gate_policy_allows_skips_only_for_focused_and_push_runs(
     assert isinstance(allowed, str)
     allowed_set = {name.strip() for name in allowed.split(",") if name.strip()}
     required = {"data-contract", "molecule"}
+    assert "changes" in gate["needs"]
     assert required <= set(gate["needs"])
     assert (required <= allowed_set) is allows_skips
     assert bool(required - allowed_set) is (not allows_skips)
