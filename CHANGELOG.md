@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.2...v2.4.3) (2026-10-20)
+
+
+### Bug Fixes
+
+* **ci:** publish the registry artifact only on full version tags ([#1644](https://github.com/dryvist/ansible-proxmox-ai/issues/1644)) ([369817d](https://github.com/dryvist/ansible-proxmox-ai/commit/369817daa60af74de509f72bc0a00e8a4c2af6eb))
+
 ## [2.4.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.1...v2.4.2) (2026-10-20)
 
 
