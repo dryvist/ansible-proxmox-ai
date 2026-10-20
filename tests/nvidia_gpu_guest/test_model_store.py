@@ -41,7 +41,7 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
         "nemotron-bolt-64k-16",
         "moe1-qwen36-n14-s1",
     }
-    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 789_994_751_498
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 791_264_981_674
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {
@@ -57,6 +57,7 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
     model_store_ids = {artifact["artifact_id"] for artifact in model_store}
     assert "qwen35-9b-q4-k-m" in model_store_ids
     assert "qwen35-9b-nvfp4" not in model_store_ids
+    assert {"bge-m3-q8-0", "bge-reranker-v2-m3-q8-0"} <= model_store_ids
     repositories = {artifact["hf_repo"] for artifact in model_store}
     for repository in repositories:
         entries = [artifact for artifact in model_store if artifact["hf_repo"] == repository]
