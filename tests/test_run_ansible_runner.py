@@ -164,6 +164,42 @@ class RunAnsibleGuardContract(RunnerSandboxBase):
         result = self._run("--limit", "localhost")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_task_limits_include_localhost(self):
+        cases = (
+            ((), ()),
+            (
+                ("--limit", "group"),
+                ("--limit", "group", "--limit", "group,localhost"),
+            ),
+            (("--limit=group",), ("--limit=group", "--limit", "group,localhost")),
+            (
+                ("--limit", "template_group", "--limit", "task_group"),
+                (
+                    "--limit",
+                    "template_group",
+                    "--limit",
+                    "task_group",
+                    "--limit",
+                    "task_group,localhost",
+                ),
+            ),
+            (("--limit", "group,localhost"), ("--limit", "group,localhost")),
+            (
+                ("--limit", "all:!down"),
+                ("--limit", "all:!down", "--limit", "all,!down,localhost"),
+            ),
+        )
+        for supplied, expected in cases:
+            with self.subTest(supplied=supplied):
+                self.called_log.write_text("", encoding="utf-8")
+                self._write_recap("localhost", "group")
+                result = self._run(*supplied)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    self.called_log.read_text(encoding="utf-8"),
+                    "called: playbooks/site.yml" + (" " + " ".join(expected) if expected else "") + "\n",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -214,6 +214,15 @@ LOG_DIR="$REPO_ROOT/.ansible-run-logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$PLAYBOOK" .yml).log"
 echo "Logging this run to $LOG_FILE"
+# Semaphore appends task args, so Ansible's final limit must include localhost.
+LIMIT_VAL=""
+prev=""
+for a in "$@"; do
+  [[ $prev == "--limit" || $prev == "-l" ]] && LIMIT_VAL="$a"
+  [[ $a == --limit=* ]] && LIMIT_VAL="${a#--limit=}"
+  prev="$a"
+done
+[[ -n $LIMIT_VAL && ",${LIMIT_VAL//:/,}," != *,localhost,* ]] && set -- "$@" --limit "${LIMIT_VAL//:/,},localhost"
 set +e
 ansible-playbook "$PLAYBOOK" "$@" 2>&1 | tee "$LOG_FILE"
 STATUS=${PIPESTATUS[0]}
@@ -225,14 +234,7 @@ set -e
 # ran, so a naive "did anything run" check is never satisfied by absence.
 # If --limit asked for anything beyond bare localhost, the recap must show at
 # least one non-localhost host, or this run touched nothing it was asked to.
-LIMIT_VAL=""
-prev=""
-for a in "$@"; do
-  [[ $prev == "--limit" || $prev == "-l" ]] && LIMIT_VAL="$a"
-  [[ $a == --limit=* ]] && LIMIT_VAL="${a#--limit=}"
-  prev="$a"
-done
-NON_LOCALHOST_LIMIT=$(tr ',' '\n' <<<"$LIMIT_VAL" | grep -vx 'localhost' | grep -v '^$' || true)
+NON_LOCALHOST_LIMIT=$(tr ',:' '\n' <<<"$LIMIT_VAL" | grep -vx 'localhost' | grep -v '^$' || true)
 if [[ -n $NON_LOCALHOST_LIMIT ]]; then
   RECAP_HOSTS=$(awk '/^PLAY RECAP/{f=1;next} f && NF{print $1}' "$LOG_FILE")
   NON_LOCALHOST_RECAP=$(grep -vx 'localhost' <<<"$RECAP_HOSTS" || true)
