@@ -55,83 +55,20 @@
               + _apps | selectattr('enabled', 'defined') | selectattr('enabled') | list)
              | map(attribute='path') | list }}
 
-    # A path only the router reads is fetched only when a router is in the run,
-    # so a GPU-only limit never needs a grant on it.
-    - name: Add a router pool member to the in-memory inventory
-      ansible.builtin.add_host:
-        name: llm-router-test
-        groups: llm_router_group
-
-    # set_fact outranks the include_vars-loaded role default; task vars do not.
-    - name: Select the run limit llm-router-test,localhost with the shipped grant flag
-      ansible.builtin.set_fact:
-        openbao_secrets_limit_pattern: "llm-router-test,localhost"
-
-    - name: A router in the run leaves the sandbox-agent path out until its grant is declared
+    - name: The sandbox tracker path is never declared for any limit; the router key path is optional
       ansible.builtin.assert:
         quiet: true
         that:
-          - not openbao_secrets_sandbox_agent_read_granted
-          - "'apps/sandbox-agent' not in _fetched"
-        fail_msg: "limit={{ openbao_secrets_limit_pattern }} fetched={{ _fetched }}"
+          - "'apps/sandbox-agent' not in _declared"
+          - _sandbox_router_paths | length == 1
+          - _sandbox_router_path.optional | bool
+          - _sandbox_router_path.enabled is not defined
+        fail_msg: "declared={{ _declared }}"
+        success_msg: "Only the optional sandbox-agent router-key path is declared."
       vars:
         _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
-        _fetched: >-
-          {{ (_apps | select('mapping') | rejectattr('enabled', 'defined') | list
-              + _apps | selectattr('enabled', 'defined') | selectattr('enabled') | list)
-             | map(attribute='path') | list }}
-
-    # set_fact outranks the include_vars-loaded role default; task vars do not.
-    - name: Declare the sandbox-agent read grant and select the run limit localhost
-      ansible.builtin.set_fact:
-        openbao_secrets_sandbox_agent_read_granted: true
-        openbao_secrets_limit_pattern: "localhost"
-
-    - name: A limit without a router leaves the sandbox-agent path out
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - "'apps/sandbox-agent' not in _fetched"
-        fail_msg: "limit={{ openbao_secrets_limit_pattern }} fetched={{ _fetched }}"
-      vars:
-        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
-        _fetched: >-
-          {{ (_apps | select('mapping') | rejectattr('enabled', 'defined') | list
-              + _apps | selectattr('enabled', 'defined') | selectattr('enabled') | list)
-             | map(attribute='path') | list }}
-
-    # set_fact outranks the include_vars-loaded role default; task vars do not.
-    - name: Select the run limit llm-router-test,localhost
-      ansible.builtin.set_fact:
-        openbao_secrets_limit_pattern: "llm-router-test,localhost"
-
-    - name: A limit with a router fetches the sandbox-agent path
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - "'apps/sandbox-agent' in _fetched"
-        fail_msg: "limit={{ openbao_secrets_limit_pattern }} fetched={{ _fetched }}"
-      vars:
-        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
-        _fetched: >-
-          {{ (_apps | select('mapping') | rejectattr('enabled', 'defined') | list
-              + _apps | selectattr('enabled', 'defined') | selectattr('enabled') | list)
-             | map(attribute='path') | list }}
-
-    # set_fact outranks the include_vars-loaded role default; task vars do not.
-    - name: Select the run limit all
-      ansible.builtin.set_fact:
-        openbao_secrets_limit_pattern: "all"
-
-    - name: A run without a limit fetches the sandbox-agent path
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - "'apps/sandbox-agent' in _fetched"
-        fail_msg: "limit={{ openbao_secrets_limit_pattern }} fetched={{ _fetched }}"
-      vars:
-        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
-        _fetched: >-
-          {{ (_apps | select('mapping') | rejectattr('enabled', 'defined') | list
-              + _apps | selectattr('enabled', 'defined') | selectattr('enabled') | list)
-             | map(attribute='path') | list }}
+        _declared: "{{ _apps | select('mapping') | map(attribute='path') | list }}"
+        _sandbox_router_paths: >-
+          {{ _apps | select('mapping')
+             | selectattr('path', 'equalto', 'apps/sandbox-agent-router') | list }}
+        _sandbox_router_path: "{{ _sandbox_router_paths | first }}"
