@@ -283,10 +283,35 @@ jobs:
           tests/llm_gpu_legacy/test_render_host_contract_all.yml
           -i localhost, -c local
 
+  # Run the broad pytest pass beside the Ansible playbook contracts. Its
+  # dependency action caches the pinned Python and Galaxy requirements.
+  # Its result still propagates through CI Gate's existing data-contract need.
+  role-self-checks:
+    name: Role Self-Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 10 || inputs.timeout_minutes }} # pr-policy: timeout-exception the full pytest suite plus a cold dependency install can pass five minutes
+    if: inputs.full_suite || inputs.pytest_targets != '[]'
+    permissions:
+      contents: read
+
+    # Keep the same CI placeholders as the former combined job.
+    env:
+      LLM_ROUTER_MASTER_KEY: sk-ci-placeholder-not-a-secret
+      LLM_LARGE_BEARER_TOKEN: ci-placeholder-bearer-not-a-secret
+      PROXMOX_SUBDOMAIN: pve.example.test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install cached Ansible dependencies
+        uses: ./.github/actions/router-deps
+
       # Every test under tests/; llm_router/ runs in _llm-router-contract.yml;
       # qdrant_llamaindex/ needs live Qdrant + Ollama.
       - name: Run role self-checks
-        if: inputs.full_suite || inputs.pytest_targets != '[]'
         env:
           PYTEST_TARGETS: ${{ inputs.pytest_targets }}
         run: |
