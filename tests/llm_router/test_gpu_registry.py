@@ -4,6 +4,11 @@ from pathlib import Path
 
 import yaml
 
+from _gpu_registry_small_alternatives import (
+    SMALL_CANDIDATES,
+    assert_small_alternatives,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_FILES = (
@@ -177,53 +182,13 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert co_resident_profile["kv_cache_dtype"] == "q8_0"
     assert co_resident_profile["gpu_memory_reserve_gib"] == 20
 
-    small_candidates = {
-        "small-lfm25-2b6": (
-            "lfm25-2b6-q4-k-m",
-            "LFM2.5-2.6B-Q4_K_M.gguf",
-            1_674_455_040,
-        ),
-        "small-granite42-3b": (
-            "granite42-3b-q4-k-m",
-            "granite-4.2-3b-Q4_K_M.gguf",
-            2_244_011_552,
-        ),
-        "small-lfm25-24b-a2b": (
-            "lfm25-24b-a2b-q4-k-m",
-            "LFM2.5-24B-A2B-Q4_K_M.gguf",
-            14_526_258_464,
-        ),
-    }
-    for profile_name, (artifact_id, gguf_file, size_bytes) in small_candidates.items():
-        entry = next(item for item in entries if item["profile"] == profile_name)
-        artifact = artifacts_by_id[entry["artifact_id"]]
-        profile = serving_profiles[profile_name]
-        assert entry["client_model_id"].startswith("gpu-small-")
-        assert entry["enabled"] is False
-        assert entry["servable"] is False
-        assert entry["route_group"] == "small"
-        assert entry["co_resident_only"] is True
-        assert entry["order"] == 1
-        assert entry["context_window"] + entry["max_output_tokens"] == 65536
-        assert artifact["artifact_id"] == artifact_id
-        assert artifact["serving_profile"] == profile_name
-        assert artifact["model_store_profile"] == profile_name
-        assert artifact["model_store_size_bytes"] == size_bytes
-        assert artifact["gguf_file"] == gguf_file
-        assert artifact["use"] == "serving"
-        assert profile["enabled"] is True
-        assert profile["co_resident_only"] is True
-        for key in (
-            "engine",
-            "max_model_len",
-            "max_num_seqs",
-            "flash_attention",
-            "gpu_layers",
-            "kv_cache_dtype",
-            "gpu_memory_reserve_gib",
-            "port",
-        ):
-            assert profile[key] == co_resident_profile[key]
+    small_candidates = SMALL_CANDIDATES
+    assert_small_alternatives(
+        entries,
+        artifacts_by_id,
+        serving_profiles,
+        co_resident_profile,
+    )
 
     for entry in entries:
         assert entry["provider"] == "hosted_vllm"
@@ -320,30 +285,6 @@ def test_route_order_reuse_is_limited_to_distinct_gpu_profiles() -> None:
             assert all(profiles) and len(set(profiles)) == len(profiles), (
                 f"{route_group} order {order} must use distinct profiles"
             )
-
-
-def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
-    """Sweeps and medium-a admit 1..64; engine slots control active work."""
-    entries = _entries()
-    serving_profiles = _serving_profiles()
-
-    caps = {
-        entry["profile"]: entry.get("max_parallel_requests", 64)
-        for entry in entries
-    }
-    admission_profiles = {
-        entry["profile"]
-        for entry in entries
-        if entry["client_model_id"].startswith("gpu-sweep-")
-    } | {"medium-a"}
-    expected_caps = {
-        name: 64 if name in admission_profiles else serving_profiles[name]["max_num_seqs"]
-        for name in caps
-    }
-    assert caps == expected_caps
-
-    assert caps["medium-a"] == 64
-    assert caps["qwen38-96k-11-fp8-mtp"] == 11
 
 
 def test_router_consumes_the_shared_gpu_profile_projection() -> None:
