@@ -69,7 +69,7 @@ for pin in "${PINS[@]}"; do
   accept=()
   [[ "$url" == https://api.github.com/* ]] && accept=(-H 'Accept: application/vnd.github.raw')
 
-  if ! http_code=$(curl -fsS ${auth[@]+"${auth[@]}"} ${accept[@]+"${accept[@]}"} --max-time 30 --retry 3 --retry-delay 2 -w '%{http_code}' -o "$tmp" "$url") || [[ "$http_code" != 200 ]]; then
+  if ! http_code=$(curl -fsS ${auth[@]+"${auth[@]}"} ${accept[@]+"${accept[@]}"} --max-time 30 --retry 4 --retry-delay 20 -w '%{http_code}' -o "$tmp" "$url") || [[ "$http_code" != 200 ]]; then
     echo "FAIL ${version_var}=${version}: cannot fetch ${url}" >&2
     echo "     A version whose installer does not exist is not a version to pin." >&2
     fail=1
@@ -115,7 +115,7 @@ for release_pin in "${RELEASE_PINS[@]}"; do
   release_url=$(printf "$release_url_tmpl" "$release_tag")
   release_metadata="${workdir}/release.json"
   # API responses are read directly: never forward auth headers on redirects.
-  if ! http_code=$(curl -fsS ${auth[@]+"${auth[@]}"} --max-time 30 --retry 3 --retry-delay 2 -w '%{http_code}' -o "$release_metadata" "$release_url") || [[ "$http_code" != 200 ]]; then
+  if ! http_code=$(curl -fsS ${auth[@]+"${auth[@]}"} --max-time 30 --retry 4 --retry-delay 20 -w '%{http_code}' -o "$release_metadata" "$release_url") || [[ "$http_code" != 200 ]]; then
     echo "FAIL ${release_var}=${release_tag}: cannot fetch release metadata" >&2
     fail=1
     continue
