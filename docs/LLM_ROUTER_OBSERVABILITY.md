@@ -17,13 +17,14 @@ load-balancer probe — so Traefik health checks need no credential.
 
 **The request log is the measurement of record.** With a database attached, the
 proxy writes one `LiteLLM_SpendLogs` row per request carrying `model` and
-`model_group` (the name the caller asked for), `model_id` and `api_base` (the
-deployment actually selected), `status`, token counts, `request_duration_ms`,
-and `metadata.user_api_key_alias`. Until the `request_metrics` callback below,
-nothing else in this fabric recorded which deployment served a request
-without a database attached, which is why the metric below is defined
+`model_group` (the deployment selected; fallback replaces the requested group),
+`model_id` and `api_base` (the deployment actually selected), `status`, token
+counts, `request_duration_ms`, and `metadata.user_api_key_alias`. The row does
+not preserve the originally requested group. Until the `request_metrics`
+callback below, nothing else in this fabric recorded which deployment served a
+request without a database attached. That is why the metric below is defined
 against this table and not against traces. The settings that arm it, and the
-reasoning for each: `roles/llm_router/defaults/main/45-database.yml`.
+reasoning for each, are in `roles/llm_router/defaults/main/45-database.yml`.
 
 The router uses LiteLLM's `otel` callback with `OTEL_EXPORTER=otlp_http` and the
 configured `ai_orchestration_otel_endpoint`. The collector routes traces to its
@@ -38,15 +39,15 @@ rendered settings establish the intended routes; live trace and counter
 delivery remain external observations. **Do not use traces as a token
 measurement source; use the counters and verify their delivery live.**
 
-## Per-request event in the log platform (`event=llm_request`)
+## Per-attempt event in the log platform (`event=llm_request`)
 
 The `LiteLLM_SpendLogs` row above needs a database attached
-(`45-database.yml`); a router with no store attached recorded nothing
-per-request until now. The `request_metrics` callback
+(`45-database.yml`). The `request_metrics` callback
 (`files/callbacks/request_metrics.py`) closes that gap independent of the
-store: it fires on every success and failure and writes one JSON line to
-stdout, already carried by this unit's journal → the existing llm_router
-rsyslog route → `index=llm`, `sourcetype=litellm:proxy`
+store: it fires on each success and failure callback event and writes one JSON
+line per attempt to stdout. A fallback chain can therefore produce multiple
+lines for one originating request. The existing journal → llm_router rsyslog
+route carries them to `index=llm`, `sourcetype=litellm:proxy`
 (`defaults/main/70-syslog.yml`) — no new pipeline.
 
 Fields: `ts`, `event` (`llm_request`), `model_group` (the SERVING group —
@@ -210,33 +211,13 @@ loggers at all. The retention test asserts the unit carries no such flag.
 
 This is the result, more than the serving-share number the document opens with.
 
-A request that ends in a refusal looks identical whether it was refused on the
-first attempt or after a chain ran and exhausted every rung. The line that would
-tell them apart is emitted at more than one chain depth and carries no depth
-marker, and the records that would have disambiguated it sit below the level the
-loggers were running at — so nothing in this estate could separate the two, in
-either direction.
-
-That distinction is not academic: it decides whether the remedy is more capacity
-at the first rung, or whether adding capacity there merely moves the same
-failure further down the chain. Choosing wrong means doing work that changes
-nothing and reporting it as a fix.
-
-Neither instrument settles it alone, and that is why both are configured:
-
-- The **counters** answer it in the form the question actually takes — a ratio
-  of how often a chain starts against how often a request ends terminally. No
-  join, and no per-request record, is needed to compute that.
-- The **scoped router log** makes an individual decision readable when someone
-  needs to look at one rather than count them.
-
-A per-request record in the **database** joining to the spend log would be
-strictly more information that does not change this decision, at the cost of
-running custom logging code on the guest. It is deliberately not built. The
-`request_metrics` event above is not that: it writes to the log platform, not
-the database, for a different question (per-model-group latency, not chain-
-depth disambiguation) — `trace_id` incidentally makes chain depth answerable
-too, but that is not why the callback exists.
+Fallback counters report how often a chain starts and ends in failure.
+`request_metrics` emits an event for each attempt, with a `call_id` per attempt
+and a shared `trace_id` across a fallback chain. Grouping those events by
+`trace_id` distinguishes an initial failure from a chain that exhausts multiple
+rungs. These log events are independent of the database spend-log rows, which
+carry cost and token fields for LiteLLM's Logs/spend view but do not preserve
+the originally requested model group.
 
 ## Known limits of the measurement
 
