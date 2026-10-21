@@ -100,6 +100,9 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert {entry["profile"] for entry in entries} == ({
         "small",
         "small-c4-64k",
+        "small-lfm25-2b6",
+        "small-granite42-3b",
+        "small-lfm25-24b-a2b",
         "medium-a",
         "qwen38-96k-11-fp8-mtp",
         "medium-b",
@@ -174,6 +177,54 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert co_resident_profile["kv_cache_dtype"] == "q8_0"
     assert co_resident_profile["gpu_memory_reserve_gib"] == 20
 
+    small_candidates = {
+        "small-lfm25-2b6": (
+            "lfm25-2b6-q4-k-m",
+            "LFM2.5-2.6B-Q4_K_M.gguf",
+            1_674_455_040,
+        ),
+        "small-granite42-3b": (
+            "granite42-3b-q4-k-m",
+            "granite-4.2-3b-Q4_K_M.gguf",
+            2_244_011_552,
+        ),
+        "small-lfm25-24b-a2b": (
+            "lfm25-24b-a2b-q4-k-m",
+            "LFM2.5-24B-A2B-Q4_K_M.gguf",
+            14_526_258_464,
+        ),
+    }
+    for profile_name, (artifact_id, gguf_file, size_bytes) in small_candidates.items():
+        entry = next(item for item in entries if item["profile"] == profile_name)
+        artifact = artifacts_by_id[entry["artifact_id"]]
+        profile = serving_profiles[profile_name]
+        assert entry["client_model_id"].startswith("gpu-small-")
+        assert entry["enabled"] is False
+        assert entry["servable"] is False
+        assert entry["route_group"] == "small"
+        assert entry["co_resident_only"] is True
+        assert entry["order"] == 1
+        assert entry["context_window"] + entry["max_output_tokens"] == 65536
+        assert artifact["artifact_id"] == artifact_id
+        assert artifact["serving_profile"] == profile_name
+        assert artifact["model_store_profile"] == profile_name
+        assert artifact["model_store_size_bytes"] == size_bytes
+        assert artifact["gguf_file"] == gguf_file
+        assert artifact["use"] == "serving"
+        assert profile["enabled"] is True
+        assert profile["co_resident_only"] is True
+        for key in (
+            "engine",
+            "max_model_len",
+            "max_num_seqs",
+            "flash_attention",
+            "gpu_layers",
+            "kv_cache_dtype",
+            "gpu_memory_reserve_gib",
+            "port",
+        ):
+            assert profile[key] == co_resident_profile[key]
+
     for entry in entries:
         assert entry["provider"] == "hosted_vllm"
         assert entry["tier"] == "gpu"
@@ -219,10 +270,12 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert {entry["profile"]: entry.get("route_group") for entry in entries} == {
         "small": "small",
         "small-c4-64k": "small",
+        **{profile_name: "small" for profile_name in small_candidates},
         "medium-a": "medium",
         "qwen38-96k-11-fp8-mtp": "medium",
         **{entry["profile"]: None for entry in entries
-           if entry["profile"] not in {"small", "small-c4-64k", "medium-a", "qwen38-96k-11-fp8-mtp"}},
+           if entry["profile"] not in ({"small", "small-c4-64k", "medium-a",
+                                        "qwen38-96k-11-fp8-mtp"} | set(small_candidates))},
     }
 
     # The standalone medium-a profile keeps its eight-slot settings outside the sweep matrix.
