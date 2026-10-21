@@ -90,7 +90,8 @@ globs, file format, quantization, engine support, GGUF file name, and use are
 defined once in `llm-models.d/65-gpu-artifacts.yml`,
 `llm-models.d/66-gpu-artifacts-glm53flash.yml`, and
 `llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml` and
-`llm-models.d/69-gpu-artifacts-matrix.yml`. The router profile
+`llm-models.d/69-gpu-artifacts-matrix.yml` and
+`llm-models.d/70-gpu-artifacts-small-alternatives.yml`. The router profile
 registry links to those records by `artifact_id` and stays `enabled: false`,
 `servable: false` until a serving floor is measured. The shared GPU registry
 also contains the `16gb` llama.cpp candidate owned by `llamacpp_serving`; this

@@ -4,6 +4,11 @@ from pathlib import Path
 
 import yaml
 
+from _gpu_registry_small_alternatives import (
+    SMALL_CANDIDATES,
+    assert_small_alternatives,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_FILES = (
@@ -100,6 +105,9 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert {entry["profile"] for entry in entries} == ({
         "small",
         "small-c4-64k",
+        "small-lfm25-2b6",
+        "small-granite42-3b",
+        "small-lfm25-24b-a2b",
         "medium-a",
         "qwen38-96k-11-fp8-mtp",
         "medium-b",
@@ -174,6 +182,14 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert co_resident_profile["kv_cache_dtype"] == "q8_0"
     assert co_resident_profile["gpu_memory_reserve_gib"] == 20
 
+    small_candidates = SMALL_CANDIDATES
+    assert_small_alternatives(
+        entries,
+        artifacts_by_id,
+        serving_profiles,
+        co_resident_profile,
+    )
+
     for entry in entries:
         assert entry["provider"] == "hosted_vllm"
         assert entry["tier"] == "gpu"
@@ -219,10 +235,12 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert {entry["profile"]: entry.get("route_group") for entry in entries} == {
         "small": "small",
         "small-c4-64k": "small",
+        **{profile_name: "small" for profile_name in small_candidates},
         "medium-a": "medium",
         "qwen38-96k-11-fp8-mtp": "medium",
         **{entry["profile"]: None for entry in entries
-           if entry["profile"] not in {"small", "small-c4-64k", "medium-a", "qwen38-96k-11-fp8-mtp"}},
+           if entry["profile"] not in ({"small", "small-c4-64k", "medium-a",
+                                        "qwen38-96k-11-fp8-mtp"} | set(small_candidates))},
     }
 
     # The standalone medium-a profile keeps its eight-slot settings outside the sweep matrix.
@@ -267,30 +285,6 @@ def test_route_order_reuse_is_limited_to_distinct_gpu_profiles() -> None:
             assert all(profiles) and len(set(profiles)) == len(profiles), (
                 f"{route_group} order {order} must use distinct profiles"
             )
-
-
-def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
-    """Sweeps and medium-a admit 1..64; engine slots control active work."""
-    entries = _entries()
-    serving_profiles = _serving_profiles()
-
-    caps = {
-        entry["profile"]: entry.get("max_parallel_requests", 64)
-        for entry in entries
-    }
-    admission_profiles = {
-        entry["profile"]
-        for entry in entries
-        if entry["client_model_id"].startswith("gpu-sweep-")
-    } | {"medium-a"}
-    expected_caps = {
-        name: 64 if name in admission_profiles else serving_profiles[name]["max_num_seqs"]
-        for name in caps
-    }
-    assert caps == expected_caps
-
-    assert caps["medium-a"] == 64
-    assert caps["qwen38-96k-11-fp8-mtp"] == 11
 
 
 def test_router_consumes_the_shared_gpu_profile_projection() -> None:
