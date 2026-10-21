@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.4...v2.4.5) (2026-10-21)
+
+
+### Bug Fixes
+
+* **hindsight_bank_dr:** allow extended job runtime ([#1651](https://github.com/dryvist/ansible-proxmox-ai/issues/1651)) ([7d1e3fd](https://github.com/dryvist/ansible-proxmox-ai/commit/7d1e3fdde177af3003c2c7bfaccd141c102ec7f6))
+* **hindsight_bank_dr:** extend the job runtime ([7d1e3fd](https://github.com/dryvist/ansible-proxmox-ai/commit/7d1e3fdde177af3003c2c7bfaccd141c102ec7f6))
+
 ## [2.4.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.3...v2.4.4) (2026-10-20)
 
 
