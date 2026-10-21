@@ -114,7 +114,7 @@ def test_export_script_prunes_before_reporting_result():
     assert script.index("s3 rm --recursive") < script.index('RESULT="pass"')
 
 
-def test_export_and_drill_units_declare_their_schedule():
+def test_export_and_drill_units_declare_their_schedule_and_timeout():
     export_timer = (ROLE / "templates" / "hindsight-bank-export.timer.j2").read_text()
     drill_timer = (ROLE / "templates" / "hindsight-bank-dr-drill.timer.j2").read_text()
     for unit in (export_timer, drill_timer):
@@ -127,6 +127,12 @@ def test_export_and_drill_units_declare_their_schedule():
         assert "Type=oneshot" in service
         assert "SyslogIdentifier={{ hindsight_bank_dr_syslog_identifier }}" in service
         assert "EnvironmentFile=/etc/hindsight-bank-dr.env" in service
+
+    for name in (
+        "hindsight-bank-export.service.j2",
+        "hindsight-bank-dr-drill.service.j2",
+    ):
+        assert "TimeoutStartSec=6h" in _render(name)
 
     env_template = (ROLE / "templates" / "hindsight-bank-dr.env.j2").read_text()
     assert "HINDSIGHT_API_KEY={{ hindsight_bank_dr_api_key }}" in env_template
