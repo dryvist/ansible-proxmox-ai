@@ -113,10 +113,35 @@ llm_router_db_connection_pool_limit: >-
 # no database the roles are simply unseeded, not half-configured.
 llm_router_store_model_in_db: true
 
-# Database spend logs retain LiteLLM request cost and token records for its
-# Logs/spend view. The `request_metrics` callback separately emits per-attempt
-# serving attribution to the log platform; it does not write these database
-# rows. The retention settings below bound the table.
+# Per-request spend logs are ON, and the retention plan the previous setting
+# demanded is immediately below.
+#
+# THESE WERE BOTH true. The recorded reason was not "logs are unwanted" — it
+# was "the table has no retention policy, so it grows without bound to buy
+# telemetry this fabric already has". Both halves of that have since been
+# tested and only the first still holds, so it is answered rather than ignored:
+#
+#   Unbounded growth — ANSWERED. The pinned release has a native retention job
+#   (maximum_spend_logs_retention_period below), verified in its source. The
+#   original comment names no such setting and treats a retention plan as
+#   something that would have to be built, so the choice it was weighing was
+#   logs-versus-a-hand-rolled-cleanup-timer. Against a setting it is a
+#   different trade. (Which release first shipped the job is NOT established
+#   here — only that the one this role installs has it.)
+#
+#   "Telemetry this fabric already has" — DID NOT HOLD. Redis carries running
+#   spend counters, not a per-request record, so it cannot attribute a request
+#   to a deployment. No callback in litellm_settings.callbacks records that
+#   pairing either (see 60-ops.yml). The estate has therefore had NO durable
+#   per-request record at all, which is what makes the local-vs-remote
+#   serving share unmeasurable.
+#
+# What the row buys, per LiteLLM_SpendLogs in the pinned schema: `model` and
+# `model_group` (the name asked for), `model_id` + `api_base` (the deployment
+# actually selected, which is the local-or-remote answer), `status`
+# success/failure, `metadata.user_api_key_alias` (the caller), token counts and
+# request_duration_ms. Nothing else in this fabric records the selected
+# deployment.
 llm_router_disable_spend_logs: false
 # Failures need a row for the same reason successes do. What was verified in
 # the pinned source: this flag gates the SPEND-LOG write on the failure path —

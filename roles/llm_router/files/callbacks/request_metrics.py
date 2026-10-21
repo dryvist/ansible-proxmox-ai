@@ -1,10 +1,9 @@
-"""Emit one structured JSON line per success or failure callback event so
-per-model-group review latency is measurable from the log platform. A fallback
-chain can emit multiple lines for one originating request.
+"""Emit one structured JSON line per request so per-model-group review latency
+is measurable from the log platform.
 
 Registered from litellm_settings.callbacks: "request_metrics.proxy_handler_instance"
 (config.yaml.j2). LiteLLM's own success/failure logging hooks (below) are the
-callback-writer's documented event extension point; the JSON line goes
+callback-writer's documented per-request extension point; the JSON line goes
 to stdout, which the systemd unit already ships to the journal, forwarded by
 the existing llm_router rsyslog route to index=llm, sourcetype=litellm:proxy
 (defaults/main/70-syslog.yml) — no new pipeline needed.

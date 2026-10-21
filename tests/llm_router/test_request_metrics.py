@@ -1,4 +1,4 @@
-"""build_record extracts the per-attempt metrics fields from litellm's own
+"""build_record extracts the per-request metrics fields from litellm's own
 StandardLoggingPayload and never carries prompt/response content. Loaded
 from source without importing litellm (CustomLogger is stubbed), like the
 system_merge and lock tests."""

@@ -211,13 +211,37 @@ loggers at all. The retention test asserts the unit carries no such flag.
 
 This is the result, more than the serving-share number the document opens with.
 
-Fallback counters report how often a chain starts and ends in failure.
-`request_metrics` emits an event for each attempt, with a `call_id` per attempt
-and a shared `trace_id` across a fallback chain. Grouping those events by
-`trace_id` distinguishes an initial failure from a chain that exhausts multiple
-rungs. These log events are independent of the database spend-log rows, which
-carry cost and token fields for LiteLLM's Logs/spend view but do not preserve
-the originally requested model group.
+A request that ends in a refusal looks identical in the router's ordinary
+informational log whether it was refused on the first attempt or after a chain
+ran and exhausted every rung. The line in that log that would tell them apart
+is emitted at more than one chain depth and carries no depth marker, and the
+records that would have disambiguated it sit below the level the loggers were
+running at — so nothing in that log could separate the two, in either
+direction.
+
+That distinction is not academic: it decides whether the remedy is more capacity
+at the first rung, or whether adding capacity there merely moves the same
+failure further down the chain. Choosing wrong means doing work that changes
+nothing and reporting it as a fix.
+
+Neither instrument settles it alone, and that is why both are configured:
+
+- The **counters** answer it in the form the question actually takes — a ratio
+  of how often a chain starts against how often a request ends terminally. No
+  join, and no per-request record, is needed to compute that.
+- The **scoped router log** makes an individual decision readable when someone
+  needs to look at one rather than count them.
+
+A per-request record in the **database** joining to the spend log would be
+strictly more information that does not change this decision, at the cost of
+running custom logging code on the guest. It is deliberately not built. The
+`request_metrics` event above is not that: it writes to the log platform, not
+the database, for a different question (per-model-group latency, not chain-
+depth disambiguation) — `trace_id` incidentally makes chain depth answerable
+too, but that is not why the callback exists. It writes one event per attempt;
+grouping events by `trace_id` distinguishes a first-attempt failure from a
+chain that exhausts multiple rungs. The database spend-log row records the
+selected model group and does not preserve the originally requested group.
 
 ## Known limits of the measurement
 
