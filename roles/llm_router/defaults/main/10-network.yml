@@ -68,37 +68,16 @@ llm_router_llm_vllm_enabled: true
 # The medium profile's primary-route rung is independently switchable for
 # maintenance. It does not change the profile's Hermes complexity-router tier.
 llm_router_vllm_medium_enabled: true
-# APEX-level, unlike the llm-fast and llm-light URLs above, and the difference
-# is not cosmetic — it is the difference between resolving and not.
-#
-# technitium_dns publishes A records under the subdomain ONLY for guests that
-# carry a declared address. Leased guests are skipped there deliberately: their
-# address lives in the DHCP lease, the gateway answers for its own lease-table
-# clients, and publishing a second copy in a second system is the drift that
-# addressing model exists to prevent. So a leased guest resolves at
-# `<hostname>.<apex>` and NOT at `<hostname>.<subdomain>`.
-#
-# llm-light has a declared address, so its subdomain form works. The optional
-# llm-fast capability uses the same endpoint form when its router flag is on.
-# This guest is leased, so it does not — and
-# copying their pattern here is exactly the mistake that shipped. Measured from
-# a router guest: the sibling backends resolve under the subdomain, this one
-# resolves only at the apex and returns no record under the subdomain.
-#
-# The failure mode is worth naming, because nothing reported it. The router
-# advertised the model in /v1/models and every request to it failed with
-# "OpenAIException - Connection error" and no fallback group, while the backend
-# itself was healthy — a TCP connect to its serving port succeeded and an HTTP
-# request to the apex name returned 200. An entry that is advertised while its
-# upstream cannot be resolved looks identical to a working one from the model
-# list alone.
-llm_router_llm_vllm_base_url: >-
-  {{ 'http://' ~ groups['llm_vllm_group'][0] ~ '.' ~ llm_router_apex_domain
-     ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
+# The published inventory FQDN is authoritative: DHCP guests may be on a
+# network DNS zone that cannot be derived by stripping a label from the router
+# subdomain.
+llm_router_llm_vllm_fqdn: >-
+  {{ tofu_data.containers[groups['llm_vllm_group'][0]].fqdn
      if (groups['llm_vllm_group'] | default([]) | length > 0) else '' }}
-# Pro6000 serving guest. Like the llm_vllm_group pattern above, derive the
-# backend host from the first inventory member and use the shared serving API
-# port. Its inventory membership comes from tofu tag `llm-gpu`.
+llm_router_llm_vllm_base_url: >-
+  {{ 'http://' ~ llm_router_llm_vllm_fqdn
+     ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
+     if llm_router_llm_vllm_fqdn | length > 0 else '' }}
 llm_router_llm_gpu_base_url: >-
   {{ 'http://' ~ groups['llm_gpu_group'][0] ~ '.' ~ llm_router_apex_domain
      ~ ':' ~ (llm_router_light_port | string) ~ '/v1'

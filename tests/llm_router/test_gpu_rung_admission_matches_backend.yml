@@ -26,10 +26,15 @@
         cpu-fixture:
           ip: 127.0.0.1
           tags: [fixture-cpu-small]
+        serving-fixture:
+          fqdn: serving-fixture.example.test
+          tags: []
+        gpu-fixture:
+          fqdn: gpu-fixture.internal.example.test
+          tags: []
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
-    llm_router_subdomain: "pve.example.test"
     llm_router_master_key: sk-test-master
     llm_router_llm_large_bearer: test-bearer-token
     ai_router_request_timeout_seconds: 2400
@@ -52,6 +57,10 @@
     - name: Load the actual GPU serving group variables
       ansible.builtin.include_vars:
         file: "{{ playbook_dir }}/../../inventory/group_vars/llm_vllm_group.yml"
+
+    - name: Set the render's test subdomain after loading role defaults
+      ansible.builtin.set_fact:
+        llm_router_subdomain: "pve.internal.example.test"
 
     - name: Set vLLM availability from the enabled registry entries
       ansible.builtin.set_fact:
@@ -100,12 +109,17 @@
       ansible.builtin.set_fact:
         _vllm_parallel: "{{ llama_cpp_parallel | int }}"
 
-    - name: Add the synthetic GPU guest with inventory serving parallelism
+    - name: Add the synthetic vLLM guest with inventory serving parallelism
       ansible.builtin.add_host:
         name: serving-fixture
         groups: llm_vllm_group
         llama_cpp_parallel: "{{ _vllm_parallel }}"
         llama_cpp_prefill_tokens_per_second: 120
+
+    - name: Add a separate synthetic GPU backend
+      ansible.builtin.add_host:
+        name: gpu-fixture
+        groups: llm_gpu_group
 
     - name: Render the real config.yaml.j2 template into a string
       ansible.builtin.set_fact:
@@ -171,16 +185,33 @@
         success_msg: The disabled vLLM tier has no guest model preset.
       when: llm_router_vllm_models | length == 0
 
-    - name: The vLLM backend URL follows the inventory guest name
+    - name: The vLLM endpoint uses its published FQDN and other zones stay unchanged
       ansible.builtin.assert:
         quiet: true
         that:
           - >-
             llm_router_llm_vllm_base_url
-            == 'http://' ~ groups['llm_vllm_group'][0] ~ '.' ~ llm_router_apex_domain
+            == 'http://' ~ tofu_data.containers[groups['llm_vllm_group'][0]].fqdn
             ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
-        success_msg: The vLLM endpoint follows its inventory member and the configured API port.
-      when: llm_router_vllm_models | length > 0
+          - >-
+            llm_router_llm_gpu_base_url
+            == 'http://' ~ groups['llm_gpu_group'][0] ~ '.' ~ llm_router_apex_domain
+            ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
+          - >-
+            llm_router_llm_gpu_co_resident_base_url
+            == 'http://' ~ groups['llm_gpu_group'][0] ~ '.' ~ llm_router_apex_domain
+            ~ ':' ~ ((llm_router_light_port | int + 1) | string) ~ '/v1'
+          - >-
+            llm_router_llm_fast_base_url
+            == 'http://llm-fast.' ~ llm_router_subdomain
+            ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
+          - >-
+            llm_router_llm_light_base_url
+            == 'http://llm-light.' ~ llm_router_subdomain
+            ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
+        success_msg: >-
+          The vLLM endpoint uses its published FQDN; other endpoints retain
+          their existing zones.
 
     - name: Every GPU-rung deployment's max_parallel_requests equals the serving process value
       ansible.builtin.assert:
