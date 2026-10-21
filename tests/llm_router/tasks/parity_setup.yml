@@ -38,6 +38,26 @@
     llama_cpp_prefill_tokens_per_second: "{{ _vllm_fixture_vars.llama_cpp_prefill_tokens_per_second | default(0) }}"
   when: groups['llm_vllm_group'] | default([]) | length == 0
 
+- name: Read the vLLM member selected by the test inventory
+  ansible.builtin.set_fact:
+    _llm_router_test_vllm_hostname: "{{ groups['llm_vllm_group'][0] }}"
+    _llm_router_test_vllm_fqdn: >-
+      {{ (tofu_data.containers | default({}))
+         .get(groups['llm_vllm_group'][0], {})
+         .get('fqdn', groups['llm_vllm_group'][0] ~ '.example.test') }}
+
+- name: Publish the synthetic vLLM FQDN in the test inventory contract
+  ansible.builtin.set_fact:
+    tofu_data: >-
+      {{ tofu_data | combine({
+           'containers': (tofu_data.containers | default({}))
+             | combine({
+                 _llm_router_test_vllm_hostname: {
+                   'fqdn': _llm_router_test_vllm_fqdn
+                 }
+               }, recursive=True)
+         }, recursive=True) }}
+
 - name: Refresh cached router projections after enabling the vLLM fixture
   ansible.builtin.include_role:
     name: llm_router
