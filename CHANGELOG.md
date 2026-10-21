@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.5...v2.4.6) (2026-10-21)
+
+
+### Bug Fixes
+
+* **llm-router:** register the sandbox key from its own leaf ([#1617](https://github.com/dryvist/ansible-proxmox-ai/issues/1617)) ([46db065](https://github.com/dryvist/ansible-proxmox-ai/commit/46db065d3a95acf7015120f5724e300488f24ebf))
+
 ## [2.4.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.4...v2.4.5) (2026-10-21)
 
 
