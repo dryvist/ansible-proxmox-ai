@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.6...v2.5.0) (2026-10-21)
+
+
+### Features
+
+* **llm-models:** add small profile model alternatives ([#1655](https://github.com/dryvist/ansible-proxmox-ai/issues/1655)) ([4064b66](https://github.com/dryvist/ansible-proxmox-ai/commit/4064b66110b85a476265abdc2db35bc99d86ba50))
+
 ## [2.4.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.5...v2.4.6) (2026-10-21)
 
 
