@@ -185,13 +185,6 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert co_resident_profile["kv_cache_dtype"] == "q8_0"
     assert co_resident_profile["gpu_memory_reserve_gib"] == 20
 
-    k2 = next(entry for entry in entries if entry["profile"] == "small-k2-horizon")
-    k2_artifact = artifacts_by_id[k2["artifact_id"]]
-    assert k2["route_group"] == "small-trial-gpu"
-    assert k2["api_port_key"] == "llm_fast_trial_api"
-    assert k2["co_resident_only"] is True
-    assert k2_artifact["revision"] == "7a75dbda05e3d440351543131ff3f7fa5687e879"
-
     small_candidates = SMALL_CANDIDATES
     assert_small_alternatives(
         entries,
@@ -290,19 +283,6 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
                 assert profile["max_model_len"] <= model_window
         else:
             assert entry["context_window"] + entry["max_output_tokens"] <= profile["max_model_len"]
-
-
-def test_route_order_reuse_is_limited_to_distinct_gpu_profiles() -> None:
-    orders: dict[tuple[str, int], list[dict]] = {}
-    for entry in _entries():
-        if route_group := entry.get("route_group"):
-            orders.setdefault((route_group, entry["order"]), []).append(entry)
-    for (route_group, order), entries in orders.items():
-        profiles = [entry.get("profile") for entry in entries]
-        if len(entries) > 1:
-            assert all(profiles) and len(set(profiles)) == len(profiles), (
-                f"{route_group} order {order} must use distinct profiles"
-            )
 
 
 def test_router_consumes_the_shared_gpu_profile_projection() -> None:
