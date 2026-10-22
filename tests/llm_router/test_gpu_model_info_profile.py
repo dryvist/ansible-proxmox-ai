@@ -109,6 +109,11 @@ def _render(models: list[dict]) -> list[dict]:
         llm_router_deployment_tags_by_entry={f"{m['client_model_id']}|{m['tier']}": [] for m in models},
         llm_router_llm_gpu_base_url="http://placeholder/v1",
         llm_router_llm_gpu_co_resident_base_url="http://placeholder:10435/v1",
+        llm_router_gpu_profile_base_urls={
+            m["profile"]: "http://placeholder:10436/v1"
+            for m in models
+            if m.get("api_port_key") == "llm_fast_trial_api"
+        },
         llm_router_gpu_co_resident_profiles=[m["profile"] for m in models if m.get("co_resident_only")],
         llm_router_light_api_key="placeholder",
     )
@@ -142,7 +147,12 @@ def test_co_resident_profile_uses_the_second_inventory_derived_port():
     for entry in entries:
         rendered = _render([entry])[0]
 
-        assert rendered["litellm_params"]["api_base"] == "http://placeholder:10435/v1"
+        expected_api_base = (
+            "http://placeholder:10436/v1"
+            if entry.get("api_port_key") == "llm_fast_trial_api"
+            else "http://placeholder:10435/v1"
+        )
+        assert rendered["litellm_params"]["api_base"] == expected_api_base
         assert rendered["litellm_params"]["max_parallel_requests"] == 4
 
 

@@ -11,6 +11,7 @@ from test_engine_profiles import (
     _registry_profiles,
     _render,
 )
+from test_legacy_vllm_sweep_profiles import _render_legacy
 
 
 def test_small_profile_is_a_four_slot_llama_cpp_profile():
@@ -40,6 +41,42 @@ def test_small_artifact_is_the_pinned_gguf_and_the_nvfp4_artifact_is_benchmark_o
     assert old_nvfp4["use"] == "benchmark-only"
     assert old_nvfp4["model_store"] is False
     assert "serving_profile" not in old_nvfp4
+
+
+def test_k2_horizon_is_a_pinned_high_reasoning_trial_profile():
+    entry = _registry_profiles()["small-k2-horizon"]
+    artifact = entry["artifact"]
+    profile = yaml.safe_load(
+        (LEGACY_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8")
+    )["llm_profiles"]["small-k2-horizon"]
+    exec_start = " ".join(_exec_start(_render_legacy("small-k2-horizon", profile)).split())
+
+    assert entry["route_group"] == "small-trial-gpu"
+    assert entry["api_port_key"] == "llm_fast_trial_api"
+    assert entry["catalog_profile"] == entry["profile"]
+    assert artifact["revision"] == "7a75dbda05e3d440351543131ff3f7fa5687e879"
+    assert artifact["gguf_file"] == "K2-Horizon-7B-Q4_K_M.gguf"
+    assert artifact["quantization"] == "Q4_K_M"
+    assert artifact["model_store_size_bytes"] == 5592217984
+    assert profile["engine"] == "llama_cpp"
+    assert profile["max_num_seqs"] == 4
+    assert profile["max_model_len"] == 65536
+    assert profile["gpu_memory_reserve_gib"] == 20
+    assert "--reasoning-effort high" in exec_start
+    assert "--parallel 4" in exec_start
+
+
+def test_selected_registry_api_port_keys_override_profile_fallback_ports():
+    tasks = yaml.safe_load((LEGACY_ROOT / "tasks/load-registry.yml").read_text(encoding="utf-8"))
+    resolve = next(
+        task for task in tasks
+        if task["name"] == "Resolve selected profile ports from the shared service-port registry"
+    )
+
+    assert "api_port_key" in resolve["ansible.builtin.set_fact"]["llm_gpu_serving_profiles"]
+    assert "tofu_data.constants.service_ports[profile.api_port_key]" in resolve[
+        "ansible.builtin.set_fact"
+    ]["llm_gpu_serving_profiles"]
 
 
 def test_small_profile_renders_the_pinned_gguf_with_llama_cpp():

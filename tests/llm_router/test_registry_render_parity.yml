@@ -35,6 +35,7 @@
         service_ports:
           llm_router_api: 4000
           llm_fast_api: 10434
+          llm_fast_trial_api: 10436
           ollama_api: 11434
           otel_traces_http: 4318
         llm_cpu_scaler:
@@ -65,6 +66,60 @@
 
     - name: Run the parity guard against the shipping registry
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
+
+    - name: Keep the MLX trial on its own route beside the small alias
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _k2_trial_registry | length == 1
+          - _k2_trial_registry[0].route_group == 'small-trial-mlx'
+          - _k2_trial_registry[0].context_window == 32768
+          - _k2_trial_registry[0].max_output_tokens == 32768
+          - _k2_trial_routes | length == 1
+          - _k2_trial_routes[0].litellm_params.model == 'openai/' ~ _k2_trial_registry[0].client_model_id
+          - _k2_trial_routes[0].model_info.max_input_tokens == 32768
+          - _k2_trial_routes[0].model_info.max_tokens == 32768
+          - _k2_trial_in_small | length == 0
+      vars:
+        _k2_trial_registry: >-
+          {{ llm_router_model_registry
+             | selectattr('route_group', 'equalto', 'small-trial-mlx')
+             | list }}
+        _k2_trial_routes: >-
+          {{ _llm_router_parity_config.model_list
+             | selectattr('model_name', 'equalto', 'small-trial-mlx') | list }}
+        _k2_trial_in_small: >-
+          {{ _llm_router_parity_config.model_list
+             | selectattr('model_name', 'equalto', 'small')
+             | selectattr('litellm_params.model', 'equalto',
+                          'openai/' ~ _k2_trial_registry[0].client_model_id) | list }}
+
+    - name: Keep the MLX oQ6e fallback on its own route beside the small alias
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _k2_o_q6e_registry | length == 1
+          - _k2_o_q6e_registry[0].route_group == 'small-trial-mlx-q6'
+          - _k2_o_q6e_registry[0].context_window == 32768
+          - _k2_o_q6e_registry[0].max_output_tokens == 32768
+          - _k2_o_q6e_routes | length == 1
+          - _k2_o_q6e_routes[0].litellm_params.model == 'openai/' ~ _k2_o_q6e_registry[0].client_model_id
+          - _k2_o_q6e_routes[0].model_info.max_input_tokens == 32768
+          - _k2_o_q6e_routes[0].model_info.max_tokens == 32768
+          - _k2_o_q6e_in_small | length == 0
+      vars:
+        _k2_o_q6e_registry: >-
+          {{ llm_router_model_registry
+             | selectattr('route_group', 'equalto', 'small-trial-mlx-q6')
+             | list }}
+        _k2_o_q6e_routes: >-
+          {{ _llm_router_parity_config.model_list
+             | selectattr('model_name', 'equalto', 'small-trial-mlx-q6') | list }}
+        _k2_o_q6e_in_small: >-
+          {{ _llm_router_parity_config.model_list
+             | selectattr('model_name', 'equalto', 'small')
+             | selectattr('litellm_params.model', 'equalto',
+                          'openai/' ~ _k2_o_q6e_registry[0].client_model_id) | list }}
 
     - name: Check the rendered per-model limits against homelab-contracts
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-catalog-render-agreement.yml"
