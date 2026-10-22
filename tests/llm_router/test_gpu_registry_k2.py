@@ -21,4 +21,6 @@ def test_k2_horizon_trial_uses_its_pinned_catalogued_artifact() -> None:
     assert entry["api_port_key"] == "llm_fast_trial_api"
     assert entry["co_resident_only"] is True
     assert entry["catalog_profile"] == entry["profile"]
+    assert entry["hints"]["speed"] == "quick"
+    assert entry["hints"]["quality"] == "routine"
     assert artifact["revision"] == "7a75dbda05e3d440351543131ff3f7fa5687e879"
