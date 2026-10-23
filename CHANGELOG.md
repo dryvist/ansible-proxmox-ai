@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.5.0...v2.6.0) (2026-10-23)
+
+
+### Features
+
+* add co-resident K2 Horizon trial route ([#1667](https://github.com/dryvist/ansible-proxmox-ai/issues/1667)) ([78ba4eb](https://github.com/dryvist/ansible-proxmox-ai/commit/78ba4ebc3d76d4b31ce01fbfdb8263618f8d8830))
+
 ## [2.5.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.4.6...v2.5.0) (2026-10-21)
 
 
