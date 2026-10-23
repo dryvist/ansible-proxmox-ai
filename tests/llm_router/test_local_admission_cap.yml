@@ -137,12 +137,9 @@
              | rejectattr('litellm_params.max_parallel_requests', 'defined')
              | map(attribute='model_name') | list }}
 
-    # A6: a large-tier registry entry may declare its OWN max_parallel_requests
-    # (mirroring that model's host effectiveConcurrency) instead of inheriting
-    # the tier-wide default — so the expected value is looked up PER DEPLOYMENT
-    # from the registry, not pinned to one shared literal. Every large-tier
-    # entry declares one today (all 1, ground truth as of 2026-09-02), so this
-    # still fails on a value that drifts from what the registry actually says.
+    # The rendered model_name uses route_group when one exists. Key expected
+    # concurrency by that same name so registry aliases retain their projected
+    # catalog limit instead of falling through to the tier default.
     - name: Each local deployment's cap matches its own registry declaration
       ansible.builtin.assert:
         quiet: true
@@ -161,7 +158,7 @@
           {%- set ns = namespace(pairs=[]) -%}
           {%- for m in llm_router_registry_enabled -%}
           {%- if ns.pairs | selectattr('n', 'equalto', m.client_model_id) | list | length == 0 -%}
-          {%- set ns.pairs = ns.pairs + [{'n': m.client_model_id,
+          {%- set ns.pairs = ns.pairs + [{'n': m.route_group | default(m.client_model_id),
                 'v': m.max_parallel_requests | default(llm_router_local_max_parallel_requests) | int}] -%}
           {%- endif -%}
           {%- endfor -%}
