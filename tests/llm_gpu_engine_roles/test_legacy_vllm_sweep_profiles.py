@@ -67,6 +67,8 @@ def _render_legacy(profile_name: str, profile: dict) -> str:
         "llm_gpu_serving_profile": {**profile, "port": TEST_API_PORT},
         "llm_gpu_serving_profile_registry_model": registry_model,
         "llm_gpu_serving_profile_model_dir": f"/cache/models/{registry_model['artifact']['hf_repo']}",
+        "llm_gpu_serving_llamacpp_install_dir": "/opt/llm-gpu-serving/llama.cpp",
+        "llm_gpu_serving_llamacpp_server_bin": "/opt/llm-gpu-serving/llama.cpp/llama-server",
     }
     return env.get_template("llm-gpu-serving.service.j2").render(**values)
 

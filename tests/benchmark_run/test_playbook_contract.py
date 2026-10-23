@@ -32,6 +32,8 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     request_assert = preflight[0]["ansible.builtin.assert"]["that"]
     assert "not (publish | default(false) | bool)" in request_assert
     assert any("reasoning_arm" in assertion for assertion in request_assert)
+    reasoning_assert = next(assertion for assertion in request_assert if "reasoning_arm" in assertion)
+    assert "'high'" in reasoning_assert
     assert any(
         "item_limit" in assertion
         for task in preflight

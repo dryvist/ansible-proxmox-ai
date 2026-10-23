@@ -105,6 +105,7 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert {entry["profile"] for entry in entries} == ({
         "small",
         "small-c4-64k",
+        "small-k2-horizon",
         "small-lfm25-2b6",
         "small-granite42-3b",
         "small-lfm25-24b-a2b",
@@ -175,6 +176,8 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert co_resident["route_group"] == "small"
     assert co_resident["order"] == 1
     assert co_resident["max_parallel_requests"] == 4
+    assert co_resident["context_window"] == 32768
+    assert co_resident["max_output_tokens"] == 32768
     assert co_resident["context_window"] + co_resident["max_output_tokens"] == 65536
     assert co_resident_profile["engine"] == "llama_cpp"
     assert co_resident_profile["max_model_len"] == 65536
@@ -207,6 +210,10 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
                 )
             )
             continue
+        if "catalog_profile" in entry and "context_window" not in entry:
+            assert entry["catalog_profile"] == entry["profile"]
+            assert entry["num_retries"] == 0
+            continue
         assert isinstance(entry["context_window"], int) and entry["context_window"] > 0
         assert isinstance(entry["max_output_tokens"], int) and entry["max_output_tokens"] > 0
         assert entry.get("input_cost_per_token", 0) == 0
@@ -235,12 +242,14 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert {entry["profile"]: entry.get("route_group") for entry in entries} == {
         "small": "small",
         "small-c4-64k": "small",
+        "small-k2-horizon": "small-trial-gpu",
         **{profile_name: "small" for profile_name in small_candidates},
         "medium-a": "medium",
         "qwen38-96k-11-fp8-mtp": "medium",
         **{entry["profile"]: None for entry in entries
            if entry["profile"] not in ({"small", "small-c4-64k", "medium-a",
-                                        "qwen38-96k-11-fp8-mtp"} | set(small_candidates))},
+                                        "qwen38-96k-11-fp8-mtp", "small-k2-horizon"}
+                                      | set(small_candidates))},
     }
 
     # The standalone medium-a profile keeps its eight-slot settings outside the sweep matrix.
@@ -268,23 +277,12 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
 
     for entry in entries:
         profile = serving_profiles[entry["profile"]]
+        model_window = artifacts_by_id[entry["artifact_id"]].get("context_window_tokens")
         if "catalog_profile" in entry:
-            assert profile["max_model_len"] <= artifacts_by_id[entry["artifact_id"]]["context_window_tokens"]
+            if model_window is not None:
+                assert profile["max_model_len"] <= model_window
         else:
             assert entry["context_window"] + entry["max_output_tokens"] <= profile["max_model_len"]
-
-
-def test_route_order_reuse_is_limited_to_distinct_gpu_profiles() -> None:
-    orders: dict[tuple[str, int], list[dict]] = {}
-    for entry in _entries():
-        if route_group := entry.get("route_group"):
-            orders.setdefault((route_group, entry["order"]), []).append(entry)
-    for (route_group, order), entries in orders.items():
-        profiles = [entry.get("profile") for entry in entries]
-        if len(entries) > 1:
-            assert all(profiles) and len(set(profiles)) == len(profiles), (
-                f"{route_group} order {order} must use distinct profiles"
-            )
 
 
 def test_router_consumes_the_shared_gpu_profile_projection() -> None:

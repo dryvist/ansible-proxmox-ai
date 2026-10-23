@@ -164,7 +164,10 @@ def test_co_resident_gpu_host_selects_the_eleven_slot_main_and_small_profile():
     host_vars = _load(REPO_ROOT / "inventory/host_vars/llm-blackwell-7-96GB-medium.yml")
 
     assert host_vars["llm_active_profile"] == "qwen38-96k-11-fp8-mtp"
-    assert host_vars["llm_gpu_serving_co_resident_profiles"] == ["small-c4-64k"]
+    assert host_vars["llm_gpu_serving_co_resident_profiles"] == [
+        "small-c4-64k",
+        "small-k2-horizon",
+    ]
 
 
 def test_shared_llamacpp_group_uses_inventory_cache_or_existing_root_cache():

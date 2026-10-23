@@ -32,6 +32,37 @@
       llm_active_profile in (llm_gpu_serving_registry_profiles
                              | map(attribute='profile') | list)
 
+- name: Require inventory service ports for selected registry profiles
+  ansible.builtin.assert:
+    that:
+      - item.api_port_key in (tofu_data.constants.service_ports | default({}))
+      - tofu_data.constants.service_ports[item.api_port_key] | int > 0
+    fail_msg: >-
+      Selected GPU profile {{ item.profile }} requires the registered service
+      port {{ item.api_port_key }} in tofu_data.constants.service_ports.
+    quiet: true
+  loop: >-
+    {{ llm_gpu_serving_registry_profiles
+       | selectattr('profile', 'in', [llm_active_profile]
+                    + (llm_gpu_serving_co_resident_profiles | default([])))
+       | selectattr('api_port_key', 'defined') | list }}
+  loop_control:
+    label: "{{ item.profile }}"
+
+- name: Resolve selected profile ports from the shared service-port registry
+  ansible.builtin.set_fact:
+    llm_gpu_serving_profiles: >-
+      {%- set ns = namespace(profiles=llm_gpu_serving_profiles) -%}
+      {%- for profile in llm_gpu_serving_registry_profiles
+            | selectattr('profile', 'in', [llm_active_profile]
+                         + (llm_gpu_serving_co_resident_profiles | default([])))
+            | selectattr('api_port_key', 'defined') | list -%}
+      {%- set _ = ns.profiles.update({profile.profile:
+            ns.profiles[profile.profile]
+            | combine({'port': tofu_data.constants.service_ports[profile.api_port_key]})}) -%}
+      {%- endfor -%}
+      {{ ns.profiles }}
+
 - name: Load the registered model artifact shards
   ansible.builtin.include_tasks:
     file: load-artifacts.yml

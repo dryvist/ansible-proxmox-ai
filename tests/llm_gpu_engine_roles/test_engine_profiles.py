@@ -91,7 +91,10 @@ def _render(profile_name: str, profile: dict) -> str:
     env.filters["combine"] = lambda value, updates: {**value, **updates}
     resolved_profile = {
         **profile,
-        "port": env.from_string(str(profile["port"])).render(nvidia_gpu_guest_api_port=10434),
+        "port": env.from_string(str(profile["port"])).render(
+            nvidia_gpu_guest_api_port=10434,
+            llm_gpu_serving_co_resident_api_port=10435,
+        ),
     }
     registry_model = _registry_profiles()[profile_name]
     common = {
