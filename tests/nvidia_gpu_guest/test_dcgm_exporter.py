@@ -75,6 +75,13 @@ def test_gpu_guest_installs_and_starts_the_package_services():
     }
     assert services == {"nvidia-dcgm.service", "nvidia-dcgm-exporter.service"}
 
+    names = [task.get("name") for task in tasks]
+    dropin_dir = tasks[names.index("Create the DCGM exporter drop-in directory")]["ansible.builtin.file"]
+    assert dropin_dir["path"] == "{{ nvidia_gpu_guest_dcgm_exporter_dropin_path | dirname }}"
+    assert dropin_dir["state"] == "directory"
+    assert names.index("Create the DCGM exporter drop-in directory") < names.index(
+        "Install the DCGM exporter collector override"
+    )
     dropin = next(
         task["ansible.builtin.copy"]
         for task in tasks
@@ -221,31 +228,33 @@ def test_legacy_gpu_serving_role_installs_the_dcgm_exporter_after_userspace():
     )
 
 
-def test_site_installs_dcgm_for_nvidia_guests_without_a_serving_play():
+def test_site_installs_dcgm_on_every_nvidia_guest():
     playbook = _load(ROOT / "playbooks/llm-serving-gpu-engines.yml")
     play = next(
         play
         for play in playbook
-        if play.get("name") == "Configure DCGM on NVIDIA guests outside existing serving plays"
+        if play.get("name") == "Configure DCGM on every NVIDIA guest"
     )
 
     assert play["hosts"] == "nvidia_gpu_group"
     assert play["gather_facts"] is False
     converge = play["tasks"][0]
-    assert converge["name"] == "Converge DCGM exporter on NVIDIA guests outside serving plays"
+    assert converge["name"] == "Converge the DCGM exporter on every NVIDIA guest"
     tasks = converge["block"]
     assert [task["name"] for task in tasks] == [
-        "Gather facts for NVIDIA guests outside existing serving plays",
-        "Load APT proxy settings for NVIDIA guests outside serving plays",
-        "Install matching NVIDIA userspace on NVIDIA guests outside serving plays",
-        "Install DCGM exporter on NVIDIA guests outside serving plays",
+        "Gather facts for the DCGM exporter",
+        "Load APT proxy settings for the DCGM exporter",
+        "Install the host-matched NVIDIA userspace for the DCGM exporter",
+        "Install the DCGM exporter",
     ]
     assert [task.get("ansible.builtin.include_role") for task in tasks[1:]] == [
         {"name": "llamacpp_release", "tasks_from": "prepare.yml"},
         {"name": "nvidia_gpu_guest", "tasks_from": "install-nvidia-userspace.yml"},
         {"name": "nvidia_gpu_guest", "tasks_from": "install-dcgm-exporter.yml"},
     ]
-    assert converge["when"] == "not (nvidia_gpu_guest_dcgm_already_served | bool)"
+    # Serving-group membership does not prove a serving role ran (an empty model list skips it).
+    assert "when" not in converge
+    assert "vars" not in play
     assert converge["rescue"][0]["ansible.builtin.include_tasks"] == (
         "tasks/record_isolated_failure.yml"
     )
@@ -254,17 +263,3 @@ def test_site_installs_dcgm_for_nvidia_guests_without_a_serving_play():
     host_projection = _load(ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
     add_host = next(task["ansible.builtin.add_host"] for task in host_projection)
     assert "['nvidia_gpu_group'] if 'nvidia-gpu' in" in add_host["groups"]
-
-    groups = {
-        "nvidia_gpu_group": ["telemetry-only", "served-engine"],
-        "llm_gpu_legacy_group": [],
-        "llm_gpu_group": ["served-engine"],
-        "llm_gpu_serving_strata_group": [],
-        "llm_vllm_group": [],
-        "llm_classify": [],
-    }
-    served = jinja2.Environment(undefined=jinja2.StrictUndefined).from_string(
-        play["vars"]["nvidia_gpu_guest_dcgm_already_served"]
-    )
-    assert served.render(groups=groups, inventory_hostname="telemetry-only").lower() == "false"
-    assert served.render(groups=groups, inventory_hostname="served-engine").lower() == "true"
