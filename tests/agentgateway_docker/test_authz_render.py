@@ -38,15 +38,29 @@ def _render_map(expression: str, **context: Any) -> dict[str, Any]:
     return yaml.safe_load(ENV.from_string(expression).render(**context))
 
 
+def _render_callers(roster: dict[str, Any], registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    """`ai_callers` as inventory/group_vars/all.yml derives it: registry plus roster."""
+    # The test environment's strict undefined cannot evaluate `| default`, so an unloaded
+    # registry is passed as empty, which is what the default yields in a play.
+    return _render_map(INVENTORY_VARS["ai_callers"], ai_agents=roster, agent_callers_registry=registry or {})
+
+
+def _render_key_fields(roster: dict[str, Any], registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _render_map(
+        INVENTORY_VARS["ai_agent_gateway_key_fields"], ai_callers=_render_callers(roster, registry)
+    )
+
+
 def _render(
     agents: dict[str, Any] | None = None,
     owners: dict[str, str] | None = None,
     keys: dict[str, str] | None = None,
     extra: dict[str, Any] | None = None,
     template_source: str | None = None,
+    registry: dict[str, Any] | None = None,
 ) -> str:
     roster = agents or {}
-    key_fields = _render_map(INVENTORY_VARS["ai_agent_gateway_key_fields"], ai_agents=roster)
+    key_fields = _render_key_fields(roster, registry)
     roster_keys = _render_map(
         ROLE_DEFAULTS["agentgateway_docker_roster_keys"],
         ai_agent_gateway_key_fields=key_fields,
@@ -148,9 +162,7 @@ def test_missing_roster_key_fails_the_role_assert_expression() -> None:
     condition = validation["ansible.builtin.assert"]["that"][0]
     roster_keys = _render_map(
         ROLE_DEFAULTS["agentgateway_docker_roster_keys"],
-        ai_agent_gateway_key_fields=_render_map(
-            INVENTORY_VARS["ai_agent_gateway_key_fields"], ai_agents=AGENTS
-        ),
+        ai_agent_gateway_key_fields=_render_key_fields(AGENTS),
         openbao_secrets_by_domain={
             "agentgateway-agent-keys": {
                 "splunk_heimdall_agentgateway_key": KEYS["splunk_heimdall_agentgateway_key"]

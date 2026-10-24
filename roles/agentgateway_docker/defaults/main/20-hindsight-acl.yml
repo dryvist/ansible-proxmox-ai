@@ -3,8 +3,8 @@
 # memory bank. Hindsight itself has ONE tenant key and no per-key bank ACL, so the
 # gateway holds that key (backendAuth) and callers never see it.
 #
-# Model (per agent x trust tier, derived from the agent roster — never listed here):
-#   every roster agent owns ONE bank, <agent>-<tier>
+# Model (per caller x trust tier, derived from `ai_callers` — never listed here):
+#   every caller (roster agent or registry harness) owns ONE bank, <caller>-<tier>
 #   an agent reads + writes its own bank (REST and the single-bank MCP mount)
 #   an agent READS the banks of agents in the same tier (REST only)
 #   an agent never touches a bank of the other tier, and never writes a peer's bank
@@ -12,7 +12,7 @@
 # errors does not match; a `deny` rule that errors would fail open).
 #
 # Inert-until-creds: the route is omitted unless the tenant key is seeded and at
-# least one roster agent has a tier, so the role converges cleanly before either
+# least one caller has a tier, so the role converges cleanly before either
 # exists.
 agentgateway_docker_hindsight_enabled: true
 
@@ -38,15 +38,16 @@ agentgateway_docker_hindsight_api_key: >-
   {{ ((bao_apps_secrets | default({})).get('hindsight_api_key', '') | default('', true)) | trim }}
 
 # --- Caller tiers and banks -------------------------------------------------
-# The tier is the roster's own `trust_tier` field from the published tofu agent
-# roster (`ai_agents`). Tofu owns the vocabulary and the default.
-# An agent with no roster `trust_tier`, or with no gateway key, receives no bank
+# The tier is the caller's `trust_tier` in `ai_callers` (inventory/group_vars/all.yml):
+# the released harness registry for workstation callers, the published tofu agent
+# roster for container agents. Each owns its vocabulary and default.
+# A caller with no `trust_tier`, or with no gateway key, receives no bank
 # and no Hindsight access; both cases fail closed.
-# agent -> tier, only for agents that hold a gateway key and have a roster tier.
+# caller -> tier, only for callers that hold a gateway key and have a tier.
 agentgateway_docker_hindsight_roster_tiers: >-
   {%- set tiers = {} -%}
   {%- for agent, key in agentgateway_docker_roster_keys.items() -%}
-    {%- set tier = (ai_agents | default({})).get(agent, {}).get('trust_tier', '') -%}
+    {%- set tier = (ai_callers | default({})).get(agent, {}).get('trust_tier', '') -%}
     {%- if key | length > 0 and tier | length > 0 -%}
       {%- set _ = tiers.update({agent: tier}) -%}
     {%- endif -%}
