@@ -1,0 +1,32 @@
+---
+- name: Verify agent-session config rendering and safe defaults
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llamaindex"
+  tasks:
+    - name: Load llamaindex role defaults
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main.yml"
+
+    - name: Supply test-only Splunk config values
+      ansible.builtin.set_fact:
+        llamaindex_splunk_url: https://search.example.invalid
+        bao_apps_secrets:
+          splunk_search_token: test-only-placeholder
+
+    - name: Render the real agent-session config template
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/llamaindex-agent-sessions.yaml.j2') | from_yaml }}"
+
+    - name: Assert the feature stays disabled by default
+      ansible.builtin.assert:
+        that:
+          - not (llamaindex_agent_sessions_enabled | bool)
+          - _config.index.collection == 'agent_sessions'
+          - _config.index.watermark_file == llamaindex_agent_sessions_watermark_path
+          - _config.splunk.url == llamaindex_splunk_url
+          - _config.splunk.token == llamaindex_splunk_search_token
+          - _config.index.harnesses | map(attribute='name') | list == ['claude', 'codex', 'gemini']
+          - _config.index.harnesses | map(attribute='role_field') | unique | list == ['message.role']
+          - _config.index.harnesses | map(attribute='content_field') | unique | list == ['message.content']
