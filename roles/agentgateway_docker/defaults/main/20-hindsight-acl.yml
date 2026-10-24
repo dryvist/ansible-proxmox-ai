@@ -1,0 +1,154 @@
+---
+# Hindsight bank ACL — the /hindsight route enforces which caller tier may touch
+# which memory bank. Hindsight itself has ONE tenant key and no per-key bank ACL,
+# so the gateway holds that key (backendAuth) and callers never see it.
+#
+# Model:
+#   untrusted harness -> read + write the shared bank only
+#   trusted harness   -> read the shared bank, read + write the trusted_write bank
+# Everything else is denied: the route is allow-list only (an `allow` rule that
+# errors does not match; a `deny` rule that errors would fail open).
+#
+# Inert-until-creds: the route is omitted unless the tenant key is seeded and the
+# caller roster is non-empty, so the role converges cleanly before either exists.
+agentgateway_docker_hindsight_enabled: true
+
+# Bank ids Hindsight serves (letters, digits, underscore, hyphen only: they are
+# spliced into CEL path patterns, and tasks/main.yml asserts the shape).
+agentgateway_docker_hindsight_banks:
+  trusted_write: sensitive
+  shared: shared
+
+# Gateway path the route is mounted at; stripped before the request reaches
+# Hindsight. Clients use https://mcp.<sub>/hindsight as their Hindsight base URL.
+agentgateway_docker_hindsight_route_prefix: /hindsight
+
+# Hindsight REST root and its single-bank MCP mount (the bank is the first path
+# segment after the mount, so the bank id in the path wins over any argument).
+agentgateway_docker_hindsight_api_root: /v1/default/banks/
+agentgateway_docker_hindsight_mcp_root: /mcp/
+
+# Backend: the same Hindsight ingress hermes_agent dials
+# (roles/hermes_agent/defaults/main/70-memory.yml), over TLS.
+agentgateway_docker_hindsight_host: >-
+  hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  or undef('PROXMOX_SUBDOMAIN required (Doppler)') }}
+agentgateway_docker_hindsight_port: 443
+
+# The Hindsight tenant key, read like roles/hindsight_docker/defaults/main.yml
+# reads it. Empty => the route is omitted.
+agentgateway_docker_hindsight_api_key: >-
+  {{ ((bao_apps_secrets | default({})).get('hindsight_api_key', '') | default('', true)) | trim }}
+
+# --- Caller tiers -----------------------------------------------------------
+# The caller roster (agentgateway_docker_roster_keys) carries one key per roster
+# agent. A roster agent gets `tier` metadata from, in order of precedence:
+#   1. agentgateway_docker_hindsight_agent_tiers   exact agent name -> tier
+#   2. agentgateway_docker_hindsight_tier_prefixes  agent-name prefix -> tier
+# An agent with no tier has no Hindsight access (the route requires a tier).
+# Tiers: trusted | untrusted. The roster currently holds the Hermes agents only;
+# harnesses without a roster entry (Claude Code, Codex, Antigravity, OpenCode,
+# ZCode, Paperclip) need a roster entry and gateway key before they can use the
+# route, and then an entry here.
+agentgateway_docker_hindsight_tier_prefixes:
+  hermes-: trusted
+# Per-agent overrides win over the prefix. hermes-public serves public channels,
+# so it gets the shared bank only.
+agentgateway_docker_hindsight_agent_tiers:
+  hermes-public: untrusted
+agentgateway_docker_hindsight_roster_tiers: >-
+  {%- set tiers = {} -%}
+  {%- for agent in agentgateway_docker_roster_keys -%}
+    {%- set ns = namespace(tier='') -%}
+    {%- for prefix, prefix_tier in agentgateway_docker_hindsight_tier_prefixes.items() -%}
+      {%- if agent.startswith(prefix) -%}
+        {%- set ns.tier = prefix_tier -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {%- set ns.tier = agentgateway_docker_hindsight_agent_tiers.get(agent, ns.tier) -%}
+    {%- if ns.tier | length > 0 -%}
+      {%- set _ = tiers.update({agent: ns.tier}) -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {{ tiers }}
+
+# --- Allowed REST surface ---------------------------------------------------
+# Patterns are relative to <api_root><bank>. `{id}` matches one path segment,
+# `{path}` one or more (Hindsight document ids may contain slashes). A pattern
+# without braces is an exact path. Any route not listed here is denied, including
+# routes added by a future Hindsight release. Deliberately NOT listed (operator
+# only, never through the gateway): bank create/update/delete, aliases, clone,
+# import/export/transfer, webhooks, bank config, audit and LLM-request logs,
+# consolidation recovery, and the bank-less chunk, file-download and bank-list
+# routes (they carry no bank in the path, so the path cannot be checked).
+agentgateway_docker_hindsight_routes:
+  read:
+    GET:
+      - /graph
+      - /stats
+      - /stats/memories-timeseries
+      - /tags
+      - /profile
+      - /memories/list
+      - /memories/{id}
+      - /memories/{id}/history
+      - /observations/scopes
+      - /entities
+      - /entities/graph
+      - /entities/{id}
+      - /mental-models
+      - /mental-models/{id}
+      - /mental-models/{id}/history
+      - /directives
+      - /directives/{id}
+      - /documents
+      - /documents/{path}
+      - /attachments/{id}
+      - /knowledge-base/tree
+      - /knowledge-base/search
+      - /knowledge-base/export
+      - /knowledge-base/pages/{id}
+      - /operations
+      - /operations/{id}
+    # POST routes that only read or preview; allowed by exact path.
+    POST:
+      - /memories/recall
+      - /reflect
+      - /memories/dry-run-extract
+      - /prompts/preview
+      - /health/llm
+      - /consolidation-strategies/preview
+      - /mental-models/{id}/dry-run-refresh
+  write:
+    POST:
+      - /memories
+      - /files/retain
+      - /consolidate
+      - /background
+      - /directives
+      - /mental-models
+      - /mental-models/{id}/refresh
+      - /mental-models/{id}/clear
+      - /entities/{id}/regenerate
+      - /documents/{path}/reprocess
+      - /knowledge-base/folders
+      - /knowledge-base/pages
+      - /operations/{id}/retry
+    PATCH:
+      - /memories/{id}
+      - /documents/{path}
+      - /mental-models/{id}
+      - /directives/{id}
+      - /knowledge-base/nodes/{id}
+    PUT:
+      - /profile
+    DELETE:
+      - /memories
+      - /memories/{id}/observations
+      - /observations
+      - /documents/{path}
+      - /mental-models/{id}
+      - /directives/{id}
+      - /knowledge-base/nodes/{id}
+      - /operations/{id}
+      - /operations/{id}/delete

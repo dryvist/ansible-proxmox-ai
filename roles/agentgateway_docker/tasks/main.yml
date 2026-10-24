@@ -15,6 +15,27 @@
   loop_control:
     label: "{{ item.key }}"
 
+- name: Validate the Hindsight bank ACL inputs
+  ansible.builtin.assert:
+    that:
+      - agentgateway_docker_hindsight_banks.shared is match('^[A-Za-z0-9_-]+$')
+      - agentgateway_docker_hindsight_banks.trusted_write is match('^[A-Za-z0-9_-]+$')
+      - agentgateway_docker_hindsight_banks.shared != agentgateway_docker_hindsight_banks.trusted_write
+      - agentgateway_docker_hindsight_roster_tiers.values() | list | difference(['trusted', 'untrusted']) | length == 0
+    fail_msg: >-
+      Hindsight ACL inputs are invalid: bank ids must be distinct and match
+      [A-Za-z0-9_-]+, and every roster tier must be trusted or untrusted.
+  when: agentgateway_docker_hindsight_enabled | bool
+
+- name: Report that the Hindsight route is inactive
+  ansible.builtin.debug:
+    msg: >-
+      The /hindsight route is omitted: the Hindsight tenant key
+      (bao_apps_secrets.hindsight_api_key) or the caller roster is empty.
+  when:
+    - agentgateway_docker_hindsight_enabled | bool
+    - agentgateway_docker_hindsight_api_key | length == 0 or agentgateway_docker_roster_keys | length == 0
+
 - name: Create agentgateway data directory
   ansible.builtin.file:
     path: "{{ agentgateway_docker_data_dir }}"
