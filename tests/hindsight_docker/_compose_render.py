@@ -84,9 +84,6 @@ DEFAULT_CONTEXT = {
     "hindsight_docker_reflect_wall_timeout": ROLE_DEFAULTS[
         "hindsight_docker_reflect_wall_timeout"
     ],
-    "hindsight_docker_refresh_mental_model_wall_timeout": ROLE_DEFAULTS[
-        "hindsight_docker_refresh_mental_model_wall_timeout"
-    ],
     "hindsight_docker_embeddings_provider": "local",
     "hindsight_docker_mcp_stateless": True,
     "hindsight_docker_worker_id": "hindsight-1",
