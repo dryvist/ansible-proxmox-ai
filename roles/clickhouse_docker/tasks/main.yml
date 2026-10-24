@@ -254,6 +254,30 @@
       - clickhouse_docker_hyperdx_password
       - clickhouse_docker_splunk_password
 
+# The LLM schema is rendered from templates/llm_schema.sql.j2 and passed as one
+# argv element, so no shell quoting touches the SQL. IF NOT EXISTS on both
+# statements makes a re-run a no-op.
+- name: Create the LLM database and per-source tables
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ clickhouse_docker_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ clickhouse_docker_app_user }}"
+      - --password
+      - "{{ clickhouse_docker_app_password }}"
+      - --multiquery
+      - --query
+      - "{{ lookup('ansible.builtin.template', 'llm_schema.sql.j2') }}"
+  changed_when: false
+  no_log: true
+
 - name: Provision the read-only ClickHouse users
   ansible.builtin.command:
     cmd: >-
