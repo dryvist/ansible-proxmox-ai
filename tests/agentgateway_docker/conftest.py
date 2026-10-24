@@ -12,7 +12,23 @@ from test_authz_render import _routes
 @pytest.fixture(scope="module")
 def route() -> dict[str, Any]:
     routes = _routes(_render_hindsight())
-    return next(r for r in routes if r["matches"][0]["path"].get("pathPrefix") == "/hindsight")
+    return next(
+        r
+        for r in routes
+        if r["matches"][0]["path"].get("pathPrefix") == "/hindsight"
+        and r["policies"]["apiKey"]["location"]["header"]["name"] == "X-Agent-Key"
+    )
+
+
+@pytest.fixture(scope="module")
+def bearer_route() -> dict[str, Any]:
+    routes = _routes(_render_hindsight())
+    return next(
+        r
+        for r in routes
+        if r["matches"][0]["path"].get("pathPrefix") == "/hindsight"
+        and r["policies"]["apiKey"]["location"]["header"]["name"] == "authorization"
+    )
 
 
 @pytest.fixture(scope="module")

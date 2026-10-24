@@ -44,8 +44,8 @@ def test_role_renders_tiers_and_the_route_without_changing_other_routes() -> Non
     assert metadata[UNTRUSTED] == {"agent": UNTRUSTED, "tier": "untrusted"}
     assert metadata[UNTRUSTED_PEER] == {"agent": UNTRUSTED_PEER, "tier": "untrusted"}
     assert metadata["no-tier-agent"] == {"agent": "no-tier-agent"}
-    # Every pre-existing route is untouched apart from the new tier metadata.
-    assert len(_routes(rendered)) == len(_routes(_render(AGENTS, {}, KEYS))) + 1
+    # Existing routes only gain tier metadata; the Hindsight route is emitted twice for auth modes.
+    assert len(_routes(rendered)) == len(_routes(_render(AGENTS, {}, KEYS))) + 2
 
 
 def test_route_authenticates_strictly_and_injects_the_tenant_key(route: dict[str, Any]) -> None:

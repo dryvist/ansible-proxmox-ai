@@ -31,7 +31,12 @@ ROLE = REPO_ROOT / "roles/agentgateway_docker"
 
 def _rules_for(agents: dict, keys: dict) -> list[dict[str, str]]:
     routes = _routes(_render_hindsight(agents=agents, keys=keys))
-    route = next(r for r in routes if r["matches"][0]["path"].get("pathPrefix") == "/hindsight")
+    route = next(
+        r
+        for r in routes
+        if r["matches"][0]["path"].get("pathPrefix") == "/hindsight"
+        and r["policies"]["apiKey"]["location"]["header"]["name"] == "X-Agent-Key"
+    )
     return route["policies"]["authorization"]["rules"]
 
 
