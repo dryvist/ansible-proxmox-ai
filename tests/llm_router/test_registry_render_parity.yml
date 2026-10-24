@@ -67,61 +67,60 @@
     - name: Run the parity guard against the shipping registry
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
 
-    - name: Keep the MLX trial on its own route beside the small alias
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _k2_trial_registry | length == 1
-          - _k2_trial_registry[0].route_group == 'small-trial-mlx'
-          - _k2_trial_registry[0].context_window == 32768
-          - _k2_trial_registry[0].max_output_tokens == 32768
-          - _k2_trial_routes | length == 1
-          - _k2_trial_routes[0].litellm_params.model == 'openai/' ~ _k2_trial_registry[0].client_model_id
-          - _k2_trial_routes[0].model_info.max_input_tokens == 32768
-          - _k2_trial_routes[0].model_info.max_tokens == 32768
-          - _k2_trial_in_small | length == 0
-      vars:
+    - name: Select the disabled K2 MLX trial entries
+      ansible.builtin.set_fact:
         _k2_trial_registry: >-
           {{ llm_router_model_registry
-             | selectattr('route_group', 'defined')
-             | selectattr('route_group', 'equalto', 'small-trial-mlx')
-             | list }}
-        _k2_trial_routes: >-
-          {{ _llm_router_parity_config.model_list
-             | selectattr('model_name', 'equalto', 'small-trial-mlx') | list }}
-        _k2_trial_in_small: >-
-          {{ _llm_router_parity_config.model_list
-             | selectattr('model_name', 'equalto', 'small')
-             | selectattr('litellm_params.model', 'equalto',
-                          'openai/' ~ _k2_trial_registry[0].client_model_id) | list }}
+             | selectattr('catalog_profile', 'defined')
+             | selectattr('catalog_profile', 'in',
+                          ['small-trial-mlx', 'small-trial-mlx-q6']) | list }}
 
-    - name: Keep the MLX oQ6e fallback on its own route beside the small alias
+    - name: Set the K2 candidate ids and empty remote-probe fixtures
+      ansible.builtin.set_fact:
+        _k2_trial_ids: >-
+          {{ _k2_trial_registry | map(attribute='client_model_id') | list }}
+        llm_router_remote_probes: []
+        llm_router_probe_unsupported_tiers: []
+        _llm_router_remote_models: {results: []}
+
+    - name: Keep the gate fixture limited to the models it serves
+      ansible.builtin.set_fact:
+        _servable_gate_ids: "{{ llm_router_servable_models | difference(_k2_trial_ids) }}"
+
+    - name: Render the gate fixture from the remaining servable registry entries
+      ansible.builtin.set_fact:
+        _llm_router_gate_models:
+          status: 200
+          json:
+            data: >-
+              {%- set ns = namespace(rows=[]) -%}
+              {%- for model_id in _servable_gate_ids -%}
+              {%- set ns.rows = ns.rows + [{'id': model_id}] -%}
+              {%- endfor -%}
+              {{ ns.rows }}
+
+    - name: Run the serving gate assertion against the rendered registry claims
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+    - name: Keep unavailable K2 MLX trial entries disabled and unclaimed
       ansible.builtin.assert:
         quiet: true
         that:
-          - _k2_o_q6e_registry | length == 1
-          - _k2_o_q6e_registry[0].route_group == 'small-trial-mlx-q6'
-          - _k2_o_q6e_registry[0].context_window == 32768
-          - _k2_o_q6e_registry[0].max_output_tokens == 32768
-          - _k2_o_q6e_routes | length == 1
-          - _k2_o_q6e_routes[0].litellm_params.model == 'openai/' ~ _k2_o_q6e_registry[0].client_model_id
-          - _k2_o_q6e_routes[0].model_info.max_input_tokens == 32768
-          - _k2_o_q6e_routes[0].model_info.max_tokens == 32768
-          - _k2_o_q6e_in_small | length == 0
-      vars:
-        _k2_o_q6e_registry: >-
-          {{ llm_router_model_registry
-             | selectattr('route_group', 'defined')
-             | selectattr('route_group', 'equalto', 'small-trial-mlx-q6')
-             | list }}
-        _k2_o_q6e_routes: >-
-          {{ _llm_router_parity_config.model_list
-             | selectattr('model_name', 'equalto', 'small-trial-mlx-q6') | list }}
-        _k2_o_q6e_in_small: >-
-          {{ _llm_router_parity_config.model_list
-             | selectattr('model_name', 'equalto', 'small')
-             | selectattr('litellm_params.model', 'equalto',
-                          'openai/' ~ _k2_o_q6e_registry[0].client_model_id) | list }}
+          - _k2_trial_registry | length == 2
+          - _k2_trial_registry | selectattr('enabled', 'equalto', false) | list | length == 2
+          - _k2_trial_registry | selectattr('servable', 'equalto', false) | list | length == 2
+          - _k2_trial_registry | selectattr('route_group', 'defined') | list | length == 0
+          - _k2_trial_ids | intersect(llm_router_servable_models) | length == 0
+          - >-
+            _llm_router_parity_config.model_list
+            | selectattr('model_name', 'in',
+                         ['small-trial-mlx', 'small-trial-mlx-q6']) | list | length == 0
+        fail_msg: >-
+          The K2 MLX trial entries must remain catalogued but must not declare
+          router route groups until the large-tier serving gate exposes them.
+        success_msg: >-
+          The K2 MLX trial entries remain catalogued, disabled, and absent from
+          router capabilities, rendered configuration, and serving-gate claims.
 
     - name: Check the rendered per-model limits against homelab-contracts
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-catalog-render-agreement.yml"
