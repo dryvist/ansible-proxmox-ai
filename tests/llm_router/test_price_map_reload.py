@@ -234,8 +234,12 @@ def test_running_version_report_renders_with_the_real_templar():
     message = next(
         task for task in tasks if task.get("name") == "Report this router's running LiteLLM version"
     )["ansible.builtin.debug"]["msg"]
-    packages = yaml.safe_load((ROLE_ROOT / "defaults/main/00-identity.yml").read_text(encoding="utf-8"))[
-        "llm_router_pip_packages"
+    packages = [
+        line
+        for line in (ROLE_ROOT / "files/requirements.in")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line and not line.startswith("#")
     ]
     pin = next(package for package in packages if package.startswith("litellm[proxy]==")).split("==")[1]
 
