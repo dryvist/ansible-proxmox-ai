@@ -118,9 +118,27 @@ llm_router_context_window_no_wider_entry_points: >-
 #
 llm_router_context_window_fallbacks: >-
   {%- set ns = namespace(pairs=[]) -%}
+  {#- Every non-local chain group's OWN ordinary fallback entry
+      (58-review-roles.yml, llm_router_hermes_own_fallback_by_group) is now
+      the chain's own tail after it, which can be wider than the group
+      itself (an early rung's narrower context window vs. a later rung's
+      wider one, further down its own tail), so it needs the same escape
+      here or a context-window error there dead-ends instead of reaching it
+      (this map's all-or-nothing rule, same as every other escape above).
+      Reuses the identical tail, never a fresh list, and skips the terminal
+      member(s) (empty tail -- nothing to escape to). This pass runs FIRST:
+      the config template keeps the first entry per name, so a name that is
+      both an override and an escape group takes the override's own tail. -#}
+  {%- for _name, _tail in llm_router_hermes_own_fallback_by_group.items() -%}
+  {%- set _tail = llm_router_entry_point_fallback_overrides.get(_name, _tail) -%}
+  {%- if _name not in llm_router_local_only_fail_fast_names and _tail | length > 0 -%}
+  {%- set ns.pairs = ns.pairs + [{_name: _tail}] -%}
+  {%- endif -%}
+  {%- endfor -%}
   {%- if llm_router_context_window_wider_groups | length > 0
         or llm_router_entry_point_fallback_overrides | length > 0 -%}
   {%- for group in llm_router_context_window_escape_groups -%}
+  {%- if group not in llm_router_local_only_fail_fast_names -%}
   {%- set _override = llm_router_entry_point_fallback_overrides.get(group) -%}
   {%- set _wider = (_override | intersect(llm_router_context_window_override_wider_groups))
         if _override is not none else llm_router_context_window_wider_groups -%}
@@ -131,21 +149,18 @@ llm_router_context_window_fallbacks: >-
   {%- if _wider | length > 0 -%}
   {%- set ns.pairs = ns.pairs + [{group: _wider}] -%}
   {%- endif -%}
+  {%- endif -%}
   {%- endfor -%}
   {%- endif -%}
-  {#- Every non-local chain group's OWN ordinary fallback entry
-      (58-review-roles.yml, llm_router_hermes_own_fallback_by_group) is now
-      the chain's own tail after it, which can be wider than the group
-      itself (an early rung's narrower context window vs. a later rung's
-      wider one, further down its own tail), so it needs the same escape
-      here or a context-window error there dead-ends instead of reaching it
-      (this map's all-or-nothing rule, same as every other escape above).
-      Reuses the identical tail, never a fresh list, and skips the terminal
-      member(s) (empty tail -- nothing to escape to). -#}
-  {%- for _name, _tail in llm_router_hermes_own_fallback_by_group.items() -%}
-  {%- if _tail | length > 0 -%}
-  {%- set ns.pairs = ns.pairs + [{_name: _tail}] -%}
-  {%- endif -%}
+  {#- Light names (light, fast, cheap and the small rung) get an EXPLICIT EMPTY
+      context-window entry: an over-long request is refused, never escaped. An
+      empty list is a refusal in LiteLLM: the context-window branch runs the empty
+      chain, raises, and never reaches the ordinary fallbacks
+      (litellm/router.py:7539). An escape to the primary rung would be walked with
+      the primary's own chain, which holds remote rungs: the hop's own name wins the
+      lookup (litellm/router_utils/fallback_event_handlers.py:397-430). -#}
+  {%- for _name in llm_router_light_lane_local_only_names -%}
+  {%- set ns.pairs = ns.pairs + [{_name: []}] -%}
   {%- endfor -%}
   {#- Every other role: a request wider than its local rungs skips straight to
       the role's own external rungs. With this map present, a group it does
