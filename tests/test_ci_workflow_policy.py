@@ -211,10 +211,11 @@ def test_galaxy_install_skips_exact_cache_hits(workflow: str, job: str) -> None:
     assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
 
 
-def test_molecule_callers_preserve_galaxy_and_doppler_settings() -> None:
+def test_molecule_callers_preserve_roles_galaxy_and_doppler_settings() -> None:
     jobs = yaml.safe_load(CI_GATE.read_text())["jobs"]
     for name in ("molecule-hosted", "molecule-hermes-ui"):
         inputs = jobs[name]["with"]
+        assert inputs["molecule_roles_path"] == "roles"
         assert inputs["galaxy_cache_prefix"] == "ansible-galaxy-"
         assert inputs["galaxy_force_install"] is True
         assert inputs["galaxy_retry_attempts"] == 4
