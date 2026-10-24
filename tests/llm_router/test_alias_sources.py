@@ -11,11 +11,10 @@ DECLARED somewhere else, which no registry entry knows about:
 * a role deployment (a mapping with `role` and `model`) whose target or
   fallbacks are literals instead of projections.
 
-Membership rule (lane contract): every lane and legacy name in
-LANE_VOCABULARY must be served by the registry, except PENDING_NAMES, and a
-literal `*_model` selection in inventory/ must name a registry name. The
-vocabulary is mirrored in homelab-contracts (tests/llm_roles/check_refs.yml)
-and nix-ai (lib/checks/litellm-local-aliases.nix); change all three together.
+Membership rule (lane contract): every lane and legacy name from the installed
+homelab-contracts lane contract must be served by the registry, except names
+marked pending, and a literal `*_model` selection in inventory/ must name a
+registry name.
 
 Production sources only: roles, playbooks and inventory. Tests plant their
 own fixtures, and the negative cases below plant into a scratch tree.
@@ -30,35 +29,6 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCAN_GLOBS = ("roles/**/*.yml", "playbooks/**/*.yml", "inventory/**/*.yml")
 ALIAS_KEYS = {"stable_aliases", "model_group_alias"}
-
-# Lane vocabulary, identical in homelab-contracts and nix-ai (see module doc).
-LANE_VOCABULARY = (
-    "auto",
-    "light",
-    "standard",
-    "critical",
-    "long",
-    "embed",
-    "rerank",
-    "ocr",
-    "classify",
-    "judge",
-    "small",
-    "fast",
-    "cheap",
-    "medium",
-    "default",
-    "large",
-    "best",
-    # Existing caller role names outside the lane vocabulary, kept until the
-    # operator decides their lane.
-    "coding",
-    "recorder",
-)
-# Vocabulary names with no router target yet. Reported here, never silently
-# passed: rerank has no reranker role, classify has no classifier target.
-PENDING_NAMES = frozenset({"rerank", "classify"})
-
 
 class _Permissive(yaml.SafeLoader):
     """Ansible files carry tags SafeLoader rejects (!vault, !unsafe); keep the node's text."""
@@ -166,9 +136,9 @@ def registry_names(root: Path) -> set[str]:
     return names
 
 
-def unserved_vocabulary(root: Path) -> list[str]:
+def unserved_vocabulary(root: Path, vocabulary: list[str], pending: set[str]) -> list[str]:
     served = registry_names(root)
-    return sorted(name for name in LANE_VOCABULARY if name not in PENDING_NAMES and name not in served)
+    return sorted(name for name in vocabulary if name not in pending and name not in served)
 
 
 def literal_selection_problems(root: Path) -> list[str]:
@@ -185,18 +155,29 @@ def literal_selection_problems(root: Path) -> list[str]:
     return problems
 
 
-def test_lane_vocabulary_is_served_by_the_registry() -> None:
-    assert unserved_vocabulary(REPO_ROOT) == []
+def test_lane_vocabulary_is_served_by_the_registry(
+    llm_lane_contract: dict[str, list[str]],
+) -> None:
+    assert unserved_vocabulary(
+        REPO_ROOT,
+        llm_lane_contract["vocabulary"],
+        set(llm_lane_contract["pending"]),
+    ) == []
 
 
 def test_literal_model_selections_name_registry_entries() -> None:
     assert literal_selection_problems(REPO_ROOT) == []
 
 
-def test_planted_unserved_lane_name_fails(tmp_path: Path) -> None:
-    # An empty registry serves nothing, so every vocabulary name is reported.
-    assert "light" in unserved_vocabulary(tmp_path)
-    assert "rerank" not in unserved_vocabulary(tmp_path)
+def test_planted_unserved_lane_name_fails(
+    tmp_path: Path, llm_lane_contract: dict[str, list[str]]
+) -> None:
+    # An empty registry reports every non-pending vocabulary name.
+    assert unserved_vocabulary(
+        tmp_path,
+        llm_lane_contract["vocabulary"],
+        set(llm_lane_contract["pending"]),
+    ) == sorted(set(llm_lane_contract["vocabulary"]) - set(llm_lane_contract["pending"]))
 
 
 def test_planted_unregistered_selection_fails(tmp_path: Path) -> None:
