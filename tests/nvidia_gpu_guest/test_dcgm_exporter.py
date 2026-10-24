@@ -75,6 +75,13 @@ def test_gpu_guest_installs_and_starts_the_package_services():
     }
     assert services == {"nvidia-dcgm.service", "nvidia-dcgm-exporter.service"}
 
+    names = [task.get("name") for task in tasks]
+    dropin_dir = tasks[names.index("Create the DCGM exporter drop-in directory")]["ansible.builtin.file"]
+    assert dropin_dir["path"] == "{{ nvidia_gpu_guest_dcgm_exporter_dropin_path | dirname }}"
+    assert dropin_dir["state"] == "directory"
+    assert names.index("Create the DCGM exporter drop-in directory") < names.index(
+        "Install the DCGM exporter collector override"
+    )
     dropin = next(
         task["ansible.builtin.copy"]
         for task in tasks
