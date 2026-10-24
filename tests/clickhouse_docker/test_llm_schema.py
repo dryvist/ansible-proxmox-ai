@@ -87,3 +87,15 @@ def test_every_table_is_replacing_on_message_id_partitioned_by_month_without_ttl
         assert "PARTITION BY toYYYYMM(event_time)" in statement
         assert "ORDER BY (session_id, event_time, message_id)" in statement
         assert not re.search(r"\bTTL\b", statement)
+
+
+def test_cribl_is_insert_only_on_the_llm_database_and_its_password_comes_from_openbao():
+    defaults = _defaults()
+    tasks = (ROLE / "tasks/main.yml").read_text(encoding="utf-8")
+
+    assert defaults["clickhouse_docker_cribl_user"] == "cribl"
+    assert "CRIBL_PASSWORD" in (ROLE / "defaults/main.yml").read_text(encoding="utf-8")
+    assert "GRANT INSERT ON {{ clickhouse_docker_llm_database }}.* TO {{ clickhouse_docker_cribl_user }}" in tasks
+    assert "GRANT SELECT ON {{ clickhouse_docker_llm_database }}.* TO {{ item.key }}" in tasks
+    assert "clickhouse_docker_cribl_password" in tasks
+    assert "GRANT SELECT" not in tasks.split("Provision the cribl ingest user")[1]

@@ -253,6 +253,7 @@
       - clickhouse_docker_grafana_password
       - clickhouse_docker_hyperdx_password
       - clickhouse_docker_splunk_password
+      - clickhouse_docker_cribl_password
 
 # The LLM schema is rendered from templates/llm_schema.sql.j2 and passed as one
 # argv element, so no shell quoting touches the SQL. IF NOT EXISTS on both
@@ -288,10 +289,27 @@
       --multiquery
       --query "CREATE USER IF NOT EXISTS {{ item.key }}
                IDENTIFIED WITH sha256_password BY '{{ item.value }}';
-               GRANT SELECT ON {{ clickhouse_docker_database }}.* TO {{ item.key }};"
+               GRANT SELECT ON {{ clickhouse_docker_database }}.* TO {{ item.key }};
+               GRANT SELECT ON {{ clickhouse_docker_llm_database }}.* TO {{ item.key }};"
   loop: "{{ clickhouse_docker_readonly_credentials | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
+  changed_when: false
+  no_log: true
+
+# Ingest-only: the cribl user can write rows into the LLM database and nothing
+# else. It has no grant on the default database and no SELECT on llm.*.
+- name: Provision the cribl ingest user (INSERT only on the llm database)
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ clickhouse_docker_data_dir }}/docker-compose.yml
+      exec -T {{ clickhouse_docker_service }}
+      clickhouse-client --user {{ clickhouse_docker_app_user }}
+      --password {{ clickhouse_docker_app_password }}
+      --multiquery
+      --query "CREATE USER IF NOT EXISTS {{ clickhouse_docker_cribl_user }}
+               IDENTIFIED WITH sha256_password BY '{{ clickhouse_docker_cribl_password }}';
+               GRANT INSERT ON {{ clickhouse_docker_llm_database }}.* TO {{ clickhouse_docker_cribl_user }};"
   changed_when: false
   no_log: true
 
