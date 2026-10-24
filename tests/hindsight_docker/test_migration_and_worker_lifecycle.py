@@ -45,12 +45,10 @@ def test_wall_clock_timeouts_render_explicitly_and_below_upstream_defaults() -> 
             "hindsight_docker_consolidation_wall_timeout",
         ),
         ("HINDSIGHT_API_REFLECT_WALL_TIMEOUT", "hindsight_docker_reflect_wall_timeout"),
-        (
-            "HINDSIGHT_API_REFRESH_MENTAL_MODEL_WALL_TIMEOUT",
-            "hindsight_docker_refresh_mental_model_wall_timeout",
-        ),
     ):
         assert env_line(rendered, env_name).endswith(f'"{ROLE_DEFAULTS[default_name]}"')
+    assert "HINDSIGHT_API_REFRESH_MENTAL_MODEL_WALL_TIMEOUT" not in rendered
+    assert "hindsight_docker_refresh_mental_model_wall_timeout" not in ROLE_DEFAULTS
     for name, value in (
         ("HINDSIGHT_API_RETAIN_WALL_TIMEOUT", ROLE_DEFAULTS["hindsight_docker_retain_wall_timeout"]),
         (

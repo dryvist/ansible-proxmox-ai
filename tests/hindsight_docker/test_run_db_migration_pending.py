@@ -158,7 +158,7 @@ def test_migration_pending_fact_covers_fresh_behind_and_up_to_date() -> None:
 def test_migration_changed_when_reflects_whether_alembic_actually_upgraded() -> None:
     # A no-op run-db-migration (already at head) must report changed=false,
     # or Molecule's idempotence check fails on a task that did nothing —
-    # confirmed at the pinned v0.9.0 tag: a real upgrade logs "Running
+    # confirmed at the previous v0.9.0 tag: a real upgrade logs "Running
     # upgrade <rev> -> <rev>, ..." per revision to stderr, a no-op run logs
     # none. Evaluated with the real Jinja expression, not a string match.
     tasks = _load_drain_tasks()
