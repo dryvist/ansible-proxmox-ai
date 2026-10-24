@@ -160,8 +160,9 @@ def test_debian13_installs_core_from_apt_and_the_pinned_exporter_file():
     assert deb["policy_rc_d"] == 101
 
 
-def test_debian13_does_not_install_the_exporter_file_in_check_mode():
+def test_debian13_does_not_fetch_or_install_the_exporter_file_in_check_mode():
     names = [task["name"] for task in _selected_tasks("13", check_mode=True)]
+    assert "Download the pinned Debian 12 DCGM exporter package" not in names
     assert "Install the pinned Debian 12 DCGM exporter package on Debian 13" not in names
 
 
