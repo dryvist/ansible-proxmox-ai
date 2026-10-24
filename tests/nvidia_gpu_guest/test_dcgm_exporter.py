@@ -219,3 +219,52 @@ def test_legacy_gpu_serving_role_installs_the_dcgm_exporter_after_userspace():
     assert names.index("Install the DCGM exporter for GPU telemetry") > names.index(
         "Install NVIDIA userspace from the host module version"
     )
+
+
+def test_site_installs_dcgm_for_nvidia_guests_without_a_serving_play():
+    playbook = _load(ROOT / "playbooks/llm-serving-gpu-engines.yml")
+    play = next(
+        play
+        for play in playbook
+        if play.get("name") == "Configure DCGM on NVIDIA guests outside existing serving plays"
+    )
+
+    assert play["hosts"] == "nvidia_gpu_group"
+    assert play["gather_facts"] is False
+    converge = play["tasks"][0]
+    assert converge["name"] == "Converge DCGM exporter on NVIDIA guests outside serving plays"
+    tasks = converge["block"]
+    assert [task["name"] for task in tasks] == [
+        "Gather facts for NVIDIA guests outside existing serving plays",
+        "Load APT proxy settings for NVIDIA guests outside serving plays",
+        "Install matching NVIDIA userspace on NVIDIA guests outside serving plays",
+        "Install DCGM exporter on NVIDIA guests outside serving plays",
+    ]
+    assert [task.get("ansible.builtin.include_role") for task in tasks[1:]] == [
+        {"name": "llamacpp_release", "tasks_from": "prepare.yml"},
+        {"name": "nvidia_gpu_guest", "tasks_from": "install-nvidia-userspace.yml"},
+        {"name": "nvidia_gpu_guest", "tasks_from": "install-dcgm-exporter.yml"},
+    ]
+    assert converge["when"] == "not (nvidia_gpu_guest_dcgm_already_served | bool)"
+    assert converge["rescue"][0]["ansible.builtin.include_tasks"] == (
+        "tasks/record_isolated_failure.yml"
+    )
+    assert not any("cuda-toolkit" in str(task) or "cache-sync.yml" in str(task) for task in tasks)
+
+    host_projection = _load(ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
+    add_host = next(task["ansible.builtin.add_host"] for task in host_projection)
+    assert "['nvidia_gpu_group'] if 'nvidia-gpu' in" in add_host["groups"]
+
+    groups = {
+        "nvidia_gpu_group": ["telemetry-only", "served-engine"],
+        "llm_gpu_legacy_group": [],
+        "llm_gpu_group": ["served-engine"],
+        "llm_gpu_serving_strata_group": [],
+        "llm_vllm_group": [],
+        "llm_classify": [],
+    }
+    served = jinja2.Environment(undefined=jinja2.StrictUndefined).from_string(
+        play["vars"]["nvidia_gpu_guest_dcgm_already_served"]
+    )
+    assert served.render(groups=groups, inventory_hostname="telemetry-only").lower() == "false"
+    assert served.render(groups=groups, inventory_hostname="served-engine").lower() == "true"
