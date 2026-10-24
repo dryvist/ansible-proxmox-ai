@@ -1,23 +1,20 @@
 ---
-# Hindsight bank ACL — the /hindsight route enforces which caller tier may touch
-# which memory bank. Hindsight itself has ONE tenant key and no per-key bank ACL,
-# so the gateway holds that key (backendAuth) and callers never see it.
+# Hindsight bank ACL — the /hindsight route enforces which caller may touch which
+# memory bank. Hindsight itself has ONE tenant key and no per-key bank ACL, so the
+# gateway holds that key (backendAuth) and callers never see it.
 #
-# Model:
-#   untrusted harness -> read + write the shared bank only
-#   trusted harness   -> read the shared bank, read + write the trusted_write bank
+# Model (per agent x trust tier, derived from the agent roster — never listed here):
+#   every roster agent owns ONE bank, <agent>-<tier>
+#   an agent reads + writes its own bank (REST and the single-bank MCP mount)
+#   an agent READS the banks of agents in the same tier (REST only)
+#   an agent never touches a bank of the other tier, and never writes a peer's bank
 # Everything else is denied: the route is allow-list only (an `allow` rule that
 # errors does not match; a `deny` rule that errors would fail open).
 #
-# Inert-until-creds: the route is omitted unless the tenant key is seeded and the
-# caller roster is non-empty, so the role converges cleanly before either exists.
+# Inert-until-creds: the route is omitted unless the tenant key is seeded and at
+# least one roster agent has a tier, so the role converges cleanly before either
+# exists.
 agentgateway_docker_hindsight_enabled: true
-
-# Bank ids Hindsight serves (letters, digits, underscore, hyphen only: they are
-# spliced into CEL path patterns, and tasks/main.yml asserts the shape).
-agentgateway_docker_hindsight_banks:
-  trusted_write: sensitive
-  shared: shared
 
 # Gateway path the route is mounted at; stripped before the request reaches
 # Hindsight. Clients use https://mcp.<sub>/hindsight as their Hindsight base URL.
@@ -40,37 +37,29 @@ agentgateway_docker_hindsight_port: 443
 agentgateway_docker_hindsight_api_key: >-
   {{ ((bao_apps_secrets | default({})).get('hindsight_api_key', '') | default('', true)) | trim }}
 
-# --- Caller tiers -----------------------------------------------------------
-# The caller roster (agentgateway_docker_roster_keys) carries one key per roster
-# agent. A roster agent gets `tier` metadata from, in order of precedence:
-#   1. agentgateway_docker_hindsight_agent_tiers   exact agent name -> tier
-#   2. agentgateway_docker_hindsight_tier_prefixes  agent-name prefix -> tier
-# An agent with no tier has no Hindsight access (the route requires a tier).
-# Tiers: trusted | untrusted. The roster currently holds the Hermes agents only;
-# harnesses without a roster entry (Claude Code, Codex, Antigravity, OpenCode,
-# ZCode, Paperclip) need a roster entry and gateway key before they can use the
-# route, and then an entry here.
-agentgateway_docker_hindsight_tier_prefixes:
-  hermes-: trusted
-# Per-agent overrides win over the prefix. hermes-public serves public channels,
-# so it gets the shared bank only.
-agentgateway_docker_hindsight_agent_tiers:
-  hermes-public: untrusted
+# --- Caller tiers and banks -------------------------------------------------
+# The tier is the roster's own `trust_tier` field from the published tofu agent
+# roster (`ai_agents`). Tofu owns the vocabulary and the default.
+# An agent with no roster `trust_tier`, or with no gateway key, receives no bank
+# and no Hindsight access; both cases fail closed.
+# agent -> tier, only for agents that hold a gateway key and have a roster tier.
 agentgateway_docker_hindsight_roster_tiers: >-
   {%- set tiers = {} -%}
-  {%- for agent in agentgateway_docker_roster_keys -%}
-    {%- set ns = namespace(tier='') -%}
-    {%- for prefix, prefix_tier in agentgateway_docker_hindsight_tier_prefixes.items() -%}
-      {%- if agent.startswith(prefix) -%}
-        {%- set ns.tier = prefix_tier -%}
-      {%- endif -%}
-    {%- endfor -%}
-    {%- set ns.tier = agentgateway_docker_hindsight_agent_tiers.get(agent, ns.tier) -%}
-    {%- if ns.tier | length > 0 -%}
-      {%- set _ = tiers.update({agent: ns.tier}) -%}
+  {%- for agent, key in agentgateway_docker_roster_keys.items() -%}
+    {%- set tier = (ai_agents | default({})).get(agent, {}).get('trust_tier', '') -%}
+    {%- if key | length > 0 and tier | length > 0 -%}
+      {%- set _ = tiers.update({agent: tier}) -%}
     {%- endif -%}
   {%- endfor -%}
   {{ tiers }}
+# agent -> its bank id. Letters, digits and hyphen only, so it is safe to splice
+# into CEL path patterns; tasks/main.yml asserts the shape and uniqueness.
+agentgateway_docker_hindsight_agent_banks: >-
+  {%- set banks = {} -%}
+  {%- for agent, tier in agentgateway_docker_hindsight_roster_tiers.items() -%}
+    {%- set _ = banks.update({agent: agent ~ '-' ~ tier}) -%}
+  {%- endfor -%}
+  {{ banks }}
 
 # --- Allowed REST surface ---------------------------------------------------
 # Patterns are relative to <api_root><bank>. `{id}` matches one path segment,

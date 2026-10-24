@@ -17,29 +17,32 @@ from cel_subset import authorize
 from hindsight_acl_support import (
     AGENTS,
     API,
+    BANKS,
     KEYS,
-    SENSITIVE,
-    SHARED,
     TENANT_KEY,
+    TIERS,
+    TRUSTED,
+    TRUSTED_PEER,
+    UNTRUSTED,
+    UNTRUSTED_PEER,
     _allowed,
     _hindsight_context,
     _render_hindsight,
     _request,
 )
-from test_authz_render import REPO_ROOT, _render, _routes
-
+from test_authz_render import _render, _routes
 
 
 def test_role_renders_tiers_and_the_route_without_changing_other_routes() -> None:
     rendered = _render_hindsight()
-    assert "tier: \"trusted\"" in rendered
     metadata = {
         key["metadata"]["agent"]: key["metadata"]
         for key in _routes(rendered)[-1]["policies"]["apiKey"]["keys"]
     }
-    assert metadata["hermes-brain"] == {"agent": "hermes-brain", "tier": "trusted"}
-    assert metadata["hermes-public"] == {"agent": "hermes-public", "tier": "trusted"}
-    assert metadata["paperclip"] == {"agent": "paperclip", "tier": "untrusted"}
+    assert metadata[TRUSTED] == {"agent": TRUSTED, "tier": "trusted"}
+    assert metadata[TRUSTED_PEER] == {"agent": TRUSTED_PEER, "tier": "trusted"}
+    assert metadata[UNTRUSTED] == {"agent": UNTRUSTED, "tier": "untrusted"}
+    assert metadata[UNTRUSTED_PEER] == {"agent": UNTRUSTED_PEER, "tier": "untrusted"}
     assert metadata["no-tier-agent"] == {"agent": "no-tier-agent"}
     # Every pre-existing route is untouched apart from the new tier metadata.
     assert len(_routes(rendered)) == len(_routes(_render(AGENTS, {}, KEYS))) + 1
@@ -65,72 +68,71 @@ def test_rules_are_allow_and_require_only(rules: list[dict[str, str]]) -> None:
     assert len(rules) >= 3
 
 
-def test_route_is_omitted_without_the_tenant_key_or_the_roster() -> None:
+def test_route_is_omitted_without_the_tenant_key_or_an_agent_with_a_trust_tier() -> None:
     no_key = _routes(_render_hindsight(tenant_key=""))
     assert not [r for r in no_key if r["matches"][0]["path"].get("pathPrefix") == "/hindsight"]
-    no_roster = _routes(_render({}, {}, {}, extra=_hindsight_context()))
+    no_roster = _routes(_render({}, {}, {}, extra=_hindsight_context(agents={}, keys={})))
     assert not [r for r in no_roster if r["matches"][0]["path"].get("pathPrefix") == "/hindsight"]
-
-
-def test_bank_names_come_from_defaults_not_the_template() -> None:
-    source = (REPO_ROOT / "roles/agentgateway_docker/templates/config.yaml.j2").read_text()
-    assert f'"{SENSITIVE}"' not in source
-    assert "/shared/" not in source
-    custom = _hindsight_context()
-    custom["agentgateway_docker_hindsight_banks"] = {"trusted_write": "vault_a", "shared": "common_b"}
-    rendered = _render(AGENTS, {}, KEYS, extra=custom)
-    assert "vault_a" in rendered and "common_b" in rendered
-    assert SENSITIVE not in rendered.split("pathPrefix: /hindsight", 1)[1]
+    tierless = {"only-agent": {}}
+    tierless_keys = {"only_agent_agentgateway_key": "example-key"}
+    none_tiered = _routes(_render_hindsight(agents=tierless, keys=tierless_keys))
+    assert not [r for r in none_tiered if r["matches"][0]["path"].get("pathPrefix") == "/hindsight"]
 
 
 # --- positive cases ---------------------------------------------------------
 
 
-POSITIVE = [
-    # untrusted: read and write shared
-    ("untrusted", "POST", f"{API}/{SHARED}/memories", {}),
-    ("untrusted", "POST", f"{API}/{SHARED}/memories/recall", {}),
-    ("untrusted", "POST", f"{API}/{SHARED}/reflect", {}),
-    ("untrusted", "GET", f"{API}/{SHARED}/memories/list", {}),
-    ("untrusted", "PATCH", f"{API}/{SHARED}/documents/a/b/c.md", {}),
-    ("untrusted", "DELETE", f"{API}/{SHARED}/documents/doc1", {}),
-    ("untrusted", "GET", f"{API}/{SHARED}/operations/abc", {}),
-    ("untrusted", "POST", f"{API}/{SHARED}/mental-models/mm1/dry-run-refresh", {}),
-    ("untrusted", "POST", f"{API}/{SHARED}/memories/recall", {"X-Bank-Id": SHARED}),
-    ("untrusted", "POST", f"/hindsight/mcp/{SHARED}/", {}),
-    ("untrusted", "GET", f"/hindsight/mcp/{SHARED}", {}),
-    # trusted: read shared
-    ("trusted", "GET", f"{API}/{SHARED}/memories/list", {}),
-    ("trusted", "POST", f"{API}/{SHARED}/memories/recall", {}),
-    ("trusted", "POST", f"{API}/{SHARED}/reflect", {}),
-    ("trusted", "GET", f"{API}/{SHARED}/documents/x/y", {}),
-    # trusted: read and write sensitive
-    ("trusted", "GET", f"{API}/{SENSITIVE}/memories/list", {}),
-    ("trusted", "POST", f"{API}/{SENSITIVE}/memories/recall", {}),
-    ("trusted", "POST", f"{API}/{SENSITIVE}/memories", {}),
-    ("trusted", "PATCH", f"{API}/{SENSITIVE}/documents/a/b", {}),
-    ("trusted", "PUT", f"{API}/{SENSITIVE}/profile", {}),
-    ("trusted", "DELETE", f"{API}/{SENSITIVE}/memories/m1/observations", {}),
-    ("trusted", "POST", f"/hindsight/mcp/{SENSITIVE}/", {}),
-    # either tier: public probes
-    ("trusted", "GET", "/hindsight/health", {}),
-    ("untrusted", "GET", "/hindsight/version", {}),
-]
+def _positive() -> list[tuple[str, str, str, dict[str, str]]]:
+    own, peer, other = BANKS[TRUSTED], BANKS[TRUSTED_PEER], BANKS[UNTRUSTED]
+    return [
+        # own bank: read and write, REST and the single-bank MCP mount
+        (TRUSTED, "POST", f"{API}/{own}/memories", {}),
+        (TRUSTED, "POST", f"{API}/{own}/memories/recall", {}),
+        (TRUSTED, "POST", f"{API}/{own}/reflect", {}),
+        (TRUSTED, "GET", f"{API}/{own}/memories/list", {}),
+        (TRUSTED, "PATCH", f"{API}/{own}/documents/a/b/c.md", {}),
+        (TRUSTED, "DELETE", f"{API}/{own}/documents/doc1", {}),
+        (TRUSTED, "PUT", f"{API}/{own}/profile", {}),
+        (TRUSTED, "POST", f"{API}/{own}/mental-models/mm1/dry-run-refresh", {}),
+        (TRUSTED, "POST", f"{API}/{own}/memories/recall", {"X-Bank-Id": own}),
+        (TRUSTED, "POST", f"/hindsight/mcp/{own}/", {}),
+        (TRUSTED, "GET", f"/hindsight/mcp/{own}", {}),
+        (UNTRUSTED, "POST", f"{API}/{other}/memories", {}),
+        (UNTRUSTED, "POST", f"/hindsight/mcp/{other}/", {}),
+        # same-tier peer bank: read only
+        (TRUSTED, "GET", f"{API}/{peer}/memories/list", {}),
+        (TRUSTED, "POST", f"{API}/{peer}/memories/recall", {}),
+        (TRUSTED, "POST", f"{API}/{peer}/reflect", {}),
+        (TRUSTED, "GET", f"{API}/{peer}/documents/x/y", {}),
+        (TRUSTED_PEER, "POST", f"{API}/{own}/memories/recall", {}),
+        (UNTRUSTED, "POST", f"{API}/{BANKS[UNTRUSTED_PEER]}/memories/recall", {}),
+        # either tier: public probes
+        (TRUSTED, "GET", "/hindsight/health", {}),
+        (UNTRUSTED, "GET", "/hindsight/version", {}),
+    ]
 
 
-@pytest.mark.parametrize(("tier", "method", "path", "headers"), POSITIVE)
-def test_positive_cases_are_allowed(rules: list[dict[str, str]], tier, method, path, headers) -> None:
-    assert authorize(rules, _request(tier, method, path, headers))[0] is True
+@pytest.mark.parametrize(("agent", "method", "path", "headers"), _positive())
+def test_positive_cases_are_allowed(rules: list[dict[str, str]], agent, method, path, headers) -> None:
+    assert authorize(rules, _request(agent, method, path, headers))[0] is True
 
 
 def test_every_allow_rule_is_exercised_by_a_positive_case(rules: list[dict[str, str]]) -> None:
-    matched = {authorize(rules, _request(*case))[1] for case in POSITIVE}
+    # Positives above cover trusted and untrusted owners; extend to every roster agent.
+    cases = list(_positive())
+    for agent, bank in BANKS.items():
+        cases += [
+            (agent, "POST", f"{API}/{bank}/memories", {}),
+            (agent, "GET", f"{API}/{bank}/memories/list", {}),
+            (agent, "POST", f"/hindsight/mcp/{bank}/", {}),
+        ]
+    matched = {authorize(rules, _request(*case))[1] for case in cases}
     allow_indexes = {i for i, rule in enumerate(rules) if "allow" in rule}
     assert matched == allow_indexes
 
 
 def test_rewrite_before_authorization_is_also_safe(rules: list[dict[str, str]]) -> None:
     # If the gateway rewrites the path before it evaluates rules, the prefix is already gone.
-    assert _allowed(rules, "untrusted", "POST", f"/v1/default/banks/{SHARED}/memories")
-    assert not _allowed(rules, "untrusted", "POST", f"/v1/default/banks/{SENSITIVE}/memories")
-    assert not _allowed(rules, "trusted", "POST", f"/v1/default/banks/{SHARED}/memories")
+    assert _allowed(rules, TRUSTED, "POST", f"/v1/default/banks/{BANKS[TRUSTED]}/memories")
+    assert not _allowed(rules, TRUSTED, "POST", f"/v1/default/banks/{BANKS[UNTRUSTED]}/memories")
+    assert not _allowed(rules, UNTRUSTED, "POST", f"/v1/default/banks/{BANKS[TRUSTED]}/memories")
