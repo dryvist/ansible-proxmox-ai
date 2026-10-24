@@ -216,7 +216,7 @@ def test_molecule_callers_preserve_roles_galaxy_and_doppler_settings() -> None:
     for name in ("molecule-hosted", "molecule-hermes-ui"):
         inputs = jobs[name]["with"]
         assert inputs["molecule_roles_path"] == "roles"
-        assert inputs["galaxy_cache_prefix"] == "ansible-galaxy-"
+        assert "galaxy_cache_prefix" not in inputs
         assert "galaxy_force_install" not in inputs
         assert inputs["galaxy_retry_attempts"] == 4
         assert inputs["galaxy_step_timeout_minutes"] == 10
