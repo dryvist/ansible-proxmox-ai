@@ -33,12 +33,15 @@ def test_full_suite_covers_main_and_develop_pushes_and_promotion_prs() -> None:
     assert 'EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop' in workflow
     assert 'BASE_SHA="$PUSH_BEFORE"' in workflow
     assert 'HEAD_SHA="$PUSH_HEAD"' in workflow
-    molecule = yaml.safe_load(workflow)["jobs"]["molecule"]
-    assert "github.event.pull_request.base.ref == 'main'" in molecule["with"]["full_suite"]
-    assert molecule["if"].count("github.event.pull_request.base.ref == 'main'") == 2
-    assert "inputs.full_suite && steps.find.outputs.scenarios" in (
-        CI_GATE.parents[0] / "_molecule.yml"
-    ).read_text()
+    jobs = yaml.safe_load(workflow)["jobs"]
+    molecule_select = jobs["molecule-select"]
+    assert "github.event.pull_request.base.ref == 'main'" in molecule_select["with"]["full_suite"]
+    assert molecule_select["if"].count("github.event.pull_request.base.ref == 'main'") == 2
+    selector_workflow = (CI_GATE.parents[0] / "_molecule-select.yml").read_text()
+    assert "inputs.full_suite" in selector_workflow
+    assert ".github/scripts/discover-molecule-scenarios.sh" in selector_workflow
+    for name in ("molecule-hosted", "molecule-hermes-ui"):
+        assert jobs[name]["uses"] == "JacobPEvans/.github/.github/workflows/_molecule.yml@v1"
     matrix_edit = json.loads(run_selector(".github/workflows/_llm-router-contract.yml").stdout)
     full = json.loads(run_selector("--full").stdout)
     assert matrix_edit["run_selector_checks"]
@@ -95,7 +98,7 @@ def test_data_contract_starts_beside_lint_on_contract_scope_alone() -> None:
 
 
 @pytest.mark.parametrize(("job_name", "preserved_conditions"), [
-    ("molecule", [
+    ("molecule-select", [
         "github.event_name == 'pull_request'",
         "github.event.pull_request.base.ref == 'main'",
         "needs.changes.outputs.molecule == 'true'",
@@ -139,7 +142,7 @@ def test_actual_gate_policy_allows_skips_only_for_focused_and_push_runs(
     })
     assert isinstance(allowed, str)
     allowed_set = {name.strip() for name in allowed.split(",") if name.strip()}
-    required = {"data-contract", "molecule"}
+    required = {"data-contract", "molecule-select", "molecule-hosted", "molecule-hermes-ui"}
     assert "changes" in gate["needs"]
     assert required <= set(gate["needs"])
     assert (required <= allowed_set) is allows_skips

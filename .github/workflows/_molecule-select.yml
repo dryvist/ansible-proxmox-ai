@@ -1,0 +1,50 @@
+---
+name: _molecule-select
+
+on:
+  workflow_call:
+    inputs:
+      scenarios:
+        type: string
+        required: true
+      full_suite:
+        type: boolean
+        required: true
+    outputs:
+      hosted_scenarios:
+        value: ${{ jobs.select.outputs.hosted_scenarios }}
+      hermes_ui_scenarios:
+        value: ${{ jobs.select.outputs.hermes_ui_scenarios }}
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    name: Partition Molecule scenarios
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      hosted_scenarios: ${{ steps.partition.outputs.hosted_scenarios }}
+      hermes_ui_scenarios: ${{ steps.partition.outputs.hermes_ui_scenarios }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Partition selected scenarios by runner
+        id: partition
+        env:
+          SELECTED_SCENARIOS: ${{ inputs.scenarios }}
+          FULL_SUITE: ${{ inputs.full_suite }}
+        run: |
+          set -euo pipefail
+          if [[ "$FULL_SUITE" == "true" || -z "$SELECTED_SCENARIOS" ]]; then
+            scenarios="$(env -u GITHUB_OUTPUT .github/scripts/discover-molecule-scenarios.sh | tail -n 1)"
+          else
+            scenarios="$SELECTED_SCENARIOS"
+          fi
+          hosted_scenarios="$(jq -c '[.[] | select(. != "hermes_ui")]' <<< "$scenarios")"
+          hermes_ui_scenarios="$(jq -c '[.[] | select(. == "hermes_ui")]' <<< "$scenarios")"
+          printf 'hosted_scenarios=%s\n' "$hosted_scenarios" >> "$GITHUB_OUTPUT"
+          printf 'hermes_ui_scenarios=%s\n' "$hermes_ui_scenarios" >> "$GITHUB_OUTPUT"
