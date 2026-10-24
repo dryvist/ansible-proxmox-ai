@@ -19,6 +19,9 @@
             - key: {{ agent_key | to_json }}
               metadata:
                 agent: {{ agent_name | to_json }}
+{% if agentgateway_docker_hindsight_roster_tiers is defined and agent_name in agentgateway_docker_hindsight_roster_tiers %}
+                tier: {{ agentgateway_docker_hindsight_roster_tiers[agent_name] | to_json }}
+{% endif %}
 {% endfor %}
 {%- endset %}
 
@@ -166,3 +169,91 @@ binds:
       backends:
       - host: {{ target.host }}
 {% endfor %}
+{% if agentgateway_docker_hindsight_enabled is defined
+      and agentgateway_docker_hindsight_enabled | bool
+      and agentgateway_docker_hindsight_api_key | length > 0
+      and agentgateway_docker_roster_keys | length > 0 %}
+{#- Hindsight bank ACL (route /hindsight). ALLOW and REQUIRE rules only: with any
+    allow rule configured the gateway denies everything unmatched, and an allow
+    expression that errors does not match — so every failure path is a denial.
+    A deny rule that errors would NOT deny, so none is used. The caller's tier
+    comes from the apiKey metadata; the Hindsight tenant key is injected by
+    backendAuth and never reaches callers.
+    Rules evaluate the path with the route prefix stripped (stripPrefix is a
+    no-op when a rewrite already ran), reject dot-segments, percent-encoding and
+    empty segments outright, and require any X-Bank-Id header to name the same
+    bank as the path. #}
+{% set hs_banks = agentgateway_docker_hindsight_banks %}
+{% set hs_api = agentgateway_docker_hindsight_api_root %}
+{% set hs_mcp = agentgateway_docker_hindsight_mcp_root %}
+{% set hs_path = 'request.path.stripPrefix("' ~ agentgateway_docker_hindsight_route_prefix ~ '")' %}
+{% set hs_guard = '!' ~ hs_path ~ '.contains("..") && !' ~ hs_path ~ '.contains("%") && !' ~ hs_path ~ '.contains("//")' %}
+{% set hs_by = {} %}
+{% for bank in [hs_banks.shared, hs_banks.trusted_write] %}
+{% for cls, methods in agentgateway_docker_hindsight_routes.items() %}
+{% for method, patterns in methods.items() %}
+{% set conds = [] %}
+{% for pattern in patterns %}
+{% if '{' in pattern %}
+{% set _ = conds.append(hs_path ~ '.matches("^' ~ ((hs_api ~ bank ~ pattern) | replace('{path}', '.+') | replace('{id}', '[^/]+')) ~ '$")') %}
+{% else %}
+{% set _ = conds.append(hs_path ~ ' == "' ~ hs_api ~ bank ~ pattern ~ '"') %}
+{% endif %}
+{% endfor %}
+{% set _ = hs_by.setdefault(bank ~ '|' ~ cls, []).append('(request.method == "' ~ method ~ '" && (' ~ (conds | join(' || ')) ~ '))') %}
+{% endfor %}
+{% endfor %}
+{% endfor %}
+{% set hs_rules = [] %}
+{% set _ = hs_rules.append(['require', 'apiKey.tier in ["trusted", "untrusted"]']) %}
+{% set _ = hs_rules.append(['allow', 'request.method == "GET" && (' ~ hs_path ~ ' == "/health" || ' ~ hs_path ~ ' == "/version")']) %}
+{# (tier, bank, classes): untrusted reads and writes shared; trusted reads shared and reads and writes trusted_write. #}
+{% for tier, bank, classes in [
+     ('untrusted', hs_banks.shared, ['read', 'write']),
+     ('trusted', hs_banks.shared, ['read']),
+     ('trusted', hs_banks.trusted_write, ['read', 'write'])] %}
+{% set surface = [] %}
+{% for cls in classes %}
+{% set _ = surface.extend(hs_by[bank ~ '|' ~ cls]) %}
+{% endfor %}
+{% set _ = hs_rules.append(['allow', 'apiKey.tier == "' ~ tier ~ '" && ' ~ hs_guard
+     ~ ' && default(request.headers["x-bank-id"], "' ~ bank ~ '") == "' ~ bank ~ '"'
+     ~ ' && (' ~ (surface | join(' || ')) ~ ')']) %}
+{% endfor %}
+{# Single-bank MCP mount: the bank is the first path segment, so a bank_id tool
+   argument or X-Bank-Id header cannot redirect the call. The multi-bank mount
+   (bank-less path) is never allowed. #}
+{% for tier, bank in [('untrusted', hs_banks.shared), ('trusted', hs_banks.trusted_write)] %}
+{% set _ = hs_rules.append(['allow', 'apiKey.tier == "' ~ tier ~ '" && ' ~ hs_guard
+     ~ ' && default(request.headers["x-bank-id"], "' ~ bank ~ '") == "' ~ bank ~ '"'
+     ~ ' && request.method in ["GET", "POST", "DELETE"]'
+     ~ ' && (' ~ hs_path ~ ' == "' ~ hs_mcp ~ bank ~ '" || ' ~ hs_path ~ '.startsWith("' ~ hs_mcp ~ bank ~ '/"))']) %}
+{% endfor %}
+    - matches:
+      - path:
+          pathPrefix: {{ agentgateway_docker_hindsight_route_prefix }}
+      policies:
+        apiKey:
+          mode: strict
+          location:
+            header:
+              name: X-Agent-Key
+{{ agentgateway_docker_api_key_block }}
+        urlRewrite:
+          authority: auto
+          path:
+            prefix: /
+        authorization:
+          rules:
+{% for kind, expression in hs_rules %}
+            - {{ kind }}: {{ expression | to_json }}
+{% endfor %}
+      backends:
+      - host: {{ (agentgateway_docker_hindsight_host ~ ':' ~ agentgateway_docker_hindsight_port) | to_json }}
+        policies:
+          backendTLS:
+            hostname: {{ agentgateway_docker_hindsight_host | to_json }}
+          backendAuth:
+            key:
+              value: {{ agentgateway_docker_hindsight_api_key | to_json }}
+{% endif %}

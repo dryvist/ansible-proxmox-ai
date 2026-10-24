@@ -42,6 +42,7 @@ def _render(
     agents: dict[str, Any] | None = None,
     owners: dict[str, str] | None = None,
     keys: dict[str, str] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> str:
     roster = agents or {}
     key_fields = _render_map(INVENTORY_VARS["ai_agent_gateway_key_fields"], ai_agents=roster)
@@ -88,6 +89,7 @@ def _render(
         "ai_agents": roster,
         "ai_agent_owner": owners or {},
         "agentgateway_docker_roster_keys": roster_keys,
+        **(extra or {}),
     }
     return ENV.from_string(TEMPLATE_SOURCE).render(**context)
 
