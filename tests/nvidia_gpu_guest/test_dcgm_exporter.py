@@ -45,6 +45,9 @@ def test_exporter_uses_the_release_compatible_package_pair():
     assert "datacenter-gpu-manager-4-cuda" in core_package
     assert "nvidia_gpu_guest_cuda_version.split('.')[0]" in core_package
     assert "nvidia_gpu_guest_dcgm_version" in core_package
+    assert defaults["nvidia_gpu_guest_dcgm_core_package"] == (
+        "datacenter-gpu-manager-4-core=1:{{ nvidia_gpu_guest_dcgm_version }}*"
+    )
     assert defaults["nvidia_gpu_guest_dcgm_packages"][1] == (
         "datacenter-gpu-manager-exporter={{ nvidia_gpu_guest_dcgm_exporter_version }}*"
     )
@@ -147,8 +150,11 @@ def test_debian13_installs_core_from_apt_and_the_pinned_exporter_file():
         "Install the pinned Debian 12 DCGM exporter package on Debian 13",
     ]
     core = selected[0]["ansible.builtin.apt"]
-    assert core["name"] == "{{ nvidia_gpu_guest_dcgm_packages[0] }}"
-    assert "exporter" not in core["name"]
+    assert core["name"] == [
+        "{{ nvidia_gpu_guest_dcgm_core_package }}",
+        "{{ nvidia_gpu_guest_dcgm_packages[0] }}",
+    ]
+    assert core["allow_downgrade"] is True
 
     download = selected[1]["ansible.builtin.get_url"]
     assert download["url"] == "{{ nvidia_gpu_guest_dcgm_exporter_deb12_url }}"
