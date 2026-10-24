@@ -8,8 +8,9 @@ so the backend topology is swappable with no app change.
 
 ## Installation
 
-The role installs the `litellm[proxy]` extra pinned in `defaults/main/00-identity.yml`;
-release-specific behavior is verified against that pin.
+The role installs the dependency set from the hash-enforced
+`files/requirements.txt` lock, generated from the Renovate-managed
+`files/requirements.in` source.
 
 Ships with the `ansible-proxmox-apps` repo; no external install. Wired into
 `playbooks/site.yml` against `llm_router_group` (guests tagged `llm-router` in the

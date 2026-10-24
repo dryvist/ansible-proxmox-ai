@@ -34,15 +34,36 @@
     group: "{{ llm_router_group }}"
     mode: "0750"
 
-# One idempotent task: virtualenv_command builds the venv with the stdlib `venv`
-# module (no `virtualenv` pip package on a minimal LXC), then pip populates it.
-# Re-runs are no-ops once the packages are present.
-- name: Create the venv and install LiteLLM (proxy extras)
+# Keep the lock on the guest beside the service files so pip can install it
+# inside the venv. It contains package versions and hashes only.
+- name: Copy the LiteLLM Python requirements lock
+  ansible.builtin.copy:
+    src: requirements.txt
+    dest: "{{ llm_router_home }}/requirements.txt"
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0640"
+
+# virtualenv_command builds the venv with stdlib `venv` (no `virtualenv` pip
+# package on a minimal LXC), then pip installs the full compiled lock. Hash
+# checking is all-or-nothing, so every direct and transitive requirement is
+# pinned and hashed in the lock file.
+- name: Create the venv and install hash-locked LiteLLM requirements
   ansible.builtin.pip:
-    name: "{{ llm_router_pip_packages }}"
+    requirements: "{{ llm_router_home }}/requirements.txt"
+    extra_args: --require-hashes
     state: present
     virtualenv: "{{ llm_router_venv }}"
     virtualenv_command: python3 -m venv
+
+# uv is a standalone runner executable; install it separately without resolving
+# dependencies that could alter the hash-locked proxy environment.
+- name: Install the pinned uv MCP runner
+  ansible.builtin.pip:
+    name: "{{ llm_router_uv_package }}"
+    state: present
+    extra_args: --no-deps
+    virtualenv: "{{ llm_router_venv }}"
 
 # The interpreter minor is the venv's business, not this role's: ask the venv
 # where its site-packages is instead of spelling a version into every path.
