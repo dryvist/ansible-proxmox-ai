@@ -2,26 +2,20 @@
 
 from __future__ import annotations
 
-import subprocess
 from typing import Any
 
 from cel_subset import authorize
 from hindsight_acl_support import (
-    AGENTS,
     API,
     BANKS,
     KEYS,
     TRUSTED,
     TRUSTED_PEER,
     UNTRUSTED,
-    _hindsight_context,
     _request,
     _render_hindsight,
 )
-from test_authz_render import REPO_ROOT, _render, _routes
-
-BASELINE_REVISION = "054d21069bcd3160a74fad9acf87b3c752694927"
-TEMPLATE_PATH = "roles/agentgateway_docker/templates/config.yaml.j2"
+from test_authz_render import REPO_ROOT, _routes
 
 
 def _route_block(rendered: str, api_key_header: str) -> str:
@@ -105,16 +99,8 @@ def test_request_with_neither_identity_header_matches_no_allow_rule(bearer_route
     assert not authorize(rules, _request(None, "GET", f"{API}/{BANKS[TRUSTED]}/memories/list"))[0]
 
 
-def test_x_agent_key_route_render_is_byte_identical_to_base_template() -> None:
-    # The worktree starts from this exact develop commit; render that template with the same fixture inputs.
-    baseline_template = subprocess.run(
-        ["git", "show", f"{BASELINE_REVISION}:{TEMPLATE_PATH}"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    context = _hindsight_context()
-    baseline_render = _render(AGENTS, {}, KEYS, extra=context, template_source=baseline_template)
-    current_render = _render_hindsight()
-    assert _route_block(current_render, "X-Agent-Key") == _route_block(baseline_render, "X-Agent-Key")
+def test_x_agent_key_route_render_is_unchanged() -> None:
+    # Snapshot of the X-Agent-Key route as rendered before the bearer route existed.
+    snapshot = (REPO_ROOT / "tests/agentgateway_docker/hindsight_x_agent_key_route.snapshot.txt").read_text()
+    block = _route_block(_render_hindsight(), "X-Agent-Key")
+    assert (block if block.endswith("\n") else block + "\n") == snapshot
