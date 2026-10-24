@@ -83,7 +83,8 @@
       - >-
         _primary_deployments[0].litellm_params.model
         == (_primary_registry_entry.provider ~ '/' ~ _primary_registry_entry.upstream_model_id)
-      - _small_zdr_aliases | length >= 2
+      - _small_aliases_all | length >= 2
+      - _small_light_nonempty | length == 0
       - _small_zdr_aliases | difference(llm_router_zdr_entry_point_names) | length == 0
       - _small_zdr_alias_mismatches | length == 0
       - _fallback_chain | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
@@ -152,10 +153,23 @@
       {{ llm_router_d1_ladder_groups
          | reject('equalto', llm_router_small_model)
          | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
-    _small_zdr_aliases: >-
+    _small_aliases_all: >-
       {{ llm_router_model_group_aliases | dict2items
          | selectattr('value', 'equalto', llm_router_small_model)
-         | map(attribute='key')
+         | map(attribute='key') | list }}
+    # Light names (light, fast, cheap) are local-only: their exact-empty chain
+    # is the fail-fast contract, so they are excluded from the ZDR-chain check
+    # below and asserted empty here instead.
+    _small_light_nonempty: >-
+      {%- set ns = namespace(names=[]) -%}
+      {%- for alias in _small_aliases_all if alias in llm_router_light_lane_local_only_names -%}
+      {%- if _fallbacks_by_key.get(alias, ['unset']) != [] -%}
+      {%- set ns.names = ns.names + [alias] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.names }}
+    _small_zdr_aliases: >-
+      {{ _small_aliases_all
          | reject('in', llm_router_local_only_fail_fast_names)
          | reject('in', llm_router_cross_modality_fail_fast_names) | list }}
     _fallbacks_by_key: >-
