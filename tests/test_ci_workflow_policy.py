@@ -69,7 +69,7 @@ def test_ci_gate_header_names_the_contract_scope_gate() -> None:
 
 @pytest.mark.parametrize(("job", "guard"), [
     ("data-contract", "github.event_name != 'push'"),
-    ("molecule", "github.event_name == 'pull_request'"),
+    ("molecule-select", "github.event_name == 'pull_request'"),
 ])
 def test_push_events_skip_focused_contract_and_molecule_jobs(job: str, guard: str) -> None:
     condition = yaml.safe_load(CI_GATE.read_text())["jobs"][job]["if"]
@@ -162,8 +162,10 @@ def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
         if "runs-on" in job and (path.name, name) != ("fix-installer-sha.yml", "fix"):
             value = " ".join(str(job.get("timeout-minutes")).split())
             allowed = {PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"}
-            if (path.name, name) == ("_molecule.yml", "test"):
-                allowed = {HERMES_UI_TIMEOUT}
+            if (path.name, name) == ("_molecule-select.yml", "select") or (
+                path.name, name
+            ) == ("ci-gate.yml", "molecule-contract-filters"):
+                allowed = {"5"}
             elif (path.name, name) == ("_llm-router-contract.yml", "router-contract-dependencies"):
                 allowed = {ROUTER_DEPENDENCIES_TIMEOUT}
             elif (path.name, name) == ("_llm-router-contract.yml", "llm-router-contract"):
@@ -177,9 +179,15 @@ def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
 
 def test_reusable_calls_forward_the_timeout_input() -> None:
     jobs = yaml.safe_load(CI_GATE.read_text())["jobs"]
-    for name in ("data-contract", "molecule"):
+    for name in ("data-contract",):
         timeout = " ".join(jobs[name]["with"]["timeout_minutes"].split())
         assert timeout == PROMOTION_TIMEOUT.replace("|| 10", "|| 15"), name
+    hosted_timeout = " ".join(jobs["molecule-hosted"]["with"]["pull_request_timeout_minutes"].split())
+    assert hosted_timeout == PROMOTION_TIMEOUT.replace("|| 10", "|| 15")
+    hermes_timeout = " ".join(jobs["molecule-hermes-ui"]["with"]["pull_request_timeout_minutes"].split())
+    assert hermes_timeout == PROMOTION_TIMEOUT.replace("|| 10", "|| 25")
+    for name in ("molecule-hosted", "molecule-hermes-ui"):
+        assert jobs[name]["with"]["pull_request_discover_timeout_minutes"] == jobs["molecule-hosted"]["with"]["pull_request_discover_timeout_minutes"]
     nested = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())["jobs"]["llm-router-contract"]
     assert nested["with"]["timeout_minutes"] == "${{ inputs.timeout_minutes }}"
 
@@ -205,7 +213,6 @@ def test_ansible_install_uses_cached_pinned_ci_requirements(workflow: str, job: 
 @pytest.mark.parametrize(("workflow", "job"), [
     ("_data-contract.yml", "syntax-check"),
     ("_data-contract.yml", "verify-inventory-load"),
-    ("_molecule.yml", "test"),
 ])
 def test_galaxy_install_skips_exact_cache_hits(workflow: str, job: str) -> None:
     steps = _job_steps(workflow, job)
@@ -214,6 +221,19 @@ def test_galaxy_install_skips_exact_cache_hits(workflow: str, job: str) -> None:
                    == step.get("with", {}).get("command"))
     assert cache["uses"].startswith("actions/cache@")
     assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
+
+
+def test_molecule_callers_preserve_galaxy_and_doppler_settings() -> None:
+    jobs = yaml.safe_load(CI_GATE.read_text())["jobs"]
+    for name in ("molecule-hosted", "molecule-hermes-ui"):
+        inputs = jobs[name]["with"]
+        assert inputs["galaxy_cache_prefix"] == "ansible-galaxy-"
+        assert inputs["galaxy_force_install"] is True
+        assert inputs["galaxy_retry_attempts"] == 4
+        assert inputs["galaxy_step_timeout_minutes"] == 10
+        assert inputs["galaxy_refresh_contracts_v5"] == "on_cache_hit"
+        assert inputs["docker_timeout_seconds"] == 180
+        assert inputs["doppler_enabled"] is True
 
 
 @pytest.mark.parametrize("job", [

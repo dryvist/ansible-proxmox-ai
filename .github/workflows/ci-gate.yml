@@ -35,7 +35,38 @@ permissions:
   pull-requests: read
 
 jobs:
+  molecule-contract-filters:
+    name: Load Molecule filters
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      scenario_filters: ${{ steps.load.outputs.scenario_filters }}
+      contract_filters: ${{ steps.load.outputs.contract_filters }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Load Molecule filter configuration
+        id: load
+        run: |
+          scenario_delimiter="SCENARIO_FILTERS_$(openssl rand -hex 16)"
+          {
+            printf 'scenario_filters<<%s\n' "$scenario_delimiter"
+            cat .github/filters/molecule-scenario-filters.yml
+            printf '%s\n' "$scenario_delimiter"
+          } >> "$GITHUB_OUTPUT"
+          contract_delimiter="CONTRACT_FILTERS_$(openssl rand -hex 16)"
+          {
+            printf 'contract_filters<<%s\n' "$contract_delimiter"
+            cat .github/filters/molecule-contract-filters.yml
+            printf '%s\n' "$contract_delimiter"
+          } >> "$GITHUB_OUTPUT"
+
   ci:
+    needs: molecule-contract-filters
     permissions:
       contents: read
       pull-requests: read
@@ -43,120 +74,17 @@ jobs:
     with:
       # Molecule is owned locally (see header); the shared workflow runs lint only.
       molecule: false
-      # Which scenarios a change touches. The changes call turns this into
-      # its `molecule_scenarios` output, which the local molecule job below
-      # consumes.
-      #
-      # Each entry lists the scenario's transitive role closure plus its own
-      # directory. Changes to shared workflow inputs widen centrally.
-      molecule_scenario_filters: &molecule_scenario_filters |
-        agent_guest:
-          - 'roles/agent_guest/**'
-          - 'roles/ai_runner/**'
-          - 'roles/squid/**'
-          - 'molecule/agent_guest/**'
-        ai_runner:
-          - 'roles/ai_runner/**'
-          - 'molecule/ai_runner/**'
-        herdr_remote:
-          - 'roles/herdr_remote/**'
-          - 'roles/nixos_deploy/**'
-          - 'roles/herdr_server/**'
-          - 'molecule/herdr_remote/**'
-        herdr_server:
-          - 'roles/herdr_server/**'
-          - 'roles/nixos_deploy/**'
-          - 'molecule/herdr_server/**'
-        hermes_ui:
-          - 'roles/hermes_ui_docker/**'
-          - 'roles/docker_engine/**'
-          - 'roles/openbao_secrets/**'
-          - 'molecule/hermes_ui/**'
-          - '.github/workflows/ci-gate.yml'
-        hindsight:
-          - 'roles/hindsight_docker/**'
-          - 'roles/docker_engine/**'
-          - 'roles/openbao_secrets/**'
-          - 'molecule/hindsight/**'
-          - 'tests/hindsight_docker/**'
-        llama_cpp_backend:
-          - 'roles/llama_cpp/**'
-          - 'roles/llamacpp_release/**'
-          - 'molecule/llama_cpp_backend/**'
-          - 'tests/llama_cpp/**'
-        llm_gpu_serving:
-          - 'roles/llm_gpu_serving/**'
-          - 'roles/llamacpp_serving/**'
-          - 'roles/llamacpp_release/**'
-          - 'roles/nvidia_gpu_guest/**'
-          - 'molecule/llm_gpu_serving/**'
-          - '.github/workflows/ci-gate.yml'
-          - 'tests/nvidia_gpu_guest/**'
-        llamaindex:
-          - 'roles/llamaindex/**'
-          - 'roles/ollama/**'
-          - 'molecule/llamaindex/**'
-        nixos_deploy:
-          - 'roles/nixos_deploy/**'
-          - 'molecule/nixos_deploy/**'
-        qdrant:
-          - 'roles/docker_engine/**'
-          - 'roles/qdrant_docker/**'
-          - 'molecule/qdrant/**'
-      # These paths have contract coverage in the Data Contract workflow
-      # above. The shared selector narrows only when every changed Ansible
-      # path matches; unlisted paths still select the full Molecule matrix.
-      molecule_contract_filters: &molecule_contract_filters |
-        contract_only:
-          - 'llm-models.d/**'
-          - 'roles/llm_model_trial/**'
-          - 'roles/llm_router/**'
-          - 'roles/hermes_agent/**'
-          - 'tests/llm_router/**'
-          - 'tests/hermes_agent/**'
-          - 'tests/fixtures/llm-router-target-output.yml'
-          - 'tests/llm_model_campaign/**'
-          - 'tests/llm_model_trial/**'
-          - 'tests/test_contract_scope_selector.py'
-          - 'tests/test_contract_scope_mapping.py'
-          - 'tests/test_ci_workflow_policy.py'
-          - 'tests/test_ci_gate_dispatch.py'
-          - 'roles/fabric_watchdog/**'
-          - 'roles/dify_docker/**'
-          - 'roles/langflow_docker/**'
-          - 'roles/clickhouse_docker/**'
-          - 'roles/langfuse_docker/**'
-          - 'roles/llamacpp_serving/**'
-          - 'roles/vllm_serving/**'
-          - 'roles/strata_serving/**'
-          - 'roles/nvidia_gpu_guest/**'
-          - 'tests/agent_concurrency/**'
-          - 'tests/dify_docker/**'
-          - 'tests/langfuse_docker/**'
-          - 'tests/llamacpp_release/**'
-          - 'tests/llamacpp_serving/**'
-          - 'tests/vllm_serving/**'
-          - 'tests/nvidia_gpu_guest/**'
-          - 'tests/llm_gpu_engine_roles/**'
-          - 'tests/llm_gpu_legacy/**'
-          - 'tests/llm_gpu_serving/**'
-          - 'tests/openbao_secrets/**'
-          - 'tests/inventory_load/**'
-          - 'tests/repo_guards/**'
-          - 'tests/benchmark_run/**'
-          - 'playbooks/llm-model-campaign-target.yml'
-          - 'playbooks/tasks/llm-model-campaign-convert.yml'
-          - 'playbooks/templates/llm-model-campaign-dimensions.json.j2'
-          - 'playbooks/benchmark-run.yml'
-          - 'playbooks/tasks/benchmark-run/**'
+      molecule_scenario_filters: ${{ needs.molecule-contract-filters.outputs.scenario_filters }}
+      molecule_contract_filters: ${{ needs.molecule-contract-filters.outputs.contract_filters }}
 
   changes:
     name: Detect Changes
+    needs: molecule-contract-filters
     uses: JacobPEvans/.github/.github/workflows/_ansible-changes.yml@v1
     with:
       molecule: false
-      molecule_scenario_filters: *molecule_scenario_filters
-      molecule_contract_filters: *molecule_contract_filters
+      molecule_scenario_filters: ${{ needs.molecule-contract-filters.outputs.scenario_filters }}
+      molecule_contract_filters: ${{ needs.molecule-contract-filters.outputs.contract_filters }}
 
   # Data Contract runs the repo-wide contract suite. On develop PRs, select it
   # only for contract inputs; workflow-only edits still exercise the CI gate.
@@ -286,34 +214,10 @@ jobs:
         github.event.pull_request.base.ref == 'main' ||
         needs.changes.outputs.molecule_scenarios != '[]'
       )
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      hosted_scenarios: ${{ steps.partition.outputs.hosted_scenarios }}
-      hermes_ui_scenarios: ${{ steps.partition.outputs.hermes_ui_scenarios }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      - name: Partition selected scenarios by runner
-        id: partition
-        env:
-          SELECTED_SCENARIOS: ${{ needs.changes.outputs.molecule_scenarios }}
-          FULL_SUITE: ${{ github.event.pull_request.base.ref == 'main' }}
-        run: |
-          set -euo pipefail
-          if [[ "$FULL_SUITE" == "true" || -z "$SELECTED_SCENARIOS" ]]; then
-            scenarios="$(env -u GITHUB_OUTPUT .github/scripts/discover-molecule-scenarios.sh | tail -n 1)"
-          else
-            scenarios="$SELECTED_SCENARIOS"
-          fi
-          hosted_scenarios="$(jq -c '[.[] | select(. != "hermes_ui")]' <<< "$scenarios")"
-          hermes_ui_scenarios="$(jq -c '[.[] | select(. == "hermes_ui")]' <<< "$scenarios")"
-          printf 'hosted_scenarios=%s\n' "$hosted_scenarios" >> "$GITHUB_OUTPUT"
-          printf 'hermes_ui_scenarios=%s\n' "$hermes_ui_scenarios" >> "$GITHUB_OUTPUT"
+    uses: ./.github/workflows/_molecule-select.yml
+    with:
+      scenarios: ${{ needs.changes.outputs.molecule_scenarios }}
+      full_suite: ${{ github.event.pull_request.base.ref == 'main' }}
 
   molecule-hosted:
     name: Molecule on ubuntu-latest
@@ -321,45 +225,29 @@ jobs:
     if: ${{ needs.molecule-select.outputs.hosted_scenarios != '[]' }}
     uses: JacobPEvans/.github/.github/workflows/_molecule.yml@v1
     with:
-      scenarios: ${{ needs.molecule-select.outputs.hosted_scenarios }}
-      full_suite: false
-      scenario_discovery: directories
-      scenario_name_profile: lower_underscore
       scenario_require_molecule_yml: true
-      runner_label: ubuntu-latest
-      discover_timeout_minutes: >-
-        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
-        github.event.pull_request.head.ref == 'develop' &&
-        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
       pull_request_discover_timeout_minutes: >-
         ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
         github.event.pull_request.head.ref == 'develop' &&
         github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
-      timeout_minutes: >-
-        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
-        github.event.pull_request.head.ref == 'develop' &&
-        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
-      pull_request_timeout_minutes: >-
-        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
-        github.event.pull_request.head.ref == 'develop' &&
-        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
-      python_version: "3.14"
-      python_install_mode: uv_packages
-      ansible_home_mode: shared
-      galaxy_cache_enabled: true
       galaxy_cache_prefix: ansible-galaxy-
       galaxy_force_install: true
       galaxy_retry_attempts: 4
       galaxy_step_timeout_minutes: 10
-      galaxy_server_timeout_seconds: 60
       galaxy_refresh_contracts_v5: on_cache_hit
-      fail_fast: false
       docker_timeout_seconds: 180
-      nix_scenarios: '["agent_guest"]'
-      molecule_workdir_mode: repo_root
-      molecule_scenario_arg: matrix
       doppler_enabled: true
-      test_secret_env_map: '{"QDRANT_API_KEY":"QDRANT_API_KEY"}'
+      scenarios: ${{ needs.molecule-select.outputs.hosted_scenarios }}
+      runner_label: ubuntu-latest
+      pull_request_timeout_minutes: >-
+        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'develop' &&
+        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
+      test_secret_env_map: >-
+        ${{ (contains(needs.molecule-select.outputs.hosted_scenarios, '"qdrant"') ||
+        contains(needs.molecule-select.outputs.hosted_scenarios, '"llamaindex"')) &&
+        '{"QDRANT_API_KEY":"QDRANT_API_KEY"}' || '{}' }}
+      nix_scenarios: '["agent_guest"]'
     secrets: inherit
 
   molecule-hermes-ui:
@@ -368,49 +256,28 @@ jobs:
     if: ${{ needs.molecule-select.outputs.hermes_ui_scenarios != '[]' }}
     uses: JacobPEvans/.github/.github/workflows/_molecule.yml@v1
     with:
-      scenarios: ${{ needs.molecule-select.outputs.hermes_ui_scenarios }}
-      full_suite: false
-      scenario_discovery: directories
-      scenario_name_profile: lower_underscore
       scenario_require_molecule_yml: true
-      runner_label: >-
-        ${{ github.event.pull_request.head.repo.full_name == github.repository &&
-        format('runs-on={0}/cpu=16/ram=32/family=m7+c7/extras=s3-cache/volume=80gb', github.run_id) ||
-        'ubuntu-latest' }}
-      discover_timeout_minutes: >-
-        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
-        github.event.pull_request.head.ref == 'develop' &&
-        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
       pull_request_discover_timeout_minutes: >-
         ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
         github.event.pull_request.head.ref == 'develop' &&
         github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
-      timeout_minutes: >-
-        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
-        github.event.pull_request.head.ref == 'develop' &&
-        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 25 }}
-      pull_request_timeout_minutes: >-
-        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
-        github.event.pull_request.head.ref == 'develop' &&
-        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 25 }}
-      scenario_timeout_floors: '{"hermes_ui":25}'
-      python_version: "3.14"
-      python_install_mode: uv_packages
-      ansible_home_mode: shared
-      galaxy_cache_enabled: true
       galaxy_cache_prefix: ansible-galaxy-
       galaxy_force_install: true
       galaxy_retry_attempts: 4
       galaxy_step_timeout_minutes: 10
-      galaxy_server_timeout_seconds: 60
       galaxy_refresh_contracts_v5: on_cache_hit
-      fail_fast: false
       docker_timeout_seconds: 180
-      nix_scenarios: '[]'
-      molecule_workdir_mode: repo_root
-      molecule_scenario_arg: matrix
       doppler_enabled: true
-      test_secret_env_map: '{"QDRANT_API_KEY":"QDRANT_API_KEY"}'
+      scenarios: ${{ needs.molecule-select.outputs.hermes_ui_scenarios }}
+      runner_label: >-
+        ${{ github.event.pull_request.head.repo.full_name == github.repository &&
+        format('runs-on={0}/cpu=16/ram=32/family=m7+c7/extras=s3-cache/volume=80gb', github.run_id) ||
+        'ubuntu-latest' }}
+      pull_request_timeout_minutes: >-
+        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'develop' &&
+        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 25 }}
+      test_secret_env_map: '{}'
     secrets: inherit
 
   # Deliberately UNCONDITIONAL — no `needs: ci`, no change filter. A version
@@ -442,6 +309,7 @@ jobs:
     needs:
       - ci
       - changes
+      - molecule-contract-filters
       - contract-scope
       - data-contract
       - molecule-select
