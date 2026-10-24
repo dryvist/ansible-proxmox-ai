@@ -117,18 +117,11 @@ def test_tiny_shared_output_gates_local_heavy_jobs_without_dropping_existing_con
     assert "needs.changes.outputs.molecule_scenarios" in job["with"]["scenarios"]
 
 
-def test_changes_passes_the_shared_filter_outputs_to_ci_and_changes() -> None:
+def test_changes_reuses_ci_filter_maps_by_yaml_alias() -> None:
     jobs = yaml.safe_load(CI_GATE.read_text())["jobs"]
     assert jobs["changes"]["uses"] == "JacobPEvans/.github/.github/workflows/_ansible-changes.yml@v1"
-    for input_name, output_name in (
-        ("molecule_scenario_filters", "scenario_filters"),
-        ("molecule_contract_filters", "contract_filters"),
-    ):
-        expected = f"${{{{ needs.molecule-contract-filters.outputs.{output_name} }}}}"
-        assert jobs["ci"]["with"][input_name] == expected
-        assert jobs["changes"]["with"][input_name] == expected
-    assert "molecule-contract-filters" in jobs["ci"]["needs"]
-    assert "molecule-contract-filters" in jobs["changes"]["needs"]
+    for name in ("molecule_scenario_filters", "molecule_contract_filters"):
+        assert jobs["changes"]["with"][name] is jobs["ci"]["with"][name]
 
 
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
@@ -151,7 +144,6 @@ def test_actual_gate_policy_allows_skips_only_for_focused_and_push_runs(
     allowed_set = {name.strip() for name in allowed.split(",") if name.strip()}
     required = {"data-contract", "molecule-select", "molecule-hosted", "molecule-hermes-ui"}
     assert "changes" in gate["needs"]
-    assert "molecule-contract-filters" in gate["needs"]
     assert required <= set(gate["needs"])
     assert (required <= allowed_set) is allows_skips
     assert bool(required - allowed_set) is (not allows_skips)

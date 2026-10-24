@@ -117,27 +117,12 @@ def test_promotion_timeout_is_sixty_only_for_same_repo_develop_into_main(
     assert _evaluate_timeout(PROMOTION_TIMEOUT, context) == expected
 
 
-# The one per-scenario exception: hermes_ui gets at least 25 minutes, never less than the caller's.
-HERMES_UI_TIMEOUT = (
-    "${{ (matrix.scenario == 'hermes_ui' && inputs.timeout_minutes < 25) && 25 || inputs.timeout_minutes }}"
-)
 ROUTER_TIMEOUT = "${{ inputs.timeout_minutes < 30 && 30 || inputs.timeout_minutes }}"
 ROUTER_DEPENDENCIES_TIMEOUT = "${{ github.event_name == 'pull_request' && 5 || inputs.timeout_minutes }}"
 # The broad pytest job documents a timeout-exception in the workflow: the suite plus a cold install passes five.
 ROLE_SELF_CHECKS_TIMEOUT = "${{ github.event_name == 'pull_request' && 10 || inputs.timeout_minutes }}"
 # The merge gate only aggregates results, so it takes the shared policy's five-minute PR cap.
 GATE_TIMEOUT = "${{ github.event_name == 'pull_request' && 5 || 10 }}"
-
-
-@pytest.mark.parametrize(("scenario", "caller", "expected"), [
-    ("hermes_ui", 15, 25),
-    ("hermes_ui", 60, 60),
-    ("qdrant", 15, 15),
-    ("qdrant", 60, 60),
-])
-def test_hermes_ui_timeout_only_raises_hermes_ui(scenario: str, caller: int, expected: int) -> None:
-    context = {"matrix.scenario": scenario, "inputs.timeout_minutes": caller}
-    assert _evaluate_timeout(HERMES_UI_TIMEOUT, context) == expected
 
 
 @pytest.mark.parametrize(("caller", "expected"), [(15, 30), (60, 60)])
@@ -162,9 +147,7 @@ def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
         if "runs-on" in job and (path.name, name) != ("fix-installer-sha.yml", "fix"):
             value = " ".join(str(job.get("timeout-minutes")).split())
             allowed = {PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"}
-            if (path.name, name) == ("_molecule-select.yml", "select") or (
-                path.name, name
-            ) == ("ci-gate.yml", "molecule-contract-filters"):
+            if (path.name, name) == ("_molecule-select.yml", "select"):
                 allowed = {"5"}
             elif (path.name, name) == ("_llm-router-contract.yml", "router-contract-dependencies"):
                 allowed = {ROUTER_DEPENDENCIES_TIMEOUT}
@@ -182,12 +165,17 @@ def test_reusable_calls_forward_the_timeout_input() -> None:
     for name in ("data-contract",):
         timeout = " ".join(jobs[name]["with"]["timeout_minutes"].split())
         assert timeout == PROMOTION_TIMEOUT.replace("|| 10", "|| 15"), name
+    molecule_timeout_15 = (
+        "${{ (github.base_ref == 'main' && github.head_ref == 'develop' && "
+        "github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}"
+    )
     hosted_timeout = " ".join(jobs["molecule-hosted"]["with"]["pull_request_timeout_minutes"].split())
-    assert hosted_timeout == PROMOTION_TIMEOUT.replace("|| 10", "|| 15")
+    assert hosted_timeout == molecule_timeout_15
     hermes_timeout = " ".join(jobs["molecule-hermes-ui"]["with"]["pull_request_timeout_minutes"].split())
-    assert hermes_timeout == PROMOTION_TIMEOUT.replace("|| 10", "|| 25")
+    assert hermes_timeout == molecule_timeout_15.replace("|| 15", "|| 25")
     for name in ("molecule-hosted", "molecule-hermes-ui"):
-        assert jobs[name]["with"]["pull_request_discover_timeout_minutes"] == jobs["molecule-hosted"]["with"]["pull_request_discover_timeout_minutes"]
+        timeout = " ".join(jobs[name]["with"]["pull_request_discover_timeout_minutes"].split())
+        assert timeout == molecule_timeout_15
     nested = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())["jobs"]["llm-router-contract"]
     assert nested["with"]["timeout_minutes"] == "${{ inputs.timeout_minutes }}"
 
