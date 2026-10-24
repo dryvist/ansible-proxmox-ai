@@ -10,9 +10,53 @@
     # The package units start only after our collector file and systemd override exist.
     policy_rc_d: 101
   environment: "{{ llamacpp_release_proxy_environment }}"
-  when: >-
-    not (ansible_check_mode and
-         (nvidia_gpu_guest_nvidia_repo | default({})).changed | default(false))
+  when:
+    - not (ansible_check_mode and (nvidia_gpu_guest_nvidia_repo | default({})).changed | default(false))
+    - ansible_facts['distribution'] != 'Debian' or ansible_facts['distribution_major_version'] | int < 13
+
+# Debian 13's repo has the DCGM core but not the exporter. The core comes from the same repo as today; the exporter
+# is one file from the Debian 12 pool, checksum-pinned in defaults, installed as a local package.
+- name: Install the DCGM core package on Debian 13
+  ansible.builtin.apt:
+    name: "{{ nvidia_gpu_guest_dcgm_packages[0] }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    install_recommends: false
+    allow_downgrade: true
+    policy_rc_d: 101
+  environment: "{{ llamacpp_release_proxy_environment }}"
+  when:
+    - not (ansible_check_mode and (nvidia_gpu_guest_nvidia_repo | default({})).changed | default(false))
+    - ansible_facts['distribution'] == 'Debian'
+    - ansible_facts['distribution_major_version'] | int >= 13
+
+- name: Download the pinned Debian 12 DCGM exporter package
+  ansible.builtin.get_url:
+    url: "{{ nvidia_gpu_guest_dcgm_exporter_deb12_url }}"
+    dest: "/var/tmp/{{ nvidia_gpu_guest_dcgm_exporter_deb12_filename }}"
+    checksum: "sha256:{{ nvidia_gpu_guest_dcgm_exporter_deb12_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+  environment: "{{ llamacpp_release_proxy_environment }}"
+  when:
+    - ansible_facts['distribution'] == 'Debian'
+    - ansible_facts['distribution_major_version'] | int >= 13
+
+- name: Install the pinned Debian 12 DCGM exporter package on Debian 13
+  ansible.builtin.apt:
+    deb: "/var/tmp/{{ nvidia_gpu_guest_dcgm_exporter_deb12_filename }}"
+    state: present
+    install_recommends: false
+    # The package units start only after our collector file and systemd override exist.
+    policy_rc_d: 101
+  environment: "{{ llamacpp_release_proxy_environment }}"
+  # Check mode does not download the file, so there is nothing to install yet.
+  when:
+    - not ansible_check_mode
+    - ansible_facts['distribution'] == 'Debian'
+    - ansible_facts['distribution_major_version'] | int >= 13
 
 - name: Create the DCGM exporter configuration directory
   ansible.builtin.file:
