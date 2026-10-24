@@ -11,6 +11,12 @@ DECLARED somewhere else, which no registry entry knows about:
 * a role deployment (a mapping with `role` and `model`) whose target or
   fallbacks are literals instead of projections.
 
+Membership rule (lane contract): every lane and legacy name in
+LANE_VOCABULARY must be served by the registry, except PENDING_NAMES, and a
+literal `*_model` selection in inventory/ must name a registry name. The
+vocabulary is mirrored in homelab-contracts (tests/llm_roles/check_refs.yml)
+and nix-ai (lib/checks/litellm-local-aliases.nix); change all three together.
+
 Production sources only: roles, playbooks and inventory. Tests plant their
 own fixtures, and the negative cases below plant into a scratch tree.
 """
@@ -24,6 +30,34 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCAN_GLOBS = ("roles/**/*.yml", "playbooks/**/*.yml", "inventory/**/*.yml")
 ALIAS_KEYS = {"stable_aliases", "model_group_alias"}
+
+# Lane vocabulary, identical in homelab-contracts and nix-ai (see module doc).
+LANE_VOCABULARY = (
+    "auto",
+    "light",
+    "standard",
+    "critical",
+    "long",
+    "embed",
+    "rerank",
+    "ocr",
+    "classify",
+    "judge",
+    "small",
+    "fast",
+    "cheap",
+    "medium",
+    "default",
+    "large",
+    "best",
+    # Existing caller role names outside the lane vocabulary, kept until the
+    # operator decides their lane.
+    "coding",
+    "recorder",
+)
+# Vocabulary names with no router target yet. Reported here, never silently
+# passed: rerank has no reranker role, classify has no classifier target.
+PENDING_NAMES = frozenset({"rerank", "classify"})
 
 
 class _Permissive(yaml.SafeLoader):
@@ -111,3 +145,64 @@ def test_projected_values_pass(tmp_path: Path) -> None:
         "llm_router_role_deployments:\n  - role: r\n    model: '{{ m }}'\n    fallbacks: ['{{ f }}']\n",
     )
     assert alias_source_problems(root) == []
+
+
+def registry_names(root: Path) -> set[str]:
+    """Every name a caller can address: client ids, route groups, aliases, DB roles."""
+    names: set[str] = set()
+    for path in sorted((root / "llm-models.d").glob("*.yml")):
+        doc = yaml.load(path.read_text(), Loader=_Permissive) or {}
+        for value in doc.values():
+            for entry in value if isinstance(value, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                names.update(str(entry[key]) for key in ("client_model_id", "route_group") if key in entry)
+                for key in ("stable_aliases", "direct_route_aliases"):
+                    names.update(str(name) for name in entry.get(key) or [])
+    roles = root / "roles/llm_router/defaults/main/55-roles.yml"
+    if roles.exists():
+        doc = yaml.load(roles.read_text(), Loader=_Permissive) or {}
+        names.update(str(d["role"]) for d in doc.get("_llm_router_role_deployments_source", []))
+    return names
+
+
+def unserved_vocabulary(root: Path) -> list[str]:
+    served = registry_names(root)
+    return sorted(name for name in LANE_VOCABULARY if name not in PENDING_NAMES and name not in served)
+
+
+def literal_selection_problems(root: Path) -> list[str]:
+    """A literal `*_model` selection in inventory must name a registry name."""
+    served = registry_names(root)
+    problems: list[str] = []
+    for path in sorted((root / "inventory").glob("**/*.yml")):
+        where = str(path.relative_to(root))
+        for doc in yaml.load_all(path.read_text(), Loader=_Permissive):
+            for key, value in (doc.items() if isinstance(doc, dict) else []):
+                if str(key).endswith("_model") and isinstance(value, str):
+                    if "{{" not in value and value.strip() and value.strip() not in served:
+                        problems.append(f"{where}: `{key}` selects `{value.strip()}`, not a registry name")
+    return problems
+
+
+def test_lane_vocabulary_is_served_by_the_registry() -> None:
+    assert unserved_vocabulary(REPO_ROOT) == []
+
+
+def test_literal_model_selections_name_registry_entries() -> None:
+    assert literal_selection_problems(REPO_ROOT) == []
+
+
+def test_planted_unserved_lane_name_fails(tmp_path: Path) -> None:
+    # An empty registry serves nothing, so every vocabulary name is reported.
+    assert "light" in unserved_vocabulary(tmp_path)
+    assert "rerank" not in unserved_vocabulary(tmp_path)
+
+
+def test_planted_unregistered_selection_fails(tmp_path: Path) -> None:
+    planted = tmp_path / "inventory/group_vars/99-planted.yml"
+    planted.parent.mkdir(parents=True)
+    planted.write_text("planted_probe_model: lane-not-served\nprojected_probe_model: '{{ x }}'\n")
+    assert literal_selection_problems(tmp_path) == [
+        "inventory/group_vars/99-planted.yml: `planted_probe_model` selects `lane-not-served`, not a registry name"
+    ]
