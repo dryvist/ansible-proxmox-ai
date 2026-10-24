@@ -18,7 +18,7 @@ def _load(path: Path):
 def test_role_pins_the_trusted_artifact_and_supported_batch_sizes():
     defaults = _load(ROLE_ROOT / "defaults/main/00-engine.yml")
 
-    assert defaults["strata_serving_version"] == "296b59d2f73c8f04a805df29c2fa97655adace78"
+    assert defaults["strata_serving_version"] == "477ac13cbe8e582c20484871ce459d20d82df09d"
     assert defaults["strata_serving_artifact_id"] == "flash-next-iq3-s"
     assert defaults["strata_serving_trusted_repo"] == (
         "{{ nvidia_gpu_guest_artifacts_by_id[strata_serving_artifact_id].hf_repo }}"
