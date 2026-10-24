@@ -5,18 +5,14 @@
 # JacobPEvans/.github/.github/workflows/_ansible-ci.yml so lint runs identically
 # across ansible-proxmox, ansible-splunk and this repo.
 #
-# Molecule stays LOCAL here: this repo's molecule job has a deliberate
-# least-privilege Doppler handling (it maps only the secret the scenarios
-# consume into the test step, never inject-env-vars). Routing it through the
-# shared molecule (which uses inject-env-vars) would regress that. So the
-# shared CI workflow runs lint only (molecule:false), while a parallel changes
-# call runs the same filters and this wrapper keeps
-# _molecule.yml and _data-contract.yml local, aggregating everything in its
-# own required "Merge Gate". The molecule job gates on the changes call's
-# filter outputs and skips when the
-# changes workflow marks a develop pull request tiny. Data-contract gates only on
-# the contract-scope job's outputs, so it starts beside lint instead of after
-# it. Installer-sha always runs.
+# Molecule scenario selection and runner grouping stay here; the reusable
+# workflow runs each selected group with the shared setup and test steps. The
+# shared Ansible CI workflow runs lint only (molecule:false), while this wrapper
+# keeps _data-contract.yml local and aggregates all results in its required
+# "Merge Gate". Molecule selection uses the changes call's filters and skips
+# when it marks a develop pull request tiny. Data-contract gates only on the
+# contract-scope job's outputs, so it starts beside lint instead of after it.
+# Installer-sha always runs.
 #
 # No e2e job: converges need live infrastructure; the data-contract job's
 # inventory-load check covers the deploy-orchestration wiring in CI.
@@ -76,7 +72,7 @@ jobs:
           - 'roles/docker_engine/**'
           - 'roles/openbao_secrets/**'
           - 'molecule/hermes_ui/**'
-          - '.github/workflows/_molecule.yml'
+          - '.github/workflows/ci-gate.yml'
         hindsight:
           - 'roles/hindsight_docker/**'
           - 'roles/docker_engine/**'
@@ -276,8 +272,8 @@ jobs:
         github.event.pull_request.head.ref == 'develop' &&
         github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
 
-  molecule:
-    name: Molecule
+  molecule-select:
+    name: Select Molecule runner groups
     needs: changes
     if: >-
       needs.changes.outputs.tiny != 'true' &&
@@ -290,16 +286,131 @@ jobs:
         github.event.pull_request.base.ref == 'main' ||
         needs.changes.outputs.molecule_scenarios != '[]'
       )
-    uses: ./.github/workflows/_molecule.yml
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      hosted_scenarios: ${{ steps.partition.outputs.hosted_scenarios }}
+      hermes_ui_scenarios: ${{ steps.partition.outputs.hermes_ui_scenarios }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Partition selected scenarios by runner
+        id: partition
+        env:
+          SELECTED_SCENARIOS: ${{ needs.changes.outputs.molecule_scenarios }}
+          FULL_SUITE: ${{ github.event.pull_request.base.ref == 'main' }}
+        run: |
+          set -euo pipefail
+          if [[ "$FULL_SUITE" == "true" || -z "$SELECTED_SCENARIOS" ]]; then
+            scenarios="$(env -u GITHUB_OUTPUT .github/scripts/discover-molecule-scenarios.sh | tail -n 1)"
+          else
+            scenarios="$SELECTED_SCENARIOS"
+          fi
+          hosted_scenarios="$(jq -c '[.[] | select(. != "hermes_ui")]' <<< "$scenarios")"
+          hermes_ui_scenarios="$(jq -c '[.[] | select(. == "hermes_ui")]' <<< "$scenarios")"
+          printf 'hosted_scenarios=%s\n' "$hosted_scenarios" >> "$GITHUB_OUTPUT"
+          printf 'hermes_ui_scenarios=%s\n' "$hermes_ui_scenarios" >> "$GITHUB_OUTPUT"
+
+  molecule-hosted:
+    name: Molecule on ubuntu-latest
+    needs: molecule-select
+    if: ${{ needs.molecule-select.outputs.hosted_scenarios != '[]' }}
+    uses: JacobPEvans/.github/.github/workflows/_molecule.yml@v1
     with:
-      scenarios: ${{ needs.changes.outputs.molecule_scenarios }}
-      full_suite: ${{ github.event.pull_request.base.ref == 'main' }}
-      # 15: every scenario but hermes_ui fits; hermes_ui ran past 15 minutes
-      # twice on 2026-10-12, so _molecule.yml raises that job alone to 25.
+      scenarios: ${{ needs.molecule-select.outputs.hosted_scenarios }}
+      full_suite: false
+      scenario_discovery: directories
+      scenario_name_profile: lower_underscore
+      scenario_require_molecule_yml: true
+      runner_label: ubuntu-latest
+      discover_timeout_minutes: >-
+        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'develop' &&
+        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
+      pull_request_discover_timeout_minutes: >-
+        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'develop' &&
+        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
       timeout_minutes: >-
         ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
         github.event.pull_request.head.ref == 'develop' &&
         github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
+      pull_request_timeout_minutes: >-
+        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'develop' &&
+        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
+      python_version: "3.14"
+      python_install_mode: uv_packages
+      ansible_home_mode: shared
+      galaxy_cache_enabled: true
+      galaxy_cache_prefix: ansible-galaxy-
+      galaxy_force_install: true
+      galaxy_retry_attempts: 4
+      galaxy_step_timeout_minutes: 10
+      galaxy_server_timeout_seconds: 60
+      galaxy_refresh_contracts_v5: on_cache_hit
+      fail_fast: false
+      docker_timeout_seconds: 180
+      nix_scenarios: '["agent_guest"]'
+      molecule_workdir_mode: repo_root
+      molecule_scenario_arg: matrix
+      doppler_enabled: true
+      test_secret_env_map: '{"QDRANT_API_KEY":"QDRANT_API_KEY"}'
+    secrets: inherit
+
+  molecule-hermes-ui:
+    name: Molecule hermes_ui runner
+    needs: molecule-select
+    if: ${{ needs.molecule-select.outputs.hermes_ui_scenarios != '[]' }}
+    uses: JacobPEvans/.github/.github/workflows/_molecule.yml@v1
+    with:
+      scenarios: ${{ needs.molecule-select.outputs.hermes_ui_scenarios }}
+      full_suite: false
+      scenario_discovery: directories
+      scenario_name_profile: lower_underscore
+      scenario_require_molecule_yml: true
+      runner_label: >-
+        ${{ github.event.pull_request.head.repo.full_name == github.repository &&
+        format('runs-on={0}/cpu=16/ram=32/family=m7+c7/extras=s3-cache/volume=80gb', github.run_id) ||
+        'ubuntu-latest' }}
+      discover_timeout_minutes: >-
+        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'develop' &&
+        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
+      pull_request_discover_timeout_minutes: >-
+        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'develop' &&
+        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
+      timeout_minutes: >-
+        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'develop' &&
+        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 25 }}
+      pull_request_timeout_minutes: >-
+        ${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'develop' &&
+        github.event.pull_request.head.repo.full_name == github.repository) && 60 || 25 }}
+      scenario_timeout_floors: '{"hermes_ui":25}'
+      python_version: "3.14"
+      python_install_mode: uv_packages
+      ansible_home_mode: shared
+      galaxy_cache_enabled: true
+      galaxy_cache_prefix: ansible-galaxy-
+      galaxy_force_install: true
+      galaxy_retry_attempts: 4
+      galaxy_step_timeout_minutes: 10
+      galaxy_server_timeout_seconds: 60
+      galaxy_refresh_contracts_v5: on_cache_hit
+      fail_fast: false
+      docker_timeout_seconds: 180
+      nix_scenarios: '[]'
+      molecule_workdir_mode: repo_root
+      molecule_scenario_arg: matrix
+      doppler_enabled: true
+      test_secret_env_map: '{"QDRANT_API_KEY":"QDRANT_API_KEY"}'
     secrets: inherit
 
   # Deliberately UNCONDITIONAL — no `needs: ci`, no change filter. A version
@@ -328,7 +439,15 @@ jobs:
 
   gate:
     name: Merge Gate
-    needs: [ci, changes, contract-scope, data-contract, molecule, installer-sha]
+    needs:
+      - ci
+      - changes
+      - contract-scope
+      - data-contract
+      - molecule-select
+      - molecule-hosted
+      - molecule-hermes-ui
+      - installer-sha
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.event_name == 'pull_request' && 5 || 10 }}
@@ -354,5 +473,5 @@ jobs:
             ${{ ((github.event_name == 'pull_request' &&
             github.event.pull_request.base.ref != 'main') ||
             github.event_name == 'push') &&
-            'data-contract, molecule' || '' }}
+            'data-contract, molecule-select, molecule-hosted, molecule-hermes-ui' || '' }}
         run: node .gh-shared/scripts/ci-gate-aggregate.mts
