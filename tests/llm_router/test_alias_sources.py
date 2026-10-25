@@ -37,6 +37,11 @@ class _Permissive(yaml.SafeLoader):
 _Permissive.add_multi_constructor("!", lambda loader, suffix, node: getattr(loader, "construct_" + node.id)(node))
 
 
+def load_yaml_documents(path: Path) -> list[object]:
+    """Load Ansible YAML while preserving support for its custom tags."""
+    return list(yaml.load_all(path.read_text(encoding="utf-8"), Loader=_Permissive))
+
+
 def _projected(value: object) -> bool:
     """A projection is a Jinja expression; an empty value declares nothing."""
     if isinstance(value, str):
@@ -66,7 +71,7 @@ def alias_source_problems(root: Path) -> list[str]:
     for pattern in SCAN_GLOBS:
         for path in sorted(root.glob(pattern)):
             where = str(path.relative_to(root))
-            for doc in yaml.load_all(path.read_text(), Loader=_Permissive):
+            for doc in load_yaml_documents(path):
                 if isinstance(doc, dict) and "/tasks/" not in f"/{where}":
                     for name, value in doc.items():
                         if "alias" in str(name) and "key_alias" not in str(name) and not _projected(value):
@@ -131,7 +136,8 @@ def registry_names(root: Path) -> set[str]:
                     names.update(str(name) for name in entry.get(key) or [])
     roles = root / "roles/llm_router/defaults/main/55-roles.yml"
     if roles.exists():
-        doc = yaml.load(roles.read_text(), Loader=_Permissive) or {}
+        documents = load_yaml_documents(roles)
+        doc = documents[0] if documents and isinstance(documents[0], dict) else {}
         names.update(str(d["role"]) for d in doc.get("_llm_router_role_deployments_source", []))
     return names
 
@@ -147,7 +153,7 @@ def literal_selection_problems(root: Path) -> list[str]:
     problems: list[str] = []
     for path in sorted((root / "inventory").glob("**/*.yml")):
         where = str(path.relative_to(root))
-        for doc in yaml.load_all(path.read_text(), Loader=_Permissive):
+        for doc in load_yaml_documents(path):
             for key, value in (doc.items() if isinstance(doc, dict) else []):
                 if str(key).endswith("_model") and isinstance(value, str):
                     if "{{" not in value and value.strip() and value.strip() not in served:
