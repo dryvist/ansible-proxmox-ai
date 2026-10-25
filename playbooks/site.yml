@@ -24,6 +24,11 @@
   hosts: managed_secrets_group:clickhouse_group
   gather_facts: false
   tags: always
+  pre_tasks:
+    # The agentgateway-agent-keys domain lists every `ai_callers` leaf, and the
+    # registry half of that map is a role fact.
+    - name: Load the harness caller registry
+      ansible.builtin.import_tasks: tasks/load_agent_callers.yml
   tasks:
     - name: Fetch each resource-domain's KV subtree via its own AppRole
       ansible.builtin.include_role:
@@ -203,185 +208,8 @@
           vars:
             _isolated_play_name: llamaindex
 
-# =============================================================================
-# Phase 6: AI orchestration platforms + observability
-# Visual builders (Dify, LangFlow) + a CrewAI/LangChain runtime on the ai
-# VLAN; Langfuse LLM-observability on siem. Docker-in-LXC except agent-exec
-# (plain Python venv). Each emits OpenTelemetry to the Cribl Stream OTLP
-# endpoint (ai_orchestration_otel_endpoint).
-# =============================================================================
-
-- name: Configure Dify LLMOps platform
-  hosts: dify_group
-  become: true
-  gather_facts: false
-  tags:
-    - dify_docker
-    - ai-orchestration
-  tasks:
-    - name: Converge dify_docker (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include dify_docker role
-          ansible.builtin.include_role:
-            name: dify_docker
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: dify_docker
-
-- name: Configure LangFlow visual prototyping
-  hosts: langflow_group
-  become: true
-  gather_facts: false
-  tags:
-    - langflow_docker
-    - ai-orchestration
-  tasks:
-    - name: Converge langflow_docker (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include langflow_docker role
-          ansible.builtin.include_role:
-            name: langflow_docker
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: langflow_docker
-
-- name: Configure LangGraph server + Agent Chat UI (zero-cloud)
-  hosts: langgraph_group
-  become: true
-  gather_facts: false
-  tags:
-    - langgraph_docker
-    - ai-orchestration
-  tasks:
-    - name: Converge langgraph_docker (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include langgraph_docker role
-          ansible.builtin.include_role:
-            name: langgraph_docker
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: langgraph_docker
-
-- name: Configure dedicated ClickHouse
-  hosts: clickhouse_group
-  become: true
-  gather_facts: false
-  tags:
-    - clickhouse_docker
-    - ai-orchestration
-  tasks:
-    - name: Converge clickhouse_docker (isolated — failure does not abort downstream plays)
-      when: bao_clickhouse_secrets | default({}) | length > 0
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include clickhouse_docker role
-          ansible.builtin.include_role:
-            name: clickhouse_docker
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: clickhouse_docker
-
-- name: Configure agent-exec runtime (CrewAI + LangChain)
-  hosts: agent_exec_group
-  become: true
-  gather_facts: false
-  tags:
-    - agent_exec
-    - ai-orchestration
-  tasks:
-    - name: Converge agent_exec (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include agent_exec role
-          ansible.builtin.include_role:
-            name: agent_exec
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: agent_exec
-
-- name: Configure Langfuse LLM observability
-  hosts: langfuse_group
-  become: true
-  gather_facts: false
-  tags:
-    - langfuse_docker
-    - observability
-  tasks:
-    - name: Converge langfuse_docker (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include langfuse_docker role
-          ansible.builtin.include_role:
-            name: langfuse_docker
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: langfuse_docker
-
-- name: Configure Arize Phoenix LLM observability
-  import_playbook: phoenix.yml
-
-- name: Configure agentgateway MCP/LLM/A2A data plane
-  hosts: agentgateway_group
-  become: true
-  gather_facts: false
-  tags:
-    - agentgateway_docker
-    - ai-orchestration
-  tasks:
-    - name: Converge agentgateway_docker (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include agentgateway_docker role
-          ansible.builtin.include_role:
-            name: agentgateway_docker
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: agentgateway_docker
-
-- name: Configure docling-serve document extraction
-  hosts: docling_serve_group
-  become: true
-  gather_facts: false
-  tags:
-    - docling_serve
-    - ai-orchestration
-  tasks:
-    - name: Converge docling_serve (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include docling_serve role
-          ansible.builtin.include_role:
-            name: docling_serve
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: docling_serve
+- name: Configure AI orchestration platforms and observability
+  import_playbook: ai-orchestration.yml
 
 # Phase 7: the headless agent execution plane (job runners, egress proxy,
 # pooled agent guests, pool return). Split out to keep this file within its

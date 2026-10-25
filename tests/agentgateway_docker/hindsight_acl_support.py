@@ -8,10 +8,11 @@ import pytest
 import yaml
 from cel_subset import authorize
 from test_authz_render import (
-    INVENTORY_VARS,
     REPO_ROOT,
     ROLE_DEFAULTS,
     _render,
+    _render_callers,
+    _render_key_fields,
     _render_map,
     _routes,
 )
@@ -41,11 +42,15 @@ DERIVED = ("roster_tiers", "agent_banks")
 
 
 def _hindsight_context(
-    tenant_key: str = TENANT_KEY, agents: dict[str, Any] | None = None, keys: dict[str, str] | None = None
+    tenant_key: str = TENANT_KEY,
+    agents: dict[str, Any] | None = None,
+    keys: dict[str, str] | None = None,
+    registry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     roster = AGENTS if agents is None else agents
     caller_keys = KEYS if keys is None else keys
-    key_fields = _render_map(INVENTORY_VARS["ai_agent_gateway_key_fields"], ai_agents=roster)
+    callers = _render_callers(roster, registry)
+    key_fields = _render_key_fields(roster, registry)
     roster_keys = _render_map(
         ROLE_DEFAULTS["agentgateway_docker_roster_keys"],
         ai_agent_gateway_key_fields=key_fields,
@@ -62,7 +67,7 @@ def _hindsight_context(
     context["agentgateway_docker_hindsight_roster_tiers"] = _render_map(
         HINDSIGHT_DEFAULTS["agentgateway_docker_hindsight_roster_tiers"],
         agentgateway_docker_roster_keys=roster_keys,
-        ai_agents=roster,
+        ai_callers=callers,
     )
     context["agentgateway_docker_hindsight_agent_banks"] = _render_map(
         HINDSIGHT_DEFAULTS["agentgateway_docker_hindsight_agent_banks"],
@@ -74,7 +79,7 @@ def _hindsight_context(
 def _render_hindsight(**kwargs: Any) -> str:
     roster = AGENTS if kwargs.get("agents") is None else kwargs["agents"]
     caller_keys = KEYS if kwargs.get("keys") is None else kwargs["keys"]
-    return _render(roster, {}, caller_keys, extra=_hindsight_context(**kwargs))
+    return _render(roster, {}, caller_keys, extra=_hindsight_context(**kwargs), registry=kwargs.get("registry"))
 
 
 _CONTEXT = _hindsight_context()

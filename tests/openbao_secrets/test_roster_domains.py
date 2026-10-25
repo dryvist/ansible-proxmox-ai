@@ -18,7 +18,7 @@ TWO_AGENT_ROSTER = {"a-x": {"owns": []}, "b-y": {"owns": []}}
 READER_DOMAIN_NAMES = {"llm-router-agent-keys", "agentgateway-agent-keys"}
 
 
-def _render_domains(ai_agents):
+def _render_domains(ai_agents, registry=None):
     defaults = yaml.safe_load(DOMAIN_DEFAULTS.read_text(encoding="utf-8"))
     roster = yaml.safe_load(ROSTER_DEFAULTS.read_text(encoding="utf-8"))
     owners = {
@@ -30,10 +30,11 @@ def _render_domains(ai_agents):
         _openbao_secrets_static_domains=defaults["_openbao_secrets_static_domains"],
         ai_agents=ai_agents,
         ai_agent_owner=owners,
+        ai_callers={**(registry or {}), **{name: {} for name in ai_agents}},
     )
 
 
-def _render_optional_domains(ai_agents):
+def _render_optional_domains(ai_agents, registry=None):
     defaults = yaml.safe_load(DOMAIN_DEFAULTS.read_text(encoding="utf-8"))
     roster = yaml.safe_load(ROSTER_DEFAULTS.read_text(encoding="utf-8"))
     return NativeEnvironment().from_string(roster["openbao_secrets_optional_domains"]).render(
@@ -41,6 +42,7 @@ def _render_optional_domains(ai_agents):
             "_openbao_secrets_static_optional_domains"
         ],
         ai_agents=ai_agents,
+        ai_callers={**(registry or {}), **{name: {} for name in ai_agents}},
     )
 
 
@@ -75,6 +77,35 @@ def test_owned_mcp_paths_are_removed_from_legacy_domains():
     legacy_domains = [domain for domain in domains if domain["name"] != "splunk-heimdall"]
 
     assert all("ai/mcp/splunk" not in domain["paths"] for domain in legacy_domains)
+
+
+def test_registry_callers_get_a_gateway_leaf_but_no_domain_of_their_own():
+    registry = {"example-harness": {"trust_tier": "trusted"}}
+    domains = _render_domains(TWO_AGENT_ROSTER, registry)
+    by_name = {domain["name"]: domain for domain in domains}
+
+    # A registry leaf is optional until seeded; roster leaves stay required.
+    assert by_name["agentgateway-agent-keys"]["paths"] == [
+        {"path": "apps/example-harness-gw", "optional": True},
+        "apps/a-x-gw",
+        "apps/b-y-gw",
+    ]
+    assert by_name["llm-router-agent-keys"]["paths"] == ["apps/a-x", "apps/b-y"]
+    assert "example-harness" not in by_name
+
+
+def test_registry_callers_alone_still_get_the_gateway_reader_domain():
+    registry = {"example-harness": {"trust_tier": "trusted"}}
+    by_name = {domain["name"]: domain for domain in _render_domains({}, registry)}
+
+    assert by_name["agentgateway-agent-keys"]["paths"] == [
+        {"path": "apps/example-harness-gw", "optional": True}
+    ]
+    assert "llm-router-agent-keys" not in by_name
+    assert _render_optional_domains({}, registry) == [
+        *_render_optional_domains({}),
+        "agentgateway-agent-keys",
+    ]
 
 
 def test_optional_fetch_skip_does_not_apply_to_required_domains():
