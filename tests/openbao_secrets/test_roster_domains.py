@@ -64,7 +64,7 @@ def test_roster_agent_gets_its_paths_and_owned_mcp_paths():
             "paths": [
                 "ai/splunk-heimdall",
                 "apps/splunk-heimdall",
-                "apps/splunk-heimdall-gw",
+                {"path": "apps/splunk-heimdall-gw", "optional": True},
                 "ai/mcp/splunk",
             ],
             "required": True,
@@ -84,11 +84,12 @@ def test_registry_callers_get_a_gateway_leaf_but_no_domain_of_their_own():
     domains = _render_domains(TWO_AGENT_ROSTER, registry)
     by_name = {domain["name"]: domain for domain in domains}
 
-    # A registry leaf is optional until seeded; roster leaves stay required.
+    # Every caller leaf is optional at fetch; the gateway role separately
+    # asserts that roster-agent keys exist before it deploys.
     assert by_name["agentgateway-agent-keys"]["paths"] == [
         {"path": "apps/example-harness-gw", "optional": True},
-        "apps/a-x-gw",
-        "apps/b-y-gw",
+        {"path": "apps/a-x-gw", "optional": True},
+        {"path": "apps/b-y-gw", "optional": True},
     ]
     assert by_name["llm-router-agent-keys"]["paths"] == ["apps/a-x", "apps/b-y"]
     assert "example-harness" not in by_name
@@ -163,7 +164,10 @@ def test_reader_domains_cover_each_roster_key_family_and_are_optional():
     }
     assert by_name["agentgateway-agent-keys"] == {
         "name": "agentgateway-agent-keys",
-        "paths": ["apps/a-x-gw", "apps/b-y-gw"],
+        "paths": [
+            {"path": "apps/a-x-gw", "optional": True},
+            {"path": "apps/b-y-gw", "optional": True},
+        ],
     }
 
     optional_domains = _render_optional_domains(TWO_AGENT_ROSTER)
@@ -190,3 +194,13 @@ def test_roster_domain_is_selected_by_the_container_identity():
     )
 
     assert selected == {"selected": "splunk-heimdall"}
+
+
+def test_each_hermes_identity_reads_only_its_own_optional_gateway_leaf():
+    identities = {"hermes": {"owns": []}, "hermes-private": {"owns": []}}
+    by_name = {domain["name"]: domain for domain in _render_domains(identities)}
+
+    for identity, other in (("hermes", "hermes-private"), ("hermes-private", "hermes")):
+        domain = by_name[identity]
+        assert {"path": f"apps/{identity}-gw", "optional": True} in domain["paths"]
+        assert f"apps/{other}-gw" not in domain["paths"]
