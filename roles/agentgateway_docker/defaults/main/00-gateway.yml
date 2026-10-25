@@ -247,16 +247,31 @@ agentgateway_docker_nautobot_read_token: >-
 # A2A targets — native Agent2Agent (JSON-RPC) endpoints the gateway fronts on
 # the same proxy port. Each gets a prefix-matched route marked `a2a: {}`, so the
 # gateway parses the JSON-RPC and rewrites the agent card's `url` to point back
-# at itself. LangGraph is the only A2A-native agent today.
+# at itself. Hermes and LangGraph are the A2A-native agents today.
 #
 # host reaches the LangGraph CONTAINER directly on its API port.
 # tofu_data.containers.langgraph.ip is ALREADY the resolvable FQDN — the same
 # address Traefik uses as its own langgraph backend — so it hits the container
 # directly. Do NOT use langgraph.<sub> (the Traefik ingress alias on :443, a
 # needless double-hop). Bare host:port → HTTP, which is what `langgraph dev`
-# serves (no TLS), so no backendTLS policy.
+# serves (no TLS), so no backendTLS policy. Hermes uses its published service
+# port and a gateway-held bearer token.
 # =============================================================================
+# Match hermes_agent_a2a_inbound_token's env-first, OpenBao-second lookup for
+# the primary Hermes identity; agentgateway is a separate play from hermes_agent.
+agentgateway_docker_hermes_a2a_token: >-
+  {{ lookup('env', 'HERMES_A2A_TOKEN')
+     | default((bao_apps_secrets | default({})).get('hermes_a2a_token', ''), true)
+     or undef('HERMES_A2A_TOKEN or bao_apps_secrets.hermes_a2a_token is required') }}
+
 agentgateway_docker_a2a_targets:
+  - name: hermes
+    path_prefix: /a2a/hermes/
+    host: >-
+      {{ hostvars['localhost']['tofu_data']['containers']['hermes-agent']['ip'] }}:{{
+      hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_a2a']
+      | mandatory('tofu_data.constants.service_ports.hermes_a2a missing — regenerate tofu_inventory.json') }}
+    bearer_token: "{{ agentgateway_docker_hermes_a2a_token }}"
   - name: langgraph
     path_prefix: /a2a/
     host: >-
