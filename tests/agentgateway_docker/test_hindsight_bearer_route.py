@@ -18,14 +18,14 @@ from hindsight_acl_support import (
 from test_authz_render import REPO_ROOT, _routes
 
 
-def _route_block(rendered: str, api_key_header: str) -> str:
+def _route_block(rendered: str, path_prefix: str, api_key_header: str) -> str:
     lines = rendered.splitlines(keepends=True)
     starts = [i for i, line in enumerate(lines) if line.startswith("    - matches:")]
     blocks = []
     for position, start in enumerate(starts):
         end = starts[position + 1] if position + 1 < len(starts) else len(lines)
         block = "".join(lines[start:end])
-        if f"name: {api_key_header}" in block:
+        if f"pathPrefix: {path_prefix}\n" in block and f"name: {api_key_header}" in block:
             blocks.append(block)
     assert len(blocks) == 1
     return blocks[0]
@@ -102,5 +102,5 @@ def test_request_with_neither_identity_header_matches_no_allow_rule(bearer_route
 def test_x_agent_key_route_render_is_unchanged() -> None:
     # Snapshot of the X-Agent-Key route as rendered before the bearer route existed.
     snapshot = (REPO_ROOT / "tests/agentgateway_docker/hindsight_x_agent_key_route.snapshot.txt").read_text()
-    block = _route_block(_render_hindsight(), "X-Agent-Key")
+    block = _route_block(_render_hindsight(), "/hindsight", "X-Agent-Key")
     assert (block if block.endswith("\n") else block + "\n") == snapshot
