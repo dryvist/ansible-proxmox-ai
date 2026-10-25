@@ -11,6 +11,7 @@ import jinja2
 import pytest
 import yaml
 from ansible.plugins.filter.core import FilterModule
+from cel_subset import authorize
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = REPO_ROOT / "inventory/group_vars/all.yml"
@@ -36,7 +37,11 @@ INVENTORY_VARS = yaml.safe_load(INVENTORY.read_text())
 ROLE_DEFAULTS = {
     **yaml.safe_load(DEFAULTS.read_text()),
     **yaml.safe_load(MCP_ROUTE_AUTH_DEFAULTS.read_text()),
+    **yaml.safe_load((DEFAULTS.parent / "05-a2a-targets.yml").read_text()),
 }
+HINDSIGHT_DEFAULTS = yaml.safe_load(
+    (REPO_ROOT / "roles/agentgateway_docker/defaults/main/20-hindsight-acl.yml").read_text()
+)
 TEMPLATE_SOURCE = TEMPLATE.read_text()
 
 
@@ -72,6 +77,12 @@ def _render(
         ai_agent_gateway_key_fields=key_fields,
         openbao_secrets_by_domain={"agentgateway-agent-keys": keys or {}},
     )
+    callers = _render_callers(roster, registry)
+    roster_tiers = _render_map(
+        HINDSIGHT_DEFAULTS["agentgateway_docker_hindsight_roster_tiers"],
+        agentgateway_docker_roster_keys=roster_keys,
+        ai_callers=callers,
+    )
     context = {
         "ansible_managed": "managed by test",
         "agentgateway_docker_admin_port": 15001,
@@ -106,11 +117,16 @@ def _render(
         "agentgateway_docker_nautobot_mcp_port": 8003,
         "agentgateway_docker_nautobot_openapi_enabled": False,
         "agentgateway_docker_a2a_targets": [
-            {"path_prefix": "/a2a/test/", "host": "http://langgraph.example.com:5000"}
+            {
+                "name": "langgraph",
+                "path_prefix": "/a2a/test/",
+                "host": "http://langgraph.example.com:5000",
+            }
         ],
         "ai_agents": roster,
         "ai_agent_owner": owners or {},
         "agentgateway_docker_roster_keys": roster_keys,
+        "agentgateway_docker_hindsight_roster_tiers": roster_tiers,
         **(extra or {}),
     }
     return ENV.from_string(TEMPLATE_SOURCE if template_source is None else template_source).render(**context)
