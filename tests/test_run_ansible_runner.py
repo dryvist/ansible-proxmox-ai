@@ -183,6 +183,20 @@ class RunAnsibleGuardContract(RunnerSandboxBase):
                     "task_group,localhost",
                 ),
             ),
+            (
+                ("--limit", "grp:!h,localhost"),
+                (
+                    "--limit",
+                    "grp:!h,localhost",
+                    "--limit",
+                    "grp,!h,localhost",
+                ),
+            ),
+            (
+                ("--limit", "grp"),
+                ("--limit", "grp", "--limit", "grp,localhost"),
+            ),
+            (("--limit", "grp,localhost"), ("--limit", "grp,localhost")),
             (("--limit", "group,localhost"), ("--limit", "group,localhost")),
             (
                 ("--limit", "all:!down"),
