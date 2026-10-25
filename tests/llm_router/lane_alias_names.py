@@ -11,6 +11,14 @@ from test_lane_fallback_chains import load_registry
 
 SOURCE = "ansible-proxmox-ai"
 ROLE_DEPLOYMENTS = "roles/llm_router/defaults/main/55-roles.yml"
+AGENTGATEWAY_DEFAULTS = "roles/agentgateway_docker/defaults/main/00-gateway.yml"
+AGENTGATEWAY_EMBED_MODEL = "agentgateway_docker_docs_mcp_embed_model"
+HERMES_INVENTORY = "inventory/group_vars/all.yml"
+HERMES_MODEL_SELECTORS = (
+    "hermes_brain_model",
+    "hermes_agent_cron_model",
+    "hermes_goal_judge_model",
+)
 
 
 def _strings(value: object) -> set[str]:
@@ -72,6 +80,26 @@ def lane_alias_names(repo_root: Path) -> list[str]:
             )
 
     names.update(_inventory_model_values(repo_root, excluded))
+
+    hermes_inventory = repo_root / HERMES_INVENTORY
+    if hermes_inventory.exists():
+        for document in load_yaml_documents(hermes_inventory):
+            if not isinstance(document, dict):
+                continue
+            for selector in HERMES_MODEL_SELECTORS:
+                model = document.get(selector)
+                if isinstance(model, str) and "{{" not in model and model.strip():
+                    names.add(model.strip())
+
+    agentgateway_defaults = repo_root / AGENTGATEWAY_DEFAULTS
+    if agentgateway_defaults.exists():
+        for document in load_yaml_documents(agentgateway_defaults):
+            if not isinstance(document, dict):
+                continue
+            model = document.get(AGENTGATEWAY_EMBED_MODEL)
+            if isinstance(model, str) and "{{" not in model and model.strip():
+                names.add(model.strip())
+
     return sorted(names)
 
 
