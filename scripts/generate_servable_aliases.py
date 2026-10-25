@@ -83,6 +83,70 @@ def build_contract(entries: list[dict]) -> dict:
                 )
             aliases[alias] = entry["client_model_id"]
 
+    # `model_group_alias` is the union of stable aliases projected from entries
+    # the router admits as servable, plus its explicit long-context exception.
+    # Keep that public alias vocabulary separate from direct routes below.
+    long_context_alias_ids = {
+        entry["client_model_id"]
+        for entry in enabled
+        if entry.get("tier") == "openrouter"
+        and entry.get("context_window", 0) >= 1_000_000
+        and entry.get("zero_data_retention") is True
+    }
+    served_aliases = sorted(
+        {
+            alias
+            for entry in entries
+            if (
+                (entry.get("enabled") and entry.get("servable"))
+                or entry.get("client_model_id") in long_context_alias_ids
+            )
+            for alias in entry.get("stable_aliases", [])
+        }
+    )
+
+    # route_group is the model_list name when present; model_list templates use
+    # client_model_id as the name for entries without a route_group. These names
+    # stay registry-derived so inventory or Ansible rendering is not required.
+    route_groups = sorted(
+        {
+            entry.get("route_group") or entry.get("client_model_id")
+            for entry in enabled
+            if entry.get("route_group") or entry.get("client_model_id")
+        }
+    )
+    direct_routes = sorted(
+        {
+            route
+            for entry in enabled
+            for route in entry.get("direct_route_aliases", [])
+        }
+    )
+
+    # These are LiteLLM's DB-seeded role targets. Review role names are stable
+    # aliases from the registry and are already included in `served_aliases`.
+    roles_path = REPO_ROOT / "roles/llm_router/defaults/main/55-roles.yml"
+    roles_doc = yaml.safe_load(roles_path.read_text(encoding="utf-8")) or {}
+    roles = sorted(
+        {
+            role["role"]
+            for role in roles_doc.get("_llm_router_role_deployments_source", [])
+            if isinstance(role, dict) and role.get("role")
+        }
+    )
+    router_name_categories = {
+        "aliases": served_aliases,
+        "route_groups": route_groups,
+        "direct_routes": direct_routes,
+        "roles": roles,
+    }
+    router_names = {
+        **router_name_categories,
+        "all": sorted(
+            set().union(*(set(names) for names in router_name_categories.values()))
+        ),
+    }
+
     models = []
     for entry in enabled:
         upstream_model_id = entry.get("upstream_model_id")
@@ -124,6 +188,7 @@ def build_contract(entries: list[dict]) -> dict:
         "servable_models": sorted(
             m["client_model_id"] for m in models if m["servable"]
         ),
+        "router_names": router_names,
     }
 
 
