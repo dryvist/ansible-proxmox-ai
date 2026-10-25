@@ -13,10 +13,18 @@ those the default is rendered first, so a default replaced by a literal is caugh
 from __future__ import annotations
 
 import pytest
+import yaml
+
 from _role_files import template_text
 from _shell_harness_shared import ROLES, defaults_of, render
 
 SENTINEL = "http://otel-sentinel.test.invalid:4318"
+INVENTORY_VARS = yaml.safe_load((ROLES.parent / "inventory/group_vars/all.yml").read_text())
+INVENTORY_CONTEXT = {
+    "agentgateway_docker_a2a_allowed_tier": INVENTORY_VARS[
+        "agentgateway_docker_a2a_allowed_tier"
+    ],
+}
 
 CONSUMERS = [
     pytest.param("llm_router", "litellm.env.j2", None, id="llm_router"),
@@ -60,6 +68,7 @@ def test_consumer_carries_the_orchestration_endpoint(role: str, template: str, d
     context = {
         **defaults,
         **REGISTRY_PROJECTIONS,
+        **INVENTORY_CONTEXT,
         "ansible_managed": "test render",
         "ai_orchestration_otel_endpoint": SENTINEL,
     }

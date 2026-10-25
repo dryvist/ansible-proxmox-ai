@@ -49,7 +49,7 @@ page continues with the variable surface.
 | `hermes_agent_slack_allowed_users` | `""` | comma-sep Slack member IDs allowed to DM the bot |
 | `hermes_agent_slack_home_channel` | `""` | Slack channel ID for proactive posts |
 | `hermes_agent_slack_home_channel_name` | `""` | Slack channel display name |
-| `hermes_agent_a2a_inbound_enabled` | `false` | enable the authenticated inbound A2A listener |
+| `hermes_agent_a2a_inbound_enabled` | on for `hermes`, or when a token is set | enable the authenticated inbound A2A listener |
 | `hermes_agent_a2a_inbound_port` | `9901` | listener port in `gateway.platforms.a2a.extra.port` |
 | `hermes_agent_a2a_inbound_host` | `0.0.0.0` | listener bind host, applied only when enabled |
 | `hermes_agent_a2a_inbound_token` | identity-scoped env/OpenBao lookup | required bearer token when inbound A2A is enabled |

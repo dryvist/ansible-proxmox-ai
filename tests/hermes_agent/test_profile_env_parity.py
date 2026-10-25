@@ -40,6 +40,8 @@ _DEFAULT_STORE_ONLY_KEYS = {
     "API_SERVER_KEY",
     "API_SERVER_HOST",
     "API_SERVER_PORT",
+    "A2A_BEARER_TOKEN",
+    "A2A_HOST",
     # Slack routing ids, read by the gateway's own emitters.
     "SLACK_FIREHOSE_CHANNEL",
     "SLACK_HERMES_ALL_CHANNEL",
