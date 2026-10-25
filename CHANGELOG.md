@@ -1,5 +1,51 @@
 # Changelog
 
+## [2.7.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.6.0...v2.7.0) (2026-10-25)
+
+
+### Features
+
+* add optional agent session semantic index ([#1671](https://github.com/dryvist/ansible-proxmox-ai/issues/1671)) ([88ff797](https://github.com/dryvist/ansible-proxmox-ai/commit/88ff797b5fdc4ca9865d50bd776f273c6ae12b68))
+* **agentgateway-docker:** add the Hindsight bank ACL route ([#1694](https://github.com/dryvist/ansible-proxmox-ai/issues/1694)) ([f4deb12](https://github.com/dryvist/ansible-proxmox-ai/commit/f4deb1278272ce06f9fa4ac82111111b84882160))
+* **agentgateway:** accept a bearer agent key on the Hindsight route ([#1709](https://github.com/dryvist/ansible-proxmox-ai/issues/1709)) ([e0fd114](https://github.com/dryvist/ansible-proxmox-ai/commit/e0fd11423e5a7269dfe6df4a5bb4181ed8a2ad93))
+* **agentgateway:** give each roster agent a Hindsight bank per trust tier ([#1708](https://github.com/dryvist/ansible-proxmox-ai/issues/1708)) ([054d210](https://github.com/dryvist/ansible-proxmox-ai/commit/054d21069bcd3160a74fad9acf87b3c752694927))
+* **agentgateway:** issue gateway keys and tier banks to registry callers ([#1712](https://github.com/dryvist/ansible-proxmox-ai/issues/1712)) ([39a0548](https://github.com/dryvist/ansible-proxmox-ai/commit/39a054886cb2f225d8574a82dca1cb501c3c5ec8))
+* **agentgateway:** upgrade to v1.6.0 ([#1683](https://github.com/dryvist/ansible-proxmox-ai/issues/1683)) ([1861e97](https://github.com/dryvist/ansible-proxmox-ai/commit/1861e97457cc3ef3796397b724a34700fdb2004f))
+* **clickhouse-docker:** add llm conversation schema and cribl ingest user ([#1703](https://github.com/dryvist/ansible-proxmox-ai/issues/1703)) ([28a9179](https://github.com/dryvist/ansible-proxmox-ai/commit/28a9179faa07fe04d931f6a36676c823c70abe8f))
+* enable the agent session index ([#1697](https://github.com/dryvist/ansible-proxmox-ai/issues/1697)) ([ae0e31a](https://github.com/dryvist/ansible-proxmox-ai/commit/ae0e31a2a13b9fce9066c78dbbfd90c90a238a21))
+* **hermes_agent:** use the gateway Hindsight route once the caller key is seeded ([#1714](https://github.com/dryvist/ansible-proxmox-ai/issues/1714)) ([6057684](https://github.com/dryvist/ansible-proxmox-ai/commit/60576841add7059ede093d238362eb3490ed8d25))
+* **hindsight-docker:** upgrade the Hindsight server to 0.10.3 ([#1692](https://github.com/dryvist/ansible-proxmox-ai/issues/1692)) ([ef83f4a](https://github.com/dryvist/ansible-proxmox-ai/commit/ef83f4afc1e5c0dbef0f16cbee701b8a07cf4d0c))
+* **llm_router:** exclude hosted route classes for zcode and sandbox-agent ([#1720](https://github.com/dryvist/ansible-proxmox-ai/issues/1720)) ([e74dac8](https://github.com/dryvist/ansible-proxmox-ai/commit/e74dac83b93777e42f84a46b348a08e53f424077))
+* **llm_router:** publish every served router name in the alias contract ([#1725](https://github.com/dryvist/ansible-proxmox-ai/issues/1725)) ([33a1585](https://github.com/dryvist/ansible-proxmox-ai/commit/33a158571a5efdeb5ce854acfe444b7d7f3b5e67))
+* **llm_router:** serve the lane aliases and check the lane vocabulary ([#1679](https://github.com/dryvist/ansible-proxmox-ai/issues/1679)) ([d79305c](https://github.com/dryvist/ansible-proxmox-ai/commit/d79305c117f8898bc2e54b869ea7948a133f12f3))
+* **llm-router:** add lane fallback chains for light, standard and critical ([#1691](https://github.com/dryvist/ansible-proxmox-ai/issues/1691)) ([6b18f60](https://github.com/dryvist/ansible-proxmox-ai/commit/6b18f60a9b2cd5d7f9f4e98623997aaa547f96d6))
+* **llm-router:** check lane alias names against the shared contract ([#1718](https://github.com/dryvist/ansible-proxmox-ai/issues/1718)) ([ee352b9](https://github.com/dryvist/ansible-proxmox-ai/commit/ee352b9f8037893c70fe3daa62be4f06fdd121ab))
+* **nvidia-gpu-guest:** install the DCGM exporter on Debian 13 guests ([#1689](https://github.com/dryvist/ansible-proxmox-ai/issues/1689)) ([a60d138](https://github.com/dryvist/ansible-proxmox-ai/commit/a60d138a931e9fe20c5a2210cd74de2f375a211c))
+* **otel:** send OTLP telemetry through the otel front door ([#1704](https://github.com/dryvist/ansible-proxmox-ai/issues/1704)) ([c94a078](https://github.com/dryvist/ansible-proxmox-ai/commit/c94a078247f1876211faf5fcb0252851c21cfc6d))
+* schedule weekly voice-learn job ([#1673](https://github.com/dryvist/ansible-proxmox-ai/issues/1673)) ([cf96e1f](https://github.com/dryvist/ansible-proxmox-ai/commit/cf96e1ff948ce870526baffdb49006724a4747a1))
+
+
+### Bug Fixes
+
+* bound the codex_runner package install with a task timeout ([#1711](https://github.com/dryvist/ansible-proxmox-ai/issues/1711)) ([f58a9ca](https://github.com/dryvist/ansible-proxmox-ai/commit/f58a9ca70673b784a7a6feb2a116a9b3890a9fb7))
+* bump Claude Code to 2.1.302 ([47ae4f2](https://github.com/dryvist/ansible-proxmox-ai/commit/47ae4f2fb66406a14044aae134ebd12c6afd8242))
+* **ci:** scope secrets for shared Molecule workflow ([#1693](https://github.com/dryvist/ansible-proxmox-ai/issues/1693)) ([2b71e6a](https://github.com/dryvist/ansible-proxmox-ai/commit/2b71e6a690e617fe81ee847476eb44ddddca57b1))
+* disable K2 Horizon MLX routes ([#1686](https://github.com/dryvist/ansible-proxmox-ai/issues/1686)) ([58d6cb2](https://github.com/dryvist/ansible-proxmox-ai/commit/58d6cb29b7c6e05f637469371c864e951f56f18e))
+* **fabric_watchdog:** key cron watchdog alert titles on the job ([#1719](https://github.com/dryvist/ansible-proxmox-ai/issues/1719)) ([4ff2ba7](https://github.com/dryvist/ansible-proxmox-ai/commit/4ff2ba70c11ded8cda336f38881951239b9a2b77))
+* **hermes_agent:** configure the dashboard auth provider ([#1717](https://github.com/dryvist/ansible-proxmox-ai/issues/1717)) ([8c26b0e](https://github.com/dryvist/ansible-proxmox-ai/commit/8c26b0ee7c386b67235dc308470e69af96744582))
+* **hermes_agent:** guard dashboard auth settings and check the unit before its gates ([#1715](https://github.com/dryvist/ansible-proxmox-ai/issues/1715)) ([f1c4a4c](https://github.com/dryvist/ansible-proxmox-ai/commit/f1c4a4c6f38f38234763cc3bcc3d69eb9205a89f))
+* **hermes_agent:** verify Node tarball against upstream checksums and guard restart marker ([#1710](https://github.com/dryvist/ansible-proxmox-ai/issues/1710)) ([ec6b17e](https://github.com/dryvist/ansible-proxmox-ai/commit/ec6b17e1764906b4765dea21d3e0fef3c3727bbf))
+* **llm_gpu_serving:** install DCGM on every NVIDIA guest ([#1700](https://github.com/dryvist/ansible-proxmox-ai/issues/1700)) ([33f5ce5](https://github.com/dryvist/ansible-proxmox-ai/commit/33f5ce55464634e90252169a97ec7818384e9c18))
+* **llm_router:** hold filelock at 3.32.7 for LiteLLM 1.105.1 ([#1721](https://github.com/dryvist/ansible-proxmox-ai/issues/1721)) ([2a77b89](https://github.com/dryvist/ansible-proxmox-ai/commit/2a77b898123a656b7f373cca628864c259c1e508))
+* **llm_router:** hold filelock below 4 for LiteLLM ([#1706](https://github.com/dryvist/ansible-proxmox-ai/issues/1706)) ([93a7e4e](https://github.com/dryvist/ansible-proxmox-ai/commit/93a7e4eb7208c3ca532fcff939ae8ed3aa74f0c8))
+* **llm-router:** enforce hashes for LiteLLM requirements ([f33ea27](https://github.com/dryvist/ansible-proxmox-ai/commit/f33ea27cfbb93e5f5d8420badcd96d6fab6c5af3))
+* **llm-router:** restore a LiteLLM-compatible filelock pin ([#1682](https://github.com/dryvist/ansible-proxmox-ai/issues/1682)) ([69e4e48](https://github.com/dryvist/ansible-proxmox-ai/commit/69e4e488703f0f74abd17e7e64e4a35e3e398eb1))
+* match the Browser Use gate on stable global-secrets page markers ([#1713](https://github.com/dryvist/ansible-proxmox-ai/issues/1713)) ([8976edd](https://github.com/dryvist/ansible-proxmox-ai/commit/8976edd8caf249b6e24db9f66cd15d16ca31a70e))
+* **nvidia_gpu_guest:** create the DCGM exporter drop-in directory ([#1702](https://github.com/dryvist/ansible-proxmox-ai/issues/1702)) ([172fec5](https://github.com/dryvist/ansible-proxmox-ai/commit/172fec58c0c2bd5e33bca4bc75119fe0c2ad67c1))
+* **nvidia_gpu_guest:** install DCGM on every NVIDIA guest ([#1699](https://github.com/dryvist/ansible-proxmox-ai/issues/1699)) ([ec45fe7](https://github.com/dryvist/ansible-proxmox-ai/commit/ec45fe72627f06a6dfdecfc945b192f98ffeb2e2))
+* **run-ansible:** pass Ansible a comma-only limit ([#1728](https://github.com/dryvist/ansible-proxmox-ai/issues/1728)) ([e37852a](https://github.com/dryvist/ansible-proxmox-ai/commit/e37852afc6615ad774be3424e019965c40f32253))
+* track released versions for pinned Git refs ([#1674](https://github.com/dryvist/ansible-proxmox-ai/issues/1674)) ([061356f](https://github.com/dryvist/ansible-proxmox-ai/commit/061356fb3dadaf4a17fd71b133e7e71bbdc182f7))
+
 ## [2.6.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.5.0...v2.6.0) (2026-10-23)
 
 
