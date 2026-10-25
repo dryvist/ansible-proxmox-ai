@@ -10,6 +10,8 @@
     # The lane that must answer from a non-local rung, and the lane that must refuse.
     _lane_walk_answers: standard
     _lane_walk_refuses: light
+    # Opt in only after the router's local rung has been disabled for a live walk.
+    lane_walk_expect_failover: false
   tasks:
     - name: Load router lanes from the model registry
       ansible.builtin.include_role:
@@ -25,6 +27,7 @@
           - _lane_walk_key | length > 0
           - _lane_walk_answers in llm_router_lane_names
           - _lane_walk_refuses in llm_router_lane_names
+          - _lane_walk_refuses in llm_router_local_only_fail_fast_names
         fail_msg: LLM_ROUTER_URL, LLM_ROUTER_API_KEY, and the standard and light lanes are required.
       no_log: true
 
@@ -51,8 +54,20 @@
         quiet: true
         that:
           - _lane_walk_standard.status | int == 200
-          - _lane_walk_standard.headers.get('x-litellm-lane', '') == _lane_walk_answers
+          - _lane_walk_standard.get('x_litellm_lane', '') == _lane_walk_answers
         fail_msg: The standard lane request did not return its lane header.
+
+    # LiteLLM's model ID identifies the deployment that served the response.
+    # Combined with the probe key's !local tag and the local rung disabled for
+    # this opt-in run, a positive fallback count proves non-local failover.
+    - name: Verify the opted-in standard lane failover
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _lane_walk_standard.get('x_litellm_model_id', '') | length > 0
+          - _lane_walk_standard.get('x_litellm_attempted_fallbacks', '0') | int > 0
+        fail_msg: The standard lane did not serve a deployment after attempting a fallback.
+      when: lane_walk_expect_failover | bool
 
     - name: Request the light lane
       ansible.builtin.uri:
@@ -79,10 +94,14 @@
         that:
           - _lane_walk_light.status | default(0) | int >= 400
           - _lane_walk_light.status | default(0) | int < 500
-        fail_msg: The light lane did not return a client error.
+        fail_msg: >-
+          The light lane returned status {{ _lane_walk_light.status | default(0) | int }}
+          instead of a 4xx fail-fast response.
 
     - name: Record the standard lane serving group
       ansible.builtin.debug:
         msg:
-          model_group: "{{ _lane_walk_standard.headers.get('x-litellm-model-group', '') }}"
+          model_group: "{{ _lane_walk_standard.get('x_litellm_model_group', '') }}"
           served_model: "{{ (_lane_walk_standard.json | default({})).get('model', '') }}"
+          attempted_fallbacks: "{{ _lane_walk_standard.get('x_litellm_attempted_fallbacks', '0') | int }}"
+          light_status: "{{ _lane_walk_light.status | default(0) | int }}"
