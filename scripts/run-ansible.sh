@@ -222,7 +222,10 @@ for a in "$@"; do
   [[ $a == --limit=* ]] && LIMIT_VAL="${a#--limit=}"
   prev="$a"
 done
-[[ -n $LIMIT_VAL && ",${LIMIT_VAL//:/,}," != *,localhost,* ]] && set -- "$@" --limit "${LIMIT_VAL//:/,},localhost"
+LIMIT_NORM="${LIMIT_VAL//:/,}"
+[[ ",$LIMIT_NORM," == *,localhost,* ]] || LIMIT_NORM="$LIMIT_NORM,localhost"
+# With a comma present Ansible stops splitting on ':', so 'a:!b,c' would match no host.
+[[ -n $LIMIT_VAL && $LIMIT_NORM != "$LIMIT_VAL" ]] && set -- "$@" --limit "$LIMIT_NORM"
 set +e
 ansible-playbook "$PLAYBOOK" "$@" 2>&1 | tee "$LOG_FILE"
 STATUS=${PIPESTATUS[0]}
