@@ -10,7 +10,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_site_converges_clickhouse_before_langfuse_and_prefetches_its_domain():
-    plays = yaml.safe_load((ROOT / "playbooks/site.yml").read_text())
+    site_plays = yaml.safe_load((ROOT / "playbooks/site.yml").read_text())
+    orchestration_imports = [
+        play for play in site_plays
+        if play.get("import_playbook") == "ai-orchestration.yml"
+    ]
+    plays = yaml.safe_load((ROOT / "playbooks/ai-orchestration.yml").read_text())
     clickhouse_play = next(play for play in plays if play.get("hosts") == "clickhouse_group")
     langfuse_index = next(
         index for index, play in enumerate(plays)
@@ -22,7 +27,7 @@ def test_site_converges_clickhouse_before_langfuse_and_prefetches_its_domain():
         if task.get("name") == "Include clickhouse_docker role"
     )
     secret_play = next(
-        play for play in plays
+        play for play in site_plays
         if "clickhouse_group" in play.get("hosts", "")
         and play.get("tags") == "always"
     )
@@ -35,6 +40,7 @@ def test_site_converges_clickhouse_before_langfuse_and_prefetches_its_domain():
     assert clickhouse_play["become"] is True
     assert "clickhouse_docker" in clickhouse_play["tags"]
     assert role_task["ansible.builtin.include_role"]["name"] == "clickhouse_docker"
+    assert len(orchestration_imports) == 1
     assert clickhouse_index < langfuse_index
     assert published["bao_clickhouse_secrets"] == (
         "{{ openbao_secrets_by_domain['clickhouse'] | default({}) }}"
