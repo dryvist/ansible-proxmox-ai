@@ -31,7 +31,10 @@ KEYS = {
 ENV = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
 ENV.filters.update(FilterModule().filters())
 INVENTORY_VARS = yaml.safe_load(INVENTORY.read_text())
-ROLE_DEFAULTS = yaml.safe_load(DEFAULTS.read_text())
+ROLE_DEFAULTS = {
+    **yaml.safe_load(DEFAULTS.read_text()),
+    **yaml.safe_load((DEFAULTS.parent / "05-a2a-targets.yml").read_text()),
+}
 HINDSIGHT_DEFAULTS = yaml.safe_load(
     (REPO_ROOT / "roles/agentgateway_docker/defaults/main/20-hindsight-acl.yml").read_text()
 )
@@ -228,7 +231,10 @@ def test_hermes_a2a_route_authenticates_callers_and_allows_only_trusted_tier() -
         _render(
             agents=agents,
             keys=keys,
-            extra={"agentgateway_docker_a2a_targets": a2a_targets},
+            extra={
+                "agentgateway_docker_a2a_targets": a2a_targets,
+                "agentgateway_docker_a2a_allowed_tier": "trusted",
+            },
         )
     )
     a2a_routes = [
