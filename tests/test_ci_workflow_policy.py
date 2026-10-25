@@ -147,7 +147,7 @@ def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
         if "runs-on" in job and (path.name, name) != ("fix-installer-sha.yml", "fix"):
             value = " ".join(str(job.get("timeout-minutes")).split())
             allowed = {PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"}
-            if (path.name, name) == ("_molecule-select.yml", "select"):
+            if (path.name, name) in {("_molecule-select.yml", "select"), ("_lane-alias-parity.yml", "lane-alias-names")}:
                 allowed = {"5"}
             elif (path.name, name) == ("_llm-router-contract.yml", "router-contract-dependencies"):
                 allowed = {ROUTER_DEPENDENCIES_TIMEOUT}
