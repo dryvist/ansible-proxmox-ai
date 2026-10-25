@@ -1,0 +1,88 @@
+---
+- name: Verify the router lane fallback behavior
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _lane_walk_url: >-
+      {{ lookup('ansible.builtin.env', 'LLM_ROUTER_URL') | trim | regex_replace('/+$', '') }}
+    _lane_walk_key: "{{ lookup('ansible.builtin.env', 'LLM_ROUTER_API_KEY') | trim }}"
+    # The lane that must answer from a non-local rung, and the lane that must refuse.
+    _lane_walk_answers: standard
+    _lane_walk_refuses: light
+  tasks:
+    - name: Load router lanes from the model registry
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+        public: true
+
+    - name: Require the configured endpoint, key, and lane projection
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _lane_walk_url | length > 0
+          - _lane_walk_key | length > 0
+          - _lane_walk_answers in llm_router_lane_names
+          - _lane_walk_refuses in llm_router_lane_names
+        fail_msg: LLM_ROUTER_URL, LLM_ROUTER_API_KEY, and the standard and light lanes are required.
+      no_log: true
+
+    - name: Request the standard lane
+      ansible.builtin.uri:
+        url: "{{ _lane_walk_url }}/v1/chat/completions"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _lane_walk_key }}"
+        body_format: json
+        body:
+          model: "{{ _lane_walk_answers }}"
+          messages:
+            - role: user
+              content: Reply with OK.
+          max_tokens: 8
+        return_content: true
+        status_code: 200
+      register: _lane_walk_standard
+      no_log: true
+
+    - name: Verify the standard lane header
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _lane_walk_standard.status | int == 200
+          - _lane_walk_standard.headers.get('x-litellm-lane', '') == _lane_walk_answers
+        fail_msg: The standard lane request did not return its lane header.
+
+    - name: Request the light lane
+      ansible.builtin.uri:
+        url: "{{ _lane_walk_url }}/v1/chat/completions"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _lane_walk_key }}"
+        body_format: json
+        body:
+          model: "{{ _lane_walk_refuses }}"
+          messages:
+            - role: user
+              content: Reply with OK.
+          max_tokens: 8
+        return_content: false
+        status_code: "{{ range(100, 600) | list }}"
+      register: _lane_walk_light
+      failed_when: false
+      no_log: true
+
+    - name: Verify the light lane refuses without local routes
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _lane_walk_light.status | default(0) | int >= 400
+          - _lane_walk_light.status | default(0) | int < 500
+        fail_msg: The light lane did not return a client error.
+
+    - name: Record the standard lane serving group
+      ansible.builtin.debug:
+        msg:
+          model_group: "{{ _lane_walk_standard.headers.get('x-litellm-model-group', '') }}"
+          served_model: "{{ (_lane_walk_standard.json | default({})).get('model', '') }}"
