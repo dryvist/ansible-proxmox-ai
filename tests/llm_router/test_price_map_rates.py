@@ -283,9 +283,13 @@ def test_fetched_price_map_validation_rejects_fewer_than_minimum_keys():
 
 
 def test_default_url_uses_the_version_from_the_litellm_package_pin():
-    pin_defaults = yaml.safe_load(
-        (REPO_ROOT / "roles/llm_router/defaults/main/00-identity.yml").read_text(encoding="utf-8")
-    )
+    packages = [
+        line
+        for line in (REPO_ROOT / "roles/llm_router/files/requirements.in")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line and not line.startswith("#")
+    ]
     environment = jinja2.Environment()
     environment.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
     environment.filters["regex_escape"] = re.escape
@@ -294,11 +298,11 @@ def test_default_url_uses_the_version_from_the_litellm_package_pin():
         pattern, replacement, value
     )
     url = environment.from_string(_defaults()["llm_router_price_map_rates_url"]).render(
-        llm_router_pip_packages=pin_defaults["llm_router_pip_packages"]
+        llm_router_pip_packages=packages
     )
     version = next(
         package.split("==", 1)[1]
-        for package in pin_defaults["llm_router_pip_packages"]
+        for package in packages
         if package.startswith("litellm[proxy]==")
     )
     assert url.endswith(f"/v{version}/model_prices_and_context_window.json")

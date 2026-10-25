@@ -6,8 +6,9 @@ import hashlib
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
-from jinja2 import Environment
+from jinja2 import Environment, StrictUndefined, UndefinedError
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 ENV = Environment()
@@ -265,3 +266,20 @@ def test_gateway_marker_modules_execute_with_ansible_check_mode(tmp_path):
         message in output.casefold()
         for message in ("unsupported parameter", "missing required arguments", "unsupported parameters")
     ), output
+
+
+def test_restart_record_is_skipped_when_the_digest_was_never_set():
+    handlers = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
+    stamp = next(handler for handler in handlers if handler["name"] == "Record the gateway restart")
+    guard = ENV.compile_expression(stamp["when"])
+    assert guard() is False
+    assert guard(hermes_agent_gateway_desired_digest="digest") is True
+    strict = Environment(undefined=StrictUndefined)
+    content = stamp["ansible.builtin.copy"]["content"]
+    # Skipped path: rendering content without the digest is the failure the guard prevents.
+    with pytest.raises(UndefinedError):
+        strict.from_string(content).render()
+    assert (
+        strict.from_string(content).render(hermes_agent_gateway_desired_digest="digest")
+        == "digest"
+    )

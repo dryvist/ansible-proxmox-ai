@@ -17,7 +17,7 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     vars_ = plays[1]["vars"]
     assert vars_["_benchmark_run_evalscope_version"] == "1.13.0"
     assert vars_["_benchmark_run_promptfoo_version"] == "0.124.1"
-    assert vars_["_benchmark_run_lmcache_version"] == "0.5.5"
+    assert vars_["_benchmark_run_lmcache_version"] == "0.5.6"
     assert vars_["_benchmark_run_vllm_client_version"] == "{{ vllm_serving_version }}"
     assert vars_["_benchmark_run_vllm_client_image"] == (
         "vllm/vllm-openai-cpu:v{{ vllm_serving_version }}-x86_64"
@@ -32,6 +32,8 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     request_assert = preflight[0]["ansible.builtin.assert"]["that"]
     assert "not (publish | default(false) | bool)" in request_assert
     assert any("reasoning_arm" in assertion for assertion in request_assert)
+    reasoning_assert = next(assertion for assertion in request_assert if "reasoning_arm" in assertion)
+    assert "'high'" in reasoning_assert
     assert any(
         "item_limit" in assertion
         for task in preflight

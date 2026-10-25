@@ -117,7 +117,7 @@
               | selectattr('lifecycle', 'defined')
               | list)[:2] }}
 
-    - name: Build the four physical serving-gate ids from registry entries
+    - name: Build physical serving-gate fixture ids from registry entries
       ansible.builtin.set_fact:
         _fixture_gate_ids: >-
           {{ llm_router_servable_models
@@ -125,12 +125,16 @@
         _fixture_gpu_ids: >-
           {{ llm_router_gpu_models | map(attribute='upstream_model_id') | unique | list }}
 
-    # Retirement removes one physical gate id while large resolves to primary.
-    - name: Prove the fixture contains all four catalogued gate ids
+    # Keep every currently claimed id plus the retired ids still returned by
+    # the fixture gate; the registry can change this set without a fixed count.
+    - name: Prove the fixture covers current and legacy gate ids
       ansible.builtin.assert:
         quiet: true
         that:
-          - _fixture_gate_ids | length == 4
+          - llm_router_servable_models | difference(_fixture_gate_ids) | length == 0
+          - >-
+            _fixture_legacy_gate_models | map(attribute='client_model_id')
+            | difference(_fixture_gate_ids) | length == 0
           - _fixture_gpu_ids | length == llm_router_gpu_models | length
 
     - name: Set offline model-list responses for both local serving gates
@@ -156,7 +160,7 @@
         _llm_router_remote_models:
           results: []
 
-    - name: Run serving-gate parity against the five fixture ids
+    - name: Run serving-gate parity against the registry-derived fixture ids
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
 
     - name: Run the seed-key format assertion with no seeded credentials

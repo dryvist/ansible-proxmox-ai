@@ -95,8 +95,8 @@ def job(name, *, cadence_min, last_ok_ago_min, status="ok", **extra):
     return record
 
 
-def run(jobs, state=None, now=NOW, profiles=None, paused=None):
-    """Evaluate a synthetic fleet. Returns (stale, recovered, state, paused-too-long).
+def write_stores(jobs, profiles=None, paused=None):
+    """Lay the default store and any profile roots out on disk, as the guest does.
 
     `profiles` maps a profile name to its job list, or to None for a profile
     root that exists but carries no job store — the shape a profile has before
@@ -117,6 +117,11 @@ def run(jobs, state=None, now=NOW, profiles=None, paused=None):
         root = TMP if name == "default" else PROFILES_DIR / name
         root.mkdir(parents=True, exist_ok=True)
         (root / "ESTOP").write_text("not-json {")
+
+
+def run(jobs, state=None, now=NOW, profiles=None, paused=None):
+    """Evaluate a synthetic fleet. Returns (stale, recovered, state, paused-too-long)."""
+    write_stores(jobs, profiles=profiles, paused=paused)
     state = state if state is not None else {"schema": WD.STATE_SCHEMA, "jobs": {}, "stores": {}}
     stale, recovered, paused_long = WD.evaluate(WD.load_stores(), state, now)
     return stale, recovered, state, paused_long

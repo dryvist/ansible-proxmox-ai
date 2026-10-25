@@ -82,20 +82,21 @@
           {{ _config.model_list | map(attribute='model_name') | unique
              | intersect(_capabilities) | list }}
 
-    # `large` now resolves to the primary route group, so there are four unique capabilities.
-    - name: Expose exactly four local capabilities and the registry aliases
+    # `large` resolves to the primary route group; the GPU trial group is the
+    # additional registry-backed local capability.
+    - name: Expose the registry capabilities and aliases
       ansible.builtin.assert:
         quiet: true
         that:
           - llm_router_large_model == llm_router_primary_model
-          - _capabilities | length == 4
+          - _capabilities | length == _expected_capabilities | length
           - _capabilities | symmetric_difference(_expected_capabilities) | length == 0
-          - _registry_local_capability_names | symmetric_difference(_capabilities) | length == 0
-          - _rendered_capability_names | symmetric_difference(_capabilities) | length == 0
+          - _registry_local_capability_names | difference(_capabilities) | length == 0
+          - _rendered_capability_names | symmetric_difference(_registry_local_capability_names) | length == 0
           - _small_members | length == 1
           - _small_members | map(attribute='litellm_params.order') | map('int') | list == [3]
           - _small_members | map(attribute='litellm_params.api_base') | list == llm_router_cpu_9b_backend_urls
-          - _aliases | length == 12 + llm_router_direct_route_aliases | length
+          - _aliases | length == 18 + llm_router_direct_route_aliases | length
           - _aliases | length == _alias_pairs | length
           - _aliases.keys() | symmetric_difference(_expected_aliases) | length == 0
           - _aliases.keys() | difference(_config.router_settings.model_group_alias.keys()) | length == 0
@@ -104,7 +105,10 @@
             _aliases.keys() | intersect(_config.model_list | map(attribute='model_name')
             | unique | list) == llm_router_direct_route_aliases
           - _aliases.values() | difference(_capabilities + llm_router_direct_route_aliases) | length == 0
-          - _capabilities | difference(_config.model_list | map(attribute='model_name') | unique | list) | length == 0
+          - >-
+            _registry_local_capability_names
+            | difference(_config.model_list | map(attribute='model_name') | unique | list)
+            | length == 0
           - >-
             llm_router_max_fallbacks | int
             == llm_router_fallback_target_names | length
@@ -119,10 +123,12 @@
           rendered aliases={{ _config.router_settings.model_group_alias }}
       vars:
         _expected_capabilities: >-
-          {{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model,
-              llm_router_embedding_model, llm_router_ocr_model] | unique | list }}
+          {{ ([llm_router_small_model, llm_router_primary_model, llm_router_large_model,
+               llm_router_embedding_model, llm_router_ocr_model]
+              | select('defined') | unique | list) + ['small-trial-gpu'] }}
         _expected_aliases: >-
           {{ ['subagent', 'fast', 'cheap', 'review-oss',
               'review-private', 'review-local', 'hermes-default', 'goal-judge',
-              'default', 'auto', 'coding', 'embeddings']
+              'default', 'auto', 'coding', 'embeddings',
+              'light', 'standard', 'critical', 'long', 'best', 'large']
              + llm_router_direct_route_aliases }}

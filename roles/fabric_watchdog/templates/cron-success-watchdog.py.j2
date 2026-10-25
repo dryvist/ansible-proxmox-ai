@@ -107,6 +107,20 @@ def log(message: str) -> None:
     print(f"cron-success-watchdog: {message}", flush=True)
 
 
+class Alert(str):
+    """A posted line that also carries the job or store it concerns.
+
+    The subject is kept beside the text, so a title is built from it directly.
+    """
+
+    subject: str
+
+    def __new__(cls, text: str, subject: str) -> Alert:
+        alert = super().__new__(cls, text)
+        alert.subject = subject
+        return alert
+
+
 def ntfy(title: str, text: str, priority: str = "default", tags: str = "robot") -> None:
     if not NTFY_URL:
         log(f"WOULD ALERT (no ntfy hub configured): {text}")
@@ -237,7 +251,8 @@ def save_state(state: dict) -> None:
 
 def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
     """Decide per job across every store. Returns (newly stale, newly
-    recovered, stores newly paused too long) display names.
+    recovered, stores newly paused too long) display lines, each an Alert
+    carrying the job or store it concerns.
 
     Mutates `state` in place: advances each job's remembered last-success and
     flips its alerted latch. Every job gets a log line whatever is decided.
@@ -367,8 +382,11 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
             if wait > cadence and not record.get("wait_alerted"):
                 record["wait_alerted"] = True
                 waited.append(
-                    f"{name} ({wait / 60:.0f}m past its scheduled slot, "
-                    f"own cadence {cadence / 60:.0f}m)"
+                    Alert(
+                        f"{name} ({wait / 60:.0f}m past its scheduled slot, "
+                        f"own cadence {cadence / 60:.0f}m)",
+                        name,
+                    )
                 )
         elif record.get("wait_alerted"):
             record["wait_alerted"] = False
@@ -418,14 +436,17 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
             elif len(record["flap_alerts"]) >= FLAP_ALERTS:
                 record["muted_at"] = now
                 stale.append(
-                    f"{name} is FLAPPING ({len(record['flap_alerts'])} alerts in "
-                    f"{FLAP_WINDOW_MINUTES}m) — muted until it stays stable for "
-                    f"{FLAP_QUIET_MINUTES}m; the job's schedule or the job itself is wrong, "
-                    f"not the watchdog"
+                    Alert(
+                        f"{name} is FLAPPING ({len(record['flap_alerts'])} alerts in "
+                        f"{FLAP_WINDOW_MINUTES}m) — muted until it stays stable for "
+                        f"{FLAP_QUIET_MINUTES}m; the job's schedule or the job itself is wrong, "
+                        f"not the watchdog",
+                        name,
+                    )
                 )
                 log(f"{name}: FLAPPING -> muted; {detail}")
             else:
-                stale.append(f"{name} ({detail})")
+                stale.append(Alert(f"{name} ({detail})", name))
                 log(f"{name}: STALE -> alerting; {detail}")
         elif recovered_by_success:
             record["alerted"] = False
@@ -438,7 +459,7 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
             # went only to the log, so a false recovery was indistinguishable in
             # Slack from a true one — the asymmetry is what made the bug above
             # cost a day to find instead of a minute.
-            recovered.append(f"{name} ({detail})")
+            recovered.append(Alert(f"{name} ({detail})", name))
             log(f"{name}: RECOVERED; {detail}")
         elif overdue:
             log(f"{name}: STALE (already alerted, staying quiet); {detail}")
@@ -464,7 +485,7 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
             # Suppression cannot be unbounded. Past this long the pause has
             # stopped explaining the silence and has become the thing to report.
             record["alerted"] = True
-            paused_long.append(f"{profile} ({stopped / 3600:.0f}h)")
+            paused_long.append(Alert(f"{profile} ({stopped / 3600:.0f}h)", profile))
             log(f"store {profile}: PAUSED TOO LONG -> alerting; stopped {stopped / 60:.0f}m")
         else:
             log(f"store {profile}: paused {stopped / 60:.0f}m")
@@ -492,22 +513,24 @@ def main() -> int:
             priority="high", tags="rotating_light",
         )
     else:
+        # Per-job titles name the job only; counters stay in the body. Titles are
+        # ASCII, since they are sent as latin-1 HTTP header values.
         for entry in stale:
             ntfy(
-                "cron-success-watchdog: job STALE",
+                f"cron-success-watchdog: job STALE - {entry.subject}",
                 f"{entry} has produced no successful run. Errors alone would not "
                 f"surface this.",
                 priority="high", tags="rotating_light",
             )
-    for name in recovered:
+    for entry in recovered:
         ntfy(
-            "cron-success-watchdog: recovered",
-            f"{name} is succeeding again",
+            f"cron-success-watchdog: job STALE - {entry.subject}",
+            f"{entry} is succeeding again",
             priority="default", tags="white_check_mark",
         )
     for entry in paused_long:
         ntfy(
-            "cron-success-watchdog: store paused too long",
+            f"cron-success-watchdog: store paused too long - {entry.subject}",
             f"store {entry} has been paused this long. Absence alerts there are "
             f"suppressed, so nothing in it is being watched — resume it or confirm "
             f"the pause is intended.",
@@ -515,7 +538,7 @@ def main() -> int:
         )
     for entry in waited:
         ntfy(
-            "cron-success-watchdog: slot wait",
+            f"cron-success-watchdog: slot wait - {entry.subject}",
             f"{entry} waited longer than its own scheduling period before "
             f"starting. Not necessarily a failure yet — if it recurs, something is "
             f"holding the store's single-threaded cron pool.",

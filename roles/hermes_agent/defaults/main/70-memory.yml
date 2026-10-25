@@ -12,9 +12,9 @@ hermes_agent_memory_provider: hindsight
 # local_external: the plugin dials the standalone HA Hindsight service (two
 # stateless replicas behind the Traefik pool) instead of running the embedded
 # daemon in-guest. The upstream plugin's mode set is
-# {cloud, local_embedded, local_external}; local_external takes api_url (+
-# optional api_key — omitted here: the API is unauthenticated inside the
-# default-deny firewall). local_embedded remains supported for rollback.
+# {cloud, local_embedded, local_external}; local_external takes api_url and
+# optional api_key. This deployment passes the tenant bearer key below.
+# local_embedded remains supported for rollback.
 hermes_agent_memory_mode: local_external
 hermes_agent_memory_api_url: >-
   https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
@@ -23,6 +23,36 @@ hermes_agent_memory_api_key: >-
   {{ bao_apps_secrets.hindsight_api_key
      | mandatory('hindsight_api_key missing from bao_apps_secrets') }}
 hermes_agent_memory_llm_model: "{{ hermes_brain_model }}"
+
+# The Hermes plugin keeps using the direct Hindsight tenant credentials for
+# administrative API calls above. Its own memory config uses the caller key
+# from this identity's OpenBao domain when that optional leaf is seeded.
+hermes_agent_memory_gateway_key_field: >-
+  {{ (ai_agent_gateway_key_fields | default({})).get(hermes_agent_id, '') }}
+hermes_agent_memory_gateway_key: >-
+  {{ ((hermes_agent_bao | default({})).get(hermes_agent_memory_gateway_key_field, '')
+     | default('', true) | trim)
+     if hermes_agent_memory_gateway_key_field | length > 0 else '' }}
+hermes_agent_memory_gateway_tier: >-
+  {{ (((ai_callers | default({})).get(hermes_agent_id, {}).get('trust_tier', ''))
+      | mandatory('ai_callers trust_tier missing for Hermes gateway key'))
+     if hermes_agent_memory_gateway_key | length > 0 else '' }}
+hermes_agent_memory_gateway_api_url: >-
+  {{ hermes_agent_docs_mcp_url | regex_replace('/docs$', '/hindsight') }}
+hermes_agent_memory_gateway_bank_id: >-
+  {{ hermes_agent_id ~ '-' ~ hermes_agent_memory_gateway_tier }}
+hermes_agent_hindsight_config_api_url: >-
+  {{ hermes_agent_memory_gateway_api_url
+     if hermes_agent_memory_gateway_key | length > 0
+     else hermes_agent_memory_api_url }}
+hermes_agent_hindsight_config_api_key: >-
+  {{ hermes_agent_memory_gateway_key
+     if hermes_agent_memory_gateway_key | length > 0
+     else hermes_agent_memory_api_key }}
+hermes_agent_hindsight_config_bank_id: >-
+  {{ hermes_agent_memory_gateway_bank_id
+     if hermes_agent_memory_gateway_key | length > 0
+     else (hermes_agent_profile_memory_bank_id | default(hermes_agent_memory_bank_id)) }}
 
 # Per-AGENT memory isolation — per-profile only where a profile entry sets
 # `memory_bank_id` (splunk-admin, see hermes_agent_splunk_memory_bank_id).
@@ -74,12 +104,10 @@ hermes_agent_hindsight_client_pin: "=={{ hermes_agent_hindsight_client_version }
 # The catalog plugin that will replace the bundled provider above (Hermes
 # tags at or after the one whose plugin-catalog/hindsight.yaml points to
 # vectorize-io/hindsight's hindsight-integrations/hermes v1.0.1) declares
-# `hindsight-client>=0.10.1,<1`. hermes_agent_hindsight_client_version cannot
-# reach that floor until PyPI publishes a 0.10.x hindsight-client release —
-# 0.9.2 is the newest available as of this comment. hermes_agent_version
-# stays on the bundled-provider tag until both that release exists and
-# Renovate has opened the version-bump PRs for it; do not hand-bump either
-# pin ahead of that.
+# `hindsight-client>=0.10.1,<1`. The managed client pin 0.10.3 satisfies
+# that range. Keep hermes_agent_version on the bundled-provider tag until the
+# catalog switches to this plugin and the client/plugin combination is
+# validated.
 
 # --- Memory failure visibility ------------------------------------------------
 # Read from the bundled Hindsight provider in the pinned Hermes v2026.9.11.

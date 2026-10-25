@@ -85,7 +85,7 @@ def test_registry_selects_all_consumers_without_global_pytest() -> None:
 
 @pytest.mark.parametrize("path", [
     "inventory/group_vars/all.yml", "group_vars/all.yml", "host_vars/example.yml",
-    "playbooks/site.yml", "requirements.yml",
+    "playbooks/site.yml", "playbooks/ai-orchestration.yml", "requirements.yml",
 ])
 def test_inventory_and_playbook_edits_route_to_full_suite(path: str) -> None:
     result = run_selector(path)

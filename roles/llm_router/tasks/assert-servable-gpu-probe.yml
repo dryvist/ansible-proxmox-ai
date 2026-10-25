@@ -13,8 +13,9 @@
       status: "{{ _llm_router_gpu_probe_statuses | reject('equalto', 200) | list | first | default(200) }}"
       ids: >-
         {%- set ns = namespace(ids=[]) -%}
-        {%- for response in [_llm_router_gpu_models_response | default({}, true),
-                             _llm_router_gpu_co_resident_models_response | default({}, true)] -%}
+        {%- set co_resident = _llm_router_gpu_co_resident_models_responses.results
+             | default([_llm_router_gpu_co_resident_models_response | default({}, true)]) -%}
+        {%- for response in [_llm_router_gpu_models_response | default({}, true)] + co_resident -%}
         {%- if response.status | default(0) | int == 200 -%}
         {%- set ns.ids = ns.ids + (response.json | default({}, true)).get('data', []) | map(attribute='id') | list -%}
         {%- endif -%}
@@ -23,5 +24,6 @@
   vars:
     _llm_router_gpu_probe_statuses: >-
       {{ [(_llm_router_gpu_models_response | default({}, true)).status | default(0) | int]
-         + ([(_llm_router_gpu_co_resident_models_response | default({}, true)).status | default(0) | int]
+           + (( _llm_router_gpu_co_resident_models_responses.results | default([])
+                | map(attribute='status') | map('default', 0) | map('int') | list)
             if llm_router_gpu_co_resident_models | default([]) | length > 0 else []) }}

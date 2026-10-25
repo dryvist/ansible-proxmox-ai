@@ -6,14 +6,47 @@
 # converge), and deploys the single agentgateway container via Docker Compose.
 # The gateway is stateless: recovery = re-apply the LXC + re-run this role.
 
+- name: Validate that no caller id is in both the roster and the harness registry
+  ansible.builtin.assert:
+    that:
+      - _caller_id_collisions | length == 0
+    fail_msg: >-
+      Caller ids owned by two sources (agent roster and harness registry):
+      {{ _caller_id_collisions | join(', ') }}. Each caller id has exactly one owner.
+  vars:
+    _caller_id_collisions: "{{ ai_agents | list | intersect(agent_callers_registry | default({}) | list) }}"
+
 - name: Validate that every roster agent has a gateway API key
   ansible.builtin.assert:
     that:
       - item.value | length > 0
     fail_msg: "No agentgateway key is available for roster agent {{ item.key }}."
-  loop: "{{ agentgateway_docker_roster_keys | dict2items }}"
+  # Registry callers are exempt: an unseeded leaf leaves the caller keyless, with no bank.
+  loop: "{{ agentgateway_docker_roster_keys | dict2items | selectattr('key', 'in', ai_agents | list) | list }}"
   loop_control:
     label: "{{ item.key }}"
+
+- name: Validate the Hindsight bank ACL inputs
+  ansible.builtin.assert:
+    that:
+      - _hindsight_banks | reject('match', '^[A-Za-z0-9-]+$') | list | length == 0
+      - _hindsight_banks | unique | list | length == _hindsight_banks | length
+    fail_msg: >-
+      Hindsight ACL inputs are invalid: every agent bank id must be unique and
+      match ^[A-Za-z0-9-]+$.
+  vars:
+    _hindsight_banks: "{{ agentgateway_docker_hindsight_agent_banks.values() | list }}"
+  when: agentgateway_docker_hindsight_enabled | bool
+
+- name: Report that the Hindsight route is inactive
+  ansible.builtin.debug:
+    msg: >-
+      The /hindsight route is omitted: the Hindsight tenant key
+      (bao_apps_secrets.hindsight_api_key) is empty, or no roster agent has a
+      gateway key and a trust_tier in the agent roster.
+  when:
+    - agentgateway_docker_hindsight_enabled | bool
+    - agentgateway_docker_hindsight_api_key | length == 0 or agentgateway_docker_hindsight_agent_banks | length == 0
 
 - name: Create agentgateway data directory
   ansible.builtin.file:

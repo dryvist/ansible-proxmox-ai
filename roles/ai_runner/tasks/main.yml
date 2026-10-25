@@ -1,15 +1,51 @@
 ---
 # ai_runner — install the Claude Code + Codex CLIs under a dedicated, low-priv
 # system user and run a systemd worker that polls the Vikunja AI Jobs queue.
-# Idempotent. Mirrors codex_runner's install idiom (packaged node, pinned npm
-# package, `creates`-guarded install, version-floor assert).
+# Idempotent. Uses a checksum-pinned Node runtime, exact npm package pins,
+# `creates`-guarded installs, and version-floor assertions.
 
-- name: Install Node.js/npm/python3 (packaged, no NodeSource repo)
+- name: Install Python for the ai-job-worker
   ansible.builtin.apt:
     name: "{{ ai_runner_apt_packages }}"
     state: present
     update_cache: true
     cache_valid_time: 3600
+
+- name: Fetch the pinned Node runtime for ai_runner (checksum-verified)
+  ansible.builtin.get_url:
+    url: >-
+      https://nodejs.org/dist/{{ ai_runner_node_version
+      }}/node-{{ ai_runner_node_version }}-linux-x64.tar.xz
+    dest: /tmp/node-{{ ai_runner_node_version }}.tar.xz
+    checksum: "sha256:{{ ai_runner_node_sha256 }}"
+    mode: "0644"
+
+- name: Create the Node prefix
+  ansible.builtin.file:
+    path: "{{ ai_runner_node_prefix }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Unpack the Node runtime
+  ansible.builtin.unarchive:
+    src: /tmp/node-{{ ai_runner_node_version }}.tar.xz
+    dest: "{{ ai_runner_node_prefix }}"
+    remote_src: true
+    extra_opts: ["--strip-components=1"]
+    creates: "{{ ai_runner_node_prefix }}/bin/node"
+
+- name: Link Node and npm from the pinned runtime
+  ansible.builtin.file:
+    src: "{{ ai_runner_node_prefix }}/bin/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+    force: true
+  loop:
+    - node
+    - npm
+    - npx
 
 - name: Create the ai-runner service group
   ansible.builtin.group:
@@ -76,7 +112,7 @@
           - item.stdout is search('\d+\.\d+\.\d+')
         fail_msg: >-
           {{ item.cmd | join(' ') }} did not report a semver
-          ({{ item.stdout }}) — investigate the packaged node/npm version.
+          ({{ item.stdout }}) — investigate the pinned Node runtime.
         quiet: true
       loop: "{{ ai_runner_version_check.results }}"
       loop_control:
