@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +15,11 @@ from ansible.plugins.filter.core import FilterModule
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = REPO_ROOT / "inventory/group_vars/all.yml"
 DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/00-gateway.yml"
+MCP_ROUTE_AUTH_DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/30-mcp-route-auth.yml"
 TASKS = REPO_ROOT / "roles/agentgateway_docker/tasks/main.yml"
 TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/config.yaml.j2"
 BASELINE_SHA256 = "c6f329d4ff68fd4fbb1466bcda56033352413ab9e973ddcdf650825964f255b6"
+MCP_ROUTE_PATHS = ("/memory", "/docs", "/vikunja", "/nautobot")
 
 AGENTS = {
     "splunk-heimdall": {"owns": ["splunk"]},
@@ -30,7 +33,10 @@ KEYS = {
 ENV = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
 ENV.filters.update(FilterModule().filters())
 INVENTORY_VARS = yaml.safe_load(INVENTORY.read_text())
-ROLE_DEFAULTS = yaml.safe_load(DEFAULTS.read_text())
+ROLE_DEFAULTS = {
+    **yaml.safe_load(DEFAULTS.read_text()),
+    **yaml.safe_load(MCP_ROUTE_AUTH_DEFAULTS.read_text()),
+}
 TEMPLATE_SOURCE = TEMPLATE.read_text()
 
 
@@ -73,6 +79,7 @@ def _render(
         "agentgateway_docker_otlp_endpoint": "http://otel.example.com:4318",
         "agentgateway_docker_trace_sampling": "true",
         "agentgateway_docker_proxy_port": 15000,
+        "agentgateway_docker_mcp_route_auth_mode": ROLE_DEFAULTS["agentgateway_docker_mcp_route_auth_mode"],
         "agentgateway_docker_mcp_targets": [
             {
                 "name": "splunk",
@@ -115,13 +122,35 @@ def _routes(rendered: str) -> list[dict[str, Any]]:
     return config["binds"][0]["listeners"][0]["routes"]
 
 
+def _strip_default_mcp_route_auth(rendered: str) -> str:
+    """Remove only the four additive empty-roster policies from the old golden config."""
+    routes = _routes(rendered)
+    for path in MCP_ROUTE_PATHS:
+        policy = _route_for_path(routes, path)["policies"]
+        assert set(policy) == {"apiKey"}
+        api_key = policy["apiKey"]
+        assert api_key["mode"] == "optional"
+        assert api_key["location"] == {"header": {"name": "X-Agent-Key"}}
+        assert not api_key["keys"]
+
+    normalized = rendered
+    for path in MCP_ROUTE_PATHS:
+        pattern = re.compile(
+            rf"(?ms)(^    - matches:\n      - path:\n          exact: {re.escape(path)}\n)"
+            r"      policies:\n.*?(?=      backends:\n)"
+        )
+        normalized, count = pattern.subn(r"\1", normalized, count=1)
+        assert count == 1
+    return normalized
+
+
 def _route_for_path(routes: list[dict[str, Any]], path: str) -> dict[str, Any]:
     return next(route for route in routes if route["matches"][0]["path"].get("exact") == path)
 
 
 @pytest.fixture(scope="module")
 def baseline() -> str:
-    return _render()
+    return _strip_default_mcp_route_auth(_render())
 
 
 def test_empty_roster_renders_the_existing_config_byte_for_byte(baseline: str) -> None:
@@ -133,6 +162,8 @@ def test_owned_route_requires_a_key_and_allows_only_its_owner(baseline: str) -> 
     routes = _routes(_render(AGENTS, {"splunk": "splunk-heimdall"}, KEYS))
     splunk = _route_for_path(routes, "/splunk")
     baseline_splunk = _route_for_path(baseline_routes, "/splunk")
+    for path in MCP_ROUTE_PATHS:
+        _route_for_path(routes, path).pop("policies")
 
     assert {key: value for key, value in splunk.items() if key != "policies"} == baseline_splunk
     policy = splunk["policies"]
@@ -150,6 +181,98 @@ def test_owned_route_requires_a_key_and_allows_only_its_owner(baseline: str) -> 
     assert [route for route in routes if route is not splunk] == [
         route for route in baseline_routes if route is not baseline_splunk
     ]
+
+
+def test_mcp_routes_validate_keys_when_present_by_default() -> None:
+    assert ROLE_DEFAULTS["agentgateway_docker_mcp_route_auth_mode"] == "optional"
+    routes = _routes(_render(AGENTS, {"splunk": "splunk-heimdall"}, KEYS))
+    shared_keys = _route_for_path(routes, "/splunk")["policies"]["apiKey"]["keys"]
+
+    for path in MCP_ROUTE_PATHS:
+        api_key = _route_for_path(routes, path)["policies"]["apiKey"]
+        assert api_key["mode"] == "optional"
+        assert api_key["location"] == {"header": {"name": "X-Agent-Key"}}
+        assert api_key["keys"] == shared_keys
+
+
+def test_mcp_routes_render_strict_mode_when_selected() -> None:
+    routes = _routes(
+        _render(
+            AGENTS,
+            {"splunk": "splunk-heimdall"},
+            KEYS,
+            extra={"agentgateway_docker_mcp_route_auth_mode": "strict"},
+        )
+    )
+
+    for path in MCP_ROUTE_PATHS:
+        api_key = _route_for_path(routes, path)["policies"]["apiKey"]
+        assert api_key["mode"] == "strict"
+        assert api_key["location"] == {"header": {"name": "X-Agent-Key"}}
+
+
+def test_staged_auth_mode_does_not_change_owned_hindsight_or_a2a_routes() -> None:
+    from hindsight_acl_support import AGENTS as HINDSIGHT_AGENTS, KEYS as HINDSIGHT_KEYS, _hindsight_context
+
+    extra = _hindsight_context()
+    default_routes = _routes(
+        _render(HINDSIGHT_AGENTS, {"splunk": "hermes-brain"}, HINDSIGHT_KEYS, extra=extra)
+    )
+    strict_routes = _routes(
+        _render(
+            HINDSIGHT_AGENTS,
+            {"splunk": "hermes-brain"},
+            HINDSIGHT_KEYS,
+            extra={**extra, "agentgateway_docker_mcp_route_auth_mode": "strict"},
+        )
+    )
+
+    assert _route_for_path(default_routes, "/splunk") == _route_for_path(strict_routes, "/splunk")
+    default_hindsight = next(
+        route
+        for route in default_routes
+        if route["matches"][0]["path"].get("pathPrefix") == "/hindsight"
+        and route["policies"]["apiKey"]["location"]["header"]["name"] == "X-Agent-Key"
+    )
+    strict_hindsight = next(
+        route
+        for route in strict_routes
+        if route["matches"][0]["path"].get("pathPrefix") == "/hindsight"
+        and route["policies"]["apiKey"]["location"]["header"]["name"] == "X-Agent-Key"
+    )
+    assert default_hindsight == strict_hindsight
+    default_a2a = next(
+        route
+        for route in default_routes
+        if route["matches"][0]["path"].get("pathPrefix") == "/a2a/test/"
+    )
+    strict_a2a = next(
+        route
+        for route in strict_routes
+        if route["matches"][0]["path"].get("pathPrefix") == "/a2a/test/"
+    )
+    assert default_a2a == strict_a2a
+
+
+def test_nautobot_openapi_route_uses_the_staged_auth_mode() -> None:
+    route_context = {
+        "agentgateway_docker_nautobot_openapi_enabled": True,
+        "agentgateway_docker_nautobot_openapi_schema_path": "/tmp/nautobot-openapi.json",
+        "agentgateway_docker_nautobot_openapi_token_path": "/tmp/nautobot-token",
+        "agentgateway_docker_nautobot_url": "",
+    }
+    for mode in ("optional", "strict"):
+        routes = _routes(
+            _render(
+                AGENTS,
+                {},
+                KEYS,
+                extra={**route_context, "agentgateway_docker_mcp_route_auth_mode": mode},
+            )
+        )
+        nautobot = _route_for_path(routes, "/nautobot")
+        assert nautobot["policies"]["apiKey"]["mode"] == mode
+        assert nautobot["policies"]["apiKey"]["location"] == {"header": {"name": "X-Agent-Key"}}
 
 
 def test_missing_roster_key_fails_the_role_assert_expression() -> None:
