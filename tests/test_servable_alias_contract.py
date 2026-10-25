@@ -34,3 +34,29 @@ def test_bolt_profiles_project_upstream_id_from_artifact_catalog():
 
     assert len(bolt_models) == 2
     assert {model["upstream_model_id"] for model in bolt_models} == {bolt_artifact["hf_repo"]}
+
+
+def test_router_names_list_served_names_by_category():
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/generate_servable_aliases.py")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    router_names = json.loads(result.stdout)["router_names"]
+
+    assert "hermes-default" in router_names["aliases"]
+    assert "judge" in router_names["roles"]
+    assert "medium" in router_names["route_groups"]
+    for names in router_names.values():
+        assert names == sorted(set(names))
+    assert router_names["all"] == sorted(
+        set().union(
+            *(
+                set(router_names[key])
+                for key in ("aliases", "route_groups", "direct_routes", "roles")
+            )
+        )
+    )
