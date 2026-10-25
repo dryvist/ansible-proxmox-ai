@@ -1,0 +1,51 @@
+---
+# Exports the repository's lane alias names and checks them against the shared lane contract.
+
+name: Lane Alias Parity
+
+on:
+  workflow_call:
+    inputs:
+      timeout_minutes:
+        type: number
+        default: 10
+
+permissions:
+  contents: read
+
+jobs:
+  lane-alias-names:
+    name: Export lane alias names
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.14'
+
+      - name: Install PyYAML
+        run: python -m pip install --upgrade pip pyyaml
+
+      - name: Export lane alias names
+        run: python3 tests/llm_router/lane_alias_names.py > lane-alias-parity-apai.json
+
+      - name: Upload generated lane alias names
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lane-alias-names
+          path: lane-alias-parity-apai.json
+
+  # The shared check job sets its own timeout-minutes: 5.
+  alias-parity:
+    name: Shared lane alias parity
+    needs: lane-alias-names
+    uses: dryvist/homelab-contracts/.github/workflows/alias-parity.yml@b600bec1b93cf09096e1ea9a712200fbc09543f5 # v5.21.0
+    with:
+      names-artifact: lane-alias-names
+      names-files: lane-alias-parity-apai.json
