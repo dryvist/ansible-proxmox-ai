@@ -1,0 +1,89 @@
+---
+# Split out of verify.yml to stay under the repo's per-file token budget. Included
+# from within verify.yml's block, so its shared rescue still covers a failure here.
+#
+# The unit's own state is checked BEFORE the HTTP probe: a dashboard that refuses
+# to start (Hermes exits 1 when the auth gate engages and no auth provider
+# registered) leaves nothing listening, and a bare connection error from the
+# probe reads like a network fault, not a unit that never came up. Naming the
+# unit state and its last journal lines makes the two cases distinguishable
+# without a shell on the guest. The journal carries Hermes' own startup
+# messages only; credentials never reach it.
+- name: Gate — the dashboard unit is active
+  ansible.builtin.systemd:
+    name: hermes-dashboard
+  register: hermes_agent_dashboard_unit
+  until: hermes_agent_dashboard_unit.status.ActiveState | default('') == 'active'
+  retries: "{{ hermes_agent_verify_probe_retries }}"
+  delay: "{{ hermes_agent_verify_probe_delay }}"
+  failed_when: false
+
+- name: Read the dashboard journal when the unit is not active
+  ansible.builtin.command:
+    argv:
+      - journalctl
+      - --unit=hermes-dashboard
+      - --lines={{ hermes_agent_verify_dashboard_journal_lines }}
+      - --no-pager
+      - --output=cat
+  register: hermes_agent_dashboard_journal
+  changed_when: false
+  # Read-only; a check run needs the live value to preview the dashboard journal.
+  check_mode: false
+  when: hermes_agent_dashboard_unit.status.ActiveState | default('') != 'active'
+
+- name: Gate — fail with the dashboard journal when the unit never came up
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_dashboard_unit.status.ActiveState | default('') == 'active'
+    fail_msg: >-
+      hermes-dashboard is {{ hermes_agent_dashboard_unit.status.ActiveState | default('unknown') }}
+      ({{ hermes_agent_dashboard_unit.status.SubState | default('unknown') }}), so the
+      unit failed to start; this is not an authentication-redirect problem. Last
+      {{ hermes_agent_verify_dashboard_journal_lines }} journal lines:
+      {{ hermes_agent_dashboard_journal.stdout | default('<journal unreadable>') }}
+    success_msg: "hermes-dashboard is active."
+
+# A dashboard unit that starts but serves an error body (e.g. the frontend
+# bundle missing) would pass every other check in this file — the bundle
+# assertion in main.yml only proves the file exists on disk, not that the
+# service serves it. Require the actual redirect to the self-hosted auth
+# login: a bare 200 here would mean authentication is not in front of the
+# dashboard at all.
+- name: Gate — the dashboard requires authentication (302 to login)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_agent_dashboard_port }}/"
+    method: GET
+    follow_redirects: none
+    status_code: 302
+  register: hermes_agent_dashboard_probe
+  # Read-only; a check run needs the live value to preview dashboard authentication.
+  check_mode: false
+  retries: "{{ hermes_agent_verify_probe_retries }}"
+  delay: "{{ hermes_agent_verify_probe_delay }}"
+  until: hermes_agent_dashboard_probe.status | default(0) == 302
+  failed_when: false
+
+- name: Gate — the dashboard redirect targets the self-hosted auth login
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_dashboard_probe.status == 302
+      # Compare the PATH, not the raw header. `uri` resolves Location
+      # against the request URL, so this arrives absolute
+      # (http://127.0.0.1:8080/auth/login?...) even though the server sends
+      # the relative form curl -I shows. Anchoring on '^/auth/login' failed
+      # a correctly-behaving dashboard on this gate's very first run.
+      # urlsplit('path') normalises both forms to /auth/login.
+      - (hermes_agent_dashboard_probe.location | default('') | urlsplit('path')) == '/auth/login'
+      - "'provider=self-hosted' in (hermes_agent_dashboard_probe.location | default(''))"
+    fail_msg: >-
+      The Hermes dashboard on port {{ hermes_agent_dashboard_port }} did not
+      respond with a 302 redirect to the self-hosted auth login (got HTTP
+      {{ hermes_agent_dashboard_probe.status | default('?') }}, location
+      {{ hermes_agent_dashboard_probe.location | default('<none>') }}). A bare
+      200 here means authentication is not in front of the dashboard — the
+      exact "Frontend not built" outage shape this gate exists to catch.
+    success_msg: "Dashboard redirects unauthenticated requests to auth login."
+  when: not ansible_check_mode
