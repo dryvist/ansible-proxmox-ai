@@ -7,6 +7,9 @@
     _lane_walk_url: >-
       {{ lookup('ansible.builtin.env', 'LLM_ROUTER_URL') | trim | regex_replace('/+$', '') }}
     _lane_walk_key: "{{ lookup('ansible.builtin.env', 'LLM_ROUTER_API_KEY') | trim }}"
+    # The lane that must answer from a non-local rung, and the lane that must refuse.
+    _lane_walk_answers: standard
+    _lane_walk_refuses: light
   tasks:
     - name: Load router lanes from the model registry
       ansible.builtin.include_role:
@@ -20,8 +23,8 @@
         that:
           - _lane_walk_url | length > 0
           - _lane_walk_key | length > 0
-          - "'standard' in llm_router_lane_names"
-          - "'light' in llm_router_lane_names"
+          - _lane_walk_answers in llm_router_lane_names
+          - _lane_walk_refuses in llm_router_lane_names
         fail_msg: LLM_ROUTER_URL, LLM_ROUTER_API_KEY, and the standard and light lanes are required.
       no_log: true
 
@@ -33,7 +36,7 @@
           Authorization: "Bearer {{ _lane_walk_key }}"
         body_format: json
         body:
-          model: standard
+          model: "{{ _lane_walk_answers }}"
           messages:
             - role: user
               content: Reply with OK.
@@ -48,7 +51,7 @@
         quiet: true
         that:
           - _lane_walk_standard.status | int == 200
-          - _lane_walk_standard.headers.get('x-litellm-lane', '') == 'standard'
+          - _lane_walk_standard.headers.get('x-litellm-lane', '') == _lane_walk_answers
         fail_msg: The standard lane request did not return its lane header.
 
     - name: Request the light lane
@@ -59,7 +62,7 @@
           Authorization: "Bearer {{ _lane_walk_key }}"
         body_format: json
         body:
-          model: light
+          model: "{{ _lane_walk_refuses }}"
           messages:
             - role: user
               content: Reply with OK.
