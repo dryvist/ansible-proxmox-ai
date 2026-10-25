@@ -126,3 +126,38 @@ def test_verify_includes_the_dashboard_gates_inside_its_shared_rescue_block() ->
     assert "rescue" in block
     # The gates exist once, in the included file.
     assert "requires authentication (302" not in text
+
+
+def _units_vars() -> dict:
+    main = yaml.safe_load((ROLE_ROOT / "tasks" / "main.yml").read_text())
+    task = next(t for t in main if t.get("name") == "Deploy and start the Hermes gateway and dashboard units")
+    return task["vars"]
+
+
+def test_dashboard_unit_runs_as_and_resolves_the_home_the_config_is_written_to() -> None:
+    # The dashboard unit takes its user and HERMES_HOME from the same variables the
+    # config.yaml task uses, so the file it reads is the file the role renders.
+    config = _task(
+        role_tasks(ROLE_ROOT),
+        "Deploy the Hermes config.yaml (brain -> LiteLLM router, memory -> Hindsight, budget)",
+    )
+    assert config["ansible.builtin.template"]["dest"] == "{{ hermes_agent_hermes_home }}/config.yaml"
+    assert config["ansible.builtin.template"]["owner"] == "{{ hermes_agent_user }}"
+    units = _units_vars()
+    assert units["hermes_runtime_user"] == "{{ hermes_agent_user }}"
+    assert units["hermes_runtime_hermes_home"] == "{{ hermes_agent_hermes_home }}"
+
+
+def test_dashboard_unit_environment_carries_the_oidc_provider_keys() -> None:
+    # The provider reads these env vars before config.yaml, so they hold even when
+    # the dashboard resolves a named profile whose config has no dashboard block.
+    env = {item["name"]: item["value"] for item in _units_vars()["hermes_runtime_dashboard_environment"]}
+    assert env["HERMES_DASHBOARD_OIDC_ISSUER"] == "{{ hermes_agent_dashboard_oidc_issuer }}"
+    assert env["HERMES_DASHBOARD_OIDC_CLIENT_ID"] == "{{ hermes_agent_dashboard_oidc_client_id }}"
+    rendered = {
+        name: Environment().from_string(value).render(**GOOD) for name, value in env.items()
+    }
+    assert rendered == {
+        "HERMES_DASHBOARD_OIDC_ISSUER": GOOD["hermes_agent_dashboard_oidc_issuer"],
+        "HERMES_DASHBOARD_OIDC_CLIENT_ID": GOOD["hermes_agent_dashboard_oidc_client_id"],
+    }
