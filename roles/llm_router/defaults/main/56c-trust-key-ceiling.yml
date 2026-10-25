@@ -1,0 +1,25 @@
+---
+# Caller keys are bounded by the registry's trust tiers. Its declared default
+# tier is the fail-closed case; every other declared tier retains its grants.
+_llm_router_trusted_caller_tiers: >-
+  {{ (agent_callers_tiers | default([])
+      | difference([agent_callers_default_tier]))
+     if agent_callers_default_tier is defined else [] }}
+_llm_router_untrusted_key_classes: [local, paid-zdr]
+_llm_router_untrusted_key_tags: ['&zdr', '!free', '!retains']
+
+# Router-internal keys (the judge and the recorder) and the static infrastructure
+# keys are outside the caller set. Every other declared key is a caller key: its
+# caller id is trust_caller when set, else its alias. An id missing from
+# ai_callers resolves to the default tier and is clamped as untrusted.
+_llm_router_trust_scoped_key_caller_ids: >-
+  {%- set ns = namespace(ids={}) -%}
+  {%- set _internal = ['judge', (llm_router_role_deployments
+        | selectattr('litellm_params.turn_off_message_logging', 'defined')
+        | first).role] -%}
+  {%- set _static = (_llm_router_static_virtual_keys | map(attribute='alias') | list) + _internal -%}
+  {%- for _key in _llm_router_declared_virtual_keys | rejectattr('alias', 'in', _static) -%}
+  {%- set _caller = _key.trust_caller | default(_key.alias) -%}
+  {%- set _ = ns.ids.update({_key.alias: _caller}) -%}
+  {%- endfor -%}
+  {{ ns.ids }}
