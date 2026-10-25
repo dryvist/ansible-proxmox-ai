@@ -11,6 +11,7 @@ profile entry sets memory_bank_id.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import jinja2
@@ -38,11 +39,17 @@ def _render_hindsight_config(
     *,
     mode: str = "local_external",
     include_api_key: bool = True,
+    gateway_key: str = "",
+    trust_tier: str = "trusted",
     profile_bank_id: str | None = None,
 ) -> dict:
     source = (ROLE_ROOT / "templates" / "hindsight-config.json.j2").read_text()
+    defaults = role_defaults(ROLE_ROOT)
     env = Environment(autoescape=False, undefined=StrictUndefined)
     env.filters["to_json"] = json.dumps
+    env.filters["regex_replace"] = lambda value, pattern, replacement: re.sub(
+        pattern, replacement, value
+    )
 
     def mandatory(value, message):
         if isinstance(value, Undefined) or not str(value).strip():
@@ -50,19 +57,40 @@ def _render_hindsight_config(
         return value
 
     env.filters["mandatory"] = mandatory
+    gateway_key_field = agent_id.replace("-", "_") + "_agentgateway_key"
     context = {
         "ansible_managed": "managed",
+        "hermes_agent_id": agent_id,
         "hermes_agent_memory_mode": mode,
         "hermes_agent_memory_api_url": "https://hindsight.example.test",
         "hermes_agent_memory_api_key": "fixture-hindsight-api-key",
-        "hermes_agent_memory_bank_id": agent_id,
+        "hermes_agent_docs_mcp_url": "https://mcp.example.test/docs",
+        "hermes_agent_bao": {gateway_key_field: gateway_key} if gateway_key else {},
+        "ai_agent_gateway_key_fields": {agent_id: gateway_key_field},
+        "ai_callers": {agent_id: {"trust_tier": trust_tier}},
         "hermes_agent_model_base_url": "https://llm.example.test/v1",
         "hermes_agent_memory_llm_model": "fixture-model",
     }
+    context["hermes_agent_memory_bank_id"] = env.from_string(
+        str(defaults["hermes_agent_memory_bank_id"])
+    ).render(**context)
     if not include_api_key:
         context.pop("hermes_agent_memory_api_key")
     if profile_bank_id is not None:
         context["hermes_agent_profile_memory_bank_id"] = profile_bank_id
+
+    for name in (
+        "hermes_agent_memory_gateway_key_field",
+        "hermes_agent_memory_gateway_key",
+        "hermes_agent_memory_gateway_tier",
+        "hermes_agent_memory_gateway_api_url",
+        "hermes_agent_memory_gateway_bank_id",
+        "hermes_agent_hindsight_config_api_url",
+        "hermes_agent_hindsight_config_api_key",
+        "hermes_agent_hindsight_config_bank_id",
+    ):
+        context[name] = env.from_string(str(defaults[name])).render(**context)
+
     rendered = env.from_string(source).render(**context)
     return json.loads(rendered)
 
@@ -120,6 +148,35 @@ def test_agents_share_hindsight_service_but_not_memory_banks() -> None:
     assert hermes["bank_id"] == "hermes"
     assert donna["bank_id"] == "donna"
     assert hermes["bank_id"] != donna["bank_id"]
+
+
+def test_an_unseeded_gateway_key_keeps_the_direct_config_values() -> None:
+    config = _render_hindsight_config("hermes")
+
+    assert config["api_url"] == "https://hindsight.example.test"
+    assert config["api_key"] == "fixture-hindsight-api-key"
+    assert config["bank_id"] == "hermes"
+
+
+def test_gateway_config_uses_the_identity_key_and_tier_bank() -> None:
+    config = _render_hindsight_config(
+        "hermes-private",
+        gateway_key="fixture-hermes-private-gateway-key",
+        profile_bank_id="hermes-private-splunk",
+    )
+
+    assert config["api_url"] == "https://mcp.example.test/hindsight"
+    assert config["api_key"] == "fixture-hermes-private-gateway-key"
+    assert config["bank_id"] == "hermes-private-trusted"
+
+
+def test_gateway_config_never_uses_the_hindsight_tenant_key() -> None:
+    config = _render_hindsight_config(
+        "hermes", gateway_key="fixture-hermes-gateway-key"
+    )
+
+    assert config["api_key"] == "fixture-hermes-gateway-key"
+    assert config["api_key"] != "fixture-hindsight-api-key"
 
 
 def test_a_profile_bank_overrides_the_agent_bank_only_when_set() -> None:
