@@ -1,0 +1,37 @@
+---
+# Hermes refuses to start `hermes dashboard` when its auth gate engages (any
+# non-loopback bind, or a non-loopback dashboard.public_url — this role always
+# sets one) and no auth provider registered; it exits 1 and the unit crash-loops
+# to "Start request repeated too quickly". The provider this role configures is
+# the bundled self-hosted OIDC one, which registers only when an https issuer and
+# a client_id reach config.yaml. A blank PROXMOX_SUBDOMAIN in the controller
+# environment renders "https://authelia." — non-empty, so it would pass a
+# length check and still never reach a working login — hence the trailing-dot
+# test. Fail here, before anything is deployed or restarted, naming the setting.
+- name: Collect the dashboard auth settings that are missing or malformed
+  ansible.builtin.set_fact:
+    hermes_agent_dashboard_auth_problems: >-
+      {{
+        [
+          '' if (hermes_agent_dashboard_oidc_issuer | string).startswith('https://')
+                and not (hermes_agent_dashboard_oidc_issuer | string).endswith('.')
+             else 'hermes_agent_dashboard_oidc_issuer',
+          '' if hermes_agent_dashboard_oidc_client_id | string | length > 0
+             else 'hermes_agent_dashboard_oidc_client_id',
+          '' if (hermes_agent_dashboard_public_url | string).startswith('https://')
+                and not (hermes_agent_dashboard_public_url | string).endswith('.')
+             else 'hermes_agent_dashboard_public_url',
+        ] | select | list
+      }}
+
+- name: Assert the dashboard has an auth provider configured before it is started
+  ansible.builtin.assert:
+    that:
+      - hermes_agent_dashboard_auth_problems | length == 0
+    fail_msg: >-
+      The Hermes dashboard binds {{ hermes_agent_dashboard_host }} behind an auth
+      gate that refuses to start without an auth provider, but these settings are
+      empty or not an https URL with a real host: {{ hermes_agent_dashboard_auth_problems | join(', ') }}.
+      The OIDC issuer and public URL derive from PROXMOX_SUBDOMAIN in the
+      controller environment; set the missing value and converge again.
+    success_msg: "The dashboard auth provider settings are complete."
