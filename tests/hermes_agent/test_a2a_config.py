@@ -98,9 +98,14 @@ def test_default_slack_config_routes_reactions_on_bot_posts() -> None:
     assert slack["extra"] == {"reaction_triggers": True}
 
 
+A2A_ENABLED_DEFAULT = (
+    "{{ hermes_agent_id == 'hermes' or hermes_agent_a2a_inbound_token | length > 0 }}"
+)
+
+
 def test_explicitly_disabling_a2a_keeps_existing_gateway_and_slack_config() -> None:
     defaults = role_defaults(ROLE_ROOT)
-    assert defaults["hermes_agent_a2a_inbound_enabled"] is True
+    assert defaults["hermes_agent_a2a_inbound_enabled"] == A2A_ENABLED_DEFAULT
     assert defaults["hermes_agent_a2a_peers"] == []
     assert defaults["hermes_agent_slack_rich_blocks"] is False
 
@@ -164,7 +169,7 @@ def test_explicitly_disabling_a2a_keeps_existing_gateway_and_slack_config() -> N
 
 def test_enabled_a2a_renders_authenticated_inbound_peer_and_slack_config() -> None:
     defaults = role_defaults(ROLE_ROOT)
-    assert defaults["hermes_agent_a2a_inbound_enabled"] is True
+    assert defaults["hermes_agent_a2a_inbound_enabled"] == A2A_ENABLED_DEFAULT
     peers = [{
         "name": "specialist",
         "url": "https://specialist.example.invalid/a2a",
