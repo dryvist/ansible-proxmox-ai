@@ -7,15 +7,27 @@
 # CPU pool so this proxy never advertises a backend without a tofu-tagged host.
 llm_router_gpu_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu') | list }}
-llm_router_gpu_profile_base_urls: >-
-  {%- set ns = namespace(urls={}) -%}
-  {%- for m in llm_router_gpu_models if m.api_port_key is defined -%}
-  {%- set port = tofu_data.constants.service_ports[m.api_port_key] -%}
-  {%- set url = 'http://' ~ groups['llm_gpu_group'][0] ~ '.' ~ llm_router_apex_domain
-       ~ ':' ~ (port | string) ~ '/v1' -%}
-  {%- set _ = ns.urls.update({m.profile: url}) -%}
+# One deployment per (llm_gpu_group member, enabled GPU entry it serves). Port: the
+# entry's api_port_key when it declares one; otherwise the member's serving port,
+# plus one for a co-resident profile on that member.
+_llm_router_gpu_deployment_targets_source: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- for member in llm_router_gpu_members -%}
+  {%- for m in llm_router_gpu_models
+        if m.profile == member.active or m.profile in member.co_resident -%}
+  {%- set port = (tofu_data.constants.service_ports[m.api_port_key]
+        if m.api_port_key is defined
+        else member.port + (1 if m.profile in member.co_resident else 0)) -%}
+  {%- set ns.out = ns.out + [{
+        'profile': m.profile,
+        'client_model_id': m.client_model_id,
+        'api_base': 'http://' ~ member.endpoint_host ~ ':' ~ (port | string) ~ '/v1'}] -%}
   {%- endfor -%}
-  {{ ns.urls }}
+  {%- endfor -%}
+  {{ ns.out }}
+llm_router_gpu_deployment_targets: "{{ _llm_router_m_gpu_deployment_targets }}"
+llm_router_gpu_profile_base_urls: >-
+  {{ llm_router_gpu_deployment_targets | items2dict(key_name='profile', value_name='api_base') }}
 llm_router_vllm_medium_registry_entry: >-
   {{ llm_router_model_registry | selectattr('tier', 'equalto', 'gpu')
      | selectattr('profile', 'equalto', 'medium-a') | first }}

@@ -34,12 +34,25 @@ llm_router_model_registry: >-
      + _llm_registry_opencode + _llm_registry_hermes_cloud
      + _llm_registry_openrouter }}
 
-llm_router_gpu_active_profile: >-
-  {{ hostvars[groups['llm_gpu_group'][0]].get('llm_active_profile', llm_active_profile | default(''))
-     if groups.get('llm_gpu_group', []) | length > 0 else llm_active_profile | default('') }}
+# One record per llm_gpu_group member: the profile it serves, the co-resident
+# profiles it adds, its endpoint host, and its serving port (the member's
+# llm_gpu_serving_api_port, else the light lane port). Each member is read from
+# its own inventory, so no single member stands in for the group.
+_llm_router_gpu_members_source: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- for host in groups.get('llm_gpu_group', []) -%}
+  {%- set ns.out = ns.out + [{
+        'host': host,
+        'endpoint_host': host ~ '.' ~ llm_router_apex_domain,
+        'port': hostvars[host].get('llm_gpu_serving_api_port', llm_router_light_port) | int,
+        'active': hostvars[host].get('llm_active_profile', llm_active_profile | default('')),
+        'co_resident': hostvars[host].get('llm_gpu_serving_co_resident_profiles', [])}] -%}
+  {%- endfor -%}
+  {{ ns.out }}
+llm_router_gpu_members: "{{ _llm_router_m_gpu_members }}"
+llm_router_gpu_active_profiles: "{{ llm_router_gpu_members | map(attribute='active') | list }}"
 llm_router_gpu_co_resident_profiles: >-
-  {{ hostvars[groups['llm_gpu_group'][0]].get('llm_gpu_serving_co_resident_profiles', [])
-     if groups.get('llm_gpu_group', []) | length > 0 else [] }}
+  {{ llm_router_gpu_members | map(attribute='co_resident') | flatten | unique | list }}
 
 # Only active entries reach the rendered config or any derived contract. The
 # GPU candidates stay hidden until the single switch above is true; when active,
@@ -55,7 +68,7 @@ _llm_router_registry_enabled_source: >-
   {%- if llm_router_gpu_profiles_enabled | bool
        and (groups['llm_gpu_group'] | default([]) | length) > 0
        and m.route_group is defined
-       and (m.profile == llm_router_gpu_active_profile
+       and (m.profile in llm_router_gpu_active_profiles
             or m.profile in llm_router_gpu_co_resident_profiles) -%}
   {%- set ns.out = ns.out + [m | combine({'enabled': true, 'servable': true})] -%}
   {%- endif -%}

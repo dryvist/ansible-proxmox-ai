@@ -107,6 +107,21 @@
 - name: Assert the spend budget is backed
   ansible.builtin.import_tasks: assert-budget-backing.yml
 
+# One GPU profile, one serving endpoint. Two llm_gpu_group members claiming the
+# same profile would collapse to one URL in llm_router_gpu_profile_base_urls, so
+# the other deployment would be dropped without an error; refuse it here.
+- name: Assert every GPU profile is served by exactly one member
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        llm_router_gpu_deployment_targets | map(attribute='profile') | unique | list | length
+        == llm_router_gpu_deployment_targets | map(attribute='profile') | list | length
+    fail_msg: >-
+      A GPU profile is served by more than one llm_gpu_group member. Profiles listed
+      per deployment: {{ llm_router_gpu_deployment_targets | map(attribute='profile') | join(', ') }}.
+    success_msg: Every GPU profile has exactly one serving endpoint.
+
 # Backend DNS resolution. Its own file so a test can import exactly this
 # assert and prove the failure path. Placed after the cheaper jinja-only
 # asserts above (a network round trip on the guest costs more than a
