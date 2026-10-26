@@ -104,7 +104,7 @@ def test_seed_filter_selects_only_the_requested_registered_artifact(tmp_path):
 
 @pytest.mark.parametrize(
     "playbook",
-    ["playbooks/llm-model-store-seed.yml", "playbooks/llm-model-campaign-target.yml"],
+    ["playbooks/llm-model-store-seed.yml", "playbooks/tasks/llm-model-campaign-run-pass.yml"],
 )
 def test_model_store_callers_use_the_maintained_guest_role(playbook: str) -> None:
     document = yaml.safe_load((REPO_ROOT / playbook).read_text(encoding="utf-8"))
