@@ -1,0 +1,47 @@
+---
+- name: Preflight the candidate model for a paired campaign
+  ansible.builtin.include_role:
+    name: llm_model_trial
+    tasks_from: preflight.yml
+  when: llm_model_campaign_paired_trial | default(false) | bool
+
+- name: Require the paired campaign recipe and trial target to agree
+  ansible.builtin.assert:
+    that:
+      - config_name == 'lm-eval/quick-intelligence'
+      - hf_repo is defined
+      - groups[llm_model_trial_inventory_group] | default([]) | length == 1
+      - machine == groups[llm_model_trial_inventory_group][0]
+      - llm_model_paired_trial_tolerance | default(2.0) | string is match('^[0-9]+([.][0-9]+)?$')
+    fail_msg: >-
+      Paired campaigns require the quick-intelligence recipe, one candidate
+      trial model, the trial inventory target, and a non-negative tolerance.
+    quiet: true
+  when: llm_model_campaign_paired_trial | default(false) | bool
+
+- name: Resolve the protected paired campaign output directory
+  ansible.builtin.set_fact:
+    _llm_campaign_output_dir: >-
+      {{ (llm_model_campaign_output_dir | default(''))
+         if (llm_model_campaign_output_dir | default('') | length > 0)
+         else ((llm_model_trial_artifact_path | dirname ~ '/campaign')
+               if llm_model_campaign_paired_trial | default(false) | bool else '') }}
+    _llm_campaign_paired_trial: "{{ llm_model_campaign_paired_trial | default(false) | bool }}"
+    _llm_campaign_tolerance: "{{ llm_model_paired_trial_tolerance | default(2.0) | float }}"
+
+- name: Validate and create the selected campaign output directory
+  when: _llm_campaign_output_dir | length > 0
+  block:
+    - name: Require an absolute output directory without parent traversal
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_output_dir | string is match('^/.+')
+          - _llm_campaign_output_dir is not search('(^|/)[.][.](/|$)')
+        fail_msg: "Campaign output directory must be an absolute path without parent traversal."
+        quiet: true
+
+    - name: Create the selected campaign output directory
+      ansible.builtin.file:
+        path: "{{ _llm_campaign_output_dir }}"
+        state: directory
+        mode: "0700"

@@ -180,11 +180,13 @@ def test_trial_always_path_restores_and_verifies_baseline() -> None:
     assert playbook[0]["ansible.builtin.import_playbook"] == "../inventory/load_tofu.yml"
     tasks = yaml.safe_load((ROLE / "tasks/serve.yml").read_text())
     run = next(task for task in tasks if "block" in task and "always" in task)
-    restore_include = next(
+    release_include = next(
         task["ansible.builtin.include_tasks"]
         for task in run["always"]
         if "ansible.builtin.include_tasks" in task
     )
+    release = yaml.safe_load((ROLE / "tasks" / release_include).read_text())
+    restore_include = release[0]["ansible.builtin.include_tasks"]
     always = yaml.safe_load((ROLE / "tasks" / restore_include).read_text())
     always_names = [task["name"] for task in always]
     assert "Always restore the exact recorded baseline serving unit" in always_names
@@ -205,3 +207,29 @@ def test_trial_always_path_restores_and_verifies_baseline() -> None:
     assert always_names.index(candidate_check["name"]) < always_names.index(restore["name"])
     assert always_names.index(restore["name"]) < always_names.index(verify["name"])
     assert always_names.index(verify["name"]) < always_names.index(release["name"])
+
+
+def test_trial_lifecycle_lock_hold_release_and_serve_compatibility() -> None:
+    serve = yaml.safe_load((ROLE / "tasks/serve.yml").read_text())
+    serve_block = next(task for task in serve if "block" in task and "always" in task)
+    assert serve_block["block"][0]["ansible.builtin.include_tasks"] == "hold.yml"
+    assert serve_block["always"][0]["ansible.builtin.include_tasks"] == "release.yml"
+
+    hold = yaml.safe_load((ROLE / "tasks/hold.yml").read_text())
+    assert hold[0]["ansible.builtin.include_tasks"] == "lock.yml"
+    assert hold[1]["ansible.builtin.include_tasks"] == "acquire-and-serve.yml"
+
+    lock = yaml.safe_load((ROLE / "tasks/lock.yml").read_text())
+    assert "llm_model_trial_lock_needed" in lock[0]["ansible.builtin.set_fact"]
+    lock_block = lock[1]
+    assert "llm_model_trial_lock_needed | bool" == lock_block["when"]
+    assert any(task.get("name", "").startswith("Record that this run owns") for task in lock_block["block"])
+    assert lock_block["block"][0]["ansible.builtin.include_tasks"] == "prepare.yml"
+
+    assert serve[0]["ansible.builtin.include_tasks"] == "prepare.yml"
+    prepare = yaml.safe_load((ROLE / "tasks/prepare.yml").read_text())
+    fixed_target = [task for task in prepare if "ansible.builtin.assert" in task]
+    assert "llm_model_trial_host == '6000'" in fixed_target[0]["ansible.builtin.assert"]["that"]
+
+    release = yaml.safe_load((ROLE / "tasks/release.yml").read_text())
+    assert release[0]["ansible.builtin.include_tasks"] == "restore.yml"

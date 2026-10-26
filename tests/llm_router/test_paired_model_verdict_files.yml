@@ -1,0 +1,126 @@
+---
+# Run from the repo root inside the ansible-apps shell:
+#   nix develop "github:JacobPEvans/nix-devenv#ansible-apps" \
+#     -c ansible-playbook -i localhost, -c local tests/llm_router/test_paired_model_verdict_files.yml
+- name: Read envelope files from both pass directories, write verdict.json, and fail when invalid
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _llm_campaign_tolerance: 2.0
+    llm_model_trial_restore_proof: {verified: true}
+    _em_09:
+      suite: quick-intelligence
+      git_sha: aaa111
+      results:
+        - {name: gsm8k, metric: exact_match, value: 0.9, tags: {lm_eval_key: "exact_match,none", n_limit: "100"}}
+    _em_05:
+      suite: quick-intelligence
+      git_sha: aaa111
+      results:
+        - {name: gsm8k, metric: exact_match, value: 0.5, tags: {lm_eval_key: "exact_match,none", n_limit: "100"}}
+    _em_07:
+      suite: quick-intelligence
+      git_sha: aaa111
+      results:
+        - {name: gsm8k, metric: exact_match, value: 0.7, tags: {lm_eval_key: "exact_match,none", n_limit: "100"}}
+  tasks:
+    - name: Create the scratch output directory for a comparable pair
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: paired-verdict-pass-
+      register: _verdict_pass_dir
+
+    - name: Create the scratch output directory for a pair with no candidate envelope
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: paired-verdict-invalid-
+      register: _verdict_invalid_dir
+
+    - name: Create the pass subdirectories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0700'
+      loop:
+        - "{{ _verdict_pass_dir.path }}/baseline"
+        - "{{ _verdict_pass_dir.path }}/candidate"
+        - "{{ _verdict_invalid_dir.path }}/baseline"
+        - "{{ _verdict_invalid_dir.path }}/candidate"
+
+    - name: Write two baseline repetitions and one candidate envelope
+      ansible.builtin.copy:
+        content: "{{ item.content | to_json }}"
+        dest: "{{ item.dest }}"
+        mode: '0600'
+      loop:
+        - {content: "{{ _em_09 }}", dest: "{{ _verdict_pass_dir.path }}/baseline/rep1.json"}
+        - {content: "{{ _em_05 }}", dest: "{{ _verdict_pass_dir.path }}/baseline/rep2.json"}
+        - {content: "{{ _em_07 }}", dest: "{{ _verdict_pass_dir.path }}/candidate/rep1.json"}
+
+    - name: Write one baseline envelope and leave the candidate pass empty
+      ansible.builtin.copy:
+        content: "{{ _em_09 | to_json }}"
+        dest: "{{ _verdict_invalid_dir.path }}/baseline/rep1.json"
+        mode: '0600'
+
+    - name: Compute the verdict for the comparable pair
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict.yml
+      vars:
+        _llm_campaign_output_dir: "{{ _verdict_pass_dir.path }}"
+
+    - name: Confirm the pass averaged both baseline repetitions
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'pass'
+          - llm_model_paired_trial_verdict.baseline.repetitions == 2
+          - llm_model_paired_trial_verdict.baseline_score | round(6) == 70.0
+        quiet: true
+
+    - name: Read the verdict.json written for the comparable pair
+      ansible.builtin.slurp:
+        src: "{{ _verdict_pass_dir.path }}/verdict.json"
+      register: _verdict_pass_json
+
+    - name: Confirm verdict.json records the pass
+      ansible.builtin.assert:
+        that:
+          - (_verdict_pass_json.content | b64decode | from_json).status == 'pass'
+        quiet: true
+
+    - name: Run the verdict for the pair with no candidate envelope, which must fail the run
+      block:
+        - name: Compute the invalid verdict
+          ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict.yml
+          vars:
+            _llm_campaign_output_dir: "{{ _verdict_invalid_dir.path }}"
+
+        - name: Fail if the invalid verdict did not stop the run
+          ansible.builtin.fail:
+            msg: The invalid paired verdict did not fail the run.
+      rescue:
+        - name: Confirm the run failed with the invalid-verdict message
+          ansible.builtin.assert:
+            that:
+              - "'Paired verdict is invalid' in (ansible_failed_result.msg | default(''))"
+              - "'no candidate envelope' in (ansible_failed_result.msg | default(''))"
+            quiet: true
+
+    - name: Read the verdict.json written for the invalid pair
+      ansible.builtin.slurp:
+        src: "{{ _verdict_invalid_dir.path }}/verdict.json"
+      register: _verdict_invalid_json
+
+    - name: Confirm verdict.json was written before the run failed
+      ansible.builtin.assert:
+        that:
+          - (_verdict_invalid_json.content | b64decode | from_json).status == 'invalid'
+          - "'no candidate envelope' in (_verdict_invalid_json.content | b64decode | from_json).reasons"
+        quiet: true
+
+    - name: Remove the scratch output directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ _verdict_pass_dir.path }}"
+        - "{{ _verdict_invalid_dir.path }}"

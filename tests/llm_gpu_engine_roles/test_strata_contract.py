@@ -72,14 +72,16 @@ def test_selected_strata_play_targets_one_gpu_guest_and_runs_before_router():
 
 def test_campaign_uses_the_served_model_id_and_preserves_the_model_store_shards():
     target = _load(REPO_ROOT / "playbooks/llm-model-campaign-target.yml")[0]
+    probe = _load(REPO_ROOT / "playbooks/tasks/llm-model-campaign-endpoint-probe.yml")
     served_id = next(
-        task for task in target["pre_tasks"]
+        task for task in probe
         if task.get("name") == "Record the model ID exposed by the live endpoint"
     )
     assert served_id["ansible.builtin.set_fact"]["_llm_campaign_served_model_id"] == "{{ _llm_campaign_models_response.json.data[0].id }}"
 
-    cache_sync = next(task for task in target["tasks"] if task.get("name") == "Download only the selected registry artifact into the target cache")
-    assert cache_sync["when"] == "engine not in ['mlx_lm', 'strata']"
+    run_pass = _load(REPO_ROOT / "playbooks/tasks/llm-model-campaign-run-pass.yml")
+    cache_sync = next(task for task in run_pass if task.get("name") == "Download only the selected registry artifact into the target cache")
+    assert "engine not in ['mlx_lm', 'strata']" in cache_sync["when"]
     gguf_find = next(task for task in target["pre_tasks"] if task.get("name") == "Resolve a single GGUF file when the selected artifact is GGUF")
     assert gguf_find["when"] == "engine == 'llama_cpp' and _llm_campaign_model.format == 'GGUF'"
 

@@ -45,8 +45,9 @@ def test_authenticated_recipes_require_runtime_alias_and_key():
     tasks = _controller_tasks()
     runtime = _named(tasks, "Require runtime endpoint inputs for authenticated model recipes")
     target = yaml.safe_load(TARGET_PLAYBOOK.read_text(encoding="utf-8"))[0]
-    endpoint = _named(target["pre_tasks"], "Verify the live endpoint advertises the selected registry model")
-    model_check = _named(target["pre_tasks"], "Require the live endpoint model ID to match the selected artifact")
+    endpoint_tasks = _load_tasks(TASKS / "llm-model-campaign-endpoint-probe.yml")
+    endpoint = _named(endpoint_tasks, "Verify the live endpoint advertises the expected model")
+    model_check = _named(endpoint_tasks, "Require the live endpoint model ID to match this campaign pass")
     saved = _named(tasks, "Save the prepared campaign inputs for the inventory target play")
 
     assert "serving_model is defined" in runtime["ansible.builtin.assert"]["that"]

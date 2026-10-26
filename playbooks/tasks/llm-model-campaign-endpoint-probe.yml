@@ -1,0 +1,41 @@
+---
+- name: Validate the active campaign endpoint origin
+  ansible.builtin.include_tasks: llm-model-campaign-endpoint-policy.yml
+  vars:
+    benchmark_endpoint_root: "{{ llm_model_campaign_current_endpoint_root }}"
+
+- name: Verify the live endpoint advertises the expected model
+  ansible.builtin.uri:
+    url: "{{ llm_model_campaign_current_endpoint_root }}/v1/models"
+    method: GET
+    headers: >-
+      {{ {'Authorization': 'Bearer ' ~ lookup('env', 'OPENAI_API_KEY')}
+         if _llm_campaign_uses_api_key else {} }}
+    status_code: 200
+    return_content: true
+  delegate_to: localhost
+  vars:
+    ansible_become: false
+  register: _llm_campaign_models_response
+  no_log: "{{ _llm_campaign_uses_api_key }}"
+
+- name: Require the live endpoint model ID to match this campaign pass
+  ansible.builtin.assert:
+    that:
+      - >-
+        (engine == 'strata'
+         and _llm_campaign_models_response.json.data | length == 1
+         and _llm_campaign_models_response.json.data[0].id | string | length > 0)
+        or
+        (engine != 'strata'
+         and _llm_campaign_models_response.json.data
+             | selectattr('id', 'equalto', llm_model_campaign_expected_endpoint_model_id)
+             | list | length == 1)
+    fail_msg: >-
+      The endpoint must expose the expected model ID for this campaign pass.
+    quiet: true
+  no_log: "{{ _llm_campaign_uses_api_key }}"
+
+- name: Record the model ID exposed by the live endpoint
+  ansible.builtin.set_fact:
+    _llm_campaign_served_model_id: "{{ _llm_campaign_models_response.json.data[0].id }}"

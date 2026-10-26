@@ -20,8 +20,6 @@
           - artifact_id is defined
           - artifact_id | string | length > 0
           - benchmark_endpoint_root is defined
-          - benchmark_endpoint_root | string is match('^https://[A-Za-z0-9-]+([.][A-Za-z0-9-]+)+$')
-          - benchmark_endpoint_root | urlsplit('hostname') is search('[A-Za-z]')
           - benchmark_cache_path is defined
           - benchmark_cache_path | string is match('^/.+')
           - benchmark_cache_path is not search('(^|/)[.][.](/|$)')
@@ -39,6 +37,16 @@
           an HTTPS endpoint origin, an existing target cache path, and a
           non-negative numeric power cap in watts.
         quiet: true
+
+    - name: Require the baseline campaign endpoint to use HTTPS
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-endpoint-policy.yml
+      vars:
+        benchmark_endpoint_root: "{{ benchmark_endpoint_root }}"
+        llm_model_campaign_allow_trial_http: false
+        llm_model_trial_endpoint_url: ""
+
+    - name: Resolve the paired campaign inputs and the protected output directory
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-paired-inputs.yml
 
     - name: Parse positive concurrency and context values
       ansible.builtin.set_fact:
@@ -130,6 +138,7 @@
         that:
           - _llm_campaign_publish_help.rc == 0
           - _llm_campaign_publish_help.stdout is search('--campaign-dimensions')
+          - _llm_campaign_output_dir | length == 0 or _llm_campaign_publish_help.stdout is search('--output-dir')
         fail_msg: >-
           The required binary uv failed to run mlx-bench-publish, or the pinned
           benchmark revision {{ _llm_campaign_benchmarks_ref }} has no
@@ -268,6 +277,9 @@
         _llm_campaign_endpoint_origin: "{{ benchmark_endpoint_root }}"
         _llm_campaign_cache_root: "{{ benchmark_cache_path }}"
         _llm_campaign_strata_batch_size: "{{ strata_batch_size | default('') }}"
+        _llm_campaign_paired_trial: "{{ _llm_campaign_paired_trial }}"
+        _llm_campaign_output_dir: "{{ _llm_campaign_output_dir }}"
+        _llm_campaign_tolerance: "{{ _llm_campaign_tolerance }}"
 
 - name: Continue the campaign on the selected target
   ansible.builtin.import_playbook: llm-model-campaign-target.yml

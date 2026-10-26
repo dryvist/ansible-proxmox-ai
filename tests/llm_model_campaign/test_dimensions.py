@@ -96,6 +96,7 @@ def test_pinned_converter_must_accept_the_dimensions_flag_before_target_work():
     assert assertion["that"] == [
         "_llm_campaign_publish_help.rc == 0",
         "_llm_campaign_publish_help.stdout is search('--campaign-dimensions')",
+        "_llm_campaign_output_dir | length == 0 or _llm_campaign_publish_help.stdout is search('--output-dir')",
     ]
     assert "_llm_campaign_benchmarks_ref" in assertion["fail_msg"]
     assert "binary uv" in assertion["fail_msg"]
@@ -185,13 +186,15 @@ def test_lm_eval_results_are_found_below_the_per_model_directory():
 
 
 def test_conversion_renders_the_dimensions_file_and_passes_it_to_the_converter():
-    render, convert = _load_tasks(TASKS / "llm-model-campaign-convert.yml")
+    make_output_dir, render, convert = _load_tasks(TASKS / "llm-model-campaign-convert.yml")
     template = render["ansible.builtin.template"]
 
+    assert make_output_dir["ansible.builtin.file"]["path"] == "{{ _llm_campaign_output_dir }}/{{ llm_model_campaign_pass_name }}"
     assert template["src"].endswith("/templates/llm-model-campaign-dimensions.json.j2")
     assert template["dest"].endswith("{{ _llm_campaign_cell_slug }}.dimensions.json")
     assert render["delegate_to"] == "localhost"
     argv = convert["ansible.builtin.command"]["argv"]
     assert "'--campaign-dimensions'" in argv
     assert "'.dimensions.json'" in argv
+    assert "'--output-dir'" in argv
     assert convert["delegate_to"] == "localhost"
