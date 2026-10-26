@@ -82,12 +82,18 @@ agentgateway_docker_mcp_targets:
   - name: context7
     host: "https://mcp.context7.com/mcp"
 
-# Per-agent caller keys from the dedicated gateway-reader domain.
+# Per-agent caller keys from the dedicated gateway-reader domain. A caller with no
+# seeded key (an unseeded registry leaf, or a roster agent missing its key) is
+# omitted, so config.yaml.j2 never renders `key: ""`. The roster presence check
+# lives in tasks/main.yml.
 agentgateway_docker_roster_keys: >-
   {%- set keys = {} -%}
   {%- set agent_keys = (openbao_secrets_by_domain | default({})).get('agentgateway-agent-keys', {}) -%}
   {%- for agent, field in (ai_agent_gateway_key_fields | default({})).items() -%}
-    {%- set _ = keys.update({agent: (agent_keys.get(field, '') | default('', true) | trim)}) -%}
+    {%- set key = agent_keys.get(field, '') | default('', true) | trim -%}
+    {%- if key | length > 0 -%}
+      {%- set _ = keys.update({agent: key}) -%}
+    {%- endif -%}
   {%- endfor -%}
   {{ keys }}
 agentgateway_docker_container_gid: "65532"

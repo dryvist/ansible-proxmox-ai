@@ -16,13 +16,26 @@
   vars:
     _caller_id_collisions: "{{ ai_agents | list | intersect(agent_callers_registry | default({}) | list) }}"
 
+# The reader domain is optional in openbao_secrets (roles/openbao_secrets, 11-roster-domains.yml),
+# so a skipped domain is absent here rather than an error. Any caller needs it: refuse to
+# deploy a gateway that would serve them no keys.
+- name: Require the agentgateway-agent-keys domain when gateway callers exist
+  ansible.builtin.assert:
+    that:
+      - "'agentgateway-agent-keys' in (openbao_secrets_by_domain | default({}, true))"
+    fail_msg: >-
+      OpenBao domain agentgateway-agent-keys was skipped or absent while gateway
+      callers exist. Refusing to deploy agentgateway without its reader domain.
+  when:
+    - (ai_agent_gateway_key_fields | default({}, true)) | length > 0
+
 - name: Validate that every roster agent has a gateway API key
   ansible.builtin.assert:
     that:
-      - item.value | length > 0
+      - item.key in (agentgateway_docker_roster_keys | default({}, true))
     fail_msg: "No agentgateway key is available for roster agent {{ item.key }}."
   # Registry callers are exempt: an unseeded leaf leaves the caller keyless, with no bank.
-  loop: "{{ agentgateway_docker_roster_keys | dict2items | selectattr('key', 'in', ai_agents | list) | list }}"
+  loop: "{{ ai_agents | default({}, true) | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
 
