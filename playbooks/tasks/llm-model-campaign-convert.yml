@@ -1,4 +1,14 @@
 ---
+- name: Create the output directory for this campaign pass when selected
+  ansible.builtin.file:
+    path: "{{ _llm_campaign_output_dir }}/{{ llm_model_campaign_pass_name }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  vars:
+    ansible_become: false
+  when: _llm_campaign_output_dir | default('') | length > 0
+
 - name: Write the campaign dimensions this cell can attest beside its raw result
   ansible.builtin.template:
     src: "{{ playbook_dir }}/templates/llm-model-campaign-dimensions.json.j2"
@@ -14,10 +24,10 @@
       {{ ['uv', 'run', 'mlx-bench-publish', _llm_campaign_converter_file.path,
           '--kind', _llm_campaign_run.converter.kind,
           '--suite', _llm_campaign_run.converter.suite,
-          '--model', _llm_campaign_model.hf_repo,
+          '--model', llm_model_campaign_pass_hf_repo,
           '--hostname', 'benchmark-target',
           '--serving-stack', engine,
-          '--serving-model', _llm_campaign_serving_model,
+          '--serving-model', llm_model_campaign_pass_serving_model,
           '--serving-port', _llm_campaign_port | string,
           '--concurrency', _llm_campaign_concurrency_value | string,
           '--tag', 'campaign=rtx-pro-6000',
@@ -30,6 +40,8 @@
            else (power_cap_w | string)),
           '--campaign-dimensions',
           _llm_campaign_cell_controller_dir ~ '/' ~ _llm_campaign_cell_slug ~ '.dimensions.json']
+         + (['--output-dir', _llm_campaign_output_dir ~ '/' ~ llm_model_campaign_pass_name]
+            if _llm_campaign_output_dir | default('') | length > 0 else [])
          + (['--tag', 'repetition=' ~ _llm_campaign_repetition_value | string])
          + (['--tag', 'model_task=' ~ _llm_campaign_model.model_task]
             if _llm_campaign_model.model_task is defined else [])

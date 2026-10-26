@@ -1,0 +1,118 @@
+---
+- name: Require a numeric tolerance in points
+  ansible.builtin.assert:
+    that:
+      - _llm_campaign_tolerance | string is match('^[0-9]+([.][0-9]+)?$')
+    fail_msg: The paired verdict tolerance must be a non-negative number of points.
+    quiet: true
+
+- name: Summarize each pass's repetition envelopes by metric key
+  ansible.builtin.set_fact:
+    _llm_campaign_summaries_json: >-
+      {% set ns = namespace(out={}) %}
+      {% for pass_name, envelopes in {
+           'baseline': llm_model_paired_trial_baseline_envelopes,
+           'candidate': llm_model_paired_trial_candidate_envelopes}.items() %}
+      {% set s = namespace(suites=[], shas=[], limits=[], values={}) %}
+      {% for env in envelopes %}
+      {% set s.suites = s.suites + [env.suite] %}
+      {% set s.shas = s.shas + [env.git_sha] %}
+      {% for row in env.results %}
+      {% set tags = row.tags | default({}) %}
+      {% set s.limits = s.limits + [row.name ~ '|' ~ tags.get('n_limit', '')] %}
+      {% if tags.get('lm_eval_key', '') is match('^(acc|exact_match)') %}
+      {% set key = row.name ~ '|' ~ row.metric %}
+      {% set s.values = s.values | combine({key: s.values.get(key, []) + [row.value]}) %}
+      {% endif %}
+      {% endfor %}
+      {% endfor %}
+      {% set means = namespace(points={}) %}
+      {% for key, vals in s.values.items() %}
+      {% set means.points = means.points | combine({key: (vals | sum) / (vals | length) * 100}) %}
+      {% endfor %}
+      {% set ns.out = ns.out | combine({pass_name: {
+           'suites': s.suites | unique | sort,
+           'shas': s.shas | unique | sort,
+           'limits': s.limits | unique | sort,
+           'repetitions': envelopes | length,
+           'points': means.points}}) %}
+      {% endfor %}
+      {{ ns.out | to_json }}
+
+- name: Parse the per-pass summaries
+  ansible.builtin.set_fact:
+    _llm_campaign_summaries: "{{ _llm_campaign_summaries_json | from_json }}"
+
+- name: Name the baseline and candidate summaries for the comparison
+  ansible.builtin.set_fact:
+    _llm_campaign_base: "{{ _llm_campaign_summaries.baseline }}"
+    _llm_campaign_cand: "{{ _llm_campaign_summaries.candidate }}"
+
+- name: Note whether both passes have envelopes to compare
+  ansible.builtin.set_fact:
+    _llm_campaign_both_present: >-
+      {{ _llm_campaign_summaries.baseline.repetitions > 0
+         and _llm_campaign_summaries.candidate.repetitions > 0 }}
+
+- name: Find the metric keys both passes measured
+  ansible.builtin.set_fact:
+    _llm_campaign_common_keys: >-
+      {{ _llm_campaign_base.points.keys()
+         | select('in', _llm_campaign_cand.points.keys())
+         | sort | list }}
+
+- name: Collect each pass's points for the common metric keys
+  ansible.builtin.set_fact:
+    _llm_campaign_baseline_points: >-
+      {{ _llm_campaign_common_keys
+         | map('extract', _llm_campaign_base.points) | list }}
+    _llm_campaign_candidate_points: >-
+      {{ _llm_campaign_common_keys
+         | map('extract', _llm_campaign_cand.points) | list }}
+
+- name: Score each pass as the mean of its common metric keys, in points
+  ansible.builtin.set_fact:
+    _llm_campaign_baseline_score: >-
+      {{ (_llm_campaign_baseline_points | sum) / (_llm_campaign_baseline_points | length)
+         if _llm_campaign_common_keys | length > 0 else none }}
+    _llm_campaign_candidate_score: >-
+      {{ (_llm_campaign_candidate_points | sum) / (_llm_campaign_candidate_points | length)
+         if _llm_campaign_common_keys | length > 0 else none }}
+
+- name: Collect every reason the paired comparison is invalid
+  ansible.builtin.set_fact:
+    _llm_campaign_invalid_reasons: >-
+      {{ (['no baseline envelope'] if _llm_campaign_base.repetitions == 0 else [])
+         + (['no candidate envelope'] if _llm_campaign_cand.repetitions == 0 else [])
+         + (['suite differs between passes']
+            if _llm_campaign_both_present and _llm_campaign_base.suites != _llm_campaign_cand.suites else [])
+         + (['git_sha differs between passes']
+            if _llm_campaign_both_present and _llm_campaign_base.shas != _llm_campaign_cand.shas else [])
+         + (['name and n_limit pairs differ between passes']
+            if _llm_campaign_both_present and _llm_campaign_base.limits != _llm_campaign_cand.limits else [])
+         + (['no metric key is common to both passes']
+            if _llm_campaign_both_present and _llm_campaign_common_keys | length == 0 else [])
+         + (['baseline restore not verified']
+            if not ((llm_model_trial_restore_proof | default({})).get('verified', false) | bool) else [])
+         + (['paired release failed']
+            if _llm_campaign_release_failed | default(false) | bool else []) }}
+
+- name: Compute the paired model verdict from both passes and the restore proof
+  ansible.builtin.set_fact:
+    llm_model_paired_trial_verdict:
+      recipe: quick-intelligence
+      status: >-
+        {{ 'invalid' if _llm_campaign_invalid_reasons | length > 0
+           else ('pass'
+                 if _llm_campaign_candidate_score >= _llm_campaign_baseline_score - _llm_campaign_tolerance | float
+                 else 'fail') }}
+      reasons: "{{ _llm_campaign_invalid_reasons }}"
+      baseline_score: "{{ _llm_campaign_baseline_score }}"
+      candidate_score: "{{ _llm_campaign_candidate_score }}"
+      tolerance: "{{ _llm_campaign_tolerance | float }}"
+      compared_keys: "{{ _llm_campaign_common_keys }}"
+      baseline: "{{ _llm_campaign_base }}"
+      candidate: "{{ _llm_campaign_cand }}"
+      baseline_restore_verified: >-
+        {{ (llm_model_trial_restore_proof | default({})).get('verified', false) | bool }}
+      release_failed: "{{ _llm_campaign_release_failed | default(false) | bool }}"

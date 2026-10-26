@@ -1,0 +1,68 @@
+---
+- name: Find every baseline repetition envelope
+  ansible.builtin.find:
+    paths: "{{ _llm_campaign_output_dir }}/baseline"
+    patterns: "*.json"
+    recurse: false
+    file_type: file
+  delegate_to: localhost
+  vars:
+    ansible_become: false
+  register: _llm_campaign_baseline_envelopes
+
+- name: Find every candidate repetition envelope
+  ansible.builtin.find:
+    paths: "{{ _llm_campaign_output_dir }}/candidate"
+    patterns: "*.json"
+    recurse: false
+    file_type: file
+  delegate_to: localhost
+  vars:
+    ansible_become: false
+  register: _llm_campaign_candidate_envelopes
+
+- name: Read every baseline repetition envelope
+  ansible.builtin.slurp:
+    src: "{{ item.path }}"
+  loop: "{{ _llm_campaign_baseline_envelopes.files }}"
+  delegate_to: localhost
+  vars:
+    ansible_become: false
+  register: _llm_campaign_baseline_contents
+
+- name: Read every candidate repetition envelope
+  ansible.builtin.slurp:
+    src: "{{ item.path }}"
+  loop: "{{ _llm_campaign_candidate_envelopes.files }}"
+  delegate_to: localhost
+  vars:
+    ansible_become: false
+  register: _llm_campaign_candidate_contents
+
+- name: Bind every repetition envelope of each pass for verdict calculation
+  ansible.builtin.set_fact:
+    llm_model_paired_trial_baseline_envelopes: >-
+      {{ _llm_campaign_baseline_contents.results
+         | map(attribute='content') | map('b64decode') | map('from_json') | list }}
+    llm_model_paired_trial_candidate_envelopes: >-
+      {{ _llm_campaign_candidate_contents.results
+         | map(attribute='content') | map('b64decode') | map('from_json') | list }}
+
+- name: Calculate the paired model verdict
+  ansible.builtin.include_tasks: llm-model-campaign-verdict-facts.yml
+
+- name: Write verdict.json beside the paired pass output directories
+  ansible.builtin.copy:
+    content: "{{ llm_model_paired_trial_verdict | to_nice_json }}"
+    dest: "{{ _llm_campaign_output_dir }}/verdict.json"
+    mode: '0600'
+  delegate_to: localhost
+  vars:
+    ansible_become: false
+
+- name: Fail the paired run when the verdict is invalid, after verdict.json is written
+  ansible.builtin.fail:
+    msg: >-
+      Paired verdict is invalid: {{ llm_model_paired_trial_verdict.reasons | join('; ') }}.
+      verdict.json beside the pass directories records the inputs.
+  when: llm_model_paired_trial_verdict.status == 'invalid'

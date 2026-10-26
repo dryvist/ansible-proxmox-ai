@@ -9,6 +9,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CAMPAIGN = REPO_ROOT / "playbooks/llm-model-campaign.yml"
 TARGET = REPO_ROOT / "playbooks/llm-model-campaign-target.yml"
+ENDPOINT_POLICY = REPO_ROOT / "playbooks/tasks/llm-model-campaign-endpoint-policy.yml"
 ARTIFACTS = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 
 
@@ -32,10 +33,14 @@ def test_campaign_validates_the_endpoint_and_cache_parameters() -> None:
     assert TARGET.name in imports
 
     plays += yaml.safe_load(TARGET.read_text(encoding="utf-8"))
+    plays += yaml.safe_load(ENDPOINT_POLICY.read_text(encoding="utf-8"))
     conditions = "\n".join(_assert_conditions(plays))
 
     assert "benchmark_endpoint_root is defined" in conditions
-    assert "benchmark_endpoint_root | string is match('^https://" in conditions
+    assert "benchmark_endpoint_root | string" in conditions
+    assert "^https://" in conditions
+    assert "llm_model_campaign_allow_trial_http | default(false) | bool" in conditions
+    assert "== llm_model_trial_endpoint_url | regex_replace('/v1$', '')" in conditions
     assert "benchmark_cache_path is defined" in conditions
     assert "benchmark_cache_path is not search('(^|/)[.][.](/|$)')" in conditions
     assert "artifact_id is defined" in conditions

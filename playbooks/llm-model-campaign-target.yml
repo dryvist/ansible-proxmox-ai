@@ -16,6 +16,10 @@
     _llm_campaign_cache_root: "{{ hostvars['localhost']._llm_campaign_cache_root }}"
     _llm_campaign_model_path: "{{ _llm_campaign_cache_root }}/models/{{ _llm_campaign_model.hf_repo }}"
     _llm_campaign_endpoint_root: "{{ hostvars['localhost']._llm_campaign_endpoint_origin }}"
+    _llm_campaign_paired_trial: "{{ hostvars['localhost']._llm_campaign_paired_trial | bool }}"
+    _llm_campaign_output_dir: "{{ hostvars['localhost']._llm_campaign_output_dir | default('') }}"
+    _llm_campaign_tolerance: "{{ hostvars['localhost']._llm_campaign_tolerance | default(2.0) }}"
+    llm_model_campaign_current_endpoint_root: "{{ _llm_campaign_endpoint_root }}"
     _llm_campaign_strata_batch_size: "{{ hostvars['localhost']._llm_campaign_strata_batch_size | default('') }}"
   pre_tasks:
     - name: Require exactly one selected host present in the published inventory
@@ -108,47 +112,6 @@
               {{ _llm_campaign_power_limit.stdout_lines[0].split(',')
                  | map('trim') | list }}
           when: _llm_campaign_power_limit.rc == 0
-
-    - name: Verify the live endpoint advertises the selected registry model
-      ansible.builtin.uri:
-        url: "{{ _llm_campaign_endpoint_root }}/v1/models"
-        method: GET
-        headers: >-
-          {{ {'Authorization': 'Bearer ' ~ lookup('env', 'OPENAI_API_KEY')}
-             if _llm_campaign_uses_api_key else {} }}
-        status_code: 200
-        return_content: true
-      delegate_to: localhost
-      vars:
-        ansible_become: false
-      register: _llm_campaign_models_response
-      no_log: "{{ _llm_campaign_uses_api_key }}"
-
-    - name: Require the live endpoint model ID to match the selected artifact
-      ansible.builtin.assert:
-        that:
-          - >-
-            (engine == 'strata'
-             and _llm_campaign_models_response.json.data | length == 1
-             and _llm_campaign_models_response.json.data[0].id | string | length > 0)
-            or
-            (engine != 'strata'
-             and _llm_campaign_models_response.json.data
-                 | selectattr(
-                     'id',
-                     'equalto',
-                     _llm_campaign_serving_model if _llm_campaign_uses_api_key
-                     else _llm_campaign_model.hf_repo
-                   )
-                 | list | length == 1)
-        fail_msg: >-
-          The endpoint must expose the selected artifact or one unambiguous Strata model ID.
-        quiet: true
-      no_log: "{{ _llm_campaign_uses_api_key }}"
-
-    - name: Record the model ID exposed by the live endpoint
-      ansible.builtin.set_fact:
-        _llm_campaign_served_model_id: "{{ _llm_campaign_models_response.json.data[0].id }}"
 
     - name: Inspect the selected serving profile's rendered service command
       ansible.builtin.command:
@@ -296,34 +259,8 @@
         ansible_become: false
 
   tasks:
-    - name: Download only the selected registry artifact into the target cache
-      ansible.builtin.include_role:
-        name: nvidia_gpu_guest
-        tasks_from: cache-sync.yml
-      loop: >-
-        {{ [_llm_campaign_model.artifact_id]
-           + (_llm_campaign_model.required_artifact_ids | default([]))
-           + ([_llm_campaign_model.mtp_artifact_id]
-              if engine == 'mlx_vlm_native'
-              and config_name is search('-mtp$')
-              and _llm_campaign_model.mtp_artifact_id is defined
-              else []) }}
-      loop_control:
-        loop_var: _llm_campaign_cache_artifact_id
-        label: "{{ _llm_campaign_cache_artifact_id }}"
-      vars:
-        nvidia_gpu_guest_cache_sync_artifact_id: "{{ _llm_campaign_cache_artifact_id }}"
-        nvidia_gpu_guest_cache_sync_notify_service: false
-        nvidia_gpu_guest_model_cache_mount_path: "{{ _llm_campaign_cache_root }}"
-        nvidia_gpu_guest_hf_home: "{{ _llm_campaign_cache_root }}/.hf-home"
-      when: engine not in ['mlx_lm', 'strata']
-
-    - name: Run each recipe row and its requested parameter cells
-      ansible.builtin.include_tasks: tasks/llm-model-campaign-run.yml
-      loop: "{{ _llm_campaign.run }}"
-      loop_control:
-        loop_var: _llm_campaign_run
-        label: "{{ _llm_campaign_run.name }}"
+    - name: Run the baseline pass and, when paired, the candidate pass under one trial lock
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-paired-passes.yml
 
   post_tasks:
     - name: Remove the controller's temporary config and raw-output workspace
