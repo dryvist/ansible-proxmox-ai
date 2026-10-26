@@ -1,0 +1,122 @@
+---
+- name: Verify the Ada embed guest serves gpu-small on the GPU port beside its light lane
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _ada_host: llm-ada-lovelace-6X-16GB-embed
+    _pro6000_host: pro6000-fixture
+    _ct503040_host: llm-blackwell-7-96GB-small
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          llm_gpu_serving_api: 10440
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
+    bao_apps_secrets: {}
+    bao_local_llm_secrets: {}
+    llm_router_subdomain: pve.example.test
+    llm_large_serving_host: llm-large
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer
+    ai_router_request_timeout_seconds: 2400
+    ai_router_retry_after_seconds: 2
+    hermes_goal_judge_model: judge
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+  tasks:
+    # Mirrors inventory/host_vars/llm-ada-lovelace-6X-16GB-embed.yml: the port is the tofu constant.
+    - name: Add Ada as a GPU member on the tofu serving port
+      ansible.builtin.add_host:
+        name: "{{ _ada_host }}"
+        groups: [llm_gpu_group, llm_gpu_legacy_group, llm_fast_group]
+        ansible_connection: local
+        llm_active_profile: small
+        llm_gpu_serving_model_cache_mount_path: /var/lib/llm
+        llm_gpu_serving_api_port: "{{ tofu_data.constants.service_ports.llm_gpu_serving_api }}"
+
+    - name: Add the existing Pro6000 member on the default light-lane port
+      ansible.builtin.add_host:
+        name: "{{ _pro6000_host }}"
+        groups: [llm_gpu_group]
+        ansible_connection: local
+        llm_active_profile: qwen38-96k-11-fp8-mtp
+
+    - name: Add CT 503040 as legacy-only, never a router member
+      ansible.builtin.add_host:
+        name: "{{ _ct503040_host }}"
+        groups: [llm_gpu_legacy_group]
+        ansible_connection: local
+        llm_active_profile: small
+
+    - name: Load router role defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Enable GPU profile projections
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+
+    - name: Refresh derived router inputs
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render the router configuration
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Assert Ada serves gpu-small on the GPU port, the light lane keeps 10434, and Pro6000 is unchanged
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - groups['llm_gpu_group'] | sort == [_ada_host, _pro6000_host] | sort
+          - _ct503040_host not in groups['llm_gpu_group']
+          - _gpu_small_deployments | length == 1
+          - _gpu_small_deployments[0].model_info.profile == 'small'
+          - _gpu_small_deployments[0].litellm_params.api_base == _ada_url
+          - _gpu_small_deployments[0].litellm_params.order | int == 2
+          - _gpu_small_deployments[0].litellm_params.max_parallel_requests | int == 4
+          - _pro6000_deployments | length >= 1
+          - _pro6000_deployments | map(attribute='litellm_params.api_base') | unique | list == [_pro6000_url]
+          - llm_router_light_port | int == 10434
+          - llm_router_llm_fast_base_url.endswith(':10434/v1')
+          - llm_router_llm_light_base_url.endswith(':10434/v1')
+          - _ct503040_host not in _api_bases
+          - _small_cpu_deployments | length == 1
+          - _small_cpu_deployments[0].litellm_params.order | int == 3
+        fail_msg: >-
+          GPU small={{ _gpu_small_deployments }}, Pro6000={{ _pro6000_deployments }},
+          CPU small={{ _small_cpu_deployments }}, GPU hosts={{ groups['llm_gpu_group'] }}
+      vars:
+        _ada_url: "{{ 'http://' ~ _ada_host ~ '.' ~ llm_router_apex_domain ~ ':10440/v1' }}"
+        _pro6000_url: "{{ 'http://' ~ _pro6000_host ~ '.' ~ llm_router_apex_domain ~ ':10434/v1' }}"
+        _gpu_small_deployments: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', 'small')
+             | selectattr('model_info.profile', 'defined')
+             | selectattr('model_info.profile', 'equalto', 'small') | list }}
+        _pro6000_deployments: >-
+          {{ _config.model_list
+             | selectattr('model_info.profile', 'defined')
+             | selectattr('model_info.profile', 'equalto', 'qwen38-96k-11-fp8-mtp') | list }}
+        _small_cpu_deployments: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', 'small')
+             | rejectattr('model_info.profile', 'defined') | list }}
+        _api_bases: >-
+          {{ _config.model_list | selectattr('litellm_params.api_base', 'defined')
+             | map(attribute='litellm_params.api_base') | join(' ') }}

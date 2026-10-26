@@ -107,14 +107,16 @@ def _render(models: list[dict]) -> list[dict]:
     text = env.get_template("model-list-gpu.yaml.j2").render(
         llm_router_gpu_models=models,
         llm_router_deployment_tags_by_entry={f"{m['client_model_id']}|{m['tier']}": [] for m in models},
-        llm_router_llm_gpu_base_url="http://placeholder/v1",
-        llm_router_llm_gpu_co_resident_base_url="http://placeholder:10435/v1",
         llm_router_gpu_profile_base_urls={
-            m["profile"]: "http://placeholder:10436/v1"
+            m.get("profile", ""): (
+                "http://placeholder:10436/v1"
+                if m.get("api_port_key") == "llm_fast_trial_api"
+                else "http://placeholder:10435/v1"
+                if m.get("co_resident_only")
+                else "http://placeholder/v1"
+            )
             for m in models
-            if m.get("api_port_key") == "llm_fast_trial_api"
         },
-        llm_router_gpu_co_resident_profiles=[m["profile"] for m in models if m.get("co_resident_only")],
         llm_router_light_api_key="placeholder",
     )
     return yaml.safe_load("model_list:\n" + text)["model_list"]
