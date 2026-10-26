@@ -115,8 +115,10 @@ def test_restart_task_only_targets_deployed_replicas_and_is_gated_on_unchanged()
     restart = next(t for t in tasks if t["name"].startswith("Restart every replica"))
     assert restart["community.docker.docker_compose_v2"] == {
         "project_src": "{{ hindsight_docker_data_dir }}",
-        "state": "started",
+        "state": "present",
     }
+    # docker_compose_v2 accepts only these; "started" failed the rescue at runtime.
+    assert restart["community.docker.docker_compose_v2"]["state"] in {"absent", "present", "stopped", "restarted"}
     assert restart["loop"] == "{{ hindsight_docker_compose_exists_check.results | default([]) }}"
     assert restart["delegate_to"] == "{{ hindsight_docker_replica_check.item }}"
     assert restart.get("run_once") is True
