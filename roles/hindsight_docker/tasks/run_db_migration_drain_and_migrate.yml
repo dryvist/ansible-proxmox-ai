@@ -49,6 +49,22 @@
       run_once: true
       when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
 
+    # The backup must run on the image that matches the current schema: a newer
+    # image's backup reads tables the old schema lacks and exits non-zero.
+    - name: Read the image the current schema was deployed with
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - "{{ '{{' }}.Config.Image{{ '}}' }}"
+          - "{{ hindsight_docker_container_name }}"
+      register: hindsight_docker_deployed_image_probe
+      run_once: true
+      changed_when: false
+      failed_when: false
+      when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
+
     - name: Take a pre-migration database backup
       ansible.builtin.command:
         argv:
@@ -62,7 +78,11 @@
           - HINDSIGHT_API_DATABASE_URL
           - -v
           - "{{ hindsight_docker_migration_backup_dir }}:/backup"
-          - "{{ hindsight_docker_image }}"
+          - >-
+            {{ (hindsight_docker_deployed_image_probe.stdout | default('') | trim)
+               if (hindsight_docker_deployed_image_probe.rc | default(1)) == 0
+                  and (hindsight_docker_deployed_image_probe.stdout | default('') | trim | length) > 0
+               else hindsight_docker_image }}
           - hindsight-admin
           - backup
           - "/backup/{{ hindsight_docker_premigration_backup_filename }}"
@@ -218,7 +238,7 @@
     - name: Restart every replica this task file stopped, on its current (unchanged) image
       community.docker.docker_compose_v2:
         project_src: "{{ hindsight_docker_data_dir }}"
-        state: started
+        state: present
       loop: "{{ hindsight_docker_compose_exists_check.results | default([]) }}"
       loop_control:
         loop_var: hindsight_docker_replica_check
