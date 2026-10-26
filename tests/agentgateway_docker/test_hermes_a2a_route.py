@@ -62,6 +62,8 @@ def test_hermes_a2a_route_authenticates_callers_and_allows_only_trusted_tier() -
 
     assert routes.index(hermes) < routes.index(langgraph)
     assert hermes["matches"][0]["path"] == {"pathPrefix": "/a2a/hermes/"}
+    assert hermes["policies"]["urlRewrite"] == {"path": {"prefix": "/"}}
+    assert "urlRewrite" not in langgraph["policies"]
     assert hermes["policies"]["apiKey"]["mode"] == "strict"
     assert hermes["policies"]["apiKey"]["location"] == {
         "header": {"name": "X-Agent-Key"}
