@@ -1,5 +1,9 @@
 # Recurring work is all plain cron now — Kanban is ad-hoc/follow-up only
 
+Maintenance runs daily 06:00-07:00 UTC (long jobs use 04:00-10:00 UTC).
+`splunk-status-digest` checks fired backup alerts once daily after 10:00 UTC
+and posts only new findings.
+
 Every recurring workload — the Splunk fleet above, `github-triage`,
 `daily-summary`, `zammad-review`, `homelab-ai-fabric-status`, the nightly wiki
 pass, the 8h `review`, and (as of this reframe) `docs-sync` — is a
