@@ -54,6 +54,7 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         )
 
         assert values["HERMES_AGENT_MODEL_API_KEY"] == "MODELKEY"
+        assert not any(key.startswith("HERMES_LANGFUSE_") for key in values)
         for key in always_blank:
             assert values[key] == "", f"{profile['name']}: {key} must always be blank"
         for section, keys in section_keys.items():

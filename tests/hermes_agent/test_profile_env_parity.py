@@ -48,11 +48,6 @@ _DEFAULT_STORE_ONLY_KEYS = {
     "SLACK_HERMES_ISSUES_CHANNEL",
     "SLACK_HERMES_NOISE_CHANNEL",
     "SLACK_HERMES_SPLUNK_CHANNEL",
-    # OTLP export, emitted by the gateway process.
-    "HERMES_OTEL_ENABLED",
-    "HERMES_OTEL_ENDPOINT",
-    "HERMES_OTEL_TIMEOUT",
-    "OTEL_SERVICE_NAME",
     # Local-embedded memory daemon: one per gateway, not one per profile.
     "HINDSIGHT_LLM_API_KEY",
     # The Browser Use CLI wiring — the profile template deliberately omits it.
@@ -110,6 +105,10 @@ def _context() -> dict[str, Any]:
         hermes_agent_webhook_enabled=True,
         hermes_agent_webhook_secret="WEBHOOKSECRET",
         hermes_agent_api_server_key="APIKEY",
+        hermes_agent_langfuse_enabled=True,
+        hermes_agent_langfuse_public_key="pk-lf-test",
+        hermes_agent_langfuse_secret_key="sk-lf-test",
+        hermes_agent_langfuse_base_url="https://langfuse.example.test",
         hermes_agent_owned_mcp_slugs=[],
         hermes_agent_slack_bot_token="xoxb-x",
         hermes_agent_slack_app_token="xapp-x",

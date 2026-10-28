@@ -36,7 +36,6 @@ CONSUMERS = [
     pytest.param(
         "hindsight_docker", "docker-compose.yml.j2", "hindsight_docker_otel_endpoint", id="hindsight_docker"
     ),
-    pytest.param("hermes_agent", "hermes-env.j2", "hermes_agent_otel_endpoint", id="hermes_agent"),
     pytest.param("open_webui", "open-webui.env.j2", "open_webui_otel_endpoint", id="open_webui"),
     pytest.param(
         "agentgateway_docker",
