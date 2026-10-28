@@ -1,0 +1,25 @@
+---
+# Tests that model trusted router callers import this after the registry loads.
+# Every caller key the projection declares is trusted, as before the ceiling.
+# Import it after the registry: the caller map reads the registry-derived keys.
+- name: Model the shared caller-tier vocabulary for key projection fixtures
+  ansible.builtin.set_fact:
+    agent_callers_tiers: [trusted, untrusted]
+    agent_callers_default_tier: untrusted
+
+- name: Give router projection fixtures their trusted caller tier
+  ansible.builtin.set_fact:
+    ai_callers: >-
+      {%- set ns = namespace(callers={}) -%}
+      {%- set _trusted_tier = _llm_router_trusted_caller_tiers | first -%}
+      {%- for _caller in _llm_router_trust_scoped_key_caller_ids.values() | unique -%}
+      {%- set _ = ns.callers.update({_caller: {'trust_tier': _trusted_tier}}) -%}
+      {%- endfor -%}
+      {{ ns.callers }}
+
+# The registry include above materialized the key projection before this map
+# existed; refresh it so the trusted callers are what the projection reads.
+- name: Refresh cached router projections after the caller fixture
+  ansible.builtin.include_role:
+    name: llm_router
+    tasks_from: assertion-inputs.yml

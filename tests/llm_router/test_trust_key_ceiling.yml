@@ -1,0 +1,99 @@
+---
+- name: Verify caller trust ceilings on rendered router keys
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # Skip the shared trusted-caller fixture so the ceiling is exercised.
+    llm_router_unforced_trust_fixture: true
+  tasks:
+    - name: Prepare role-backed rendered contract
+      ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+
+    - name: Add callers with declared, trusted, and missing tiers
+      ansible.builtin.set_fact:
+        _llm_router_target_virtual_keys: >-
+          {{ _llm_router_target_virtual_keys + [
+            {
+              'alias': 'fixture-untrusted',
+              'enabled': true,
+              'allowed_classes': _llm_router_consumer_classes_all,
+              'models': [llm_router_small_model, llm_router_primary_model,
+                         llm_router_large_model] + llm_router_d1_all_key_groups,
+              'models_authoritative': true
+            },
+            {
+              'alias': 'fixture-trusted',
+              'enabled': true,
+              'allowed_classes': _llm_router_consumer_classes_all,
+              'models': [llm_router_small_model, llm_router_primary_model,
+                         llm_router_large_model] + llm_router_d1_all_key_groups,
+              'models_authoritative': true
+            },
+            {
+              'alias': 'fixture-missing-tier',
+              'enabled': true,
+              'allowed_classes': _llm_router_consumer_classes_all,
+              'models': [llm_router_small_model, llm_router_primary_model,
+                         llm_router_large_model] + llm_router_d1_all_key_groups,
+              'models_authoritative': true
+            }
+          ] }}
+        ai_callers:
+          fixture-untrusted:
+            trust_tier: "{{ agent_callers_default_tier }}"
+          fixture-trusted:
+            trust_tier: "{{ _llm_router_trusted_caller_tiers | first }}"
+
+    - name: Refresh the projection after changing caller tiers
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: Capture the effective keys
+      ansible.builtin.set_fact:
+        _trust_fixture_keys: "{{ llm_router_virtual_keys }}"
+      no_log: true
+
+    - name: Require fail-closed classes and ZDR tags for untrusted callers
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'sub' in _fixture_untrusted_declared.allowed_classes"
+          - _fixture_untrusted.allowed_classes == _llm_router_untrusted_key_classes
+          - "'sub' not in _fixture_untrusted.allowed_classes"
+          - >-
+            _llm_router_untrusted_key_tags | difference(_fixture_untrusted.tags) | length == 0
+          - _fixture_untrusted.router_settings.enable_tag_filtering | bool
+          - _fixture_missing.allowed_classes == _fixture_untrusted.allowed_classes
+          - >-
+            _llm_router_untrusted_key_tags | difference(_fixture_missing.tags) | length == 0
+          - _fixture_trusted.allowed_classes == _fixture_trusted_declared.allowed_classes
+          - _fixture_trusted.tags | default([]) == _fixture_trusted_declared.tags | default([])
+          - >-
+            _fixture_untrusted.models
+            | intersect(_llm_router_m_d1_rungs_by_class['sub']) | length == 0
+          - >-
+            _fixture_missing.models
+            | intersect(_llm_router_m_d1_rungs_by_class['sub']) | length == 0
+          - >-
+            _fixture_trusted.models
+            | intersect(_llm_router_m_d1_rungs_by_class['sub']) | length > 0
+          - _fixture_missing.models | sort == _fixture_untrusted.models | sort
+        fail_msg: "Router key trust ceilings did not preserve or clamp the declared grants."
+      vars:
+        _fixture_untrusted_declared: >-
+          {{ _llm_router_target_virtual_keys
+             | selectattr('alias', 'equalto', 'fixture-untrusted') | first }}
+        _fixture_trusted_declared: >-
+          {{ _llm_router_target_virtual_keys
+             | selectattr('alias', 'equalto', 'fixture-trusted') | first }}
+        _fixture_untrusted: >-
+          {{ _trust_fixture_keys | selectattr('alias', 'equalto', 'fixture-untrusted') | first }}
+        _fixture_trusted: >-
+          {{ _trust_fixture_keys | selectattr('alias', 'equalto', 'fixture-trusted') | first }}
+        _fixture_missing: >-
+          {{ _trust_fixture_keys
+             | selectattr('alias', 'equalto', 'fixture-missing-tier') | first }}

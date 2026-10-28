@@ -1,0 +1,71 @@
+---
+- name: Run the baseline pass, and when paired the candidate pass, under one trial lock
+  block:
+    - name: Acquire the trial lock before the baseline pass
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: lock.yml
+      become: true
+      when: _llm_campaign_paired_trial | bool
+
+    - name: Run the baseline campaign pass
+      ansible.builtin.include_tasks: llm-model-campaign-run-pass.yml
+      vars:
+        llm_model_campaign_pass_name: "{{ 'baseline' if _llm_campaign_paired_trial | bool else 'campaign' }}"
+        llm_model_campaign_current_endpoint_root: "{{ _llm_campaign_endpoint_root }}"
+        llm_model_campaign_expected_endpoint_model_id: >-
+          {{ _llm_campaign_serving_model if _llm_campaign_uses_api_key
+             else _llm_campaign_model.hf_repo }}
+        llm_model_campaign_pass_hf_repo: "{{ _llm_campaign_model.hf_repo }}"
+        llm_model_campaign_pass_serving_model: "{{ _llm_campaign_serving_model }}"
+        llm_model_campaign_allow_trial_http: false
+        _llm_campaign_port: 443
+
+    - name: Hold the candidate service for the second paired pass
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: hold.yml
+      become: true
+      when: _llm_campaign_paired_trial | bool
+
+    - name: Require the candidate engine to match the selected recipe
+      ansible.builtin.assert:
+        that:
+          - llm_model_trial_plan.engine == engine
+        fail_msg: "The candidate trial engine must match the paired campaign recipe."
+        quiet: true
+      when: _llm_campaign_paired_trial | bool
+
+    - name: Run the candidate campaign pass against the trial endpoint
+      ansible.builtin.include_tasks: llm-model-campaign-run-pass.yml
+      vars:
+        llm_model_campaign_pass_name: candidate
+        llm_model_campaign_current_endpoint_root: "{{ llm_model_trial_endpoint_url | regex_replace('/v1$', '') }}"
+        llm_model_campaign_expected_endpoint_model_id: "{{ hf_repo }}"
+        llm_model_campaign_pass_hf_repo: "{{ hf_repo }}"
+        llm_model_campaign_pass_serving_model: "{{ hf_repo }}"
+        llm_model_campaign_allow_trial_http: true
+        _llm_campaign_port: "{{ llm_model_trial_endpoint_url | urlsplit('port') }}"
+      when: _llm_campaign_paired_trial | bool
+
+  always:
+    - name: Restore the baseline and release the trial lock after both passes
+      when: _llm_campaign_paired_trial | bool
+      block:
+        - name: Release the trial lock after restoring the baseline
+          ansible.builtin.include_role:
+            name: llm_model_trial
+            tasks_from: release.yml
+          become: true
+      rescue:
+        - name: Report the failed release; the verdict turns invalid and fails the run
+          ansible.builtin.debug:
+            msg: "{{ ansible_failed_result.msg | default('baseline release failed') }}"
+
+        - name: Record the failed release so the paired verdict is invalid
+          ansible.builtin.set_fact:
+            _llm_campaign_release_failed: true
+
+- name: Find envelopes and write the paired verdict
+  ansible.builtin.include_tasks: llm-model-campaign-verdict.yml
+  when: _llm_campaign_paired_trial | bool

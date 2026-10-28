@@ -98,14 +98,18 @@ def test_default_slack_config_routes_reactions_on_bot_posts() -> None:
     assert slack["extra"] == {"reaction_triggers": True}
 
 
-def test_defaults_leave_existing_gateway_and_slack_config_byte_unchanged() -> None:
+A2A_ENABLED_DEFAULT = (
+    "{{ hermes_agent_id == 'hermes' or hermes_agent_a2a_inbound_token | length > 0 }}"
+)
+
+
+def test_explicitly_disabling_a2a_keeps_existing_gateway_and_slack_config() -> None:
     defaults = role_defaults(ROLE_ROOT)
-    assert defaults["hermes_agent_a2a_inbound_enabled"] is False
+    assert defaults["hermes_agent_a2a_inbound_enabled"] == A2A_ENABLED_DEFAULT
     assert defaults["hermes_agent_a2a_peers"] == []
     assert defaults["hermes_agent_slack_rich_blocks"] is False
 
-    # These are the two old gateway render shapes. New identities only change
-    # the identity-scoped secret lookup; no A2A config bytes appear by default.
+    # Explicitly disabling inbound A2A preserves the old gateway render shapes.
     for identity in ("hermes", "hermes-private", "donna"):
         assert _gateway_fragment(
             hermes_agent_api_server_key="",
@@ -164,13 +168,15 @@ def test_defaults_leave_existing_gateway_and_slack_config_byte_unchanged() -> No
 
 
 def test_enabled_a2a_renders_authenticated_inbound_peer_and_slack_config() -> None:
+    defaults = role_defaults(ROLE_ROOT)
+    assert defaults["hermes_agent_a2a_inbound_enabled"] == A2A_ENABLED_DEFAULT
     peers = [{
         "name": "specialist",
         "url": "https://specialist.example.invalid/a2a",
         "token": "fixture-outbound-token",
     }]
     context = {
-        "hermes_agent_a2a_inbound_enabled": True,
+        "hermes_agent_a2a_inbound_enabled": defaults["hermes_agent_a2a_inbound_enabled"],
         "hermes_agent_a2a_inbound_port": 9901,
         "hermes_agent_a2a_peers": peers,
         "hermes_agent_env_prefix": "HERMES",

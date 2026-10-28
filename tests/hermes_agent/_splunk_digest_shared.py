@@ -23,6 +23,7 @@ FIXTURE_CONFIG = {
     "EXPECTED_CONTINUOUS": ["os", "network", "firewall"],
     "STALENESS_MIN": 60,
     "EARLIEST": "-24h",
+    "BACKUP_OUTCOME_AFTER_HOUR_UTC": 10,
     "ISSUES_MARKER": "[ISSUES]",
 }
 

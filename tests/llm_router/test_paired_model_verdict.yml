@@ -1,0 +1,173 @@
+---
+# Run from the repo root inside the ansible-apps shell:
+#   nix develop "github:JacobPEvans/nix-devenv#ansible-apps" \
+#     -c ansible-playbook -i localhost, -c local tests/llm_router/test_paired_model_verdict.yml
+- name: Score the paired verdict from repetitions, shared metric keys and comparability
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _llm_campaign_tolerance: 2.0
+    llm_model_trial_restore_proof: {verified: true}
+    _em09: {name: gsm8k, metric: exact_match, value: 0.9, tags: {lm_eval_key: "exact_match,none", n_limit: "100"}}
+    _em075: {name: gsm8k, metric: exact_match, value: 0.75, tags: {lm_eval_key: "exact_match,none", n_limit: "100"}}
+    _em06: {name: gsm8k, metric: exact_match, value: 0.6, tags: {lm_eval_key: "exact_match,none", n_limit: "100"}}
+    _em05: {name: gsm8k, metric: exact_match, value: 0.5, tags: {lm_eval_key: "exact_match,none", n_limit: "100"}}
+    _em0875: {name: gsm8k, metric: exact_match, value: 0.875, tags: {lm_eval_key: "exact_match,none", n_limit: "100"}}
+    _em09_n200: {name: gsm8k, metric: exact_match, value: 0.9, tags: {lm_eval_key: "exact_match,none", n_limit: "200"}}
+    _acc04: {name: hellaswag, metric: acc, value: 0.4, tags: {lm_eval_key: "acc,none", n_limit: "100"}}
+    _acc05: {name: hellaswag, metric: acc, value: 0.5, tags: {lm_eval_key: "acc,none", n_limit: "100"}}
+    _acc09: {name: hellaswag, metric: acc, value: 0.9, tags: {lm_eval_key: "acc,none", n_limit: "100"}}
+    _bleu099: {name: gsm8k, metric: bleu, value: 0.99, tags: {lm_eval_key: "bleu,none", n_limit: "100"}}
+    _bleu01: {name: gsm8k, metric: bleu, value: 0.1, tags: {lm_eval_key: "bleu,none", n_limit: "100"}}
+  tasks:
+    - name: Pass with repetitions averaged and the bleu metric ignored
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict-facts.yml
+      vars:
+        llm_model_paired_trial_baseline_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}", "{{ _acc04 }}", "{{ _bleu099 }}"]}
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em05 }}", "{{ _acc04 }}", "{{ _bleu099 }}"]}
+        llm_model_paired_trial_candidate_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em06 }}", "{{ _acc05 }}", "{{ _bleu01 }}"]}
+
+    - name: Confirm the averaged pass scores are 55 points on both sides
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'pass'
+          - llm_model_paired_trial_verdict.baseline_score | round(6) == 55.0
+          - llm_model_paired_trial_verdict.candidate_score | round(6) == 55.0
+        quiet: true
+
+    - name: Pass exactly at the tolerance boundary (a wide tolerance keeps the fractions exact)
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict-facts.yml
+      vars:
+        _llm_campaign_tolerance: 25.0
+        llm_model_paired_trial_baseline_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em075 }}"]}
+        llm_model_paired_trial_candidate_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em05 }}"]}
+
+    - name: Confirm the boundary candidate passes
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'pass'
+        quiet: true
+
+    - name: Fail when the candidate is below the tolerated score
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict-facts.yml
+      vars:
+        llm_model_paired_trial_baseline_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}"]}
+        llm_model_paired_trial_candidate_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em0875 }}"]}
+
+    - name: Confirm the lower score fails
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'fail'
+        quiet: true
+
+    - name: Invalid when no metric key is common to both passes
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict-facts.yml
+      vars:
+        llm_model_paired_trial_baseline_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}"]}
+        llm_model_paired_trial_candidate_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _acc09 }}"]}
+
+    - name: Confirm the disjoint metric keys are invalid with a reason
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'invalid'
+          - "'no metric key is common to both passes' in llm_model_paired_trial_verdict.reasons"
+        quiet: true
+
+    - name: Invalid when the suites differ
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict-facts.yml
+      vars:
+        llm_model_paired_trial_baseline_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}"]}
+        llm_model_paired_trial_candidate_envelopes:
+          - {suite: other-suite, git_sha: aaa111, results: ["{{ _em09 }}"]}
+
+    - name: Confirm the suite mismatch is invalid with a reason
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'invalid'
+          - "'suite differs between passes' in llm_model_paired_trial_verdict.reasons"
+        quiet: true
+
+    - name: Invalid when the name and n_limit pairs differ
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict-facts.yml
+      vars:
+        llm_model_paired_trial_baseline_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}"]}
+        llm_model_paired_trial_candidate_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09_n200 }}"]}
+
+    - name: Confirm the n_limit mismatch is invalid with a reason
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'invalid'
+          - "'name and n_limit pairs differ between passes' in llm_model_paired_trial_verdict.reasons"
+        quiet: true
+
+    - name: Invalid when the git_sha differs
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict-facts.yml
+      vars:
+        llm_model_paired_trial_baseline_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}"]}
+        llm_model_paired_trial_candidate_envelopes:
+          - {suite: quick-intelligence, git_sha: bbb222, results: ["{{ _em09 }}"]}
+
+    - name: Confirm the git_sha mismatch is invalid with a reason
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'invalid'
+          - "'git_sha differs between passes' in llm_model_paired_trial_verdict.reasons"
+        quiet: true
+
+    - name: Invalid when the baseline restore is not verified, even with a passing score
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict-facts.yml
+      vars:
+        llm_model_trial_restore_proof: {verified: false}
+        llm_model_paired_trial_baseline_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}"]}
+        llm_model_paired_trial_candidate_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}"]}
+
+    - name: Confirm the unverified restore is invalid with a reason
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'invalid'
+          - "'baseline restore not verified' in llm_model_paired_trial_verdict.reasons"
+        quiet: true
+
+    - name: Invalid when the paired release failed
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict-facts.yml
+      vars:
+        _llm_campaign_release_failed: true
+        llm_model_paired_trial_baseline_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}"]}
+        llm_model_paired_trial_candidate_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}"]}
+
+    - name: Confirm the failed release is invalid with a reason
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'invalid'
+          - "'paired release failed' in llm_model_paired_trial_verdict.reasons"
+        quiet: true
+
+    - name: Invalid when the candidate pass has no envelope
+      ansible.builtin.include_tasks: ../../playbooks/tasks/llm-model-campaign-verdict-facts.yml
+      vars:
+        llm_model_paired_trial_baseline_envelopes:
+          - {suite: quick-intelligence, git_sha: aaa111, results: ["{{ _em09 }}"]}
+        llm_model_paired_trial_candidate_envelopes: []
+
+    - name: Confirm the empty candidate pass is invalid with only its own reason
+      ansible.builtin.assert:
+        that:
+          - llm_model_paired_trial_verdict.status == 'invalid'
+          - llm_model_paired_trial_verdict.reasons == ['no candidate envelope']
+        quiet: true

@@ -20,31 +20,50 @@ _llm_router_virtual_keys_source: >-
   {%- set out = [] -%}
   {%- for k in _declared_keys
        if (k.enabled is not defined or k.enabled | bool) -%}
-  {%- set _classes = k.allowed_classes | default([]) -%}
-  {%- set _zdr_only = '&zdr' in (k.tags | default([])) -%}
+  {%- set _key = k -%}
+  {%- set _trust_clamped = false -%}
+  {%- set _caller = _llm_router_trust_scoped_key_caller_ids.get(k.alias) -%}
+  {%- if k.alias in _llm_router_trust_scoped_key_caller_ids -%}
+  {%- set _tier = (ai_callers | default({})).get(_caller, {}).get('trust_tier', '')
+        | default(agent_callers_default_tier | default(''), true) -%}
+  {%- if _tier not in _llm_router_trusted_caller_tiers -%}
+  {%- set _classes = (k.allowed_classes | default([]))
+        | select('in', _llm_router_untrusted_key_classes) | list -%}
+  {%- set _tags = ((k.tags | default([])) + _llm_router_untrusted_key_tags)
+        | unique | list -%}
+  {%- set _router_settings = (k.router_settings | default({}, true))
+        | combine({'enable_tag_filtering': true}, recursive=true) -%}
+  {%- set _key = k | combine({'allowed_classes': _classes, 'tags': _tags,
+        'router_settings': _router_settings}, recursive=true) -%}
+  {%- set _trust_clamped = true -%}
+  {%- endif -%}
+  {%- endif -%}
+  {%- set _classes = _key.allowed_classes | default([]) -%}
+  {%- set _zdr_only = '&zdr' in (_key.tags | default([])) -%}
   {%- set _rungs = namespace(models=[]) -%}
-  {%- for _class in (_classes if not (k.models_authoritative | default(false) | bool) else []) -%}
+  {%- for _class in (_classes if not (_key.models_authoritative | default(false) | bool) else []) -%}
   {%- set _class_rungs = (_zdr_rungs_by_class[_class]
                            if _zdr_only and _class in ['local', 'sub', 'paid-zdr']
                            else [] if _zdr_only
                            else _rungs_by_class[_class]) -%}
   {%- set _rungs.models = _rungs.models + _class_rungs -%}
   {%- endfor -%}
-  {%- set ns = namespace(models=(k.models | list) + (_rungs.models if _classes | length > 0 else [])) -%}
-  {%- for d in _role_deployments if d.role in k.models -%}
+  {%- set ns = namespace(models=(_key.models | list) + (_rungs.models if _classes | length > 0 else [])) -%}
+  {%- for d in _role_deployments if d.role in _key.models -%}
   {%- set ns.models = ns.models + [d.model] + (d.fallbacks | list) -%}
   {%- endfor -%}
   {%- set _filtered = [] -%}
   {%- for _name in ns.models | unique | list -%}
   {%- set _name_class = _group_class_by_name.get(_name) -%}
   {%- if (not _classes or _name_class is none or _name_class in _classes)
-        and (k.alias == 'github-actions' or _name not in _ci_only_groups)
+        and (not _trust_clamped or _classes | length > 0 or _name_class in _classes)
+        and (_key.alias == 'github-actions' or _name not in _ci_only_groups)
         and (not _zdr_only or _name not in _zdr_unasserted) -%}
   {%- set _discard = _filtered.append(_name) -%}
   {%- endif -%}
   {%- endfor -%}
   {%- set ns.models = _filtered -%}
-  {%- if k.zdr_only | default(false) -%}
+  {%- if _key.zdr_only | default(false) -%}
   {%- set _stripped = _zdr_false_groups + _zdr_unasserted -%}
   {%- set ns.models = (ns.models + _llm_router_private_zdr_model_scope)
         | reject('in', _stripped) | list -%}
@@ -52,32 +71,33 @@ _llm_router_virtual_keys_source: >-
   {%- set _stripped = _zdr_unasserted -%}
   {%- set ns.models = ns.models | reject('in', _stripped) | list -%}
   {%- endif -%}
-  {%- set _purpose = (k.metadata | default({})).get(
-        'purpose', 'benchmark' if k.alias == 'inference-direct-only' else 'live') -%}
-  {%- set _permissions = k.object_permission
+  {%- set _purpose = (_key.metadata | default({})).get(
+        'purpose', 'benchmark' if _key.alias == 'inference-direct-only' else 'live') -%}
+  {%- set _permissions = _key.object_permission
         | default(llm_router_mcp_default_object_permission) -%}
-  {%- if _permissions.mcp_servers is defined and k.owner_filter | default(true) -%}
+  {%- if _permissions.mcp_servers is defined and _key.owner_filter | default(true) -%}
   {%- set _owned_elsewhere = ai_agent_owner | default({}) | dict2items
-        | rejectattr('value', 'equalto', k.alias) | map(attribute='key') | list -%}
+        | rejectattr('value', 'equalto', _key.alias) | map(attribute='key') | list -%}
   {%- set _permissions = _permissions | combine({'mcp_servers':
         _permissions.mcp_servers | reject('in', _owned_elsewhere) | list}, recursive=true) -%}
   {%- endif -%}
-  {%- set _key = k | dict2items
-        | rejectattr('key', 'equalto', 'owner_filter') | items2dict -%}
-  {%- set _sensitivity_tag = k.sensitivity_tag | default('&sensitivity:sensitive') -%}
+  {%- set _key = _key | dict2items
+        | rejectattr('key', 'in', ['owner_filter', 'trust_caller'])
+        | items2dict -%}
+  {%- set _sensitivity_tag = _key.sensitivity_tag | default('&sensitivity:sensitive') -%}
   {%- set _ = out.append(_key | combine({
         'models': ns.models | unique | list,
         'sensitivity_tag': _sensitivity_tag,
         'object_permission': _permissions,
         'metadata': {'trace_defaults': {
-          'client': k.alias,
-          'runner': (k.metadata | default({})).get('runner', k.alias),
-          'runtime': (k.metadata | default({})).get('runtime', k.alias),
+          'client': _key.alias,
+          'runner': (_key.metadata | default({})).get('runner', _key.alias),
+          'runtime': (_key.metadata | default({})).get('runtime', _key.alias),
           'purpose': _purpose,
-          'tier': (k.metadata | default({})).get('tier', k.tier | default('local')),
+          'tier': (_key.metadata | default({})).get('tier', _key.tier | default('local')),
           'environment': 'benchmark' if _purpose == 'benchmark' else llm_router_trace_environment,
           'release': _litellm_release,
-        } | combine((k.metadata | default({})).get('trace_defaults', {})),
+        } | combine((_key.metadata | default({})).get('trace_defaults', {})),
         'trace_required': llm_router_benchmark_trace_fields},
       }, recursive=true)) -%}
   {%- endfor -%}

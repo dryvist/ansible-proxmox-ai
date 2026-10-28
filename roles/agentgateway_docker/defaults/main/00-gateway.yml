@@ -82,12 +82,18 @@ agentgateway_docker_mcp_targets:
   - name: context7
     host: "https://mcp.context7.com/mcp"
 
-# Per-agent caller keys from the dedicated gateway-reader domain.
+# Per-agent caller keys from the dedicated gateway-reader domain. A caller with no
+# seeded key (an unseeded registry leaf, or a roster agent missing its key) is
+# omitted, so config.yaml.j2 never renders `key: ""`. The roster presence check
+# lives in tasks/main.yml.
 agentgateway_docker_roster_keys: >-
   {%- set keys = {} -%}
   {%- set agent_keys = (openbao_secrets_by_domain | default({})).get('agentgateway-agent-keys', {}) -%}
   {%- for agent, field in (ai_agent_gateway_key_fields | default({})).items() -%}
-    {%- set _ = keys.update({agent: (agent_keys.get(field, '') | default('', true) | trim)}) -%}
+    {%- set key = agent_keys.get(field, '') | default('', true) | trim -%}
+    {%- if key | length > 0 -%}
+      {%- set _ = keys.update({agent: key}) -%}
+    {%- endif -%}
   {%- endfor -%}
   {{ keys }}
 agentgateway_docker_container_gid: "65532"
@@ -242,27 +248,6 @@ agentgateway_docker_nautobot_url: >-
 agentgateway_docker_nautobot_read_token: >-
   {{ (bao_local_llm_secrets | default({}))['NAUTOBOT_MCP_TOKEN']
      | default(lookup('env', 'NAUTOBOT_MCP_TOKEN'), true) }}
-
-# =============================================================================
-# A2A targets — native Agent2Agent (JSON-RPC) endpoints the gateway fronts on
-# the same proxy port. Each gets a prefix-matched route marked `a2a: {}`, so the
-# gateway parses the JSON-RPC and rewrites the agent card's `url` to point back
-# at itself. LangGraph is the only A2A-native agent today.
-#
-# host reaches the LangGraph CONTAINER directly on its API port.
-# tofu_data.containers.langgraph.ip is ALREADY the resolvable FQDN — the same
-# address Traefik uses as its own langgraph backend — so it hits the container
-# directly. Do NOT use langgraph.<sub> (the Traefik ingress alias on :443, a
-# needless double-hop). Bare host:port → HTTP, which is what `langgraph dev`
-# serves (no TLS), so no backendTLS policy.
-# =============================================================================
-agentgateway_docker_a2a_targets:
-  - name: langgraph
-    path_prefix: /a2a/
-    host: >-
-      {{ hostvars['localhost']['tofu_data']['containers']['langgraph']['ip'] }}:{{
-      hostvars['localhost']['tofu_data']['constants']['service_ports']['langgraph_api']
-      | mandatory('tofu_data.constants.service_ports.langgraph_api missing — regenerate tofu_inventory.json') }}
 
 # =============================================================================
 # Tracing — OTLP/HTTP to the shared Cribl Stream receiver (telemetry always via

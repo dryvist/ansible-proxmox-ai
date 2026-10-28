@@ -24,9 +24,9 @@ def test_retain_scope_uses_the_dedicated_primary_route_alias() -> None:
     assert f'"{selected_model}"' in env_line(rendered, "HINDSIGHT_API_LLM_MODEL")
 
 
-def test_retain_scope_admits_one_in_flight_extraction() -> None:
+def test_retain_scope_admits_four_in_flight_extractions() -> None:
     rendered = render()
-    assert '"1"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT")
+    assert '"4"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT")
 
 
 def test_retain_limits_cover_real_target_observations() -> None:

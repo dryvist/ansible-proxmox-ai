@@ -1,0 +1,82 @@
+---
+- name: Read a page of Langfuse root observations for Stage 0 curation
+  ansible.builtin.uri:
+    url: >-
+      {{ 'http://' ~ ansible_facts['lo']['ipv4']['address'] ~ ':' ~ langfuse_docker_web_port
+         ~ '/api/public/v2/observations?fromStartTime='
+         ~ (langfuse_docker_stage0_trace_from_start_time | urlencode)
+         ~ '&toStartTime='
+         ~ (langfuse_docker_stage0_trace_to_start_time | urlencode)
+         ~ '&isRootObservation=true&limit=100&fields=core,basic,io,metadata'
+         ~ ('&cursor=' ~ (langfuse_docker_stage0_trace_cursor | urlencode)
+            if langfuse_docker_stage0_trace_cursor | length > 0 else '') }}
+    method: GET
+    url_username: "{{ langfuse_docker_init_public_key }}"
+    url_password: "{{ langfuse_docker_init_secret_key }}"
+    force_basic_auth: true
+    return_content: true
+    status_code: 200
+  register: langfuse_docker_stage0_trace_observations
+  changed_when: false
+  no_log: true
+
+- name: Add each tagged Stage 0 trace to exactly one dataset
+  ansible.builtin.uri:
+    url: >-
+      {{ 'http://' ~ ansible_facts['lo']['ipv4']['address'] ~ ':'
+         ~ langfuse_docker_web_port ~ '/api/public/dataset-items' }}
+    method: POST
+    url_username: "{{ langfuse_docker_init_public_key }}"
+    url_password: "{{ langfuse_docker_init_secret_key }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      datasetName: "{{ langfuse_docker_stage0_dataset_name }}-{{ langfuse_docker_stage0_trace_split }}"
+      id: "agent-trace-{{ langfuse_docker_stage0_trace_split }}-{{ item.traceId }}"
+      input: "{{ item.input | default(omit) }}"
+      expectedOutput: "{{ item.output | default(omit) }}"
+      sourceTraceId: "{{ item.traceId }}"
+      metadata:
+        source_dataset: "{{ langfuse_docker_stage0_dataset_name }}"
+        source_run_id: "{{ langfuse_docker_stage0_trace_run_id }}"
+        split: "{{ langfuse_docker_stage0_trace_split }}"
+    status_code: [200, 201]
+  loop: "{{ langfuse_docker_stage0_trace_observations.json.data }}"
+  loop_control:
+    label: "{{ item.traceId }}"
+  vars:
+    langfuse_docker_stage0_trace_metadata: "{{ item.metadata | default({}) }}"
+    langfuse_docker_stage0_trace_attributes: >-
+      {{ langfuse_docker_stage0_trace_metadata.get('attributes', {}) }}
+    langfuse_docker_stage0_trace_dataset: >-
+      {{ langfuse_docker_stage0_trace_attributes.get(
+           'requester_metadata.dataset',
+           langfuse_docker_stage0_trace_metadata.get('requester_metadata.dataset', '')
+         ) | string | regex_replace('^"|"$', '') }}
+    langfuse_docker_stage0_trace_run_id: >-
+      {{ langfuse_docker_stage0_trace_attributes.get(
+           'requester_metadata.run_id',
+           langfuse_docker_stage0_trace_metadata.get('requester_metadata.run_id', '')
+         ) | string | regex_replace('^"|"$', '') }}
+    langfuse_docker_stage0_trace_hash_bucket: >-
+      {{ ((item.traceId | hash('sha256'))[:8] | int(base=16)) % 10000 }}
+    langfuse_docker_stage0_trace_holdout_cutoff: >-
+      {{ (langfuse_docker_stage0_trace_holdout_fraction | float * 10000) | int }}
+    langfuse_docker_stage0_trace_split: >-
+      {{ 'holdout'
+         if langfuse_docker_stage0_trace_hash_bucket | int
+            < langfuse_docker_stage0_trace_holdout_cutoff | int
+         else 'train' }}
+  when:
+    - item.traceId is defined
+    - langfuse_docker_stage0_trace_dataset == langfuse_docker_stage0_dataset_name
+    - langfuse_docker_stage0_trace_run_id | length > 0
+  no_log: true
+
+- name: Read the next page of Stage 0 root observations
+  ansible.builtin.include_tasks: reconcile-stage0-trace-page.yml
+  vars:
+    langfuse_docker_stage0_trace_cursor: "{{ langfuse_docker_stage0_trace_observations.json.meta.cursor }}"
+  when:
+    - langfuse_docker_stage0_trace_observations.json.meta.cursor is defined
+    - langfuse_docker_stage0_trace_observations.json.meta.cursor | string | length > 0

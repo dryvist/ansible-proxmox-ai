@@ -1,47 +1,4 @@
 ---
-- name: Start a lock holder before changing the baseline
-  ansible.builtin.command:
-    argv:
-      - systemd-run
-      - "--unit={{ llm_model_trial_lock_unit_name | regex_replace('\\.service$', '') }}"
-      - --property=Type=exec
-      - "--property=RuntimeMaxSec={{ llm_model_trial_lock_timeout_seconds }}s"
-      - /usr/bin/flock
-      - --nonblock
-      - --no-fork
-      - "{{ llm_model_trial_lock_path }}"
-      - /usr/bin/sleep
-      - "{{ llm_model_trial_lock_timeout_seconds }}"
-  register: llm_model_trial_lock_start
-  changed_when: true
-  failed_when: false
-
-- name: Read the lock holder state
-  ansible.builtin.command:
-    argv: [systemctl, is-active, "{{ llm_model_trial_lock_unit_name }}"]
-  register: llm_model_trial_lock_state
-  changed_when: false
-  failed_when: false
-
-- name: Require exclusive host ownership for the trial
-  ansible.builtin.assert:
-    that:
-      - llm_model_trial_lock_state.stdout | trim == 'active'
-    fail_msg: >-
-      The fixed 6000 host is locked by another trial; no baseline or
-      serving unit was changed.
-    quiet: true
-
-- name: Record that this run owns the host lock
-  ansible.builtin.set_fact:
-    llm_model_trial_lock_acquired: true
-
-- name: Record the beginning of this run for bounded failure evidence
-  ansible.builtin.command:
-    argv: [date, -u, "+%Y-%m-%dT%H:%M:%SZ"]
-  register: llm_model_trial_started_at
-  changed_when: false
-
 - name: Check the selected engine binary
   ansible.builtin.stat:
     path: "{{ llm_gpu_serving_venv }}/bin/vllm"
@@ -87,36 +44,6 @@
   become_user: "{{ llm_gpu_serving_user }}"
   register: llm_model_trial_download
   changed_when: true
-
-- name: Find the active baseline serving unit
-  ansible.builtin.command:
-    argv:
-      - systemctl
-      - list-units
-      - --type=service
-      - --state=active
-      - --plain
-      - --no-legend
-      - --no-pager
-      - "{{ llm_gpu_serving_unit_prefix }}-*.service"
-  register: llm_model_trial_active_baseline
-  changed_when: false
-
-- name: Require exactly one active baseline serving unit
-  ansible.builtin.assert:
-    that:
-      - llm_model_trial_active_baseline.stdout_lines | length == 1
-    fail_msg: >-
-      Exactly one llm-gpu-serving baseline must be active before a trial;
-      no baseline was stopped.
-    quiet: true
-
-- name: Record the baseline unit and profile before suspending it
-  ansible.builtin.set_fact:
-    llm_model_trial_baseline_unit: "{{ llm_model_trial_active_baseline.stdout_lines[0].split()[0] }}"
-    llm_model_trial_baseline_profile: >-
-      {{ llm_model_trial_active_baseline.stdout_lines[0].split()[0]
-         | regex_replace('^' ~ llm_gpu_serving_unit_prefix ~ '-(.*)[.]service$', '\\1') }}
 
 - name: Stop the recorded baseline unit
   ansible.builtin.systemd:

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.7.0...v2.8.0) (2026-10-25)
+
+
+### Features
+
+* **llm_router:** tag responses with their lane and add a lane-walk probe ([#1731](https://github.com/dryvist/ansible-proxmox-ai/issues/1731)) ([292fcbf](https://github.com/dryvist/ansible-proxmox-ai/commit/292fcbfa4049c88f4f47c2365d3abbd6826c2c3c))
+
 ## [2.7.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.6.0...v2.7.0) (2026-10-25)
 
 

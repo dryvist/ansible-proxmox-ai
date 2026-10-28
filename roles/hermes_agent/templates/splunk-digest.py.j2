@@ -56,6 +56,7 @@ STALENESS_MIN = {{ hermes_agent_splunk_digest_staleness_minutes }}
 # rather than assuming the argument took effect.
 EARLIEST = "{{ hermes_agent_splunk_digest_window }}"
 ROW_LIMIT = 1000  # the MCP tool's maximum; the truncation guard fails loudly past it
+BACKUP_OUTCOME_AFTER_HOUR_UTC = {{ hermes_agent_splunk_digest_backup_outcome_after_hour_utc }}
 
 # Same span, phrased for prose ("the 24h window" rather than "the -24h window").
 WINDOW = EARLIEST.lstrip("-")
@@ -64,6 +65,11 @@ WINDOW = EARLIEST.lstrip("-")
 # (index volume, host membership, per-host liveness, sourcetype composition), so
 # escalating the search costs no extra Splunk work.
 TSTATS_QUERY = "| tstats count as vol, max(_time) as last_time where index=* by index, host, sourcetype"
+BACKUP_OUTCOME_QUERY = (
+    'index=_internal sourcetype=scheduler savedsearch_name="HomelabAlert - *backup*" '
+    'status=success result_count>0 earliest=-24h | stats count AS fires '
+    'max(_time) AS last_fire BY savedsearch_name'
+)
 # State schema version. Bumped when the shape changes; an older/absent value
 # means "no usable baseline" and the run reports full numbers with no deltas.
 STATE_SCHEMA = 3
@@ -125,7 +131,7 @@ def load_env(path):
     return env
 
 
-async def run_tstats(url, token):
+async def run_splunk_query(url, token, query):
     """Return the parsed results list, or raise on any failure."""
     from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
     from mcp import ClientSession
@@ -137,7 +143,7 @@ async def run_tstats(url, token):
             await s.initialize()
             # The MCP names the window `earliest_time` and caps rows at `row_limit`
             # (default 100): a capped table reads as missing indexes/hosts.
-            res = await s.call_tool("splunk_run_query", {"query": TSTATS_QUERY, "earliest_time": EARLIEST,
+            res = await s.call_tool("splunk_run_query", {"query": query, "earliest_time": EARLIEST,
                                                         "latest_time": "now", "row_limit": ROW_LIMIT})
             if getattr(res, "is_error", False):
                 raise RuntimeError("splunk_run_query returned is_error=true")
@@ -150,7 +156,46 @@ async def run_tstats(url, token):
                     raise RuntimeError("no structured_content and no text content")
             if data.get("truncated"):
                 raise RuntimeError(f"splunk_run_query truncated: {data.get('total_rows')} rows > {ROW_LIMIT}")
-            return data.get("results", [])
+            results = data.get("results", [])
+            if not isinstance(results, list):
+                raise RuntimeError("splunk_run_query results is not a list")
+            return results
+
+
+async def run_tstats(url, token):
+    return await run_splunk_query(url, token, TSTATS_QUERY)
+
+
+async def run_backup_outcomes(url, token):
+    return await run_splunk_query(url, token, BACKUP_OUTCOME_QUERY)
+
+
+def backup_outcome_due(now, state):
+    """Run once on the first digest invocation at or after the configured UTC hour."""
+    today = now.strftime("%Y-%m-%d")
+    return (now.hour >= BACKUP_OUTCOME_AFTER_HOUR_UTC
+            and (state or {}).get("backup_outcome_checked_date") != today)
+
+
+def backup_outcome_findings(results):
+    """Turn scheduler rows into stable findings without reimplementing alert logic."""
+    findings = []
+    for row in results:
+        name = row.get("savedsearch_name")
+        if not isinstance(name, str) or not name:
+            raise RuntimeError("backup outcome row has no savedsearch_name")
+        try:
+            fires = int(float(row["fires"]))
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError(f"backup outcome row for {name!r} has invalid fires") from None
+        if fires < 1:
+            raise RuntimeError(f"backup outcome row for {name!r} has non-positive fires")
+        display_name = name.replace("`", "'").replace("\n", " ")
+        findings.append(Finding(
+            f"backup-outcome:{name}",
+            f"Backup alert `{display_name}` fired {fires} time(s) in the last 24 h.",
+        ))
+    return findings
 
 
 def oom_bucket(vol):
@@ -517,7 +562,7 @@ def baseline_from(state):
     return state if isinstance(state.get("by_index"), dict) else None
 
 
-def build_digest(results, now, state):
+def build_digest(results, now, state, backup_outcomes=None):
     """Return (text, payload) where payload is the complete next state file.
 
     Everything the run decides — which findings are novel, which repeat, what the
@@ -529,6 +574,12 @@ def build_digest(results, now, state):
     ledger_entries = load_ledger_entries(state, today)
     previously_reported = set((state or {}).get("reported_findings") or [])
     previously_reported.update(entry["k"] for entry in ledger_entries)
+    if backup_outcomes is None:
+        stored_backup_findings = (state or {}).get("backup_outcome_findings", [])
+        backup_findings = [Finding(key, "") for key in stored_backup_findings
+                           if isinstance(key, str)]
+    else:
+        backup_findings = backup_outcome_findings(backup_outcomes)
 
     by_index, host_last, saw_host, saw_st = parse_results(results, now_epoch)
     hosts = set(host_last)
@@ -570,8 +621,11 @@ def build_digest(results, now, state):
     current_keys = {finding.key for finding in critical}
     for _, found in tiers:
         current_keys.update(finding.key for finding in found)
+    current_keys.update(finding.key for finding in backup_findings)
     new_critical = [finding for finding in critical if finding.key not in previously_reported]
-    emitted = [*new_critical, *novel]
+    new_backup_findings = [finding for finding in backup_findings
+                           if finding.key not in previously_reported]
+    emitted = [*new_critical, *novel, *new_backup_findings]
     reported_findings = (previously_reported & current_keys) | {finding.key for finding in emitted}
 
     lines = []
@@ -589,14 +643,26 @@ def build_digest(results, now, state):
         lines.append(f"*New finding — {tier_name}{escalated}:*")
         lines.extend(f"• {finding.text}" for finding in novel)
 
+    if new_backup_findings:
+        if not lines:
+            lines.append(f"*Splunk finding* — {now.strftime('%Y-%m-%d %H:%M UTC')}")
+        lines.append("")
+        lines.append("*New backup outcome findings:*")
+        lines.extend(f"• {finding.text}" for finding in new_backup_findings)
+
     last_post_iso = now.isoformat() if emitted else (state or {}).get("last_post_iso")
     payload = {"schema": STATE_SCHEMA, "fingerprint": fingerprint,
                "last_post_date": today, "captured_iso": now.isoformat(),
                "last_post_iso": last_post_iso,
                "reported_findings": sorted(reported_findings),
+               "backup_outcome_findings": sorted(finding.key for finding in backup_findings),
                "ledger": {"day": today,
                           "keys": (ledger_entries
                                    + [{"k": finding.key, "t": finding.text} for finding in emitted])[-LEDGER_MAX:]}}
+    if backup_outcomes is not None:
+        payload["backup_outcome_checked_date"] = today
+    elif (state or {}).get("backup_outcome_checked_date"):
+        payload["backup_outcome_checked_date"] = state["backup_outcome_checked_date"]
     payload.update(snapshot_of(by_index, hosts, saw_host, saw_st))
 
     if not emitted:
@@ -711,6 +777,10 @@ def save_state(payload):
 
 def main():
     # fail loud, never fabricate: any error is delivered, then exit 0
+    now = dt.datetime.now(dt.timezone.utc)
+    state = load_state()
+    check_backup_outcomes = backup_outcome_due(now, state)
+    backup_query_attempted = False
     try:
         env = load_env(ENV_PATH)
         url = env.get("SPLUNK_MCP_URL")
@@ -718,6 +788,11 @@ def main():
         if not url or not token:
             raise RuntimeError("SPLUNK_MCP_URL / SPLUNK_MCP_TOKEN missing from .env")
         results = asyncio.run(run_tstats(url, token))
+        backup_outcomes = None
+        if check_backup_outcomes:
+            backup_query_attempted = True
+            backup_outcomes = asyncio.run(run_backup_outcomes(url, token))
+        text, payload = build_digest(results, now, state, backup_outcomes)
     except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
         # asyncio.TaskGroup wraps the real fault in an ExceptionGroup; unwrap to
         # the root leaf so the delivered message names the actual cause (e.g.
@@ -732,16 +807,14 @@ def main():
         # Delivered through the day ledger, not straight to stdout. Failure is
         # still always reported the first time it is seen and a changed cause
         # posts at once; only verbatim repetition is suppressed, and counted.
-        now = dt.datetime.now(dt.timezone.utc)
-        text, payload = failure_report(root, load_state(), now)
+        text, payload = failure_report(root, state, now)
+        if backup_query_attempted:
+            payload["backup_outcome_checked_date"] = now.strftime("%Y-%m-%d")
         save_state(payload)
         print(text)
         return 0
 
-    now = dt.datetime.now(dt.timezone.utc)
-    state = load_state()
     recovered = recovery_line(state, now)
-    text, payload = build_digest(results, now, state)
     # The run succeeded, so the stored failure is over. Clearing it here (rather
     # than leaving it for the next failure to overwrite) is what makes the
     # recovery line fire exactly once.

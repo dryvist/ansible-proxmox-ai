@@ -1,0 +1,34 @@
+---
+- name: Verify the endpoint for this campaign pass
+  ansible.builtin.include_tasks: llm-model-campaign-endpoint-probe.yml
+
+- name: Download only the selected registry artifact into the target cache
+  ansible.builtin.include_role:
+    name: nvidia_gpu_guest
+    tasks_from: cache-sync.yml
+  loop: >-
+    {{ [_llm_campaign_model.artifact_id]
+       + (_llm_campaign_model.required_artifact_ids | default([]))
+       + ([_llm_campaign_model.mtp_artifact_id]
+          if engine == 'mlx_vlm_native'
+          and config_name is search('-mtp$')
+          and _llm_campaign_model.mtp_artifact_id is defined
+          else []) }}
+  loop_control:
+    loop_var: _llm_campaign_cache_artifact_id
+    label: "{{ _llm_campaign_cache_artifact_id }}"
+  vars:
+    nvidia_gpu_guest_cache_sync_artifact_id: "{{ _llm_campaign_cache_artifact_id }}"
+    nvidia_gpu_guest_cache_sync_notify_service: false
+    nvidia_gpu_guest_model_cache_mount_path: "{{ _llm_campaign_cache_root }}"
+    nvidia_gpu_guest_hf_home: "{{ _llm_campaign_cache_root }}/.hf-home"
+  when:
+    - engine not in ['mlx_lm', 'strata']
+    - not (_llm_campaign_paired_trial | bool) or llm_model_campaign_pass_name == 'baseline'
+
+- name: Run each recipe row and its requested parameter cells
+  ansible.builtin.include_tasks: llm-model-campaign-run.yml
+  loop: "{{ _llm_campaign.run }}"
+  loop_control:
+    loop_var: _llm_campaign_run
+    label: "{{ _llm_campaign_run.name }}"

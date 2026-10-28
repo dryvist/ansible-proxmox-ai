@@ -204,8 +204,10 @@ def test_ingest_silence_and_fail_loud_contracts_are_preserved():
     assert "SPLUNK INGEST OUTAGE" in outage and "ZERO rows" in outage
 
     assert ":warning: Splunk digest FAILED:" in TEMPLATE, "fail-loud path must stay"
-    assert TEMPLATE.count("call_tool(") == 1 and 'call_tool("splunk_run_query"' in TEMPLATE, \
-        "the fact path must be exactly one Splunk tstats call and no LLM"
+    assert TEMPLATE.count('call_tool("splunk_run_query"') == 1, \
+        "both bounded searches must use the one structured MCP call site"
+    assert "run_tstats(url, token)" in TEMPLATE and "run_backup_outcomes(url, token)" in TEMPLATE, \
+        "the digest must keep the tstats and backup outcome searches explicit"
     assert "ExceptionGroup" in TEMPLATE and "exceptions" in TEMPLATE, \
         "the ExceptionGroup unwrap must stay so a delivered failure names its real cause"
 

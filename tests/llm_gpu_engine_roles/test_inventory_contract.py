@@ -160,6 +160,25 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
     assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
 
 
+def test_ada_small_gpu_route_tag_keeps_the_light_lane_and_selects_its_cache():
+    host_vars = _load(
+        REPO_ROOT / "inventory/host_vars/llm-ada-lovelace-6X-16GB-embed.yml"
+    )
+    inventory_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
+    add_host = next(
+        task["ansible.builtin.add_host"]
+        for task in _walk(inventory_tasks)
+        if "ansible.builtin.add_host" in task
+    )
+    groups = add_host["groups"]
+
+    assert host_vars["llm_active_profile"] == "small"
+    assert host_vars["llm_gpu_serving_model_cache_mount_path"] == "/var/lib/llm"
+    assert groups.count("'llm-gpu-small-router' in (item.value.tags | default([]))") == 2
+    assert "['llm_gpu_legacy_group', 'llm_gpu_group']" in groups
+    assert "'llm-gpu' not in (item.value.tags | default([]))" in groups
+
+
 def test_co_resident_gpu_host_selects_the_eleven_slot_main_and_small_profile():
     host_vars = _load(REPO_ROOT / "inventory/host_vars/llm-blackwell-7-96GB-medium.yml")
 

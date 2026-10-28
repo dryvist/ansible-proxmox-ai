@@ -79,6 +79,8 @@ def _render_env(price_map_url: str) -> str:
         "llm_router_log_level": "INFO",
         "llm_router_openrouter_models": [],
         "llm_router_opencode_models": [],
+        "llm_router_lane_names": [],
+        "llm_router_untrusted_classify_enabled": False,
         "_llm_router_m_hermes_cloud_models_credentialed": [],
         "_llm_router_m_resolved_credentials": {},
         "llm_router_price_map_url": price_map_url,

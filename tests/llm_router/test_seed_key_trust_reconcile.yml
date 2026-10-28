@@ -1,0 +1,73 @@
+---
+# A live caller key gains its trust_tier marker on an initial-mode converge, with
+# no rebuild, and a key that already carries it gets no update.
+- name: Existing keys receive the trust marker without a rebuild
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_seed_mode: initial
+    _llm_router_live_key_aliases: [unmarked, marked]
+    llm_router_mcp_default_object_permission:
+      mcp_servers: [no-mcp-servers]
+    _llm_router_key_trust_metadata:
+      unmarked: {trust_tier: untrusted}
+      marked: {trust_tier: trusted}
+  tasks:
+    - name: Extract the real policy expression
+      ansible.builtin.set_fact:
+        _expr: >-
+          {{ (lookup('file', _role_dir ~ '/tasks/reconcile-seeded-key-policy.yml') | from_yaml | first)
+             ['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
+    - name: Allocate a renderable expression
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _trust_template_file
+    - name: Write the actual expression
+      ansible.builtin.copy:
+        dest: "{{ _trust_template_file.path }}"
+        content: "{{ _expr }}"
+        mode: '0600'
+    - name: Render initial mode against one unmarked and one marked live key
+      ansible.builtin.set_fact:
+        _trust_updates: "{{ lookup('ansible.builtin.template', _trust_template_file.path) }}"
+      vars:
+        llm_router_virtual_keys:
+          - alias: unmarked
+            value: sk-test-unmarked-key
+            models: [test-model]
+          - alias: marked
+            value: sk-test-marked-key
+            models: [test-model]
+        llm_router_existing_keys:
+          json:
+            keys:
+              - key_alias: unmarked
+                models: [test-model]
+                metadata:
+                  app: unmarked
+                  tier: local
+                  other: keep-me
+                  tags: ['&sensitivity:sensitive']
+                object_permission: {mcp_servers: [no-mcp-servers]}
+              - key_alias: marked
+                models: [test-model]
+                metadata:
+                  app: marked
+                  tier: local
+                  trust_tier: trusted
+                  tags: ['&sensitivity:sensitive']
+                object_permission: {mcp_servers: [no-mcp-servers]}
+    - name: Only the unmarked key is updated, keeping its other metadata
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _trust_updates | map(attribute='alias') | list == ['unmarked']
+          - (_trust_updates | first).body.metadata.trust_tier == 'untrusted'
+          - (_trust_updates | first).body.metadata.other == 'keep-me'
+          - (_trust_updates | first).body.metadata.app == 'unmarked'
+    - name: Remove the temporary template
+      ansible.builtin.file:
+        path: "{{ _trust_template_file.path }}"
+        state: absent

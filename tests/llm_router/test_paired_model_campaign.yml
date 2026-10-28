@@ -1,0 +1,68 @@
+---
+# Run from the repo root inside the ansible-apps shell:
+#   nix develop "github:JacobPEvans/nix-devenv#ansible-apps" \
+#     -c ansible-playbook -i localhost, -c local tests/llm_router/test_paired_model_campaign.yml
+- name: Refuse HTTP when the campaign flag is omitted
+  hosts: localhost
+  gather_facts: false
+  vars:
+    llm_model_paired_trial_test_endpoint: "{{ 'http://' ~ inventory_hostname ~ ':10001/v1' }}"
+    llm_model_paired_trial_test_root: "{{ llm_model_paired_trial_test_endpoint | regex_replace('/v1$', '') }}"
+  tasks:
+    - name: Confirm HTTP needs the explicit candidate-pass flag
+      block:
+        - name: Apply the campaign endpoint policy without its opt-in flag
+          ansible.builtin.import_tasks: ../../playbooks/tasks/llm-model-campaign-endpoint-policy.yml
+          vars:
+            benchmark_endpoint_root: "{{ llm_model_paired_trial_test_root }}"
+            llm_model_trial_endpoint_url: "{{ llm_model_paired_trial_test_endpoint }}"
+
+        - name: Fail if the endpoint policy admitted HTTP without its flag
+          ansible.builtin.fail:
+            msg: The endpoint policy admitted HTTP without the candidate-pass flag.
+      rescue:
+        - name: Confirm the unapproved HTTP endpoint was rejected
+          ansible.builtin.assert:
+            that:
+              - "'Campaign endpoints must use HTTPS' in (ansible_failed_result.msg | default(''))"
+            quiet: true
+
+- name: Refuse an HTTP endpoint that differs from the trial role fact
+  hosts: localhost
+  gather_facts: false
+  vars:
+    llm_model_paired_trial_test_endpoint: "{{ 'http://' ~ inventory_hostname ~ ':10001/v1' }}"
+    llm_model_paired_trial_test_root: "{{ 'http://' ~ inventory_hostname ~ ':10002' }}"
+  tasks:
+    - name: Confirm the opt-in does not admit a different HTTP endpoint
+      block:
+        - name: Apply the campaign endpoint policy to the mismatched endpoint
+          ansible.builtin.import_tasks: ../../playbooks/tasks/llm-model-campaign-endpoint-policy.yml
+          vars:
+            benchmark_endpoint_root: "{{ llm_model_paired_trial_test_root }}"
+            llm_model_campaign_allow_trial_http: true
+            llm_model_trial_endpoint_url: "{{ llm_model_paired_trial_test_endpoint }}"
+
+        - name: Fail if the endpoint policy admitted an unmatched HTTP endpoint
+          ansible.builtin.fail:
+            msg: The endpoint policy admitted an HTTP endpoint that differs from the trial role fact.
+      rescue:
+        - name: Confirm the mismatched HTTP endpoint was rejected
+          ansible.builtin.assert:
+            that:
+              - "'Campaign endpoints must use HTTPS' in (ansible_failed_result.msg | default(''))"
+            quiet: true
+
+- name: Allow only the exact trial endpoint when the candidate-pass flag is set
+  hosts: localhost
+  gather_facts: false
+  vars:
+    llm_model_paired_trial_test_endpoint: "{{ 'http://' ~ inventory_hostname ~ ':10001/v1' }}"
+    llm_model_paired_trial_test_root: "{{ llm_model_paired_trial_test_endpoint | regex_replace('/v1$', '') }}"
+  tasks:
+    - name: Apply the endpoint policy to the matching candidate endpoint
+      ansible.builtin.import_tasks: ../../playbooks/tasks/llm-model-campaign-endpoint-policy.yml
+      vars:
+        benchmark_endpoint_root: "{{ llm_model_paired_trial_test_root }}"
+        llm_model_campaign_allow_trial_http: true
+        llm_model_trial_endpoint_url: "{{ llm_model_paired_trial_test_endpoint }}"

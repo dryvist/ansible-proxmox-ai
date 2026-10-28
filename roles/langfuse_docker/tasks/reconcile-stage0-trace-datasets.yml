@@ -1,0 +1,78 @@
+---
+- name: Validate the Stage 0 trace holdout fraction
+  ansible.builtin.assert:
+    that:
+      - langfuse_docker_stage0_trace_holdout_fraction | float > 0
+      - langfuse_docker_stage0_trace_holdout_fraction | float < 1
+    fail_msg: The trace holdout fraction must be greater than 0 and less than 1.
+
+- name: Define the Stage 0 trace split datasets
+  ansible.builtin.set_fact:
+    langfuse_docker_stage0_trace_datasets:
+      - name: "{{ langfuse_docker_stage0_dataset_name }}-train"
+        split: train
+      - name: "{{ langfuse_docker_stage0_dataset_name }}-holdout"
+        split: holdout
+    langfuse_docker_stage0_trace_to_start_time: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Read the Stage 0 trace split datasets
+  ansible.builtin.uri:
+    url: >-
+      {{ 'http://' ~ ansible_facts['lo']['ipv4']['address'] ~ ':' ~ langfuse_docker_web_port
+         ~ '/api/public/v2/datasets/' ~ (item.name | urlencode) }}
+    method: GET
+    url_username: "{{ langfuse_docker_init_public_key }}"
+    url_password: "{{ langfuse_docker_init_secret_key }}"
+    force_basic_auth: true
+    return_content: true
+    status_code: [200, 404]
+  register: langfuse_docker_stage0_trace_dataset_reads
+  changed_when: false
+  loop: "{{ langfuse_docker_stage0_trace_datasets }}"
+  loop_control:
+    label: "{{ item.split }}"
+  no_log: true
+
+- name: Require Stage 0 trace split datasets to retain their identities
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.status == 404 or
+        (item.json.metadata.source_dataset == langfuse_docker_stage0_dataset_name
+         and item.json.metadata.split == item.item.split)
+    fail_msg: >-
+      An existing trace split dataset has different source metadata. Review it
+      before changing the Stage 0 trace dataset contract.
+  loop: "{{ langfuse_docker_stage0_trace_dataset_reads.results }}"
+  loop_control:
+    label: "{{ item.item.split }}"
+
+- name: Create missing Stage 0 trace split datasets
+  ansible.builtin.uri:
+    url: >-
+      {{ 'http://' ~ ansible_facts['lo']['ipv4']['address'] ~ ':'
+         ~ langfuse_docker_web_port ~ '/api/public/v2/datasets' }}
+    method: POST
+    url_username: "{{ langfuse_docker_init_public_key }}"
+    url_password: "{{ langfuse_docker_init_secret_key }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ item.item.name }}"
+      description: "Agent traces assigned to the Stage 0 {{ item.item.split }} split."
+      metadata:
+        source_dataset: "{{ langfuse_docker_stage0_dataset_name }}"
+        split: "{{ item.item.split }}"
+        split_strategy: sha256-prefix-mod-10000
+    return_content: true
+    status_code: 200
+  loop: "{{ langfuse_docker_stage0_trace_dataset_reads.results }}"
+  loop_control:
+    label: "{{ item.item.split }}"
+  when: item.status == 404
+  no_log: true
+
+- name: Read the first page of Stage 0 root observations
+  ansible.builtin.include_tasks: reconcile-stage0-trace-page.yml
+  vars:
+    langfuse_docker_stage0_trace_cursor: ""
