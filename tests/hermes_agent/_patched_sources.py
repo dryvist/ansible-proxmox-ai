@@ -134,7 +134,7 @@ PATCHED_CRON_DELIVERY_SOURCE = (
         "d.failure_incident_id,\n"
         "    ) = _compose_run_delivery(\n"
         "        job, success=d.success, error=d.error, final_response=final_response,\n"
-        "        output_file=output_file)\n",
+        "        output_file=output_file, agent_declared=d.agent_declared)\n",
     )
     + _apply_runtime_patch(
         "Deliver a self-declared cron failure through the failure lane",
@@ -147,11 +147,12 @@ PATCHED_CRON_DELIVERY_SOURCE = (
         "        and not _resolve_delivery_targets(job, for_failure=not d.success)\n"
         "    )\n",
     )
-    + _apply_runtime_patch(
-        "Route the run-ledger classification through the failure lane for a declared failure",
-        "        normalized_deliver=_normalize_deliver_value(_delivery_lane_value(job,\n"
-        "            for_failure=not d.success)),\n",
-    )
+)
+# The run-ledger classification lives in cron/scheduler_bookkeeping.py at
+# v0.22.5, not in scheduler.py, so it has its own fixture var.
+PATCHED_CRON_BOOKKEEPING_SOURCE = _apply_runtime_patch(
+    "Route the run-ledger classification through the failure lane for a declared failure",
+    "            scheduler._delivery_lane_value(job, for_failure=not d.success)),\n",
 )
 # cron/scheduler.py carries the opt-in goal-mode runner too, and
 # patches_verify.yml asserts on all of it against ONE source string — so this

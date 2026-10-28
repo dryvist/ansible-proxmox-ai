@@ -18,7 +18,40 @@ Refresh with scripts/verify-pinned-patches.py when hermes_agent_version moves.
 
 from __future__ import annotations
 
+import sys
+import types
+
+
+def _stub_portal_tags() -> None:
+    """The verbatim loop imports agent.portal_tags when it runs, and the test
+    tree has no upstream `agent` package. Affinity scoping does nothing for
+    these tests, so bind inert stand-ins under that module name."""
+    if "agent.portal_tags" in sys.modules:
+        return
+    portal_tags = types.ModuleType("agent.portal_tags")
+    portal_tags.get_affinity_scope = lambda: None
+    portal_tags.set_affinity_scope = lambda scope: None
+    portal_tags.reset_affinity_scope = lambda token: None
+    package = sys.modules.get("agent") or types.ModuleType("agent")
+    package.portal_tags = portal_tags
+    sys.modules["agent"] = package
+    sys.modules["agent.portal_tags"] = portal_tags
+
+
+_stub_portal_tags()
+
 PINNED_KANBAN_GOAL_LOOP_SOURCE = '''\
+# Worker-driven terminal task statuses → loop outcome. The card's own acceptance criteria are the
+# goal; the worker already has the full task body, so these outcomes stop the loop cleanly.
+_KANBAN_TERMINAL_STATUSES = {
+    "done": ("completed_by_worker", "worker completed the task", "task {task_id} completed by worker after {turns} turn(s)"),
+    "blocked": ("blocked_by_worker", "worker blocked the task", "task {task_id} blocked by worker after {turns} turn(s)"),
+    # kanban_request_review is a legitimate terminator: implementation done, awaiting a reviewer.
+    "review": ("review_requested_by_worker", "worker requested review", "task {task_id} handed off for review by worker after {turns} turn(s)"),
+    "changes_requested": ("changes_requested_by_reviewer", "reviewer requested changes", "reviewer returned task {task_id} for changes after {turns} turn(s)"),
+}
+
+
 def run_kanban_goal_loop(
     *,
     task_id: str,
@@ -29,7 +62,14 @@ def run_kanban_goal_loop(
     max_turns: int = DEFAULT_MAX_TURNS,
     first_response: str = "",
     log=None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
+    """Drive a kanban worker through a Ralph-style goal loop.
+
+    Each iteration: stop if the worker already terminated the task (``kanban_complete`` /
+    ``kanban_block`` / review hand-off); otherwise judge the latest response against ``goal_text``
+    (the card's title + body) and feed a continuation or finalize nudge. A WAIT verdict is treated
+    as CONTINUE (workers finish via kanban tools, not by parking).
+    """
 
     def _log(msg: str) -> None:
         if log is not None:
@@ -38,56 +78,71 @@ def run_kanban_goal_loop(
             except Exception:
                 pass
 
+    def _block(message: str) -> None:
+        try:
+            block_fn(message)
+        except Exception as exc:
+            _log(f"kanban goal loop: block_fn failed ({exc})")
+
+    def _result(outcome: str, reason: str) -> dict[str, Any]:
+        return {"outcome": outcome, "turns_used": turns_used, "reason": reason}
+
     max_turns = int(max_turns or DEFAULT_MAX_TURNS)
     if max_turns < 1:
         max_turns = DEFAULT_MAX_TURNS
 
     last_response = first_response or ""
-    # The first turn already consumed one unit of budget.
-    turns_used = 1
+    turns_used = 1   # the first turn already consumed one unit of budget
     nudged_to_finalize = False
 
     while True:
-        # Did the worker terminate the task itself this turn?
         try:
             status = task_status_fn()
         except Exception as exc:
             _log(f"kanban goal loop: status check failed ({exc}); stopping")
-            return {"outcome": "stopped", "turns_used": turns_used, "reason": "status check failed"}
+            return _result("stopped", "status check failed")
 
-        if status == "done":
-            _log(f"kanban goal loop: task {task_id} completed by worker after {turns_used} turn(s)")
-            return {"outcome": "completed_by_worker", "turns_used": turns_used, "reason": "worker completed the task"}
-        if status == "blocked":
-            _log(f"kanban goal loop: task {task_id} blocked by worker after {turns_used} turn(s)")
-            return {"outcome": "blocked_by_worker", "turns_used": turns_used, "reason": "worker blocked the task"}
+        terminal = _KANBAN_TERMINAL_STATUSES.get(status)
+        if terminal is not None:
+            outcome, reason, log_fmt = terminal
+            _log("kanban goal loop: " + log_fmt.format(task_id=task_id, turns=turns_used))
+            return _result(outcome, reason)
         if status not in ("running", "ready"):
             # Reclaimed / archived / unexpected — let the dispatcher own it.
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
-            return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
+            return _result("stopped", f"status={status}")
 
-        # Still open — judge whether the latest response satisfies the card.
-        # The kanban worker loop has no wait-barrier concept (workers finish
-        # via kanban_complete / kanban_block, not by parking), so a WAIT
-        # verdict is treated as CONTINUE here.
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
+        try:
+            verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        finally:
+            if affinity_token is not None:
+                reset_affinity_scope(affinity_token)
+        if _transport_failed:
+            _log(f"kanban goal loop: judge transport failed on turn {turns_used}; stopping")
+            return _result("stopped", "judge transport failure")
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
 
+        if verdict == "blocked":
+            # Unachievable is NOT done: block the card with the judge's reason now instead of
+            # re-poking an impossible goal, and never let it land in done.
+            # The judge ruled the goal cannot be satisfied at all — this is NOT done (#100954).
+            _log(f"kanban goal loop: task {task_id} judged unachievable; blocking")
+            _block(f"Goal-mode judge ruled the goal unachievable: {reason}")
+            return _result("blocked_unachievable", f"judge verdict blocked: {reason}")
+
         if verdict == "done":
             if nudged_to_finalize:
-                # Already asked once to call kanban_complete and it still
-                # didn't — block for review rather than spin.
+                # Already asked once to call kanban_complete — block for review rather than spin.
                 _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
-                try:
-                    block_fn(
-                        f"Goal-mode worker's output looked complete but it never "
-                        f"called kanban_complete after a finalize nudge ({reason})."
-                    )
-                except Exception as exc:
-                    _log(f"kanban goal loop: block_fn failed ({exc})")
-                return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "judged done, never finalized"}
+                _block(
+                    f"Goal-mode worker's output looked complete but it never "
+                    f"called kanban_complete after a finalize nudge ({reason})."
+                )
+                return _result("blocked_budget", "judged done, never finalized")
             prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
             nudged_to_finalize = True
         else:
@@ -96,23 +151,32 @@ def run_kanban_goal_loop(
         # Budget check BEFORE spending another turn.
         if turns_used >= max_turns:
             _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
-            try:
-                block_fn(
-                    f"Goal-mode worker exhausted its turn budget "
-                    f"({turns_used}/{max_turns}) without completing the task. "
-                    f"Last judge verdict: {_truncate(reason, 300)}"
-                )
-            except Exception as exc:
-                _log(f"kanban goal loop: block_fn failed ({exc})")
-            return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
+            _block(
+                f"Goal-mode worker exhausted its turn budget "
+                f"({turns_used}/{max_turns}) without completing the task. "
+                f"Last judge verdict: {_truncate(reason, 300)}"
+            )
+            return _result("blocked_budget", "turn budget exhausted")
 
-        # Run another turn in the same session.
         try:
-            last_response = run_turn(prompt) or ""
+            result = run_turn(prompt)
+            if isinstance(result, dict):
+                last_response = result.get("response", "") or ""
+                failed = bool(result.get("failed", False))
+                failure_reason = result.get("failure_reason") or "unknown"
+            else:
+                # backward compatibility: assume it's a string
+                last_response = result or ""
+                failed = False
+                failure_reason = None
         except Exception as exc:
             _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
-            return {"outcome": "stopped", "turns_used": turns_used, "reason": f"run_turn error: {type(exc).__name__}"}
-        turns_used += 1'''
+            return _result("stopped", f"run_turn error: {type(exc).__name__}")
+        if failed:
+            _log(f"kanban goal loop: worker failed on turn {turns_used} (reason={failure_reason}); stopping")
+            return _result("stopped", f"worker failed: {failure_reason}")
+        turns_used += 1
+'''
 
 
 # The loop's two continuation prompts, VERBATIM upstream. The finalize one is

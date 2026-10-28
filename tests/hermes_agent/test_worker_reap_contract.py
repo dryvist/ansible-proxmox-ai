@@ -1,54 +1,26 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import re
 import signal as signal_module
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-import yaml
+from _pinned_sources_worker import PINNED_WORKER_REAP_SOURCE
 from _role_files import role_tasks
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
 
-# Reduced reap slice from enforce_max_runtime (upstream v2026.9.11,
-# hermes_cli/kanban_db_dispatch.py) — the exact lines the role's own regexes
-# target, indentation included. Not the whole function: only the SIGTERM/
-# SIGKILL block the three replace tasks below patch, plus the shared
-# _sigkill(kill, pid) helper both reapers now escalate through (2026-09
-# upstream rewrite) since the escalation patch targets that helper's own
-# body, not either call site.
-PINNED_REAP_SOURCE = '''\
-def _sigkill(kill, pid: int) -> bool:
-    """Best-effort SIGKILL; True when the signal was delivered."""
-    try:
-        kill(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
-        return True
-    except (ProcessLookupError, OSError):
-        return False
-
-
-def _reap(pid, signal_fn=None):
-    killed = False
-    kill = signal_fn if signal_fn is not None else (
-        os.kill if hasattr(os, "kill") else None
-    )
-    if kill is not None:
-        with contextlib.suppress(ProcessLookupError, OSError):
-            kill(pid, signal.SIGTERM)
-        for _ in range(10):
-            if not _pid_alive(pid):
-                break
-            time.sleep(0.5)
-        if _pid_alive(pid):
-            killed = _sigkill(kill, pid)
-    return killed
-'''
+# PINNED_WORKER_REAP_SOURCE is upstream v0.22.5 text: _sigkill plus the kill
+# block of enforce_max_runtime, the lines the role's replace tasks patch. The
+# def/for header around the kill block is scaffolding only.
 
 REAP_SIGNAL_SAFETY_PATCH_NAME = (
-    "Patch Hermes worker-reap timeout path to verify PID safety before signaling"
+    "Patch Hermes worker-reap timeout path to skip init and self PIDs before signaling"
 )
 REAP_SIGTERM_PATCH_NAME = (
     "Patch Hermes worker-reap timeout path to signal the worker's process group"
@@ -56,6 +28,8 @@ REAP_SIGTERM_PATCH_NAME = (
 REAP_SIGKILL_PATCH_NAME = (
     "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group"
 )
+LEGACY_GUARD_TASK_NAME = "Patch Hermes worker-reap legacy-row identity guard before signaling"
+WORKER_CMDLINE = "python -m hermes_cli.kanban_worker_client"
 
 
 def _task(name: str) -> dict[str, Any]:
@@ -72,20 +46,19 @@ def _apply_replace(name: str, source: str) -> str:
     return patched
 
 
+def _legacy_helper_block() -> str:
+    return _task(LEGACY_GUARD_TASK_NAME)["ansible.builtin.blockinfile"]["block"]
+
+
 def _patched_reap_source() -> str:
-    source = PINNED_REAP_SOURCE
+    source = PINNED_WORKER_REAP_SOURCE
     for name in (
         REAP_SIGNAL_SAFETY_PATCH_NAME,
         REAP_SIGTERM_PATCH_NAME,
         REAP_SIGKILL_PATCH_NAME,
     ):
         source = _apply_replace(name, source)
-    return source
-
-
-class _NoSleepTime:
-    def sleep(self, seconds: float) -> None:
-        pass
+    return _legacy_helper_block() + "\n\n" + source
 
 
 class _FixedPid:
@@ -96,51 +69,75 @@ class _FixedPid:
         return self._pid
 
 
-def _run_patched_reap(source: str, namespace: dict[str, Any]) -> None:
-    # Equivalent to exec(source, namespace): compile in "exec" mode, then
-    # evaluate the resulting code object against the namespace.
-    code = compile(source, "<patched-reap>", "exec")
-    eval(code, namespace)  # noqa: S307 -- test-only, self-authored source
+class _RecordingLog:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def info(self, message: str, *args: object) -> None:
+        self.lines.append(message % args if args else message)
 
 
-def _build_reap(*, own_pid: int, pid_alive: bool, is_hermes_worker: bool):
+def _fake_proc_open(cmdline: str):
+    def fake_open(path, mode="rb", *args, **kwargs):
+        assert path.endswith("/cmdline"), path
+        return io.BytesIO(cmdline.encode("utf-8"))
+
+    return fake_open
+
+
+def _build_enforce(
+    *,
+    own_pid: int,
+    pid_alive: bool,
+    recycled: bool = False,
+    cmdline: str = WORKER_CMDLINE,
+):
+    log = _RecordingLog()
     namespace: dict[str, Any] = {
         "os": _FixedPid(own_pid),
         "signal": signal_module,
-        "time": _NoSleepTime(),
         "contextlib": contextlib,
-        "_pid_alive": lambda pid: pid_alive,
-        "_pid_is_hermes_worker": lambda pid: is_hermes_worker,
+        "open": _fake_proc_open(cmdline),
+        "_kb": SimpleNamespace(_pid_alive=lambda pid: pid_alive, _log=log),
+        "_pid_recycled": lambda pid, started_at: recycled,
+        "_kill_fn": lambda signal_fn: signal_fn,
+        "_worker_alive": lambda pid, started_at: pid_alive,
+        "_poll_worker_exit": lambda pid, started_at=None: not pid_alive,
     }
-    _run_patched_reap(_patched_reap_source(), namespace)
-    return namespace["_reap"]
+    exec(compile(_patched_reap_source(), "<patched-reap>", "exec"), namespace)
+    return namespace["_enforce_timeout_kill"], log
+
+
+def _run(reap, pid: int, started_at: Any) -> tuple[list[tuple[int, int]], Any]:
+    calls: list[tuple[int, int]] = []
+    killed = reap(
+        [pid],
+        started_at,
+        signal_fn=lambda target, sig: calls.append((target, sig)),
+    )
+    return calls, killed
 
 
 def test_worker_reap_helper_landed_before_the_function_it_guards() -> None:
-    task = _task(
-        "Patch Hermes worker-reap helper to verify PID identity before signaling"
-    )
-    cfg = task["ansible.builtin.blockinfile"]
+    cfg = _task(LEGACY_GUARD_TASK_NAME)["ansible.builtin.blockinfile"]
     assert cfg["insertbefore"] == r"^def enforce_max_runtime\("
     block = cfg["block"]
-    assert "def _pid_is_hermes_worker(pid: int) -> bool:" in block
-    assert '"hermes" in cmdline and "chat" in cmdline' in block
+    assert "def _legacy_worker_may_be_signalled(pid, started_at) -> bool:" in block
+    assert '"kanban_worker_client" in cmdline' in block
 
 
 def test_reap_signals_the_process_group_not_just_the_pid() -> None:
     # A worker's children (start_new_session=True makes it its own process
     # group leader) are the actual leak; signaling only the PID misses them.
-    reap = _build_reap(own_pid=1, pid_alive=False, is_hermes_worker=True)
-    calls: list[tuple[int, int]] = []
-    killed = reap(12345, signal_fn=lambda pid, sig: calls.append((pid, sig)))
+    reap, _ = _build_enforce(own_pid=1, pid_alive=False)
+    calls, killed = _run(reap, 12345, "fingerprint")
     assert calls == [(-12345, signal_module.SIGTERM)]
     assert killed is False  # SIGTERM alone was enough
 
 
 def test_reap_escalates_to_sigkill_on_the_process_group_if_sigterm_survives() -> None:
-    reap = _build_reap(own_pid=1, pid_alive=True, is_hermes_worker=True)
-    calls: list[tuple[int, int]] = []
-    killed = reap(12345, signal_fn=lambda pid, sig: calls.append((pid, sig)))
+    reap, _ = _build_enforce(own_pid=1, pid_alive=True)
+    calls, killed = _run(reap, 12345, "fingerprint")
     assert calls == [
         (-12345, signal_module.SIGTERM),
         (-12345, signal_module.SIGKILL),
@@ -149,22 +146,46 @@ def test_reap_escalates_to_sigkill_on_the_process_group_if_sigterm_survives() ->
 
 
 def test_reap_refuses_to_signal_the_gateways_own_pid() -> None:
-    reap = _build_reap(own_pid=12345, pid_alive=True, is_hermes_worker=True)
-    calls: list[tuple[int, int]] = []
-    reap(12345, signal_fn=lambda pid, sig: calls.append((pid, sig)))
+    reap, _ = _build_enforce(own_pid=12345, pid_alive=True)
+    calls, _ = _run(reap, 12345, "fingerprint")
     assert calls == []
 
 
 def test_reap_refuses_pid_zero_negative_or_init() -> None:
     for unsafe_pid in (0, -5, 1):
-        reap = _build_reap(own_pid=99999, pid_alive=True, is_hermes_worker=True)
-        calls: list[tuple[int, int]] = []
-        reap(unsafe_pid, signal_fn=lambda pid, sig: calls.append((pid, sig)))
+        reap, _ = _build_enforce(own_pid=99999, pid_alive=True)
+        calls, _ = _run(reap, unsafe_pid, "fingerprint")
         assert calls == [], f"signaled unsafe pid {unsafe_pid}"
 
 
 def test_reap_refuses_a_pid_the_os_recycled_for_something_else() -> None:
-    reap = _build_reap(own_pid=1, pid_alive=True, is_hermes_worker=False)
-    calls: list[tuple[int, int]] = []
-    reap(12345, signal_fn=lambda pid, sig: calls.append((pid, sig)))
+    reap, _ = _build_enforce(own_pid=1, pid_alive=True, recycled=True)
+    calls, _ = _run(reap, 12345, "fingerprint")
     assert calls == []
+
+
+def test_fingerprinted_row_is_not_subject_to_the_legacy_command_line_check() -> None:
+    reap, log = _build_enforce(
+        own_pid=1, pid_alive=False, cmdline="/usr/bin/some-other-service --serve"
+    )
+    calls, _ = _run(reap, 12345, "fingerprint")
+    assert calls == [(-12345, signal_module.SIGTERM)]
+    assert log.lines == []
+
+
+def test_legacy_row_with_a_worker_command_line_is_signalled() -> None:
+    reap, log = _build_enforce(own_pid=1, pid_alive=True)
+    calls, _ = _run(reap, 12345, None)
+    assert calls[0] == (-12345, signal_module.SIGTERM)
+    assert log.lines == []
+
+
+def test_legacy_row_whose_pid_is_not_a_kanban_worker_is_skipped_and_logged_once() -> None:
+    reap, log = _build_enforce(
+        own_pid=1, pid_alive=True, cmdline="/usr/bin/some-other-service --serve"
+    )
+    calls, killed = _run(reap, 12345, None)
+    assert calls == []
+    assert killed is False
+    assert len(log.lines) == 1
+    assert "not signalled" in log.lines[0]

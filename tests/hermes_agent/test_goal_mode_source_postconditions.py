@@ -26,6 +26,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "hermes_cli/kanban_db_dispatch.py",
         "agent/turn_iteration_prep.py",
         "agent/turn_truncation.py",
+        "cron/scheduler_bookkeeping.py",
     ]
 
     assert_task = _combined_assert_task()
@@ -95,15 +96,14 @@ def test_installed_source_postconditions_fail_closed() -> None:
         and ") == 2" in condition
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
-    # Re-anchored (PR C): this occurrence moved off hermes_agent_retry_source
-    # onto its own turn_iteration_prep_source var, and its own-file count
-    # dropped from 2 to 1 as a result.
-    assert any(
-        "_boost_cap = agent.max_tokens if agent.max_tokens else max(" in condition
-        and ".count(" in condition
-        and ") == 1" in condition
-        for condition in assert_task["ansible.builtin.assert"]["that"]
+    # v0.22.5: both retry ladders go through boosted_output_cap() in
+    # turn_truncation.py, which carries the configured-ceiling substitution;
+    # the length-continuation caller must still route through it.
+    assert (
+        "'boost = min(max(base * (2 ** n), requested_cap or 0), agent.max_tokens'"
+        in conditions
     )
+    assert "'boosted_output_cap(' in hermes_agent_turn_iteration_prep_source" in conditions
     assert 'resolved_provider != "custom"' in conditions
     assert "update the pinned-source patches" in assert_task["ansible.builtin.assert"][
         "fail_msg"

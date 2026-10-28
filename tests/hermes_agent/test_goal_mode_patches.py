@@ -118,10 +118,10 @@ REVERTED_CLIENT_BACKOFF_PATCH_NAMES = (
     "Enable prompt-safe Hermes request size metrics at DEBUG",
     "Enable prompt-safe Hermes token usage metrics at DEBUG",
 )
+# v0.22.5 routes the length-continuation caller through boosted_output_cap(),
+# so only the retry-boost ceiling patch is still needed.
 KEPT_MAX_TOKENS_CEILING_PATCH_NAMES = (
     "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
-    "Patch hermes-agent length-continuation boost to respect the configured "
-    "max_tokens ceiling",
 )
 
 
