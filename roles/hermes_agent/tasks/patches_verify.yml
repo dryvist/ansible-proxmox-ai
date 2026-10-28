@@ -20,6 +20,9 @@
     - "{{ hermes_agent_install_dir }}/agent/turn_truncation.py"
     # Appended (index 12): the run-ledger classification moved here in v0.22.5.
     - "{{ hermes_agent_install_dir }}/cron/scheduler_bookkeeping.py"
+    # Appended (index 13): v0.22.5 moved the goal-mode loop and the worker task prompt
+    # from the dispatcher's argv to the profile owner.
+    - "{{ hermes_agent_install_dir }}/gateway/session_kanban.py"
   register: hermes_agent_goal_mode_sources
   changed_when: false
 
@@ -37,6 +40,8 @@
       {{ hermes_agent_goal_mode_sources.results[8].content | b64decode }}
     hermes_agent_kanban_dispatch_source: >-
       {{ hermes_agent_goal_mode_sources.results[9].content | b64decode }}
+    hermes_agent_session_kanban_source: >-
+      {{ hermes_agent_goal_mode_sources.results[13].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -48,34 +53,29 @@
         'cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", '
         ~ '"cron_command", forward_return=True,'
         in hermes_agent_cli_main_source
-      # A goal-mode worker must take the fully-quiet CLI path or its
-      # goal-loop hook never runs. Retired as a role patch because
-      # upstream's dispatcher already appends "-Q" for a goal-mode task on
-      # top of its own "-q" quiet chat invocation — but only INSIDE
-      # `if task.goal_mode:`. Asserting only that "-Q" appears somewhere
-      # after the chat invocation would still pass if upstream made "-Q"
-      # unconditional (every worker, not just goal-mode ones, would take
-      # the quiet-loop path) — so the gate itself is asserted too, not just
-      # ordering. `in` is checked ahead of `.index()` for each needle:
-      # `.index()` on a needle that is not present raises a Jinja
-      # ValueError, which surfaces as an unrelated template-error crash
-      # instead of this task's own fail_msg.
+      # A goal-mode card must still run the goal loop. v0.22.5 retired the
+      # dispatcher's `chat -q ... -Q` argv: the dispatcher hands the card to
+      # the profile owner, which submits the task prompt, gates the goal loop
+      # on the card's goal_mode, and runs the loop itself. The dispatcher's own
+      # goal_mode gate stays asserted, and the owner-side anchors are checked
+      # in gateway/session_kanban.py. Each anchor is checked with `in`, never
+      # `.index()`: a missing needle makes `.index()` raise a Jinja ValueError,
+      # which surfaces as a template-error crash instead of this fail_msg.
       - >-
-        'cmd.extend(["chat", "-q", f"work kanban task {task.id}"])'
-        in hermes_agent_kanban_dispatch_source
+        'work kanban task {params["task_id"]}' in hermes_agent_session_kanban_source
       - "'if task.goal_mode:' in hermes_agent_kanban_dispatch_source"
-      - "'cmd.append(\"-Q\")' in hermes_agent_kanban_dispatch_source"
       - >-
-        hermes_agent_kanban_dispatch_source.index(
-          'cmd.extend(["chat", "-q", f"work kanban task {task.id}"])'
-        ) < hermes_agent_kanban_dispatch_source.index('if task.goal_mode:')
-        < hermes_agent_kanban_dispatch_source.index('cmd.append("-Q")')
+        "if not context['goal_mode'] or turn_exit_code(result, kanban_worker=True) != 0:"
+        in hermes_agent_session_kanban_source
+      - >-
+        "run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,"
+        in hermes_agent_session_kanban_source
     fail_msg: >-
       Upstream Hermes no longer supplies a behavior this role used to patch
-      in itself (cron exit-code propagation, or the goal-mode quiet CLI
-      path in hermes_cli/kanban_db_dispatch.py). This is an upstream
-      regression, not a missing role patch — the equivalent role patch
-      needs to be restored, not re-anchored.
+      in itself (cron exit-code propagation, or the goal-mode loop handoff
+      in gateway/session_kanban.py). This is an upstream regression, not a
+      missing role patch — the equivalent role patch needs to be restored,
+      not re-anchored.
 
 - name: Assert installed Hermes pinned-source patches
   when: not ansible_check_mode
@@ -110,8 +110,9 @@
       # Upstream's own five-value unpack, not a patch result: the role's arity
       # patch is retired because the pinned release fixed it upstream. Still
       # asserted — a drift back to a shorter tuple silently re-opens the
-      # fail-open completion gate this line exists to close.
-      - "'verdict, reason, _, _, _ = judge_goal(' in hermes_agent_goal_completion_source"
+      # fail-open completion gate this line exists to close. v0.22.5 binds the
+      # fifth value to transport_failed, so the anchor names it.
+      - "'verdict, reason, _, _, transport_failed = judge_goal(' in hermes_agent_goal_completion_source"
       - >-
         'SELECT id, status FROM tasks WHERE idempotency_key = ?'
         in hermes_agent_goal_reconcile_source

@@ -23,7 +23,7 @@ def create_task(conn, *, idempotency_key=None, goal_mode=False, goal_max_turns=N
             return row["id"]
     raise RuntimeError("insert path")
 '''
-PINNED_GOAL_COMPLETION_SOURCE = "        verdict, reason, _, _, _ = judge_goal(\n"
+PINNED_GOAL_COMPLETION_SOURCE = "            verdict, reason, _, _, transport_failed = judge_goal(\n"
 # Verbatim upstream lines at the pinned release, indentation included. A copy
 # that drifts from upstream silently stops patching and the test goes green on
 # nothing — these sat at v2026.7.7.2 while the role installed a much later
@@ -191,3 +191,23 @@ PINNED_CRON_TIMEOUT_SOURCE = '''\
         )
     return result
 '''
+
+# v0.22.5 cron/scheduler.py:2638-2647, verbatim: the success artifact passes the
+# newline-normalized prompt as `framed_prompt` (plain text, never hashed).
+PINNED_CRON_SUCCESS_ARTIFACT_SOURCE = '''\
+        logged_response = final_response if final_response else "(No response generated)"
+        # Text-file reads normalize newlines; count the same characters the
+        # context_from reader sees so quoted markers can never become boundaries.
+        framed_prompt = _normalize_newlines(prompt)
+        logged_response = _normalize_newlines(logged_response)
+        output = (
+            _run_doc_header(job, job_name, job_id, framed_prompt,
+                            prompt_stamp=f"{_PROMPT_FRAME}{len(framed_prompt)}\\n")
+            + f"{_RESPONSE_FRAME}{len(logged_response)}\\n{_RESPONSE_HEADING}{logged_response}{_RESPONSE_TERMINATOR}"
+        )
+'''
+
+# v0.22.5 cron/scheduler.py:2675, verbatim: the failure call site the artifact patch anchors on.
+PINNED_CRON_FAILURE_ARTIFACT_SOURCE = (
+    '            _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)\n'
+)

@@ -26,11 +26,12 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "agent/turn_iteration_prep.py",
         "agent/turn_truncation.py",
         "cron/scheduler_bookkeeping.py",
+        "gateway/session_kanban.py",
     ]
 
     assert_task = _combined_assert_task()
     conditions = " ".join(assert_task["ansible.builtin.assert"]["that"])
-    assert "verdict, reason, _, _, _ = judge_goal(" in conditions
+    assert "verdict, reason, _, _, transport_failed = judge_goal(" in conditions
     assert any(
         "goal judge unavailable:" in condition
         and ".count(" in condition
@@ -45,8 +46,8 @@ def test_installed_source_postconditions_fail_closed() -> None:
         in conditions
     )
     assert "goal_max_turns = COALESCE(?, goal_max_turns)" in conditions
-    # The worker-spawn "--quiet" patch is retired (2026-09): upstream's own
-    # kanban dispatcher already appends "-Q" for a goal-mode task, checked
+    # The worker-spawn "--quiet" patch is retired (2026-09). v0.22.5 runs the
+    # goal loop on the profile owner, so the owner-side anchors are checked
     # against the live installed source in "Assert upstream still supplies
     # the behavior these retired patches used to add", not here.
     assert "WHERE id = ? AND status IN" in conditions
