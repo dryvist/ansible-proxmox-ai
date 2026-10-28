@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.9.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.8.0...v2.9.0) (2026-10-28)
+
+
+### Features
+
+* **agentgateway:** validate per-caller keys on the memory, docs, Vikunja and Nautobot MCP routes ([#1736](https://github.com/dryvist/ansible-proxmox-ai/issues/1736)) ([d7da173](https://github.com/dryvist/ansible-proxmox-ai/commit/d7da173653436678350c1f150f959c9ddc992bcc))
+* **hermes_agent:** upgrade Hermes to v0.22.5 with pinned memory and tracing plugins ([#1759](https://github.com/dryvist/ansible-proxmox-ai/issues/1759)) ([9f603cf](https://github.com/dryvist/ansible-proxmox-ai/commit/9f603cf88c648a5819addd762ed6334271897584))
+* **hermes:** serve Hermes over A2A through agentgateway for trusted callers ([#1739](https://github.com/dryvist/ansible-proxmox-ai/issues/1739)) ([2054d63](https://github.com/dryvist/ansible-proxmox-ai/commit/2054d63bc7ce5fc9af405c1864995105cdbb259d))
+* **hermes:** UTC window timers and a daily backup-alert check ([#1755](https://github.com/dryvist/ansible-proxmox-ai/issues/1755)) ([252f0c7](https://github.com/dryvist/ansible-proxmox-ai/commit/252f0c76d846b72d476f77f684609b94c9f80a2f))
+* **langfuse:** curate Stage 0 traces into deterministic train and holdout datasets ([#1738](https://github.com/dryvist/ansible-proxmox-ai/issues/1738)) ([12355d3](https://github.com/dryvist/ansible-proxmox-ai/commit/12355d37530281f29ad85f23e54373b8ddb45f24))
+* **llm_router:** clamp each caller's router key grants to its trust tier ceiling ([#1740](https://github.com/dryvist/ansible-proxmox-ai/issues/1740)) ([8b3522a](https://github.com/dryvist/ansible-proxmox-ai/commit/8b3522ada3d4102cf21894f99cfb1dceb7c3c8b7))
+* **llm-router:** classify untrusted-tier requests and refuse unless public ([#1746](https://github.com/dryvist/ansible-proxmox-ai/issues/1746)) ([6a135c7](https://github.com/dryvist/ansible-proxmox-ai/commit/6a135c71d05ebc497e960bb078d7785321be9392))
+* **llm-router:** derive one GPU deployment per llm_gpu_group member ([#1750](https://github.com/dryvist/ansible-proxmox-ai/issues/1750)) ([b34e72d](https://github.com/dryvist/ansible-proxmox-ai/commit/b34e72db904d5d076e9493256b6e7586989852d4))
+* **trials:** run baseline and candidate campaign passes under one trial lock and write a verdict ([#1742](https://github.com/dryvist/ansible-proxmox-ai/issues/1742)) ([8e74ce3](https://github.com/dryvist/ansible-proxmox-ai/commit/8e74ce3237cee12567d7ce999d9250d5f4cf1f12))
+
+
+### Bug Fixes
+
+* **agentgateway:** never render empty caller keys ([#1744](https://github.com/dryvist/ansible-proxmox-ai/issues/1744)) ([7439966](https://github.com/dryvist/ansible-proxmox-ai/commit/74399661b4b9737c352cea448e73339b1490e97d))
+* **agentgateway:** never render empty caller keys; require the key reader domain ([7439966](https://github.com/dryvist/ansible-proxmox-ai/commit/74399661b4b9737c352cea448e73339b1490e97d))
+* **agentgateway:** strip the Hermes A2A route prefix before proxying ([#1745](https://github.com/dryvist/ansible-proxmox-ai/issues/1745)) ([f62613d](https://github.com/dryvist/ansible-proxmox-ai/commit/f62613d32abead26ec7b6c116439fc7a1abda628))
+* **clickhouse_docker:** read the ingest password from its own path and re-apply user passwords ([#1733](https://github.com/dryvist/ansible-proxmox-ai/issues/1733)) ([1eeacb7](https://github.com/dryvist/ansible-proxmox-ai/commit/1eeacb7837aee56d80c2221fbe555c99ec0667e5))
+* **hermes_agent:** enable the bundled Langfuse tracing plugin ([#1756](https://github.com/dryvist/ansible-proxmox-ai/issues/1756)) ([dfdb3af](https://github.com/dryvist/ansible-proxmox-ai/commit/dfdb3af8b443c64a1b19bbc962406bdc2f3bb571))
+* **hermes_agent:** install drain wrapper before first restart notify ([#1751](https://github.com/dryvist/ansible-proxmox-ai/issues/1751)) ([6b15cd9](https://github.com/dryvist/ansible-proxmox-ai/commit/6b15cd93ad2013cb9ce809bd146210f6e9c07a04))
+* **hermes_agent:** raise on unset PROXMOX_SUBDOMAIN for the Langfuse URL ([#1757](https://github.com/dryvist/ansible-proxmox-ai/issues/1757)) ([18efa68](https://github.com/dryvist/ansible-proxmox-ai/commit/18efa68e621b85cd10071b18683a3c49f173ddba))
+* **hindsight:** back up with the deployed image and restart drained replicas on failure ([#1749](https://github.com/dryvist/ansible-proxmox-ai/issues/1749)) ([31597d1](https://github.com/dryvist/ansible-proxmox-ai/commit/31597d1b37bb9a5b73e4d849fc48e56e67d4f512))
+* **hindsight:** run retain on the medium capability with four in flight ([#1748](https://github.com/dryvist/ansible-proxmox-ai/issues/1748)) ([84f855b](https://github.com/dryvist/ansible-proxmox-ai/commit/84f855b48cf35539e9b76a7c86620999f8b1ef08))
+* **inventory:** read the Ada serving port from the controller tofu_data ([#1754](https://github.com/dryvist/ansible-proxmox-ai/issues/1754)) ([29473bd](https://github.com/dryvist/ansible-proxmox-ai/commit/29473bd77a26ab19e718a17334d3338470e1e12f))
+* **inventory:** read the Ada serving port from the controller's tofu_data ([29473bd](https://github.com/dryvist/ansible-proxmox-ai/commit/29473bd77a26ab19e718a17334d3338470e1e12f))
+* **llm_router:** turn thinking off on the small route group ([#1753](https://github.com/dryvist/ansible-proxmox-ai/issues/1753)) ([ac5d3ad](https://github.com/dryvist/ansible-proxmox-ai/commit/ac5d3adb666c9623b114b2635d219759ac406aab))
+* **llm-router:** reconcile the trust_tier marker onto live caller keys ([#1747](https://github.com/dryvist/ansible-proxmox-ai/issues/1747)) ([ec079f9](https://github.com/dryvist/ansible-proxmox-ai/commit/ec079f9a90698b80e7147323747a6e698383e8b9))
+* **verify:** assert lane headers as returned and prove failover on request ([#1737](https://github.com/dryvist/ansible-proxmox-ai/issues/1737)) ([d5aec99](https://github.com/dryvist/ansible-proxmox-ai/commit/d5aec997de0990f77313a9d53e1f68c0d4ef053b))
+
 ## [2.8.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.7.0...v2.8.0) (2026-10-25)
 
 
