@@ -8,6 +8,7 @@ logs stay off, so the export is metrics only.
 from __future__ import annotations
 
 from _role_files import role_defaults, role_tasks
+from _shell_harness_shared import defaults_of
 from test_context_limits import ROLE_ROOT, _render
 
 
@@ -28,6 +29,11 @@ def test_gateway_config_exports_gateway_health_metrics_only() -> None:
         "warning_error_events_enabled": False,
         "export_interval_seconds": defaults["hermes_agent_gateway_health_metrics_interval_seconds"],
     }
+
+
+def test_native_endpoint_default_is_the_orchestration_endpoint() -> None:
+    # Read raw: a literal here would bypass the shared OTLP endpoint every consumer reads.
+    assert defaults_of("hermes_agent")["hermes_agent_otel_endpoint"] == "{{ ai_orchestration_otel_endpoint }}"
 
 
 def test_otlp_packages_are_installed_so_the_export_can_start() -> None:

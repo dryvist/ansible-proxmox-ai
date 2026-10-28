@@ -1,20 +1,4 @@
 ---
-- name: Check whether the Hermes OTEL plugin file exists
-  ansible.builtin.stat:
-    path: "{{ hermes_agent_install_dir }}/plugins/observability/otel/__init__.py"
-  register: hermes_agent_otel_plugin
-
-- name: Patch Hermes OTEL spans to carry the configured service name
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/plugins/observability/otel/__init__.py"
-    regexp: '^(\s*)attrs = \[_attr\(_GEN_AI_SESSION, session_id\), _attr\(_GEN_AI_EXECUTION, exec_id\)\]$'
-    replace: >-
-      \1attrs = [_attr(_GEN_AI_SESSION, session_id),
-      _attr(_GEN_AI_EXECUTION, exec_id),
-      _attr("service.name", os.environ.get("OTEL_SERVICE_NAME", "hermes-agent"))]
-  notify: Restart hermes-gateway
-  when: hermes_agent_otel_plugin.stat.exists
-
 # The base install skips optional messaging-platform extras (they pull in
 # platform SDKs like slack-bolt that most converges never need). Without this,
 # the gateway logs "Platform 'Slack' requirements not met" and refuses to
@@ -94,6 +78,51 @@
     )
   notify: Restart hermes-gateway
   when: hermes_agent_otel_endpoint | length > 0
+
+- name: Install the pinned Langfuse SDK into the Hermes venv
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_venv_python }}
+      "langfuse{{ hermes_agent_langfuse_sdk_pin }}"
+  register: hermes_agent_langfuse_sdk_install
+  changed_when: >-
+    not ansible_check_mode and (
+      'Installed' in hermes_agent_langfuse_sdk_install.stderr
+      or 'Uninstalled' in hermes_agent_langfuse_sdk_install.stderr
+    )
+  when: hermes_agent_langfuse_enabled | bool
+  notify: Restart hermes-gateway
+
+- name: Read the installed Langfuse SDK version and required exports
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - >-
+        from importlib.metadata import version;
+        from langfuse import Langfuse, propagate_attributes;
+        print(version('langfuse'))
+  register: hermes_agent_langfuse_sdk_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: hermes_agent_langfuse_enabled | bool
+
+- name: Assert the Hermes venv has the pinned Langfuse SDK
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_langfuse_sdk_probe.rc == 0
+      - hermes_agent_langfuse_sdk_probe.stdout == hermes_agent_langfuse_sdk_version
+    fail_msg: >-
+      Hermes venv Langfuse SDK version is
+      {{ hermes_agent_langfuse_sdk_probe.stdout | default('<missing>') }},
+      expected {{ hermes_agent_langfuse_sdk_version }} with its Langfuse and
+      propagate_attributes exports.
+  when:
+    - hermes_agent_langfuse_enabled | bool
+    - not ansible_check_mode
 
 # slack_sdk's ``SocketModeClient.connect()`` is a ``while True`` retry loop
 # that never checks the client's ``closed`` flag. Its base class spawns
