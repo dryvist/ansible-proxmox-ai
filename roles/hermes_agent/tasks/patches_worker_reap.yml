@@ -14,6 +14,36 @@
 # leaves that child orphaned and running after the top-level PID is gone. The
 # group-signal patches below reap that child too.
 
+# A legacy row has no spawn fingerprint, so upstream can never prove its PID is
+# still the worker and treats it as never recycled. Signal such a PID only when
+# its live command line names the kanban worker client; otherwise skip it and
+# log once. Rows with a fingerprint keep upstream's recycled-PID refusal.
+- name: Patch Hermes worker-reap legacy-row identity guard before signaling
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db_dispatch.py"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK worker reap legacy identity guard"
+    insertbefore: '^def enforce_max_runtime\('
+    block: |
+      def _legacy_worker_may_be_signalled(pid, started_at) -> bool:
+          """True when a row's PID may be signalled: a fingerprinted row (upstream's
+          _pid_recycled decides), or a legacy row whose live command line names the
+          kanban worker client. Anything else is skipped and logged once."""
+          if started_at is not None:
+              return True
+          try:
+              with open(f"/proc/{int(pid)}/cmdline", "rb") as handle:
+                  cmdline = handle.read().decode("utf-8", "replace")
+          except OSError:
+              cmdline = ""
+          if "kanban_worker_client" in cmdline:
+              return True
+          _kb._log.info(
+              "kanban: worker pid %s has no spawn fingerprint and is not a kanban worker; not signalled",
+              pid,
+          )
+          return False
+  notify: Restart hermes-gateway
+
 # Never signal PID 0/negative/1 (init) or this gateway process itself
 # (dispatch_in_gateway: true runs enforce_max_runtime inside the gateway process,
 # so os.getpid() at this call site can be the gateway's own PID).
@@ -27,6 +57,7 @@
       \1if (
       \1    kill is not None and pid > 1 and pid != os.getpid()
       \1    and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at))
+      \1    and _legacy_worker_may_be_signalled(pid, started_at)
       \1):
   notify: Restart hermes-gateway
 
@@ -59,7 +90,11 @@
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db_dispatch.py"
     regexp: '^([ \t]*)if not pid or pid <= 0 or not claim_lock:$'
-    replace: '\1if not pid or pid <= 1 or pid == os.getpid() or not claim_lock:'
+    replace: |-
+      \1if (
+      \1    not pid or pid <= 1 or pid == os.getpid() or not claim_lock
+      \1    or not _legacy_worker_may_be_signalled(pid, started_at)
+      \1):
   notify: Restart hermes-gateway
 
 # Signal the worker's process group (negative pid), not just the recorded
