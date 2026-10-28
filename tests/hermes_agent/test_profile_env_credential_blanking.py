@@ -55,6 +55,10 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
 
         assert values["HERMES_AGENT_MODEL_API_KEY"] == "MODELKEY"
         assert not any(key.startswith("HERMES_LANGFUSE_") for key in values)
+        readonly = "1" if profile["name"] in context["hermes_agent_guardrails_github_readonly_profiles"] else ""
+        assert values["DRYVIST_GUARDRAILS_GITHUB_READONLY"] == readonly, (
+            f"{profile['name']}: the GitHub read-only guard is set only for listed profiles"
+        )
         for key in always_blank:
             assert values[key] == "", f"{profile['name']}: {key} must always be blank"
         for section, keys in section_keys.items():

@@ -11,7 +11,6 @@ from conftest import (
     PINNED_CREATE_TASK_SOURCE,
     PINNED_CRON_DELIVERY_SOURCE,
     PINNED_GOAL_COMPLETION_SOURCE,
-    PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PATCHED_JUDGE_CALL_SOURCE,
     PINNED_JUDGE_CALL_SOURCE,
     PINNED_JUDGE_ERROR_SENTINEL_SOURCE,
@@ -284,15 +283,6 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
             retry_source,
             auxiliary_source,
             turn_truncation_source=unpatched_turn_truncation_source,
-        )
-    )
-    assert not all(
-        _source_postconditions(
-            completion_source,
-            reconcile_source,
-            retry_source,
-            auxiliary_source,
-            hindsight_plugin_source=PINNED_HINDSIGHT_PREFETCH_SOURCE,
         )
     )
     # Worker-reap process-group guard dropped: kanban_dispatch_source

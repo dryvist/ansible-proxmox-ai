@@ -1,7 +1,7 @@
 """Verbatim upstream Hermes source snippets: task/goal/cron-delivery half.
 
 Split from _pinned_sources.py (over the repo's per-file token budget) —
-worker-reap and hindsight snippets moved to _pinned_sources_worker.py, and
+worker-reap snippets moved to _pinned_sources_worker.py, and
 judge/memory/slack/dispatch snippets to _pinned_sources_hooks.py. A version bump only ever edits these strings, and
 an agent re-anchoring a patch should read the snippets without the fixtures,
 and vice versa. Every constant is upstream source EXACTLY as shipped — never

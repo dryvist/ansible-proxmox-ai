@@ -20,7 +20,6 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "agent/auxiliary_client.py",
         "agent/context_compressor.py",
         "cron/scheduler.py",
-        "plugins/memory/hindsight/__init__.py",
         "run_agent.py",
         "hermes_cli/main.py",
         "hermes_cli/kanban_db_dispatch.py",
@@ -81,7 +80,6 @@ def test_installed_source_postconditions_fail_closed() -> None:
         in conditions
     )
     assert "failure_limit=1 if is_systemic else None," in conditions
-    assert 'logger.debug("Hindsight prefetch failed:' in conditions
     assert "if _transport_failed:" in conditions
     assert "blocked_judge_unreachable" in conditions
     # The upstream sentinel producer must stay pinned: reworded upstream, the

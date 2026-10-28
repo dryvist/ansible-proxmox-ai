@@ -16,7 +16,6 @@ from conftest import (
     _patched_goal_loop,
     _task,
     _task_db,
-    PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PATCHED_JUDGE_CALL_SOURCE,
     PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
@@ -74,17 +73,6 @@ def test_goal_judge_availability_probe_logs_both_declines() -> None:
         del _sys.modules["agent.auxiliary_client"]
     assert len(warnings) == 2
     assert all("goal judge unavailable" in str(call[0]) for call in warnings)
-
-
-def test_hindsight_recall_failure_keeps_best_effort_result_after_central_logging() -> None:
-    patched = _apply_runtime_patch(
-        "Keep failed Hindsight recall best effort without a duplicate debug log",
-        PINNED_HINDSIGHT_PREFETCH_SOURCE,
-    )
-    assert "if not getattr(e, \"hindsight_request_id\", None):" in patched
-    assert 'self._report_hindsight_failure("recall", e)' in patched
-    assert 'return "", 0' in patched
-    assert "logger.debug" not in patched
 
 
 def test_auxiliary_retry_budgets_are_bounded() -> None:
