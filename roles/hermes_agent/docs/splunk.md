@@ -36,21 +36,20 @@ timing is measurable in the same query rather than invisible.
 
 ## Hindsight operation failures
 
-The bundled Hindsight provider emits one prompt-safe ERROR for a failed recall
-or retain operation with `request_id=`, `operation=`,
-`hindsight_failure_count=1`, and `hindsight_degraded=true`. Hermes' existing
+The Hindsight plugin (v1.2.3) logs a failed recall or retain call at WARNING:
+`Hindsight recall failed: ...` or `Hindsight retain failed: ...`. Hermes' existing
 rsyslog route forwards these records through Cribl to `index=hermes`; no new
 input or pipeline is needed. Count failures by operation with:
 
 ```spl
-index=hermes "hindsight_failure_count=1"
-| rex field=_raw "operation=(?<hindsight_operation>\S+)"
+index=hermes ("Hindsight recall failed" OR "Hindsight retain failed")
+| rex field=_raw "Hindsight (?<hindsight_operation>recall|retain) failed"
 | stats count by hindsight_operation
 ```
 
-Auto-recall preserves the provider's best-effort contract, then includes a
-`[HINDSIGHT_MEMORY_DEGRADED ...]` marker in the next prefetch context when a
-failure occurred. Direct memory-tool errors include the same request id.
+The plugin does not add the `request_id=`, `hindsight_failure_count=1`, or
+`[HINDSIGHT_MEMORY_DEGRADED ...]` markers that the retired bundled-provider
+patches produced, so searches on those markers no longer match.
 
 ## Splunk search access
 
