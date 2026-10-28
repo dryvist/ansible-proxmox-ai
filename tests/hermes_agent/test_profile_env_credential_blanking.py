@@ -31,6 +31,11 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         hermes_agent_wiki_enabled=True,
         hermes_agent_wiki_path="/var/lib/hermes/wiki",
         hermes_agent_github_read_token="READTOK",
+        hermes_agent_homeassistant_enabled=True,
+        hermes_agent_homeassistant_token="HATOK",
+        hermes_agent_homeassistant_url="https://ha.example.com",
+        hermes_agent_homeassistant_home_channel="",
+        hermes_agent_homeassistant_entity_denylist="",
     )
     always_blank = ("CONTEXT7_API_KEY",)
     section_keys = {
@@ -38,6 +43,7 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         "splunk": ("SPLUNK_MCP_URL", "SPLUNK_MCP_TOKEN"),
         "zammad": ("ZAMMAD_URL", "ZAMMAD_API_TOKEN"),
         "github": ("GH_PAT_WRITE_PROJECT_ISSUES",),
+        "homeassistant": ("HASS_TOKEN", "HASS_URL"),
     }
 
     for profile in _profiles():

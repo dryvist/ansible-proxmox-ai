@@ -17,6 +17,7 @@
     - ../../roles/hermes_agent/defaults/main/53-event-relay.yml
     - ../../roles/openbao_secrets/defaults/main/00-connection.yml
     - ../../roles/openbao_secrets/defaults/main/10-domains.yml
+    - ../../roles/openbao_secrets/defaults/main/10-domains-identities.yml
     - ../../roles/openbao_secrets/defaults/main/11-roster-domains.yml
   vars:
     hermes_agent_ops_workload_enabled: true
@@ -171,14 +172,20 @@
 
     - name: Assert the hermes domain declares exactly the paths Hermes reads
       vars:
-        _declared: >-
+        _all: >-
           {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'hermes') | first).paths }}
+        _switched_off: >-
+          {{ _all | select('mapping') | selectattr('enabled', 'defined')
+             | selectattr('enabled', 'false') | list }}
+        _declared: "{{ _all | reject('in', _switched_off) | list }}"
       ansible.builtin.assert:
         that:
           - _declared == _expected_hermes_paths
+          - "_switched_off == [{'path': 'ai/public/homeassistant', 'optional': true, 'enabled': false}]"
         fail_msg: >-
-          The hermes domain declares {{ _declared }}; it must be exactly
-          {{ _expected_hermes_paths }} (the policy grants these exact paths).
+          The hermes domain declares {{ _declared }} enabled and {{ _switched_off }} switched off;
+          enabled must be exactly {{ _expected_hermes_paths }} (the policy grants these exact paths)
+          and the Home Assistant path must stay off until its grant exists.
 
     - name: Assert the private identity has only its own domain and the shared read-only Splunk route
       vars:
