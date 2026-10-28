@@ -39,18 +39,19 @@
       \1judge_failures = 0
   notify: Restart hermes-gateway
 
+# Re-anchored for v0.22.5: upstream's kanban goal loop now stops on a judge
+# transport failure (the `if _transport_failed:` block). That block is rewritten
+# to retry without consuming a turn, block after 5 consecutive failures, and
+# reset the counter otherwise. The verdict line this patch used to anchor on
+# is unchanged upstream and is not touched.
 - name: Patch Hermes kanban goal loop to retry judge errors without burning turns
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
     regexp: |-
-      ^([ \t]*)verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal\(goal_text, last_response\)$
-      \1if verdict == "wait":$
-      \1    verdict = "continue"$
-      \1_log\(f"kanban goal loop: turn \{turns_used\}/\{max_turns\} verdict=\{verdict\} reason=.*\)$
+      ^([ \t]*)if _transport_failed:$
+      \1    _log\(f"kanban goal loop: judge transport failed on turn \{turns_used\}; stopping"\)$
+      \1    return _result\("stopped", "judge transport failure"\)$
     replace: |-
-      \1verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
-      \1if verdict == "wait":
-      \1    verdict = "continue"
       \1if _transport_failed:
       \1    judge_failures += 1
       \1    _log(
@@ -66,11 +67,10 @@
       \1            )
       \1        except Exception as exc:
       \1            _log(f"kanban goal loop: block_fn failed ({exc})")
-      \1        return {"outcome": "blocked_judge_unreachable", "turns_used": turns_used, "reason": reason}
+      \1        return _result("blocked_judge_unreachable", reason)
       \1    time.sleep(15.0)
       \1    continue
       \1judge_failures = 0
-      \1_log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
   notify: Restart hermes-gateway
 
 # index=hermes is this fabric's latency telemetry (roles/hermes_agent/docs/splunk.md).
