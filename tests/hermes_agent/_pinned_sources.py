@@ -1,7 +1,7 @@
 """Verbatim upstream Hermes source snippets: task/goal/cron-delivery half.
 
 Split from _pinned_sources.py (over the repo's per-file token budget) —
-worker-reap and hindsight snippets moved to _pinned_sources_worker.py, and
+worker-reap snippets moved to _pinned_sources_worker.py, and
 judge/memory/slack/dispatch snippets to _pinned_sources_hooks.py. A version bump only ever edits these strings, and
 an agent re-anchoring a patch should read the snippets without the fixtures,
 and vice versa. Every constant is upstream source EXACTLY as shipped — never
@@ -29,15 +29,18 @@ PINNED_GOAL_COMPLETION_SOURCE = "        verdict, reason, _, _, _ = judge_goal(\
 # nothing — these sat at v2026.7.7.2 while the role installed a much later
 # release, which is how seven patches came to match zero times with every test
 # passing. Re-verify with scripts/verify-pinned-patches.py on a version bump.
-# Re-anchored (PR I): upstream's September 2026 decomposition moved this to
-# agent/turn_truncation.py and inlined the separate `_tc_boost_cap =`
-# assignment directly into the min() call it fed.
+# v0.22.5: both retry paths call one shared ladder, boosted_output_cap() in
+# agent/turn_truncation.py. Its ceiling term is the substitution point.
 PINNED_TC_BOOST_CAP_SOURCE = (
-    "    agent._ephemeral_max_output_tokens = min(_tc_boost, "
-    "max(32768, _tc_requested_cap or 0))\n"
+    "    boost = min(max(base * (2 ** n), requested_cap or 0), "
+    "max(32768, anchor * 2))\n"
 )
+# The length-continuation caller (agent/turn_iteration_prep.py) is not patched
+# in v0.22.5; it routes through the same ladder above.
 PINNED_BOOST_CAP_SOURCE = (
-    "            _boost_cap = max(32768, _requested_cap or 0)\n"
+    "        agent._ephemeral_max_output_tokens = boosted_output_cap(\n"
+    "            agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), length_continue_retries\n"
+    "        )\n"
 )
 PINNED_COMPRESSOR_SCAN_SOURCE = (
     "        for idx in range(end - 1, start - 1, -1):\n"

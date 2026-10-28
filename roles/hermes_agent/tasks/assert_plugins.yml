@@ -1,0 +1,57 @@
+---
+# Read-back of the plugin requirements the collection installed (tasks_from: plugins
+# in main.yml). A mismatch fails the converge here, not at the first memory or trace call.
+- name: Read the installed Hindsight client version from the Hermes venv
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - "from importlib.metadata import version; print(version('hindsight-client'))"
+  register: hermes_agent_hindsight_client_version_installed
+  changed_when: false
+  # Read-only; a check run needs the live value to preview Hindsight packages.
+  check_mode: false
+  when: hermes_agent_memory_provider == 'hindsight'
+
+- name: Assert the Hermes venv has the pinned Hindsight client
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_hindsight_client_version_installed.stdout == hermes_agent_hindsight_client_version
+    fail_msg: >-
+      Hermes venv Hindsight client version is {{ hermes_agent_hindsight_client_version_installed.stdout
+      | default('<missing>') }}, expected {{ hermes_agent_hindsight_client_version }}.
+      Do not repair site-packages manually; re-run the managed Hermes converge.
+  when:
+    - hermes_agent_memory_provider == 'hindsight'
+    - not ansible_check_mode
+
+- name: Read the installed Langfuse SDK version and required exports
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - >-
+        from importlib.metadata import version;
+        from langfuse import Langfuse, propagate_attributes;
+        print(version('langfuse'))
+  register: hermes_agent_langfuse_sdk_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: hermes_agent_langfuse_enabled | bool
+
+- name: Assert the Hermes venv has the pinned Langfuse SDK
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_langfuse_sdk_probe.rc == 0
+      - hermes_agent_langfuse_sdk_probe.stdout == hermes_agent_langfuse_sdk_version
+    fail_msg: >-
+      Hermes venv Langfuse SDK version is
+      {{ hermes_agent_langfuse_sdk_probe.stdout | default('<missing>') }},
+      expected {{ hermes_agent_langfuse_sdk_version }} with its Langfuse and
+      propagate_attributes exports.
+  when:
+    - hermes_agent_langfuse_enabled | bool
+    - not ansible_check_mode

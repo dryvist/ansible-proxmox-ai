@@ -14,29 +14,21 @@
 # converge (idempotent regexp match) because `hermes update` self-updates
 # the app out from under this checkout and would silently drop the patch
 # otherwise.
+# Re-anchored for v0.22.5: both retry paths (truncated tool call in
+# agent/turn_truncation.py, length continuation in agent/turn_iteration_prep.py)
+# now call the single boosted_output_cap() ladder in agent/turn_truncation.py,
+# which holds the 32768 floor in its ceiling term. That term is the one
+# substitution point, so the length-continuation patch that used to target
+# turn_iteration_prep.py is gone.
 - name: Patch hermes-agent retry boost to respect the configured max_tokens ceiling
-  # Rewritten: upstream's September 2026 decomposition moved this to
-  # agent/turn_truncation.py and inlined the separate `_tc_boost_cap =`
-  # assignment directly into the min() call it fed. Same substitution,
-  # applied to the inlined expression instead of a standalone variable.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/agent/turn_truncation.py"
     regexp: >-
-      ^(\s*)agent\._ephemeral_max_output_tokens = min\(_tc_boost,
-      max\(32768, _tc_requested_cap or 0\)\)$
+      ^(\s*)boost = min\(max\(base \* \(2 \*\* n\), requested_cap or 0\),
+      max\(32768, anchor \* 2\)\)$
     replace: >-
-      \1agent._ephemeral_max_output_tokens = min(_tc_boost, agent.max_tokens
-      if agent.max_tokens else max(32768, _tc_requested_cap or 0))
-  notify: Restart hermes-gateway
-
-- name: Patch hermes-agent length-continuation boost to respect the configured max_tokens ceiling
-  # Upstream split conversation_loop.py into focused files (COMPAT_MANIFEST.md,
-  # September 2026 decomposition); this call moved to turn_iteration_prep.py
-  # verbatim, so only the path changes here.
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/turn_iteration_prep.py"
-    regexp: '^(\s*)_boost_cap = max\(32768, _requested_cap or 0\)$'
-    replace: '\1_boost_cap = agent.max_tokens if agent.max_tokens else max(32768, _requested_cap or 0)'
+      \1boost = min(max(base * (2 ** n), requested_cap or 0),
+      agent.max_tokens if agent.max_tokens else max(32768, anchor * 2))
   notify: Restart hermes-gateway
 
 # The compressor-scan clamp that used to sit here is GONE. It guarded an
@@ -187,19 +179,17 @@
     replace: 'return isinstance(status, int) and (status in (408, 429) or 500 <= status < 600)'
   notify: Restart hermes-gateway
 
-# Rewritten: the guard inverted and `should_fallback` dropped from this
-# call site. Upstream's own gate is now "skip fallback unless (auto mode OR
-# a capacity error)" — so an EXPLICIT non-auto provider pin still falls
-# back on a capacity error, which is exactly the defect this patch exists
-# to close. Narrows the capacity-error branch to exclude the explicit local
-# provider, leaving auto mode and every other explicit provider's capacity
-# fallback untouched. Only one call site carries this guard now (the old
-# patch's expected_matches: 2 no longer applies).
+# Re-anchored for v0.22.5: upstream's gate now also admits an explicit
+# provider on an auth error when a task fallback_chain is configured
+# (explicit_auth_with_task_chain). That branch is left as upstream wrote it.
+# Only the capacity-error term is narrowed, so an explicit local provider no
+# longer falls back on a capacity error; auto mode and other explicit
+# providers are unchanged.
 - name: Disable post-budget fallback for the explicit local auxiliary provider
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
-    regexp: '^([ \t]*)if reason is None or not \(is_auto or is_capacity_error\):$'
+    regexp: '^([ \t]*)if reason is None or not \(is_auto or is_capacity_error or explicit_auth_with_task_chain\):$'
     replace: >-
       \1if reason is None or not (is_auto or (is_capacity_error and
-      resolved_provider != "custom")):
+      resolved_provider != "custom") or explicit_auth_with_task_chain):
   notify: Restart hermes-gateway

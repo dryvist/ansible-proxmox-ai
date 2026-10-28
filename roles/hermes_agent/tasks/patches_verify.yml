@@ -13,12 +13,13 @@
     # later assertion at the wrong file.
     - "{{ hermes_agent_install_dir }}/agent/context_compressor.py"
     - "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    - "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
     - "{{ hermes_agent_install_dir }}/run_agent.py"
     - "{{ hermes_agent_install_dir }}/hermes_cli/main.py"
     - "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db_dispatch.py"
     - "{{ hermes_agent_install_dir }}/agent/turn_iteration_prep.py"
     - "{{ hermes_agent_install_dir }}/agent/turn_truncation.py"
+    # Appended (index 12): the run-ledger classification moved here in v0.22.5.
+    - "{{ hermes_agent_install_dir }}/cron/scheduler_bookkeeping.py"
   register: hermes_agent_goal_mode_sources
   changed_when: false
 
@@ -33,9 +34,9 @@
   when: not ansible_check_mode
   vars:
     hermes_agent_cli_main_source: >-
-      {{ hermes_agent_goal_mode_sources.results[9].content | b64decode }}
+      {{ hermes_agent_goal_mode_sources.results[8].content | b64decode }}
     hermes_agent_kanban_dispatch_source: >-
-      {{ hermes_agent_goal_mode_sources.results[10].content | b64decode }}
+      {{ hermes_agent_goal_mode_sources.results[9].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -93,18 +94,16 @@
       {{ hermes_agent_goal_mode_sources.results[5].content | b64decode }}
     hermes_agent_cron_scheduler_source: >-
       {{ hermes_agent_goal_mode_sources.results[6].content | b64decode }}
-    hermes_agent_hindsight_plugin_source: >-
-      {{ hermes_agent_goal_mode_sources.results[7].content | b64decode }}
     hermes_agent_run_agent_source: >-
-      {{ hermes_agent_goal_mode_sources.results[8].content | b64decode }}
+      {{ hermes_agent_goal_mode_sources.results[7].content | b64decode }}
     hermes_agent_cli_main_source: >-
-      {{ hermes_agent_goal_mode_sources.results[9].content | b64decode }}
+      {{ hermes_agent_goal_mode_sources.results[8].content | b64decode }}
     hermes_agent_kanban_dispatch_source: >-
-      {{ hermes_agent_goal_mode_sources.results[10].content | b64decode }}
+      {{ hermes_agent_goal_mode_sources.results[9].content | b64decode }}
     hermes_agent_turn_iteration_prep_source: >-
-      {{ hermes_agent_goal_mode_sources.results[11].content | b64decode }}
+      {{ hermes_agent_goal_mode_sources.results[10].content | b64decode }}
     hermes_agent_turn_truncation_source: >-
-      {{ hermes_agent_goal_mode_sources.results[12].content | b64decode }}
+      {{ hermes_agent_goal_mode_sources.results[11].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -151,19 +150,25 @@
       # helper (_sigkill), so one assertion now covers what used to be two
       # separate call sites.
       - >-
-        'def _pid_is_hermes_worker(pid: int) -> bool:'
-        in hermes_agent_kanban_dispatch_source
-      - >-
         'kill is not None and pid > 1 and pid != os.getpid()'
         in hermes_agent_kanban_dispatch_source
       - >-
-        'and _pid_is_hermes_worker(pid)'
+        'and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at))'
+        in hermes_agent_kanban_dispatch_source
+      - >-
+        'def _legacy_worker_may_be_signalled(pid, started_at) -> bool:'
+        in hermes_agent_kanban_dispatch_source
+      - >-
+        'and _legacy_worker_may_be_signalled(pid, started_at)'
         in hermes_agent_kanban_dispatch_source
       - >-
         'kill(-pid, signal.SIGTERM)'
         in hermes_agent_kanban_dispatch_source
       - >-
-        'if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):'
+        'not pid or pid <= 1 or pid == os.getpid() or not claim_lock'
+        in hermes_agent_kanban_dispatch_source
+      - >-
+        'or not _legacy_worker_may_be_signalled(pid, started_at)'
         in hermes_agent_kanban_dispatch_source
       - >-
         'kill(-int(pid), signal.SIGTERM)'
@@ -194,19 +199,15 @@
       - >-
         'resolved_provider != "custom"'
         in hermes_agent_auxiliary_source
-      # These two patches used to share one file (agent/conversation_loop.py)
-      # and a variable-name substring assertion (`_tc_boost_cap` contains
-      # `_boost_cap`). Upstream's September 2026 decomposition moved them to
-      # different files AND inlined the retry-boost one's standalone
-      # variable into the min() call it fed — asserted directly against
-      # that inlined expression now.
+      # Upstream (v0.22.5) computes both retry ladders in one function,
+      # boosted_output_cap(), in agent/turn_truncation.py. The configured-ceiling
+      # substitution lives in that function; the length-continuation caller must
+      # still route through it, or the ceiling is bypassed on that path.
       - >-
-        'agent._ephemeral_max_output_tokens = min(_tc_boost, agent.max_tokens'
+        'boost = min(max(base * (2 ** n), requested_cap or 0), agent.max_tokens'
         in hermes_agent_turn_truncation_source
       - >-
-        hermes_agent_turn_iteration_prep_source.count(
-          '_boost_cap = agent.max_tokens if agent.max_tokens else max('
-        ) == 1
+        'boosted_output_cap(' in hermes_agent_turn_iteration_prep_source
     fail_msg: >-
       The pinned Hermes source changed and one or more required source
       patches were not installed; update the pinned-source patches before

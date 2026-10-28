@@ -32,8 +32,8 @@ def _upstream_scheduler_excerpt() -> str:
         + "\n\ndef run_job():\n    pass\n"
         + UPSTREAM_EXCERPT
         + '\n    return (\n'
-        '        "No fallback chain configured — add one with `hermes fallback add`, "\n'
-        '        "or set a cron fleet default via `cron.model` + `cron.model_provider` in config.yaml."\n'
+        '        "No backup provider is configured — add one with `hermes fallback add`, "\n'
+        '        "or set a cron-wide default via `cron.model` + `cron.model_provider` in config.yaml."\n'
         "    )\n"
         + '        f"Fix its prompt/config, or pause it with `hermes cron pause {job_ref}` "\n'
         + '        "(resume/remove also available) to stop the noise."\n'

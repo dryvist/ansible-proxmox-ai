@@ -25,10 +25,17 @@
     src: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
   register: hermes_agent_cron_failure_routing_source
 
+- name: Read run-ledger bookkeeping source before patching its failure lane
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_install_dir }}/cron/scheduler_bookkeeping.py"
+  register: hermes_agent_cron_failure_bookkeeping_source
+
 - name: Validate every cron failure-routing patch anchor before changing source
   vars:
     hermes_agent_cron_failure_routing_source_text: >-
       {{ hermes_agent_cron_failure_routing_source.content | b64decode }}
+    hermes_agent_cron_failure_bookkeeping_source_text: >-
+      {{ hermes_agent_cron_failure_bookkeeping_source.content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -39,7 +46,7 @@
           ~ '[ \\t]*deliver_content, d\\.blocked_config, _silent_alert, d\\.incident_acked, d\\.failure_incident_id,\\n'
           ~ '[ \\t]*\\) = _compose_run_delivery\\(\\n'
           ~ '[ \\t]*job, success=d\\.success, error=d\\.error, final_response=final_response,\\n'
-          ~ '[ \\t]*output_file=output_file\\)$'
+          ~ '[ \\t]*output_file=output_file, agent_declared=d\\.agent_declared\\)$'
           )) is not none
           and (hermes_agent_cron_failure_routing_source_text | regex_search(
           '(?m)^([ \\t]*)for_failure=not d\\.success,$'
@@ -51,9 +58,8 @@
           ~ '[ \\t]*and not _resolve_delivery_targets\\(job, for_failure=not d\\.success\\)\\n'
           ~ '[ \\t]*\\)$'
           )) is not none
-          and (hermes_agent_cron_failure_routing_source_text | regex_search(
-          '(?m)^([ \\t]*)normalized_deliver=_normalize_deliver_value\\(_delivery_lane_value\\(job,\\s*'
-          ~ 'for_failure=not d\\.success\\)\\),$'
+          and (hermes_agent_cron_failure_bookkeeping_source_text | regex_search(
+          '(?m)^([ \\t]*)scheduler\\._delivery_lane_value\\(job, for_failure=not d\\.success\\)\\),$'
           )) is not none
           and 'job, deliver_content, _cron_declared_failure = _cron_route(job, deliver_content)'
           not in hermes_agent_cron_failure_routing_source_text
@@ -69,7 +75,7 @@
           and 'job, for_failure=not d.success or _cron_declared_failure)) == "origin"'
           in hermes_agent_cron_failure_routing_source_text
           and 'for_failure=not d.success or getattr(d, "declared_failure", False))),'
-          in hermes_agent_cron_failure_routing_source_text
+          in hermes_agent_cron_failure_bookkeeping_source_text
         )
       - "'def _cron_route(' in hermes_agent_cron_failure_routing_source_text"
     fail_msg: >-
@@ -85,13 +91,13 @@
       [ \t]*deliver_content, d\.blocked_config, _silent_alert, d\.incident_acked, d\.failure_incident_id,
       [ \t]*\) = _compose_run_delivery\(
       [ \t]*job, success=d\.success, error=d\.error, final_response=final_response,
-      [ \t]*output_file=output_file\)$(?!\n[ \t]*job, deliver_content, _cron_declared_failure = _cron_route)
+      [ \t]*output_file=output_file, agent_declared=d\.agent_declared\)$(?!\n[ \t]*job, deliver_content, _cron_declared)
     replace: |-
       \g<1>(
       \g<1>    deliver_content, d.blocked_config, _silent_alert, d.incident_acked, d.failure_incident_id,
       \g<1>) = _compose_run_delivery(
       \g<1>    job, success=d.success, error=d.error, final_response=final_response,
-      \g<1>    output_file=output_file)
+      \g<1>    output_file=output_file, agent_declared=d.agent_declared)
       \g<1>job, deliver_content, _cron_declared_failure = _cron_route(job, deliver_content)
       \g<1>d.declared_failure = _cron_declared_failure
   notify: Restart hermes-gateway
@@ -133,13 +139,14 @@
 # _cron_route — d.declared_failure (set above) is what carries the flag
 # across that boundary, since the local _cron_declared_failure variable is
 # not in scope there.
+# Re-anchored for v0.22.5: the ledger classification moved out of scheduler.py
+# into cron/scheduler_bookkeeping.py (finish_completed_run), where `d` is the
+# same _RunDelivery.
 - name: Route the run-ledger classification through the failure lane for a declared failure
   ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: >-
-      (?x)^([\x20\t]*)normalized_deliver=_normalize_deliver_value\(_delivery_lane_value\(job,
-      \s*for_failure=not\x20d\.success\)\),$
-    replace: |-
-      \1normalized_deliver=_normalize_deliver_value(_delivery_lane_value(
-      \1    job, for_failure=not d.success or getattr(d, "declared_failure", False))),
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler_bookkeeping.py"
+    regexp: '^([ \t]*)scheduler\._delivery_lane_value\(job, for_failure=not d\.success\)\),$'
+    replace: >-
+      \1scheduler._delivery_lane_value(job,
+      for_failure=not d.success or getattr(d, "declared_failure", False))),
   notify: Restart hermes-gateway

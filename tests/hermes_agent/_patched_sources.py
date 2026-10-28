@@ -28,10 +28,6 @@ from _pinned_sources_hooks import (
     PINNED_JUDGE_ERROR_SENTINEL_SOURCE,
     PINNED_SYNC_EXTERNAL_MEMORY_SOURCE,
 )
-from _pinned_sources_worker import (
-    PINNED_HINDSIGHT_FAILURE_SOURCE,
-    PINNED_HINDSIGHT_PREFETCH_SOURCE,
-)
 from _pinned_goal_loop import PINNED_KANBAN_GOAL_LOOP_SOURCE
 from _role_files import role_tasks
 
@@ -134,7 +130,7 @@ PATCHED_CRON_DELIVERY_SOURCE = (
         "d.failure_incident_id,\n"
         "    ) = _compose_run_delivery(\n"
         "        job, success=d.success, error=d.error, final_response=final_response,\n"
-        "        output_file=output_file)\n",
+        "        output_file=output_file, agent_declared=d.agent_declared)\n",
     )
     + _apply_runtime_patch(
         "Deliver a self-declared cron failure through the failure lane",
@@ -147,11 +143,12 @@ PATCHED_CRON_DELIVERY_SOURCE = (
         "        and not _resolve_delivery_targets(job, for_failure=not d.success)\n"
         "    )\n",
     )
-    + _apply_runtime_patch(
-        "Route the run-ledger classification through the failure lane for a declared failure",
-        "        normalized_deliver=_normalize_deliver_value(_delivery_lane_value(job,\n"
-        "            for_failure=not d.success)),\n",
-    )
+)
+# The run-ledger classification lives in cron/scheduler_bookkeeping.py at
+# v0.22.5, not in scheduler.py, so it has its own fixture var.
+PATCHED_CRON_BOOKKEEPING_SOURCE = _apply_runtime_patch(
+    "Route the run-ledger classification through the failure lane for a declared failure",
+    "            scheduler._delivery_lane_value(job, for_failure=not d.success)),\n",
 )
 # cron/scheduler.py carries the opt-in goal-mode runner too, and
 # patches_verify.yml asserts on all of it against ONE source string — so this
@@ -194,32 +191,6 @@ PATCHED_CRON_DELIVERY_SOURCE += (
     ]
     + PATCHED_CRON_TIMEOUT_SOURCE
 )
-PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
-    "Keep failed Hindsight recall best effort without a duplicate debug log",
-    PINNED_HINDSIGHT_PREFETCH_SOURCE,
-)
-PATCHED_HINDSIGHT_FAILURE_SOURCE = PINNED_HINDSIGHT_FAILURE_SOURCE
-for _hindsight_failure_task_name in (
-    "Report Hindsight operation failures through the provider status hook",
-    "Label Hindsight recall API failures",
-    "Label Hindsight reflect API failures",
-    "Label Hindsight retain API failures",
-    "Label Hindsight retain-status API failures",
-    "Report unhandled Hindsight writer failures once",
-    "Report server-side Hindsight retain failures after acceptance",
-    "Update Hindsight retain-timeout documentation for error reporting",
-    "Report unresolved Hindsight retain operations at the prefetch deadline",
-    "Report Hindsight session-switch flush failures once",
-    "Return request identifiers for Hindsight tool failures",
-    "Keep failed Hindsight recall best effort without a duplicate debug log",
-    "Return the queued Hindsight failure marker with prefetch context",
-):
-    PATCHED_HINDSIGHT_FAILURE_SOURCE = _apply_runtime_patch(
-        _hindsight_failure_task_name, PATCHED_HINDSIGHT_FAILURE_SOURCE
-    )
-# Current upstream dropped the line entirely — also a passing state, since the
-# assertion is now "the debug form is absent".
-UPSTREAM_HINDSIGHT_PREFETCH_LINE_REMOVED = ""
 PATCHED_RUN_AGENT_SOURCE = PINNED_SYNC_EXTERNAL_MEMORY_SOURCE
 for _run_agent_task_name in (
     # Rewritten (2026-09): upstream combined the interrupted-turn guard and

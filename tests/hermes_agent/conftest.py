@@ -46,8 +46,6 @@ from _pinned_sources_hooks import (
     PINNED_SYNC_EXTERNAL_MEMORY_SOURCE,
 )
 from _pinned_sources_worker import (
-    PINNED_HINDSIGHT_FAILURE_SOURCE,
-    PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PINNED_STALE_RECLAIM_TERMINATE_SOURCE,
     PINNED_WORKER_REAP_SOURCE,
     PINNED_WORKER_SPAWN_SOURCE,
@@ -61,16 +59,14 @@ from _patched_sources import (
     REPO_ROOT,
     ROLE_ROOT,
     PATCHED_COMPRESSOR_SCAN_SOURCE,
+    PATCHED_CRON_BOOKKEEPING_SOURCE,
     PATCHED_CRON_DELIVERY_SOURCE,
     PATCHED_CRON_TIMEOUT_SOURCE,
     PATCHED_GOAL_JUDGE_SOURCE,
-    PATCHED_HINDSIGHT_PREFETCH_SOURCE,
-    PATCHED_HINDSIGHT_FAILURE_SOURCE,
     PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_JUDGE_CALL_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
     PATCHED_RUN_AGENT_SOURCE,
-    UPSTREAM_HINDSIGHT_PREFETCH_LINE_REMOVED,
     _apply_rendered_runtime_patch,
     _apply_runtime_patch,
     _replace_task,
@@ -191,7 +187,7 @@ PATCHED_CLI_MAIN_SOURCE = PINNED_CLI_MAIN_SOURCE.replace(
 # the role's own patch tasks over minimal real fragments, never hand-copy
 # the expected output.
 PATCHED_KANBAN_DISPATCH_SOURCE = (
-    _task("Patch Hermes worker-reap helper to verify PID identity before signaling")[
+    _task("Patch Hermes worker-reap legacy-row identity guard before signaling")[
         "ansible.builtin.blockinfile"
     ]["block"]
     + _apply_runtime_patch(
@@ -199,7 +195,7 @@ PATCHED_KANBAN_DISPATCH_SOURCE = (
         _apply_runtime_patch(
             "Patch Hermes worker-reap timeout path to signal the worker's process group",
             _apply_runtime_patch(
-                "Patch Hermes worker-reap timeout path to verify PID safety before signaling",
+                "Patch Hermes worker-reap timeout path to skip init and self PIDs before signaling",
                 PINNED_WORKER_REAP_SOURCE,
             ),
         ),
@@ -209,7 +205,7 @@ PATCHED_KANBAN_DISPATCH_SOURCE = (
         _apply_runtime_patch(
             "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
             _apply_runtime_patch(
-                "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
+                "Patch Hermes stale-reclaim worker termination to skip init and self PIDs before signaling",
                 PINNED_STALE_RECLAIM_TERMINATE_SOURCE,
             ),
         ),
@@ -225,11 +221,8 @@ PATCHED_KANBAN_DISPATCH_SOURCE = (
 # max_tokens-ceiling patch's target file to turn_iteration_prep.py (path
 # change only, content unchanged) — checked against its own dedicated
 # hermes_agent_turn_iteration_prep_source var, not hermes_agent_retry_source.
-PATCHED_TURN_ITERATION_PREP_SOURCE = _apply_runtime_patch(
-    "Patch hermes-agent length-continuation boost to respect the configured "
-    "max_tokens ceiling",
-    PINNED_BOOST_CAP_SOURCE,
-)
+# v0.22.5: no patch on this caller; it routes through boosted_output_cap().
+PATCHED_TURN_ITERATION_PREP_SOURCE = PINNED_BOOST_CAP_SOURCE
 # Upstream's September 2026 decomposition also moved the retry-boost
 # max_tokens-ceiling patch's target file to turn_truncation.py and inlined
 # its standalone `_tc_boost_cap =` variable into the min() call it fed —
@@ -262,7 +255,7 @@ def _source_postconditions(
     auxiliary_source: str,
     compressor_source: str = PATCHED_COMPRESSOR_SCAN_SOURCE,
     cron_scheduler_source: str = PATCHED_CRON_DELIVERY_SOURCE,
-    hindsight_plugin_source: str = PATCHED_HINDSIGHT_FAILURE_SOURCE,
+    cron_bookkeeping_source: str = PATCHED_CRON_BOOKKEEPING_SOURCE,
     goal_judge_source: str = PATCHED_GOAL_JUDGE_SOURCE,
     run_agent_source: str = PATCHED_RUN_AGENT_SOURCE,
     cli_main_source: str = PATCHED_CLI_MAIN_SOURCE,
@@ -281,7 +274,7 @@ def _source_postconditions(
         "hermes_agent_auxiliary_source": auxiliary_source,
         "hermes_agent_compressor_source": compressor_source,
         "hermes_agent_cron_scheduler_source": cron_scheduler_source,
-        "hermes_agent_hindsight_plugin_source": hindsight_plugin_source,
+        "hermes_agent_cron_bookkeeping_source": cron_bookkeeping_source,
         "hermes_agent_run_agent_source": run_agent_source,
         "hermes_agent_cli_main_source": cli_main_source,
         "hermes_agent_kanban_dispatch_source": kanban_dispatch_source,
