@@ -1,56 +1,32 @@
 ---
 # Upstream's timeout reaper (enforce_max_runtime) and the stale-reclaim path
-# (detect_stale_running) both terminate a host-local worker for a different
-# reason but must not diverge in HOW they do it, so both route through the
-# same identity-check helper. Workers are spawned with start_new_session=True,
-# making each worker the leader of its own process group, but the reapers
-# signal only the recorded PID, not that group — a worker that itself forked
-# a child (MCP server, tool subprocess) leaves that child orphaned and
-# running indefinitely after the top-level PID is gone. Helper inserted via
-# blockinfile (idempotent markers) ahead of the function it guards; the
-# kill() call sites below (timeout path and stale-reclaim path) route
-# through it.
-- name: Patch Hermes worker-reap helper to verify PID identity before signaling
-  ansible.builtin.blockinfile:
-    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db_dispatch.py"
-    marker: "# {mark} ANSIBLE MANAGED BLOCK worker reap identity guard"
-    insertbefore: '^def enforce_max_runtime\('
-    block: |
-      def _pid_is_hermes_worker(pid: int) -> bool:
-          """Best-effort check that ``pid`` still looks like a hermes worker.
+# (_terminate_reclaimed_worker) both terminate a host-local worker. Upstream
+# (v0.22.5) verifies identity with a spawn-time process fingerprint
+# (_pid_recycled): a recycled PID is never signalled, and an unverified spawn is
+# never signalled by bare number. This role no longer adds its own `ps`-based
+# identity check on top of that; the check it used to inject matched only a
+# command line containing "chat", which upstream's worker no longer has
+# (`-m hermes_cli.kanban_worker_client`), so it would have refused every worker.
+#
+# Workers are spawned with start_new_session=True, making each worker the leader
+# of its own process group, but the reapers signal only the recorded PID, not
+# that group. A worker that itself forked a child (MCP server, tool subprocess)
+# leaves that child orphaned and running after the top-level PID is gone. The
+# group-signal patches below reap that child too.
 
-          Guards against signaling a PID the OS has recycled for an
-          unrelated process between the time it was recorded and the time
-          we act on it.
-          """
-          try:
-              proc = subprocess.run(
-                  ["ps", "-o", "command=", "-p", str(int(pid))],
-                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                  text=True, timeout=1, check=False,
-              )
-          except (OSError, subprocess.SubprocessError, TimeoutError):
-              return False
-          if proc.returncode != 0:
-              return False
-          cmdline = proc.stdout or ""
-          return "hermes" in cmdline and "chat" in cmdline
-
-
-  notify: Restart hermes-gateway
-
-# Never signal PID 0/negative/1(init), this gateway process itself
-# (dispatch_in_gateway: true runs enforce_max_runtime inside the gateway
-# process, so os.getpid() at this call site IS the gateway's own PID), or a
-# PID the OS has recycled for something no longer a hermes worker.
-- name: Patch Hermes worker-reap timeout path to verify PID safety before signaling
+# Never signal PID 0/negative/1 (init) or this gateway process itself
+# (dispatch_in_gateway: true runs enforce_max_runtime inside the gateway process,
+# so os.getpid() at this call site can be the gateway's own PID).
+- name: Patch Hermes worker-reap timeout path to skip init and self PIDs before signaling
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db_dispatch.py"
-    regexp: '^([ \t]*)if kill is not None:$'
+    regexp: >-
+      ^([ \t]*)if kill is not None and not \(_kb\._pid_alive\(pid\) and
+      _pid_recycled\(pid, started_at\)\):$
     replace: |-
       \1if (
       \1    kill is not None and pid > 1 and pid != os.getpid()
-      \1    and _pid_is_hermes_worker(pid)
+      \1    and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at))
       \1):
   notify: Restart hermes-gateway
 
@@ -65,13 +41,9 @@
 
 # Upstream centralized BOTH escalation call sites (timeout path and
 # stale-reclaim path) onto one shared helper, _sigkill(kill, pid)
-# (hermes_cli/kanban_db_dispatch.py) — a different call shape than the two
-# separate kill(pid, _sigkill) / kill(int(pid), _sigkill) sites this patch
-# and the deleted stale-reclaim escalation (formerly a separate task) used
-# to target, so this needs one rewrite of the shared helper rather than a
-# path change. Negative pid inside the helper covers both call sites at
-# once, closing the same process-group gap for both the timeout reaper and
-# the stale-reclaim path in one patch.
+# (hermes_cli/kanban_db_dispatch.py). Negative pid inside the helper covers both
+# call sites at once, closing the same process-group gap for both the timeout
+# reaper and the stale-reclaim path in one patch.
 - name: Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db_dispatch.py"
@@ -79,26 +51,15 @@
     replace: '\1kill(-int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))'
   notify: Restart hermes-gateway
 
-# Never signal PID 0/negative/1(init), this gateway process itself
-# (dispatch_in_gateway: true runs this reclaim path inside the gateway
-# process), or a PID the OS has recycled for something no longer a hermes
-# worker. The pid<=0 check above already excludes 0/negative; this adds the
-# remaining cases.
-- name: Patch Hermes stale-reclaim worker termination to verify PID safety before signaling
+# Never signal PID 0/negative/1 (init) or this gateway process itself. The
+# recycled-PID refusal is upstream's (the fingerprint check in
+# _terminate_reclaimed_worker); this adds the init and self cases it does not
+# cover.
+- name: Patch Hermes stale-reclaim worker termination to skip init and self PIDs before signaling
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db_dispatch.py"
-    regexp: |-
-      ^([ \t]*)if kill is None:$
-      \1    return info$
-      $
-      \1info\["termination_attempted"\] = True$
-    replace: |-
-      \1if kill is None:
-      \1    return info
-      \1if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):
-      \1    return info
-
-      \1info["termination_attempted"] = True
+    regexp: '^([ \t]*)if not pid or pid <= 0 or not claim_lock:$'
+    replace: '\1if not pid or pid <= 1 or pid == os.getpid() or not claim_lock:'
   notify: Restart hermes-gateway
 
 # Signal the worker's process group (negative pid), not just the recorded
@@ -114,6 +75,6 @@
 # The stale-reclaim escalation patch that used to sit here is GONE: upstream
 # restructured both reapers' SIGKILL escalation onto one shared helper,
 # `_sigkill(kill, pid)` (hermes_cli/kanban_db_dispatch.py), so the timeout-path
-# escalation patch below and this one now target the same function. Folded
+# escalation patch above and this one now target the same function. Folded
 # into a single rewrite of that helper (tracked separately) rather than kept
 # as two patches that would both try to edit it.
