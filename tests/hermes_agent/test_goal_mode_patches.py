@@ -130,11 +130,11 @@ def test_client_side_backoff_hacks_stay_reverted() -> None:
 
 
 # The worker-spawn "--quiet" patch this used to exercise is retired
-# (2026-09): upstream's own kanban dispatcher already appends "-Q" for a
-# goal-mode task, so there is no role-patch before/after diff left to unit
-# test here. Coverage moved to "Assert upstream still supplies the behavior
-# these retired patches used to add" (patches_verify.yml), asserted against
-# the live installed source at converge time.
+# (2026-09): v0.22.5 runs the goal loop on the profile owner, so there is no
+# role-patch before/after diff left to unit test here. Coverage moved to
+# "Assert upstream still supplies the behavior these retired patches used to
+# add" (patches_verify.yml), asserted against the live installed source at
+# converge time.
 
 
 def test_judge_call_failure_consumes_no_turns_and_blocks_retryable() -> None:
