@@ -28,9 +28,7 @@
 # that guest forever.
 - name: "Direct cron | Decide agent ownership for {{ item.name }}"
   ansible.builtin.set_fact:
-    hermes_agent_direct_wanted: >-
-      {{ (item.enabled | bool)
-         and (hermes_agent_id in hermes_agent_job_identities) }}
+    hermes_agent_direct_wanted: "{{ hermes_agent_direct_job_wanted }}"
 
 - name: "Direct cron | Resolve deliver target for {{ item.name }}"
   ansible.builtin.set_fact:
@@ -121,8 +119,12 @@
       stdout: >-
         {{ (hermes_agent_direct_cron_lists | default({}))
            .get(item.hermes_home | default(hermes_agent_hermes_home), '') }}
+  # Only a wanted job must find its home listed. A home that does not exist
+  # holds no installed job, so an unwanted job there has nothing to withdraw;
+  # a wanted job on a missing home is reported by the batch's fail task.
   failed_when: >-
     not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
+    and (hermes_agent_direct_wanted | bool)
     and (item.hermes_home | default(hermes_agent_hermes_home))
         not in (hermes_agent_direct_cron_lists | default({}))
 

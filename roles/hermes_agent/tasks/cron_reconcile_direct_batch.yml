@@ -5,17 +5,61 @@
 # on Slack: the repo-crawl reconcile below reads the same facts.
 - name: Read the installed cron jobs and desired-state markers once
   block:
-    - name: Direct cron | List the installed jobs once per HERMES_HOME
+    - name: Direct cron | Collect every declared job home
+      ansible.builtin.set_fact:
+        hermes_agent_direct_declared_homes: >-
+          {{ ([hermes_agent_hermes_home]
+              + (hermes_agent_direct_cron_jobs
+                 | map(attribute='hermes_home', default=hermes_agent_hermes_home) | list))
+             | unique | list }}
+      changed_when: false
+
+    # A home that does not exist holds no installed job, so it is never listed.
+    # An existing home is listed even when its jobs are not wanted here, because
+    # the withdraw task needs the list to remove a job this agent no longer owns.
+    - name: Direct cron | Check which declared job homes exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      become: true
+      become_user: "{{ hermes_agent_user }}"
+      loop: "{{ hermes_agent_direct_declared_homes }}"
+      loop_control:
+        label: "{{ item }}"
+      register: hermes_agent_direct_home_stats
+      changed_when: false
+
+    - name: Direct cron | Index the declared job homes that exist
+      ansible.builtin.set_fact:
+        hermes_agent_direct_existing_homes: >-
+          {{ hermes_agent_direct_home_stats.results
+             | selectattr('stat.exists') | selectattr('stat.isdir')
+             | map(attribute='item') | list }}
+      changed_when: false
+
+    - name: Direct cron | Fail when a wanted job's profile home does not exist
+      ansible.builtin.fail:
+        msg: >-
+          Hermes direct cron job '{{ item.name }}' is enabled for this agent, but
+          profile '{{ (item.hermes_home | default(hermes_agent_hermes_home)) | basename }}'
+          has no home at '{{ item.hermes_home | default(hermes_agent_hermes_home) }}'.
+          Provision that profile, or disable the job for this agent.
+      loop: "{{ hermes_agent_direct_cron_jobs }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
+        - hermes_agent_direct_job_wanted | bool
+        - (item.hermes_home | default(hermes_agent_hermes_home)) not in hermes_agent_direct_existing_homes
+
+    - name: Direct cron | List the installed jobs once per existing HERMES_HOME
       ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
       environment:
         HERMES_HOME: "{{ item }}"
       become: true
       become_user: "{{ hermes_agent_user }}"
-      loop: >-
-        {{ ([hermes_agent_hermes_home]
-            + (hermes_agent_direct_cron_jobs
-               | map(attribute='hermes_home', default=hermes_agent_hermes_home) | list))
-           | unique | list }}
+      loop: "{{ hermes_agent_direct_existing_homes }}"
+      loop_control:
+        label: "{{ item }}"
       register: hermes_agent_direct_cron_list_raw
       changed_when: false
       check_mode: false
