@@ -104,6 +104,10 @@ def test_splunk_owner_takes_only_splunk_jobs() -> None:
         }
         assert _direct_owned_names(identity, owners) == expected_direct
 
-    for task_file in ("reconcile_direct_cron.yml", "reconcile_enqueuer_cron.yml"):
-        task_text = (ROLE / "tasks" / task_file).read_text()
-        assert "hermes_agent_job_identities" in task_text
+    # The direct-cron ownership decision is the shared definition in defaults,
+    # which is where the identities are read; the enqueuer path reads them itself.
+    direct = (ROLE / "tasks" / "reconcile_direct_cron.yml").read_text()
+    assert "hermes_agent_direct_job_wanted" in direct
+    assert "hermes_agent_job_identities" in DEFAULTS["hermes_agent_direct_job_wanted"]
+    enqueuer = (ROLE / "tasks" / "reconcile_enqueuer_cron.yml").read_text()
+    assert "hermes_agent_job_identities" in enqueuer
