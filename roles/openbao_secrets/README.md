@@ -201,10 +201,11 @@ The `hermes-write` policy is limited to the Hermes secret document by
 accepts only the exact `default` + `hermes-write` policy set, no identity
 policies, a positive remaining TTL of at most 600 seconds, and a nonrenewable
 orphan token. Orphaning prevents revocation of the minting parent from also
-revoking the writer before the converge. The role verifies the exact Hermes
-data-path read/update and metadata-path read, performs an authoritative bundle
-read and CAS merge, and self-revokes the token in an `always` block on success
-or failure. The minting `ai-admin` token is self-revoked before Ansible starts,
+revoking the writer before the converge. The shared `dryvist.homelab.openbao_secrets`
+`seed_generated` task verifies the exact create/read/update on the Hermes data path and
+read on its metadata path, performs an authoritative bundle read and CAS write, and
+self-revokes the token on success or failure; a failed self-revocation fails the run.
+The minting `ai-admin` token is self-revoked before Ansible starts,
 so only the narrow writer reaches the converge. If the process is terminated
 before the `always` block runs, the enforced 600-second TTL is the backstop.
 The native shell procedure always cleans both token variables before returning

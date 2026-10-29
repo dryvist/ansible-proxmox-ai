@@ -1,5 +1,5 @@
 ---
-- name: Verify the Hermes API key seed contract
+- name: Verify the local-llm seed contract through the shared seed_generated task
   hosts: localhost
   gather_facts: false
   become: false
@@ -10,124 +10,12 @@
          | from_yaml }}
     seed_task_file: >-
       {{ lookup('ansible.builtin.file',
-                playbook_dir ~ '/../../roles/openbao_secrets/tasks/seed_hermes_api_key.yml')
+                playbook_dir ~ '/../../roles/openbao_secrets/tasks/seed_local_llm_secret.yml')
          | from_yaml }}
     seed_defaults: >-
       {{ lookup('ansible.builtin.file',
                 playbook_dir ~ '/../../roles/openbao_secrets/defaults/main/00-connection.yml')
          | from_yaml }}
-    seed_task_source: >-
-      {{ lookup('ansible.builtin.file',
-                playbook_dir ~ '/../../roles/openbao_secrets/tasks/seed_hermes_api_key.yml') }}
-    seed_identity_assert_file: >-
-      {{ lookup('ansible.builtin.file',
-                playbook_dir ~ '/../../roles/openbao_secrets/tasks/assert_hermes_writer_identity.yml')
-         | from_yaml }}
-    seed_capability_assert_file: >-
-      {{ lookup('ansible.builtin.file',
-                playbook_dir ~ '/../../roles/openbao_secrets/tasks/assert_hermes_writer_capabilities.yml')
-         | from_yaml }}
-    seed_winner_file: >-
-      {{ lookup('ansible.builtin.file',
-                playbook_dir ~ '/../../roles/openbao_secrets/tasks/publish_hermes_authoritative_winner.yml')
-         | from_yaml }}
-    seed_include_task: >-
-      {{ seed_main_file
-         | selectattr('name', 'equalto',
-                      'Reconcile the generated Hermes API key before secret consumption')
-         | first }}
-    seed_detect_task: "{{ seed_task_file | first }}"
-    seed_writer_block: >-
-      {{ seed_task_file
-         | selectattr('name', 'equalto',
-                      'Seed the missing Hermes API key with an exact-path writer')
-         | first }}
-    seed_writer_execution: >-
-      {{ seed_writer_block.block
-         | selectattr('name', 'equalto',
-                      'Execute the authorized Hermes key seed')
-         | first }}
-    seed_writer_tasks: "{{ seed_writer_execution.block }}"
-    seed_identity_lookup_task: >-
-      {{ seed_writer_tasks
-         | selectattr('name', 'equalto',
-                      'Look up the Hermes writer token identity')
-         | first }}
-    seed_identity_assert_task: "{{ seed_identity_assert_file | first }}"
-    seed_capability_task: >-
-      {{ seed_writer_tasks
-         | selectattr('name', 'equalto',
-                      "Check the writer token's exact Hermes secret capabilities")
-         | first }}
-    seed_capability_assert_task: "{{ seed_capability_assert_file | first }}"
-    seed_authoritative_check_task: >-
-      {{ seed_writer_tasks
-         | selectattr('name', 'equalto',
-                      'Recheck the key after the authoritative writer read')
-         | first }}
-    seed_winner_task: >-
-      {{ seed_writer_tasks
-         | selectattr('name', 'equalto',
-                      'Publish an API key found by the authoritative writer read')
-         | first }}
-    seed_winner_publish_task: "{{ seed_winner_file | first }}"
-    seed_generate_task: >-
-      {{ seed_writer_tasks
-         | selectattr('name', 'equalto',
-                      'Generate 32 cryptographic random bytes as lowercase hex')
-         | first }}
-    seed_shape_task: >-
-      {{ seed_writer_tasks
-         | selectattr('name', 'equalto',
-                      'Validate the generated Hermes API key shape')
-         | first }}
-    seed_write_task: >-
-      {{ seed_writer_tasks
-         | selectattr('name', 'equalto', 'CAS-write the merged Hermes bundle')
-         | first }}
-    seed_publish_task: >-
-      {{ seed_writer_tasks
-         | selectattr('name', 'equalto',
-                      'Add the seeded key to the local-llm secret accumulator')
-         | first }}
-    seed_revoke_wrapper: >-
-      {{ seed_writer_execution.always
-         | selectattr('name', 'equalto',
-                      'Revoke the ephemeral Hermes writer token')
-         | first }}
-    seed_revoke_task: "{{ seed_revoke_wrapper.block | first }}"
-    seed_primary_failure_task: >-
-      {{ seed_writer_execution.always
-         | selectattr('name', 'equalto',
-                      'Propagate a primary Hermes seed failure after revocation')
-         | first }}
-    seed_revoke_failure_task: >-
-      {{ seed_writer_execution.always
-         | selectattr('name', 'equalto',
-                      'Fail when only Hermes writer token revocation failed')
-         | first }}
-    contract_existing:
-      sibling: preserve-me
-    contract_generated: >-
-      0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-    contract_merged: >-
-      {{ contract_existing
-         | combine({'HERMES_API_SERVER_KEY': contract_generated}) }}
-    openbao_secrets_active: true
-    openbao_secrets_kv_mount: secret
-    openbao_secrets_hermes_api_data_path: secret/data/ai/hermes
-    openbao_secrets_hermes_api_metadata_path: secret/metadata/ai/hermes
-    openbao_secrets_validate_certs: true
-    openbao_secrets_hermes_api_key_path: ai/hermes
-    openbao_secrets_hermes_api_key_field: HERMES_API_SERVER_KEY
-    openbao_secrets_hermes_writer_max_ttl_seconds: 600
-    openbao_secrets_hermes_current:
-      metadata:
-        version: 7
-      secret: "{{ contract_existing }}"
-    openbao_secrets_hermes_generated:
-      stdout: "{{ contract_generated }}"
-
   tasks:
-    - name: Verify the Hermes API key seed contract
+    - name: Verify the local-llm seed contract
       ansible.builtin.import_tasks: verify_hermes_api_key_seed_tasks.yml
