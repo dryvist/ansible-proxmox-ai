@@ -194,14 +194,17 @@ def test_changed_router_shards_are_sorted_independently_of_path_order() -> None:
 ])
 def test_molecule_filters_cover_every_role_the_scenario_loads(scenario: str, role: str) -> None:
     filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_scenario_filters"]
-    assert f"roles/{role}/**" in yaml.safe_load(filters)[scenario]
+    # openbao_secrets is a collection role; the repo-owned input the scenario reads is its catalog.
+    pattern = ("inventory/group_vars/all/openbao_secrets/**" if role == "openbao_secrets"
+               else f"roles/{role}/**")
+    assert pattern in yaml.safe_load(filters)[scenario]
 
 
 def test_roles_consumed_by_molecule_scenarios_are_not_contract_only() -> None:
     filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_contract_filters"]
     contract_only = yaml.safe_load(filters)["contract_only"]
     for path in ("roles/llamacpp_release/defaults/main/00-release.yml",
-                 "roles/openbao_secrets/defaults/main/10-domains.yml"):
+                 "inventory/group_vars/all/openbao_secrets/10-domains.yml"):
         assert not any(fnmatch.fnmatchcase(path, pattern) for pattern in contract_only)
 
 
