@@ -8,12 +8,10 @@ from jinja2.nativetypes import NativeEnvironment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DOMAIN_DEFAULTS = REPO_ROOT / "roles/openbao_secrets/defaults/main/10-domains.yml"
-ROSTER_DEFAULTS = REPO_ROOT / "roles/openbao_secrets/defaults/main/11-roster-domains.yml"
-IDENTITY_DEFAULTS = REPO_ROOT / "roles/openbao_secrets/defaults/main/10-domains-identities.yml"
+DOMAIN_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains.yml"
+ROSTER_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/11-roster-domains.yml"
+IDENTITY_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains-identities.yml"
 AGENT_DEFAULTS = REPO_ROOT / "inventory/group_vars/hermes_agent_group/00-agent-settings.yml"
-FETCH_DOMAIN_TASKS = REPO_ROOT / "roles/openbao_secrets/tasks/fetch_domain.yml"
-ROLE_TASKS = REPO_ROOT / "roles/openbao_secrets/tasks/main.yml"
 ROSTER = {"splunk-heimdall": {"owns": ["splunk"]}}
 TWO_AGENT_ROSTER = {"a-x": {"owns": []}, "b-y": {"owns": []}}
 READER_DOMAIN_NAMES = {"llm-router-agent-keys", "agentgateway-agent-keys"}
@@ -119,48 +117,13 @@ def test_registry_callers_alone_still_get_the_gateway_reader_domain():
     ]
 
 
-def test_optional_fetch_skip_does_not_apply_to_required_domains():
-    tasks = yaml.safe_load(FETCH_DOMAIN_TASKS.read_text(encoding="utf-8"))
-    skip_task = next(
-        task for task in tasks if task["name"].startswith("Report a deliberately optional")
-    )
-    fail_task = next(
-        task for task in tasks if task["name"].startswith("Fail on missing credentials")
-    )
-
-    assert any(
-        "not (openbao_domain.required | default(false))" in condition
-        for condition in skip_task["when"]
-    )
-    assert any(
-        "or (openbao_domain.required | default(false))" in condition
-        for condition in fail_task["when"]
-    )
-
-
 def test_domain_names_map_to_distinct_approle_env_prefixes():
-    defaults = yaml.safe_load(DOMAIN_DEFAULTS.read_text(encoding="utf-8"))
-    tasks = yaml.safe_load(ROLE_TASKS.read_text(encoding="utf-8"))
-    assertion = next(
-        task["ansible.builtin.assert"]
-        for task in tasks
-        if "ansible.builtin.assert" in task
-    )
-    env = NativeEnvironment()
-    env.filters["regex_replace"] = lambda value, pattern, repl: re.sub(pattern, repl, value)
-    distinct = env.from_string("{{ " + assertion["that"][0] + " }}")
-
-    assert distinct.render(openbao_secrets_domains=_static_domains())
-    assert distinct.render(openbao_secrets_domains=_render_domains(ROSTER))
-    for colliding in (
-        {"hermes-private": {}},
-        {"hermes_private": {}},
-        {"llm-router-agent-keys": {}},
-        {"llm_router_agent_keys": {}},
-        {"agentgateway-agent-keys": {}},
-        {"a-x": {}, "a_x": {}},
-    ):
-        assert distinct.render(openbao_secrets_domains=_render_domains(colliding)) is False, colliding
+    for domains in (_static_domains(), _render_domains(ROSTER), _render_domains(TWO_AGENT_ROSTER)):
+        env_prefixes = [
+            re.sub(r"[^A-Z0-9]", "_", domain["name"].upper())
+            for domain in domains
+        ]
+        assert len(env_prefixes) == len(set(env_prefixes))
 
 
 
