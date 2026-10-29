@@ -89,8 +89,6 @@ ROLE_TESTS = {
     "nvidia_gpu_guest": GPU_PYTEST,
     "llm_gpu_serving": GPU_PYTEST,
     "llm_model_trial": {"tests/llm_model_trial/"},
-    "openbao_secrets": {"tests/test_openbao_login_classification.py",
-                        "tests/test_openbao_secrets_approle_name_resolution.py"},
     "phoenix_docker": set(),
     "llamaindex": set(),
     "qdrant_docker": {"tests/qdrant_docker/"},
@@ -262,7 +260,7 @@ def select(paths: list[str]) -> Selection:
             role_scope("llm_router")
             run_selector_checks = True
         elif path == "scripts/run-ansible.sh":
-            pytest_targets.update({"tests/test_run_ansible_runner.py", "tests/test_run_ansible_identity.py"})
+            pytest_targets.add("tests/test_run_ansible_runner.py")
         elif path == "scripts/verify-pinned-patches.py":
             role_scope("hermes_agent")
         elif path == "renovate.json":

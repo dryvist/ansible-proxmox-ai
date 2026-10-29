@@ -81,7 +81,7 @@ profile decision made in the PR that adds the work, not a widened existing one.
 
 **Concurrency**: `hermes_agent_kanban_max_in_progress` is the SUM cap across
 every profile combined. It takes the shared `ai_agent_default_concurrency`
-(`inventory/group_vars/all.yml`), the same cap the API uses, and that value does
+(`inventory/group_vars/all/`), the same cap the API uses, and that value does
 not track any serving profile. Naming a profile never raises real concurrency by
 itself; changing the shared cap is a separate, deliberate operator decision.
 

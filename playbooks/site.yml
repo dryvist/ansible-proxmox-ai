@@ -32,7 +32,29 @@
   tasks:
     - name: Fetch each resource-domain's KV subtree via its own AppRole
       ansible.builtin.include_role:
-        name: openbao_secrets
+        name: dryvist.homelab.openbao_secrets
+      vars:
+        openbao_secrets_fail_on_missing_credentials: true
+        openbao_secrets_fail_when_unavailable: true
+        openbao_secrets_skip_cidr_refusals: true
+        openbao_secrets_isolate_optional_login_failures: false
+        openbao_secrets_strict_reads: true
+        openbao_secrets_isolate_optional_read_failures: false
+
+    - name: Reconcile the generated local-llm secrets before secret consumption
+      run_once: true
+      when:
+        - openbao_secrets_active
+        - >-
+          'local-llm' in
+          (hostvars['localhost'].openbao_secrets_by_domain | default({}))
+      block:
+        - name: Reconcile each local-llm secret
+          ansible.builtin.include_tasks: tasks/openbao_secrets_seed_local_llm.yml
+          loop: "{{ openbao_secrets_local_llm_seed_specs }}"
+          loop_control:
+            loop_var: local_llm_secret
+            label: "{{ local_llm_secret.label }}"
 
     # Publish the domain's shared, un-prefixed fact at the playbook layer
     # (like tofu_data in load_tofu.yml). openbao_secrets_by_domain was

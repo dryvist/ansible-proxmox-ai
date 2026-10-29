@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
 GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
-ROUTER_GPU_PROFILE_VARS = REPO_ROOT / "inventory/group_vars/all.yml"
+ROUTER_GPU_PROFILE_VARS = REPO_ROOT / "inventory/group_vars/all/00-core.yml"
 ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 
 
@@ -48,7 +48,7 @@ def test_site_reaches_the_serving_playbook_without_a_tag_filter():
 
 
 def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
-    all_vars = _load(REPO_ROOT / "inventory/group_vars/all.yml")
+    all_vars = _load(REPO_ROOT / "inventory/group_vars/all/00-core.yml")
     profiles_by_engine = all_vars["llm_gpu_active_profiles_by_engine"]
     assert profiles_by_engine["llama_cpp"] == "medium-b"
     llama_cpp_group = _load(

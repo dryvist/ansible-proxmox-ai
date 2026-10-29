@@ -12,7 +12,8 @@
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    _secrets_role_dir: "{{ playbook_dir }}/../../roles/openbao_secrets"
+    _secrets_role_dir: "{{ playbook_dir }}/../../inventory/group_vars/all/openbao_secrets/10-domains-identities.yml"
+    _secrets_seed_file: "{{ playbook_dir }}/../../inventory/group_vars/all/openbao_secrets/00-seed-vars.yml"
     tofu_data:
       constants:
         service_ports:
@@ -51,7 +52,7 @@
   tasks:
     - name: Load the external provider secret contract
       ansible.builtin.include_vars:
-        dir: "{{ _secrets_role_dir }}/defaults/main"
+        file: "{{ _secrets_role_dir }}"
         name: _secrets_defaults
 
     - name: Provider keys use exact leaves on the external mount
@@ -59,11 +60,6 @@
         quiet: true
         that:
           - _provider_paths == _expected_provider_paths
-          # A mapping entry's own mount is honoured; only its ABSENCE falls
-          # back to the KV default. Pinned as text because a swap of the two
-          # operands would read the default for every provider key.
-          - "'item.mount | default(openbao_secrets_kv_mount) if item is mapping' in _fetch_task"
-          - "'item.path if item is mapping' in _fetch_task"
           - "'openbao_secrets_ai_api_key_mount' in _secrets_defaults_source"
           - "'openbao_secrets_ai_api_key_path_prefix' in _secrets_defaults_source"
       vars:
@@ -78,8 +74,7 @@
           - path: ai/mcp/qdrant
             optional: true
           # OPENROUTER_API_KEY and OPENROUTER_HERMES_KEY are two fields of
-          # this one secret — see the note in roles/openbao_secrets/defaults/
-          # main/10-domains.yml.
+          # this one secret — see the note in inventory/group_vars/all/
           - mount: test-external
             path: test/provider-keys/openrouter
           - mount: test-external
@@ -101,10 +96,8 @@
           - mount: test-kv
             path: ai/phoenix
             optional: true
-        _fetch_task: >-
-          {{ lookup('ansible.builtin.file', _secrets_role_dir ~ '/tasks/fetch_domain.yml') }}
         _secrets_defaults_source: >-
-          {{ lookup('ansible.builtin.file', _secrets_role_dir ~ '/defaults/main/00-connection.yml') }}
+          {{ lookup('ansible.builtin.file', _secrets_seed_file) }}
 
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:

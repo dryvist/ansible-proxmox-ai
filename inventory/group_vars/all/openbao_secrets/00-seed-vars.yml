@@ -1,0 +1,46 @@
+---
+# Repository-specific seed inputs. Read behavior and endpoint failover are
+# owned by dryvist.homelab.openbao_secrets.
+openbao_secrets_kv_mount: secret
+openbao_secrets_ai_api_key_mount: >-
+  {{ lookup('ansible.builtin.env', 'OPENBAO_AI_API_KEY_MOUNT')
+     | default(openbao_secrets_kv_mount, true) }}
+openbao_secrets_ai_api_key_path_prefix: >-
+  {{ lookup('ansible.builtin.env', 'OPENBAO_AI_API_KEY_PATH_PREFIX')
+     | default('ai/saas', true) }}
+
+# The read-side local-llm AppRole cannot seed the Hermes key. The runner's
+# BAO_TOKEN is never used as a writer token.
+openbao_secrets_hermes_writer_token: >-
+  {{ lookup('env', 'HERMES_WRITE_BAO_TOKEN') | default('', true) }}
+openbao_secrets_hermes_api_key_fallback: >-
+  {{ lookup('env', 'HERMES_API_SERVER_KEY') | default('', true) }}
+openbao_secrets_hermes_writer_max_ttl_seconds: 600
+openbao_secrets_hermes_api_key_path: ai/hermes
+openbao_secrets_hermes_api_key_field: HERMES_API_SERVER_KEY
+
+# The read-side local-llm AppRole cannot seed the llm-router Redis password.
+openbao_secrets_redis_writer_token: >-
+  {{ lookup('env', 'LLM_ROUTER_WRITE_BAO_TOKEN') | default('', true) }}
+openbao_secrets_redis_password_fallback: >-
+  {{ lookup('env', 'LLM_ROUTER_REDIS_PASSWORD') | default('', true) }}
+openbao_secrets_redis_writer_max_ttl_seconds: 600
+openbao_secrets_redis_password_path: ai/llm-router
+openbao_secrets_redis_password_field: LLM_ROUTER_REDIS_PASSWORD
+
+# Reconcile in list order before publishing the local-llm domain.
+openbao_secrets_local_llm_seed_specs:
+  - label: hermes
+    path: "{{ openbao_secrets_hermes_api_key_path }}"
+    field: "{{ openbao_secrets_hermes_api_key_field }}"
+    fallback: "{{ openbao_secrets_hermes_api_key_fallback }}"
+    writer_token: "{{ openbao_secrets_hermes_writer_token }}"
+    writer_policy: hermes-write
+    writer_max_ttl: "{{ openbao_secrets_hermes_writer_max_ttl_seconds }}"
+  - label: llm-router
+    path: "{{ openbao_secrets_redis_password_path }}"
+    field: "{{ openbao_secrets_redis_password_field }}"
+    fallback: "{{ openbao_secrets_redis_password_fallback }}"
+    writer_token: "{{ openbao_secrets_redis_writer_token }}"
+    writer_policy: llm-router-write
+    writer_max_ttl: "{{ openbao_secrets_redis_writer_max_ttl_seconds }}"

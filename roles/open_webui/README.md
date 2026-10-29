@@ -54,7 +54,7 @@ against the router's own `GET /v1/model/info` (a tuned entry with a real
 `max_input_tokens` — never the `"*"` wildcard passthrough), rewrites
 `/etc/open-webui.env`'s `DEFAULT_MODELS` and restarts `open-webui`. Mirrors
 `roles/hermes_agent`'s identically-named mechanism exactly — see that role's
-README for the full design note and `roles/openbao_secrets/README.md` for
+README for the full design note and `the dryvist.homelab.openbao_secrets README` for
 the `ai-public` domain (and the companion `ansible-proxmox-apps` AppRole/
 policy it still needs before it resolves live). A poll failure always keeps
 the currently-configured default; it never blanks it.

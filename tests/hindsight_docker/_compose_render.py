@@ -1,5 +1,5 @@
 """Shared docker-compose.yml.j2 render helpers for the hindsight_docker test
-suite — same bare-module convention as tests/_runner_stubs.py (no
+suite — same bare-module convention as the other test helpers (no
 tests/__init__.py exists, so pytest puts each collected directory on
 sys.path; a leading-underscore, non test_*.py module is never collected as
 tests itself, only imported by the ones that need it).
@@ -19,7 +19,7 @@ ROLE_DEFAULTS = yaml.safe_load(
     (REPO_ROOT / "roles/hindsight_docker/defaults/main.yml").read_text()
 )
 INVENTORY_DEFAULTS = yaml.safe_load(
-    (REPO_ROOT / "inventory/group_vars/all.yml").read_text()
+    (REPO_ROOT / "inventory/group_vars/all/00-core.yml").read_text()
 )
 
 DEFAULT_CONTEXT = {

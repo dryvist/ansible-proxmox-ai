@@ -110,14 +110,14 @@ def test_key_consumer_reads_the_one_secret_field(role: str, variable: str) -> No
 
 
 def test_the_one_secret_field_is_fetched_exactly_once() -> None:
-    domains = _load_yaml(ROLES / "openbao_secrets" / "defaults" / "main" / "10-domains-identities.yml")
+    domains = _load_yaml(REPO_ROOT / "inventory" / "group_vars" / "all" / "openbao_secrets" / "10-domains-identities.yml")
     local_llm = next(d for d in domains["_openbao_secrets_static_domains_identities"] if d["name"] == "local-llm")
-    paths = [p if isinstance(p, str) else p["path"] for p in local_llm["paths"]]
+    paths =[p if isinstance(p, str) else p["path"] for p in local_llm["paths"]]
     assert paths.count("ai/qdrant") == 1
 
 
 def test_memory_mcp_secret_path_is_optional_until_published() -> None:
-    domains = _load_yaml(ROLES / "openbao_secrets" / "defaults" / "main" / "10-domains-identities.yml")
+    domains = _load_yaml(REPO_ROOT / "inventory" / "group_vars" / "all" / "openbao_secrets" / "10-domains-identities.yml")
     local_llm = next(d for d in domains["_openbao_secrets_static_domains_identities"] if d["name"] == "local-llm")
     scoped_paths = [p for p in local_llm["paths"] if isinstance(p, dict) and p.get("path") == "ai/mcp/qdrant"]
     assert scoped_paths == [{"path": "ai/mcp/qdrant", "optional": True}]

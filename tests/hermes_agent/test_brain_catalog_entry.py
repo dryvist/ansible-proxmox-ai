@@ -1,7 +1,7 @@
 """hermes_agent_brain_catalog_entry resolves when hermes_brain_model is a
 router capability name.
 
-hermes_brain_model (inventory/group_vars/all.yml) names a capability, which is
+hermes_brain_model (inventory/group_vars/all/00-core.yml) names a capability, which is
 a registry route_group, not a catalog alias. This renders the real expression
 through Jinja against the registry's enabled entries, so a brain model with no
 catalog entry fails here instead of in the Hermes converge ("No first item,
@@ -43,7 +43,7 @@ def _render_brain_entry(brain: str, registry: list[dict]) -> dict:
 
 
 def test_brain_capability_resolves_to_its_enabled_registry_entry() -> None:
-    brain = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all.yml").read_text())[
+    brain = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all/00-core.yml").read_text())[
         "hermes_brain_model"
     ]
     registry = load_registry()

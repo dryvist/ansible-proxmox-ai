@@ -5,10 +5,16 @@
 - name: Verify every optional KV path has a presence-gated consumer
   hosts: localhost
   gather_facts: false
+  # vars_files, not include_vars: include_vars binds above task vars, which
+  # would undo the per-task fixtures (bao_local_llm_secrets, the flags) below.
   vars_files:
     - fixtures/gated_optional_paths.yml
+    - ../../inventory/group_vars/all/00-core.yml
+    - ../../inventory/group_vars/all/openbao_secrets/00-seed-vars.yml
+    - ../../inventory/group_vars/all/openbao_secrets/10-domains-identities.yml
+    - ../../inventory/group_vars/all/openbao_secrets/10-domains.yml
+    - ../../inventory/group_vars/all/openbao_secrets/11-roster-domains.yml
   vars:
-    _secrets_role_dir: "{{ playbook_dir }}/../../roles/openbao_secrets"
     _gateway_role_dir: "{{ playbook_dir }}/../../roles/agentgateway_docker"
   tasks:
     - name: Add a router-group fixture host for the direct-only key gate
@@ -16,10 +22,6 @@
         name: llm-router-direct-key-fixture
         groups: llm_router_group
         ansible_connection: local
-
-    - name: Load the declared domains
-      ansible.builtin.include_vars:
-        dir: "{{ _secrets_role_dir }}/defaults/main"
 
     - name: Collect every optional path
       ansible.builtin.set_fact:
@@ -138,13 +140,18 @@
 - name: Keep the direct-only key available on router hosts during GPU drains
   hosts: llm-router-direct-key-fixture
   gather_facts: false
-  vars:
-    _secrets_role_dir: "{{ playbook_dir }}/../../roles/openbao_secrets"
-    llm_router_gpu_profiles_enabled: false
+  vars_files:
+    - ../../inventory/group_vars/all/00-core.yml
+    - ../../inventory/group_vars/all/openbao_secrets/00-seed-vars.yml
+    - ../../inventory/group_vars/all/openbao_secrets/10-domains-identities.yml
+    - ../../inventory/group_vars/all/openbao_secrets/10-domains.yml
+    - ../../inventory/group_vars/all/openbao_secrets/11-roster-domains.yml
   tasks:
-    - name: Load the declared domains
-      ansible.builtin.include_vars:
-        dir: "{{ _secrets_role_dir }}/defaults/main"
+    # set_fact, not a play var: the catalog's own expression would otherwise
+    # decide the GPU-profile flag for this fixture host.
+    - name: Pin the GPU-profile flag off for the direct-only key fixture
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: false
 
     - name: Resolve the benchmark app path
       ansible.builtin.set_fact:
@@ -198,7 +205,7 @@
     # if 56-virtual-keys.yml gains or loses one without this list moving.
     # prometheus-scrape is NOT listed: apps/prometheus is deliberately absent
     # from openbao_secrets_domains right now (see the ORDERING comment in
-    # roles/openbao_secrets/defaults/main/10-domains.yml). Re-add it here in
+    # inventory/group_vars/all/). Re-add it here in
     # the same change that re-adds the path.
     _optional_key_aliases: [open-webui, langgraph, glance]
   tasks:

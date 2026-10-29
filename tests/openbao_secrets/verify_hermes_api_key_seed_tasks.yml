@@ -4,6 +4,19 @@
 # OpenBao endpoint: a stored key is kept, and an absent key takes its env
 # fallback with no write.
 
+- name: Assert the local OpenBao role copy is absent
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../../roles/openbao_secrets"
+  become: false
+  vars:
+    ansible_become: false
+  register: openbao_secrets_local_role
+
+- name: Require the local OpenBao role copy to be absent
+  ansible.builtin.assert:
+    that:
+      - not openbao_secrets_local_role.stat.exists
+
 - name: Assert the seed task files replaced by the shared seed_generated task are gone
   ansible.builtin.stat:
     path: "{{ playbook_dir }}/../../roles/openbao_secrets/tasks/{{ item }}"
@@ -33,12 +46,17 @@
       - seed_reconcile_block.run_once | bool
       - (seed_reconcile_block.when | join(' ')) is search('openbao_secrets_active')
       - (seed_reconcile_block.when | join(' ')) is search("'local-llm' in")
-      - seed_reconcile_loop['ansible.builtin.include_tasks'] == 'seed_local_llm_secret.yml'
+      - seed_reconcile_loop['ansible.builtin.include_tasks'] == 'tasks/openbao_secrets_seed_local_llm.yml'
       - "'openbao_secrets_local_llm_seed_specs' in seed_reconcile_loop.loop"
       - seed_reconcile_loop.loop_control.loop_var == 'local_llm_secret'
   vars:
-    seed_reconcile_block: >-
+    seed_prefetch_play: >-
       {{ seed_main_file
+         | selectattr('name', 'equalto',
+                      'Pre-fetch resource-domain secrets from OpenBao')
+         | first }}
+    seed_reconcile_block: >-
+      {{ seed_prefetch_play.tasks
          | selectattr('name', 'equalto',
                       'Reconcile the generated local-llm secrets before secret consumption')
          | first }}
@@ -96,7 +114,7 @@
   delegate_facts: true
 
 - name: Reconcile a stored Hermes key with no writer token and no endpoint
-  ansible.builtin.include_tasks: ../../roles/openbao_secrets/tasks/seed_local_llm_secret.yml
+  ansible.builtin.include_tasks: ../../playbooks/tasks/openbao_secrets_seed_local_llm.yml
   vars:
     local_llm_secret:
       label: hermes
@@ -122,7 +140,7 @@
   delegate_facts: true
 
 - name: Publish a valid env fallback for an absent Hermes key without a write
-  ansible.builtin.include_tasks: ../../roles/openbao_secrets/tasks/seed_local_llm_secret.yml
+  ansible.builtin.include_tasks: ../../playbooks/tasks/openbao_secrets_seed_local_llm.yml
   vars:
     local_llm_secret:
       label: hermes

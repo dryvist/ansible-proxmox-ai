@@ -13,7 +13,7 @@ SOURCE = "ansible-proxmox-ai"
 ROLE_DEPLOYMENTS = "roles/llm_router/defaults/main/55-roles.yml"
 AGENTGATEWAY_DEFAULTS = "roles/agentgateway_docker/defaults/main/00-gateway.yml"
 AGENTGATEWAY_EMBED_MODEL = "agentgateway_docker_docs_mcp_embed_model"
-HERMES_INVENTORY = "inventory/group_vars/all.yml"
+HERMES_INVENTORY = "inventory/group_vars/all/00-core.yml"
 HERMES_MODEL_SELECTORS = (
     "hermes_brain_model",
     "hermes_agent_cron_model",

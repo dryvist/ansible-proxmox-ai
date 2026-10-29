@@ -135,7 +135,7 @@ some_role_some_limit: 12345
 ```
 
 The fabric-wide timeout chain (`ai_stream_read_timeout_seconds`,
-`ai_router_request_timeout_seconds` in `group_vars/all.yml`) is named once for
+`ai_router_request_timeout_seconds` in `group_vars/all/`) is named once for
 the same reason: the ordering invariant is a single source of truth that the
 Layer 1 assert can check across two roles, instead of two unlinked literals that
 can silently invert.
