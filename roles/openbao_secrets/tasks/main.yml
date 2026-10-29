@@ -150,28 +150,23 @@
         loop_var: openbao_domain
         label: "{{ openbao_domain.name }}"
 
-# The API key must exist before the calling play publishes the local-llm fact
-# to Hermes.  This include is a no-op when the key is already non-empty.  Its
-# write lane accepts only an explicitly supplied, short-lived hermes-write
-# token and a KV-v2 CAS update; standing read and runner identities stay out.
-- name: Reconcile the generated Hermes API key before secret consumption
-  ansible.builtin.include_tasks: seed_hermes_api_key.yml
+# The local-llm secrets (Hermes API key, llm-router Redis password) must exist
+# before the calling play publishes the local-llm fact. Each entry of
+# openbao_secrets_local_llm_seed_specs is reconciled by seed_local_llm_secret.yml:
+# a stored value is kept, a valid env fallback is published without a write, and
+# otherwise the value is generated and written by the shared seed_generated task
+# with its own short-lived writer token.
+- name: Reconcile the generated local-llm secrets before secret consumption
   when:
     - openbao_secrets_active
     - >-
       'local-llm' in
       (hostvars['localhost'].openbao_secrets_by_domain | default({}))
   run_once: true
-
-# The llm-router Redis password must exist before the calling play publishes the
-# local-llm fact.  This include is a no-op when the password is already non-empty.
-# Its write lane accepts only an explicitly supplied, short-lived llm-router-write
-# token and a KV-v2 CAS update; standing read and runner identities stay out.
-- name: Reconcile the generated llm-router Redis password before secret consumption
-  ansible.builtin.include_tasks: seed_redis_password.yml
-  when:
-    - openbao_secrets_active
-    - >-
-      'local-llm' in
-      (hostvars['localhost'].openbao_secrets_by_domain | default({}))
-  run_once: true
+  block:
+    - name: Reconcile each local-llm secret
+      ansible.builtin.include_tasks: seed_local_llm_secret.yml
+      loop: "{{ openbao_secrets_local_llm_seed_specs }}"
+      loop_control:
+        loop_var: local_llm_secret
+        label: "{{ local_llm_secret.label }}"

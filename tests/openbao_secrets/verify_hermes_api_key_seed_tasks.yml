@@ -1,25 +1,92 @@
 ---
-# Task body for ../verify_hermes_api_key_seed.yml — split out to keep that
-# playbook under the repo's per-file token budget.
+# Task body for ../verify_hermes_api_key_seed.yml. Pins the caller wiring and the
+# shared seed_generated arguments, then runs two fixture lanes that need no
+# OpenBao endpoint: a stored key is kept, and an absent key takes its env
+# fallback with no write.
 
-- name: Set an absent local-llm authority with an ambient fallback fixture
-  ansible.builtin.set_fact:
-    openbao_secrets_by_domain: {}
-    ambient_hermes_api_server_key: ambient-fallback-remains-available
-  delegate_to: localhost
-  delegate_facts: true
+- name: Assert the seed task files replaced by the shared seed_generated task are gone
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../../roles/openbao_secrets/tasks/{{ item }}"
+  become: false
+  vars:
+    ansible_become: false
+  loop:
+    - seed_hermes_api_key.yml
+    - seed_redis_password.yml
+    - assert_hermes_writer_identity.yml
+    - assert_hermes_writer_capabilities.yml
+    - assert_redis_writer_identity.yml
+    - assert_redis_writer_capabilities.yml
+    - publish_hermes_authoritative_winner.yml
+    - publish_redis_authoritative_winner.yml
+  register: openbao_secrets_removed_seed_files
 
-- name: Assert absent local-llm authority preserves the fallback path
+- name: Require the replaced seed task files to be absent
+  ansible.builtin.assert:
+    that:
+      - openbao_secrets_removed_seed_files.results | selectattr('stat.exists') | list | length == 0
+    fail_msg: The seed task files replaced by seed_generated must be deleted.
+
+- name: Pin the controller loop over every local-llm spec, gated on the fetched domain
+  ansible.builtin.assert:
+    that:
+      - seed_reconcile_block.run_once | bool
+      - (seed_reconcile_block.when | join(' ')) is search('openbao_secrets_active')
+      - (seed_reconcile_block.when | join(' ')) is search("'local-llm' in")
+      - seed_reconcile_loop['ansible.builtin.include_tasks'] == 'seed_local_llm_secret.yml'
+      - "'openbao_secrets_local_llm_seed_specs' in seed_reconcile_loop.loop"
+      - seed_reconcile_loop.loop_control.loop_var == 'local_llm_secret'
+  vars:
+    seed_reconcile_block: >-
+      {{ seed_main_file
+         | selectattr('name', 'equalto',
+                      'Reconcile the generated local-llm secrets before secret consumption')
+         | first }}
+    seed_reconcile_loop: "{{ seed_reconcile_block.block | first }}"
+
+- name: Pin the per-secret call to the shared seed_generated task and its contract arguments
+  ansible.builtin.assert:
+    that:
+      - seed_call_block.delegate_to == 'localhost'
+      - seed_call_block.no_log | bool
+      - seed_call_module.name == 'dryvist.homelab.openbao_secrets'
+      - seed_call_module.tasks_from == 'seed_generated'
+      - seed_call_vars.openbao_secrets_seed_fields | length == 1
+      - seed_call_vars.openbao_secrets_seed_fields[0].length == 64
+      - seed_call_vars.openbao_secrets_seed_fields[0].charset == 'hex'
+      - "'local_llm_secret.field' in seed_call_vars.openbao_secrets_seed_fields[0].name"
+      - "'local_llm_secret.path' in seed_call_vars.openbao_secrets_seed_path"
+      - "'local_llm_secret.writer_token' in seed_call_vars.openbao_secrets_seed_token"
+      - "'local_llm_secret.writer_policy' in seed_call_vars.openbao_secrets_seed_expected_writer_policy"
+      - "'local_llm_secret.writer_max_ttl' in seed_call_vars.openbao_secrets_seed_writer_max_ttl"
+      - "'ansible_check_mode' in seed_call_vars.openbao_secrets_seed_check_capabilities"
+      - "'local_llm_secret.writer_token' in seed_call_vars.openbao_secrets_seed_revoke_token"
+      - seed_call_vars.openbao_secrets_seed_register == 'openbao_secrets_local_llm_seed_result'
+  vars:
+    seed_call_block: >-
+      {{ seed_task_file
+         | selectattr('name', 'equalto',
+                      'Generate and write an absent local-llm secret through the shared seed_generated task')
+         | first }}
+    seed_call_task: "{{ seed_call_block.block | first }}"
+    seed_call_module: "{{ seed_call_task['ansible.builtin.include_role'] }}"
+    seed_call_vars: "{{ seed_call_task.vars }}"
+
+- name: Pin the two local-llm specs to their writer policies, tokens and TTLs
   ansible.builtin.assert:
     that:
       - >-
-        not ('local-llm' in
-             (hostvars['localhost'].openbao_secrets_by_domain | default({})))
-      - ambient_hermes_api_server_key == 'ambient-fallback-remains-available'
-      - seed_include_task.when | length == 2
-      - "'local-llm' in seed_include_task.when[1]"
+        seed_defaults.openbao_secrets_local_llm_seed_specs
+        | map(attribute='writer_policy') | list == ['hermes-write', 'llm-router-write']
+      - "'openbao_secrets_hermes_writer_token' in seed_defaults.openbao_secrets_local_llm_seed_specs[0].writer_token"
+      - "'openbao_secrets_redis_writer_token' in seed_defaults.openbao_secrets_local_llm_seed_specs[1].writer_token"
+      - "'HERMES_WRITE_BAO_TOKEN' in seed_defaults.openbao_secrets_hermes_writer_token"
+      - "'LLM_ROUTER_WRITE_BAO_TOKEN' in seed_defaults.openbao_secrets_redis_writer_token"
+      - "\"lookup('env', 'BAO_TOKEN')\" not in seed_defaults.openbao_secrets_hermes_writer_token"
+      - seed_defaults.openbao_secrets_hermes_writer_max_ttl_seconds == 600
+      - seed_defaults.openbao_secrets_redis_writer_max_ttl_seconds == 600
 
-- name: Set a valid fetched-key fixture with no writer identity
+- name: Set a fetched local-llm Hermes key with a sibling field
   ansible.builtin.set_fact:
     openbao_secrets_by_domain:
       local-llm:
@@ -28,360 +95,46 @@
   delegate_to: localhost
   delegate_facts: true
 
-- name: Execute the production existing-key path
-  ansible.builtin.include_tasks: >-
-    ../../roles/openbao_secrets/tasks/seed_hermes_api_key.yml
+- name: Reconcile a stored Hermes key with no writer token and no endpoint
+  ansible.builtin.include_tasks: ../../roles/openbao_secrets/tasks/seed_local_llm_secret.yml
   vars:
-    openbao_secrets_hermes_writer_token: ""
+    local_llm_secret:
+      label: hermes
+      path: ai/hermes
+      field: HERMES_API_SERVER_KEY
+      fallback: ""
+      writer_token: ""
+      writer_policy: hermes-write
+      writer_max_ttl: 600
 
-- name: Assert a valid fetched key made the writer lane a complete no-op
+- name: Assert a stored Hermes key is kept verbatim with no writer token and no write
   ansible.builtin.assert:
     that:
-      - hostvars['localhost'].openbao_secrets_hermes_api_key_present | bool
-      - >-
-        hostvars['localhost'].openbao_secrets_by_domain['local-llm']
-        ['HERMES_API_SERVER_KEY'] == '  existing-valid-key  '
-      - seed_writer_block.no_log | bool
-      - seed_detect_task.no_log | bool
+      - hostvars['localhost'].openbao_secrets_by_domain['local-llm'].HERMES_API_SERVER_KEY == '  existing-valid-key  '
+      - hostvars['localhost'].openbao_secrets_by_domain['local-llm'].sibling == 'preserve-me'
 
-- name: Execute partial-domain fixtures with a valid ambient fallback
-  ansible.builtin.include_tasks: exercise_fallback_candidate.yml
-  loop:
-    - name: absent fetched field
-      fields: {}
-    - name: null fetched field
-      fields:
-        HERMES_API_SERVER_KEY: null
-    - name: empty fetched field
-      fields:
-        HERMES_API_SERVER_KEY: ""
-    - name: whitespace fetched field
-      fields:
-        HERMES_API_SERVER_KEY: "   "
-  loop_control:
-    loop_var: fallback_candidate_fixture
-    label: "{{ fallback_candidate_fixture.name }}"
-
-- name: Execute malformed fetched-key fixtures against production tasks
-  ansible.builtin.include_tasks: exercise_key_candidate.yml
-  loop:
-    - name: "null"
-      value: null
-    - name: "false"
-      value: false
-    - name: empty
-      value: ""
-    - name: whitespace
-      value: "   "
-  loop_control:
-    loop_var: key_candidate_fixture
-    label: "{{ key_candidate_fixture.name }}"
-
-- name: Set a writer failure fixture against a closed local endpoint
+- name: Set a local-llm accumulator with no Hermes key
   ansible.builtin.set_fact:
     openbao_secrets_by_domain:
       local-llm:
         sibling: preserve-me
-    openbao_secrets_active_addr: http://127.0.0.1:1
   delegate_to: localhost
   delegate_facts: true
 
-- name: Execute a primary writer failure through the production always block
-  block:
-    - name: Include production seed tasks with a nonempty fixture token
-      ansible.builtin.include_tasks: >-
-        ../../roles/openbao_secrets/tasks/seed_hermes_api_key.yml
-      vars:
-        openbao_secrets_hermes_writer_token: fixture-token
-
-  rescue:
-    - name: Record propagated writer and revocation failure
-      ansible.builtin.set_fact:
-        writer_failure_propagated_after_revoke: true
-
-- name: Assert the production always block attempted revocation
-  ansible.builtin.assert:
-    that:
-      - writer_failure_propagated_after_revoke | default(false) | bool
-      - hostvars['localhost'].openbao_secrets_hermes_seed_failed | bool
-      - hostvars['localhost'].openbao_secrets_hermes_revoke_failed | bool
-      - >-
-        hostvars['localhost'].openbao_secrets_hermes_seed_failed_task
-        == 'Look up the Hermes writer token identity'
-
-- name: Assert the writer identity is isolated from standing runner tokens
-  ansible.builtin.assert:
-    that:
-      - >-
-        'HERMES_WRITE_BAO_TOKEN' in
-        seed_defaults.openbao_secrets_hermes_writer_token
-      - >-
-        "lookup('env', 'BAO_TOKEN')" not in
-        seed_defaults.openbao_secrets_hermes_writer_token
-      - seed_defaults.openbao_secrets_hermes_writer_max_ttl_seconds == 600
-      - >-
-        seed_identity_lookup_task['community.hashi_vault.vault_read'].path
-        == 'auth/token/lookup-self'
-      - >-
-        'openbao_secrets_hermes_writer_token' in
-        seed_identity_lookup_task['community.hashi_vault.vault_read'].token
-      - >-
-        'openbao_secrets_hermes_writer_token' in
-        seed_capability_task['community.hashi_vault.vault_write'].token
-      - >-
-        'openbao_secrets_hermes_writer_token' in
-        seed_write_task['community.hashi_vault.vault_kv2_write'].token
-
-- name: Execute writer-identity validation fixtures
-  ansible.builtin.include_tasks: exercise_writer_identity.yml
-  loop:
-    - name: exact short-lived identity
-      reject: false
-      policies: [hermes-write, default]
-      identity_policies: []
-      renewable: false
-      orphan: true
-      ttl: 600
-    - name: broad identity
-      reject: true
-      policies: [default, hermes-write, ai-admin]
-      identity_policies: []
-      renewable: false
-      orphan: true
-      ttl: 600
-    - name: root identity
-      reject: true
-      policies: [root]
-      identity_policies: []
-      renewable: false
-      orphan: true
-      ttl: 600
-    - name: inherited identity policy
-      reject: true
-      policies: [default, hermes-write]
-      identity_policies: [ai-admin]
-      renewable: false
-      orphan: true
-      ttl: 600
-    - name: renewable identity
-      reject: true
-      policies: [default, hermes-write]
-      identity_policies: []
-      renewable: true
-      orphan: true
-      ttl: 600
-    - name: child identity tied to the minting parent
-      reject: true
-      policies: [default, hermes-write]
-      identity_policies: []
-      renewable: false
-      orphan: false
-      ttl: 600
-    - name: expired identity
-      reject: true
-      policies: [default, hermes-write]
-      identity_policies: []
-      renewable: false
-      orphan: true
-      ttl: 0
-    - name: excessive TTL identity
-      reject: true
-      policies: [default, hermes-write]
-      identity_policies: []
-      renewable: false
-      orphan: true
-      ttl: 601
-  loop_control:
-    loop_var: writer_identity_fixture
-    label: "{{ writer_identity_fixture.name }}"
-
-- name: Assert the writer is capability checked on both exact KV-v2 paths
-  ansible.builtin.assert:
-    that:
-      - >-
-        seed_capability_task['community.hashi_vault.vault_write'].path
-        == 'sys/capabilities-self'
-      - >-
-        seed_capability_task['community.hashi_vault.vault_write'].data.paths
-        | length == 2
-      - >-
-        'openbao_secrets_hermes_api_data_path' in
-        seed_capability_task['community.hashi_vault.vault_write'].data.paths[0]
-      - >-
-        'openbao_secrets_hermes_api_metadata_path' in
-        seed_capability_task['community.hashi_vault.vault_write'].data.paths[1]
-
-- name: Execute exact-path capability validation fixtures
-  ansible.builtin.include_tasks: exercise_writer_capabilities.yml
-  loop:
-    - name: required data and metadata access
-      reject: false
-      capabilities:
-        secret/data/ai/hermes: [create, read, update]
-        secret/metadata/ai/hermes: [read]
-    - name: missing data update
-      reject: true
-      capabilities:
-        secret/data/ai/hermes: [create, read]
-        secret/metadata/ai/hermes: [read]
-    - name: missing metadata read
-      reject: true
-      capabilities:
-        secret/data/ai/hermes: [create, read, update]
-        secret/metadata/ai/hermes: [deny]
-    - name: extra data delete
-      reject: true
-      capabilities:
-        secret/data/ai/hermes: [create, delete, read, update]
-        secret/metadata/ai/hermes: [read]
-    - name: extra data sudo
-      reject: true
-      capabilities:
-        secret/data/ai/hermes: [create, read, sudo, update]
-        secret/metadata/ai/hermes: [read]
-    - name: extra metadata update
-      reject: true
-      capabilities:
-        secret/data/ai/hermes: [create, read, update]
-        secret/metadata/ai/hermes: [read, update]
-    - name: wildcard result cannot substitute for exact paths
-      reject: true
-      capabilities:
-        secret/data/ai/*: [create, read, update]
-        secret/metadata/ai/*: [read]
-  loop_control:
-    loop_var: writer_capability_fixture
-    label: "{{ writer_capability_fixture.name }}"
-
-- name: Assert generation is exactly 32 random bytes rendered as lowercase hex
-  ansible.builtin.assert:
-    that:
-      - >-
-        seed_generate_task['ansible.builtin.command'].argv
-        == ['openssl', 'rand', '-hex', '32']
-      - >-
-        seed_shape_task['ansible.builtin.assert'].that
-        == ["openbao_secrets_hermes_generated.stdout is match('^[0-9a-f]{64}$')"]
-      - contract_generated is match('^[0-9a-f]{64}$')
-
-- name: Set an authoritative concurrent-winner fixture
-  ansible.builtin.set_fact:
-    openbao_secrets_by_domain:
-      local-llm:
-        sibling: preserve-me
-    openbao_secrets_hermes_current:
-      metadata:
-        version: 8
-      secret:
-        HERMES_API_SERVER_KEY: concurrent-winner-key
-        sibling: newer-authoritative-value
-    openbao_secrets_hermes_api_key_present: true
-  delegate_to: localhost
-  delegate_facts: true
-
-- name: Execute the production authoritative-winner publication
-  ansible.builtin.include_tasks: >-
-    ../../roles/openbao_secrets/tasks/publish_hermes_authoritative_winner.yml
-
-- name: Assert the authoritative winner replaced no sibling fields
-  ansible.builtin.assert:
-    that:
-      - >-
-        hostvars['localhost'].openbao_secrets_by_domain['local-llm']
-        ['HERMES_API_SERVER_KEY'] == 'concurrent-winner-key'
-      - >-
-        hostvars['localhost'].openbao_secrets_by_domain['local-llm'].sibling
-        == 'preserve-me'
-
-- name: Assert authoritative winner and sibling-preserving merge behavior
-  ansible.builtin.assert:
-    that:
-      - contract_merged.sibling == 'preserve-me'
-      - contract_merged.HERMES_API_SERVER_KEY == contract_generated
-      - contract_merged | length == contract_existing | length + 1
-      - >-
-        'is string' in
-        seed_authoritative_check_task['ansible.builtin.set_fact']
-        .openbao_secrets_hermes_api_key_present
-      - >-
-        '| trim | length > 0' in
-        seed_authoritative_check_task['ansible.builtin.set_fact']
-        .openbao_secrets_hermes_api_key_present
-      - >-
-        seed_writer_tasks.index(seed_winner_task)
-        < seed_writer_tasks.index(seed_generate_task)
-      - >-
-        seed_winner_task.when
-        == "hostvars['localhost'].openbao_secrets_hermes_api_key_present | bool"
-      - >-
-        'openbao_secrets_hermes_current.secret' in
-        seed_winner_publish_task['ansible.builtin.set_fact']
-        .openbao_secrets_by_domain
-      - >-
-        'combine({openbao_secrets_hermes_api_key_field:' in
-        seed_write_task['community.hashi_vault.vault_kv2_write'].data
-
-- name: Exercise a stale CAS fixture
+- name: Publish a valid env fallback for an absent Hermes key without a write
+  ansible.builtin.include_tasks: ../../roles/openbao_secrets/tasks/seed_local_llm_secret.yml
   vars:
-    contract_stale_cas_version: 7
-    contract_concurrent_winner_version: 8
-  block:
-    - name: Reject a write after a concurrent version winner
-      ansible.builtin.assert:
-        that:
-          - contract_stale_cas_version == contract_concurrent_winner_version
+    local_llm_secret:
+      label: hermes
+      path: ai/hermes
+      field: HERMES_API_SERVER_KEY
+      fallback: valid-ambient-key
+      writer_token: ""
+      writer_policy: hermes-write
+      writer_max_ttl: 600
 
-    - name: Mark a stale generated key as published
-      ansible.builtin.set_fact:
-        stale_generated_key_published: true
-
-  rescue:
-    - name: Record that the CAS conflict failed closed
-      ansible.builtin.set_fact:
-        stale_cas_failed_closed: true
-
-- name: Assert CAS propagation and conflict fail-safe ordering
+- name: Assert the env fallback reaches the accumulator with no writer token and the sibling survives
   ansible.builtin.assert:
     that:
-      - stale_cas_failed_closed | default(false) | bool
-      - not (stale_generated_key_published | default(false) | bool)
-      - >-
-        'openbao_secrets_hermes_current.metadata.version' in
-        seed_write_task['community.hashi_vault.vault_kv2_write'].cas
-      - seed_write_task.failed_when is not defined
-      - >-
-        seed_writer_tasks.index(seed_publish_task)
-        > seed_writer_tasks.index(seed_write_task)
-
-- name: Assert self-revocation is unconditional after entering the writer lane
-  ansible.builtin.assert:
-    that:
-      - seed_writer_execution.always is defined
-      - >-
-        seed_revoke_wrapper.when
-        == 'openbao_secrets_hermes_writer_token | length > 0'
-      - >-
-        seed_revoke_task['community.hashi_vault.vault_write'].path
-        == 'auth/token/revoke-self'
-      - >-
-        'openbao_secrets_hermes_writer_token' in
-        seed_revoke_task['community.hashi_vault.vault_write'].token
-      - seed_revoke_wrapper.rescue is defined
-      - >-
-        seed_writer_execution.always.index(seed_primary_failure_task)
-        > seed_writer_execution.always.index(seed_revoke_wrapper)
-      - >-
-        seed_writer_execution.always.index(seed_revoke_failure_task)
-        > seed_writer_execution.always.index(seed_revoke_wrapper)
-      - seed_primary_failure_task.no_log == false
-      - seed_revoke_failure_task.no_log == false
-
-- name: Assert every secret-bearing production task inherits no-log protection
-  ansible.builtin.assert:
-    that:
-      - seed_writer_block.no_log | bool
-      - seed_detect_task.no_log | bool
-      - seed_write_task.register == 'openbao_secrets_hermes_write'
-      - >-
-        'openbao_secrets_validate_certs' in
-        seed_write_task['community.hashi_vault.vault_kv2_write'].validate_certs
+      - hostvars['localhost'].openbao_secrets_by_domain['local-llm'].HERMES_API_SERVER_KEY == 'valid-ambient-key'
+      - hostvars['localhost'].openbao_secrets_by_domain['local-llm'].sibling == 'preserve-me'
