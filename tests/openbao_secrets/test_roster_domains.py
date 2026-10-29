@@ -8,9 +8,9 @@ from jinja2.nativetypes import NativeEnvironment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DOMAIN_DEFAULTS = REPO_ROOT / "inventory/group_vars/all.yml"
-ROSTER_DEFAULTS = REPO_ROOT / "inventory/group_vars/all.yml"
-IDENTITY_DEFAULTS = REPO_ROOT / "inventory/group_vars/all.yml"
+DOMAIN_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains.yml"
+ROSTER_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/11-roster-domains.yml"
+IDENTITY_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains-identities.yml"
 AGENT_DEFAULTS = REPO_ROOT / "inventory/group_vars/hermes_agent_group/00-agent-settings.yml"
 ROSTER = {"splunk-heimdall": {"owns": ["splunk"]}}
 TWO_AGENT_ROSTER = {"a-x": {"owns": []}, "b-y": {"owns": []}}

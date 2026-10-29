@@ -1,6 +1,6 @@
 """ai_orchestration_otel_endpoint reaches every consumer that exports to it.
 
-The shared OTLP endpoint is set once, in inventory/group_vars/all.yml. Each
+The shared OTLP endpoint is set once, in inventory/group_vars/all/00-core.yml. Each
 consumer below is rendered with a sentinel in its place, and the sentinel must
 come out the other end. A consumer that drops the endpoint, or hard-codes its
 own, fails here instead of in a trace that never arrives.
@@ -19,7 +19,7 @@ from _role_files import template_text
 from _shell_harness_shared import ROLES, defaults_of, render
 
 SENTINEL = "http://otel-sentinel.test.invalid:4318"
-INVENTORY_VARS = yaml.safe_load((ROLES.parent / "inventory/group_vars/all.yml").read_text())
+INVENTORY_VARS = yaml.safe_load((ROLES.parent / "inventory/group_vars/all/00-core.yml").read_text())
 INVENTORY_CONTEXT = {
     "agentgateway_docker_a2a_allowed_tier": INVENTORY_VARS[
         "agentgateway_docker_a2a_allowed_tier"

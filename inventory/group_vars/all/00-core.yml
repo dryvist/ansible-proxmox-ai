@@ -1,0 +1,293 @@
+---
+# Global variables for all hosts
+
+# System
+ansible_become: true
+ansible_become_method: sudo
+
+# The published tofu inventory roster is the single source for agent identity
+# and ownership.
+ai_agents: "{{ (tofu_data | default({})).agents | default({}) }}"
+ai_agent_by_container: >-
+  {{ dict(ai_agents | dict2items | map(attribute='value.container')
+          | zip(ai_agents.keys())) }}
+ai_agent_owner: >-
+  {%- set owners = {} -%}
+  {%- for name, agent in ai_agents.items() -%}
+    {%- for slug in agent.owns | default([]) -%}
+      {%- set _ = owners.update({slug: name}) -%}
+    {%- endfor -%}
+  {%- endfor -%}
+  {{ owners }}
+# Every gateway caller identity -> {trust_tier}: the released harness registry
+# (agent_callers_registry, loaded by dryvist.homelab.agent_callers) plus the
+# roster. A roster agent without a trust_tier carries an empty tier, which
+# the Hindsight ACL treats as no bank. An id in both sources is a fault,
+# asserted in roles/agentgateway_docker/tasks/main.yml.
+ai_callers: >-
+  {%- set callers = {} -%}
+  {%- for name, caller in (agent_callers_registry | default({})).items() -%}
+    {%- set _ = callers.update({name: {'trust_tier': caller.trust_tier}}) -%}
+  {%- endfor -%}
+  {%- for name, agent in ai_agents.items() -%}
+    {%- set _ = callers.update({name: {'trust_tier': agent.get('trust_tier', '')}}) -%}
+  {%- endfor -%}
+  {{ callers }}
+# The ai_callers trust_tier allowed to call agents behind the gateway's A2A
+# routes (roles/agentgateway_docker). Read by the role, never re-typed there.
+agentgateway_docker_a2a_allowed_tier: trusted
+ai_agent_gateway_key_fields: >-
+  {%- set fields = {} -%}
+  {%- for name in ai_callers -%}
+    {%- set _ = fields.update({name: (name | replace('-', '_')) ~ '_agentgateway_key'}) -%}
+  {%- endfor -%}
+  {{ fields }}
+
+# Shared Cribl Stream OTLP/HTTP receiver — every OTEL-emitting component points
+# here, so this is global rather than scoped to ai_orchestration_group.yml
+# (roles outside that group, e.g. hermes_agent/open_webui, reference it too).
+ai_subdomain: "{{ lookup('env', 'PROXMOX_SUBDOMAIN') or undef('PROXMOX_SUBDOMAIN required') }}"
+# The OTLP receiver is Cribl Stream's in_otel input, reached through the otel
+# front door on HTTPS (Traefik, port 443). Stream sends traces to Langfuse and
+# Phoenix; metrics also go to VictoriaMetrics and Splunk. Cribl Edge remains
+# the per-guest session-log collector, not the OTLP receiver.
+ai_orchestration_otel_endpoint: "https://otel.{{ ai_subdomain }}"
+
+# Resolve the serving identity from published inventory constants, then the
+# environment override. No host or address fallback is supplied. Missing
+# identity is asserted by roles/llm_router/tasks/assert-serving-identity.yml.
+llm_large_serving_host: >-
+  {{ ((tofu_data.constants.serving | default({})).host | default('', true))
+     or (lookup('env', 'LLM_LARGE_RUNNER_HOST') | split('.') | first) }}
+llm_large_serving_ip: >-
+  {{ ((tofu_data.constants.serving | default({})).ip | default('', true))
+     or lookup('env', 'LLM_LARGE_RUNNER_IP') }}
+# Which authority supplied the two values above, for the converge-time notice
+# in roles/llm_router/tasks/assert-serving-identity.yml. "constants" is the
+# destination state; "environment" is the operator override and the supply path
+# while the published artifact predates tofu-proxmox#827; "unset" fails the
+# assert.
+llm_large_serving_source: >-
+  {{ 'constants'
+     if ((tofu_data.constants.serving | default({})).host | default('', true))
+     else ('environment' if lookup('env', 'LLM_LARGE_RUNNER_HOST') else 'unset') }}
+
+# Default capability for consumers that have not selected another capability.
+# Open WebUI resolves an OpenBao override when present; Hermes reads its own
+# selector below.
+ai_default_model: >-
+  {{ bao_ai_public_secrets.active_model
+     | default('medium', true) }}
+
+# Hermes Agent's brain can differ from ai_default_model; hermes_brain_model
+# resolves to this value.
+# The Tofu engine selector chooses the active model/context profile.
+llm_gpu_active_profiles_by_engine:
+  llama_cpp: medium-b
+  vllm: medium-a
+  sglang: flash-next-64k-8-fp8-mtp
+llm_active_profile: >-
+  {{ llm_gpu_active_profiles_by_engine.get(
+       (hostvars['localhost']['tofu_data'] | default({})).get('llm_gpu_engine', 'llama_cpp'),
+       'medium-a'
+     )
+     if groups.get(
+          'llm_gpu_engine_' ~
+          (hostvars['localhost']['tofu_data'] | default({})).get('llm_gpu_engine', 'llama_cpp') ~
+          '_group', []) | length > 0
+     else 'medium-a' }}
+
+# Shared by the legacy and per-engine GPU serving roles for declared stress windows.
+llm_gpu_serving_paused: false
+
+#
+# Hermes defaults to the same capability as every other default consumer.
+hermes_brain_model: medium
+
+# Agentic Hermes cron work is pinned to the router's local-only review ladder.
+hermes_agent_cron_model: review-local
+
+# Hindsight's fact extraction (retain) and reflection run on the local medium
+# capability, a batching GPU lane; its router key is restricted to it.
+hindsight_retain_model: medium
+llm_router_hindsight_key_model: "{{ hindsight_retain_model }}"
+
+# SELECTION PHILOSOPHY (2026-08-15, operator decision) — ACCURACY OVER SPEED.
+# Where a tier choice trades quality against latency, this fabric takes the
+# quality. A model that answers in four minutes and is right is worth more than
+# one that answers in twenty seconds and is not, because a wrong answer is not
+# cheap work — it is negative work, and something downstream pays to undo it.
+#
+# The reason this is affordable: the fabric runs continuously, unattended. A
+# slow model working 24/7 completes an enormous amount; wall-clock latency per
+# call only matters where a human is waiting, which is the minority of calls
+# here. So the effort goes into better, more focused prompts — the lever that
+# actually moves output quality — not into shaving seconds.
+#
+# This is NOT a licence to put everything on the biggest model. Two limits:
+# a task that is genuinely a short classification (the goal judge is the
+# canonical one) belongs on the cheap tier, because the deliberate model buys
+# nothing there and takes a slot the real work wants; and no timeout may be
+# widened without a measurement (see the judge timeout in
+# roles/hermes_agent/defaults/main/60-kanban-dispatcher.yml). Deliberate where
+# it pays, cheap where it does not.
+#
+# AI serving timeout chain (client-is-decider). Each OUTER layer must OUTLIVE the
+# inner one, so no intermediate guard kills a still-healthy generation and the
+# CLIENT alone decides when to give up:
+#   nix-darwin MLX model server guard 3600s (external to this repo)
+#     > llm_router per-attempt timeout  (ai_router_request_timeout_seconds)
+#       > Hermes client stream read     (ai_stream_read_timeout_seconds)
+# The two in-repo layers are named ONCE here (not as bare literals in each role)
+# so the ordering invariant is a single source of truth AND the hermes_agent
+# Layer-1 assert can verify `read < router` across two roles that never share a
+# play — see roles/hermes_agent/tasks/assert.yml. Consumers:
+# hermes_agent_stream_read_timeout and llm_router_request_timeout_seconds resolve
+# to these, so the rendered configs stay byte-identical to the prior literals.
+ai_stream_read_timeout_seconds: 1800
+ai_router_request_timeout_seconds: 2400
+# Router minimum backoff before a retry. Named here for the same reason as
+# the two above: the brain watchdog's probe deadline must OUTLIVE one backoff
+# or no retry can complete inside a probe, and that assert lives in
+# roles/hermes_agent while the value is consumed by roles/llm_router — two
+# roles that never share a play. Consumer: llm_router_retry_after_seconds.
+#
+# 2, was 40 (2026-09-19 admission rule, roles/llm_router 40-routing.yml): a
+# 429 is no longer retried on the same rung at all, so this is only the
+# backoff before the single timeout retry the router may make, and the whole
+# wait on a busy rung is bounded by llm_router_admission_budget_seconds (15).
+ai_router_retry_after_seconds: 2
+
+# The ingress's response-header timeout in front of the router — the same
+# figure ansible-proxmox-apps declares as traefik_backend_response_header_timeout
+# (120s). Mirrored here, not read across repos, so roles/llm_router can hold
+# every local rung's first-byte bound BELOW it: a bound at or above this makes
+# the caller see the ingress's 504 before the router's fallback can fire.
+# Change both together.
+ai_ingress_response_header_timeout_seconds: 120
+
+# The open-source-CI router key (llm_router 56-virtual-keys.yml github-actions-oss)
+# and the apps-domain path that carries it (openbao_secrets 10-domains.yml).
+# On: the apps policy grants the read, the path is fetched and the key is
+# minted. Set false to drop the path from the fetch and stop minting the key;
+# both roles read this one switch.
+llm_router_oss_ci_key_enabled: true
+
+# Router keys whose apps bucket has no read grant in the apps policy yet; the
+# paths stay out of the domain fetch (a denied read fails the whole fetch).
+llm_router_recorder_key_enabled: false
+llm_router_judge_key_enabled: false
+
+# The Hermes orchestrator profile's key; the apps read policy grants its bucket.
+# hermes_agent converges need it on.
+llm_router_hermes_orchestrator_key_enabled: true
+
+# The docs site's router snapshot key; the apps read policy grants its bucket.
+llm_router_docs_router_snapshot_key_enabled: true
+
+# The Home Assistant read-only token path on the hermes domain (openbao_secrets
+# 10-domains-identities.yml). Off until the hermes read grant exists: a denied read fails the
+# whole hermes fetch. Set true once the grant lands.
+hermes_agent_homeassistant_token_bao_enabled: false
+
+# Per-model serving concurrency ceiling. THE single numeric definition now
+# lives upstream in dryvist/tofu-proxmox's
+# modules/proxmox-stack/constants-serving.tf (pipeline_constants.serving.llm_concurrency)
+# and is published to every host via the same tofu_data.constants channel
+# every other pipeline_constants family already uses (dryvist.homelab.
+# inventory_resolve, see inventory/load_tofu.yml). This value is a DERIVATION,
+# not a second definition — it was previously a bare literal kept "in sync by
+# convention" with nix-ai's programs.mlx.proxy.concurrencyLimit (set per-host
+# in dryvist/nix-darwin's lib/hosts/mac-studio.nix serveConcurrency), which
+# drifted silently by design. nix-darwin's flake evaluation is hermetic (no
+# network access at build time) so it cannot derive from tofu_data the same
+# way; instead its CI runs a parity check
+# (.github/workflows/_llm-concurrency-parity.yml) against this repo's
+# published constant and fails the build on drift. The serving tier admits
+# this many in-flight requests per model and 429s the rest (the 429s are
+# absorbed by llm_router's rate-limit retry policy, not this repo's concern).
+# Consumer: ollama_num_parallel (roles/ollama/defaults/main.yml). Agent
+# admission caps are independent of serving slots; see
+# ai_agent_default_concurrency below.
+# ROLLOUT WINDOW (remove the fallback once the artifact carries it). Ansible
+# reads the PUBLISHED inventory artifact, not tofu-proxmox's constants.tf, and
+# that artifact is only rewritten by a `tofu apply`. Older artifacts have no
+# `serving` key; a bare reference therefore raises "object of type 'dict' has
+# no attribute 'serving'" and fails every converge. The fallback follows the
+# active eight-slot profile until the artifact is republished.
+#
+# The fallback is a migration shim, NOT a second definition: it is the same
+# value the constant publishes, it disappears from every render the moment the
+# artifact carries the key, and `assert_serving_constant_published` below
+# reports which path was taken so the shim cannot go quietly permanent. Delete
+# the `| default` and that assert together after the first apply that
+# republishes the inventory.
+ai_llm_concurrency: >-
+  {{ (tofu_data.constants.serving | default({})).llm_concurrency | default(8) }}
+# True only while the shim above is load-bearing. Consumed by the converge-time
+# notice in roles/hermes_agent/tasks/assert.yml.
+ai_llm_concurrency_from_fallback: >-
+  {{ (tofu_data.constants.serving | default({})).llm_concurrency is not defined }}
+
+# Agent runners accept work up to this shared cap. LiteLLM handles backend
+# saturation and fallback, so this value does not track any serving profile.
+ai_agent_default_concurrency: 8
+
+# Resource-domain secrets fetched from OpenBao by the openbao_secrets pre-play.
+# Defaults to an empty dict so every consumer's
+# `bao_local_llm_secrets.X | default(lookup('env','X'), true)` resolves even
+# when the fetch is skipped (BAO_ADDR unset, or the domain's role_id/secret_id
+# envs unset) or the host is outside the openbao_secrets play. The pre-play
+# overrides this per host when active. bao_ai_public_secrets is the same
+# shape for the `ai-public` domain (see ai_default_model above): empty here
+# resolves to the ai_default_model literal fallback until that domain's
+# AppRole exists and secret/ai/public/brain is seeded.
+bao_local_llm_secrets: {}
+bao_ai_public_secrets: {}
+# Same floor for the `apps` domain. It was missing while two roles already read
+# it (hindsight_docker, and now llm_router's database login), so any run that
+# skipped the Phase 0 fetch — BAO_ADDR unset, a --tags run that excludes it,
+# molecule — raised "bao_apps_secrets is undefined" instead of falling through
+# to the env fallback the consumers were written to expect. An empty dict makes
+# that fallback reachable, which is the whole point of the bao-first pattern.
+bao_apps_secrets: {}
+
+# The judge rides its OWN alias, not the worker's. Two reasons, and the router
+# still owns the physical backend selection behind both.
+#
+# 1. A judge scoring its own model's output is self-preference bias by
+#    construction. It survives blind evaluation (the perplexity asymmetry is
+#    intrinsic to the scorer), so "the judge cannot see the author" is not a
+#    defence. `goal-judge` resolves to a model of a different generation than
+#    whatever serves as the worker.
+# 2. The serving tier admits one in-flight request per model, so a worker and a
+#    judge on the SAME model serialize against each other — the judge queues
+#    behind the very generation it was spawned to score.
+#
+# THE JUDGE IS UNIVERSAL AND IT IS NOT THE WORKER — no exceptions, no
+# per-caller override, no "just this once" fallback to the brain. Every
+# evaluation the fabric performs goes through this alias. A judge that
+# sometimes resolves to the worker is worse than one that always does, because
+# the bias then varies by call and nothing downstream can correct for it.
+#
+# It is also deliberately the SMALLER model, and that is not a cost compromise.
+# The worker is the tier that should think hard; a verdict is a short,
+# well-specified classification, and spending the deliberate model's minutes on
+# it buys nothing while taking the slot the actual work wants. Judge cheap,
+# work deep.
+#
+# Until 2026-07-28 this read `hermes-default`, which made the `goal-judge` alias
+# dead config: it was defined, asserted, and named by nothing. Pointing here is
+# what makes it real — and until 2026-08-15 the var that actually reached
+# inference (hermes_agent_kanban_goal_judge_model) still bypassed it. Both now
+# read this name. It is the `judge` router role now; `goal-judge` remains a
+# separate registry alias for the `small` route group.
+hermes_goal_judge_model: judge
+
+
+# Restart the Docker stack on failure (Phase 9 systemd restart policy).
+systemd_restart_policy_services:
+  - docker
+
+# Shared by the router and OpenBao prefetch play across the full inventory.
+llm_router_gpu_profiles_enabled: "{{ (groups['llm_gpu_group'] | default([])) | length > 0 }}"

@@ -14,7 +14,7 @@ from ansible.plugins.filter.core import FilterModule
 from cel_subset import authorize
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-INVENTORY = REPO_ROOT / "inventory/group_vars/all.yml"
+INVENTORY = REPO_ROOT / "inventory/group_vars/all/00-core.yml"
 DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/00-gateway.yml"
 MCP_ROUTE_AUTH_DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/30-mcp-route-auth.yml"
 TASKS = REPO_ROOT / "roles/agentgateway_docker/tasks/main.yml"
@@ -50,7 +50,7 @@ def _render_map(expression: str, **context: Any) -> dict[str, Any]:
 
 
 def _render_callers(roster: dict[str, Any], registry: dict[str, Any] | None = None) -> dict[str, Any]:
-    """`ai_callers` as inventory/group_vars/all.yml derives it: registry plus roster."""
+    """`ai_callers` as inventory/group_vars/all/00-core.yml derives it: registry plus roster."""
     # The test environment's strict undefined cannot evaluate `| default`, so an unloaded
     # registry is passed as empty, which is what the default yields in a play.
     return _render_map(INVENTORY_VARS["ai_callers"], ai_agents=roster, agent_callers_registry=registry or {})

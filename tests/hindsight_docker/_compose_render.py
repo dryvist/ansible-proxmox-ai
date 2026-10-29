@@ -19,7 +19,7 @@ ROLE_DEFAULTS = yaml.safe_load(
     (REPO_ROOT / "roles/hindsight_docker/defaults/main.yml").read_text()
 )
 INVENTORY_DEFAULTS = yaml.safe_load(
-    (REPO_ROOT / "inventory/group_vars/all.yml").read_text()
+    (REPO_ROOT / "inventory/group_vars/all/00-core.yml").read_text()
 )
 
 DEFAULT_CONTEXT = {

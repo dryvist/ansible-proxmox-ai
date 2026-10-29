@@ -26,7 +26,7 @@ REPO_ROOT = ROLE.parents[1]
 WATCHDOG = (ROLE / "templates" / "hermes-brain-watchdog.sh.j2").read_text()
 DEFAULTS = role_defaults_text(ROLE)
 ROUTER_DEFAULTS = role_defaults_text(REPO_ROOT / "roles" / "llm_router")
-ALL_VARS = (REPO_ROOT / "inventory" / "group_vars" / "all.yml").read_text()
+ALL_VARS = (REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml").read_text()
 
 
 def _int_var(pattern: str, haystack: str, what: str) -> int:

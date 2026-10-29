@@ -78,7 +78,7 @@ bao-first via the `local-llm` OpenBao domain (`secret/ai/hermes` — see
 plain-env default above), falling back to the converge environment
 (`lookup('env', ...)`, so Doppler or SOPS also satisfy it) when that domain's
 AppRole isn't configured. A path-exact `hermes` domain also exists (see
-`inventory/group_vars/all.yml`), provisioned ahead of a future
+`inventory/group_vars/all/`), provisioned ahead of a future
 migration off `local-llm`'s broader `ai/*`-style grant — nothing reads
 through it yet.
 

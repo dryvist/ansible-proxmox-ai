@@ -121,7 +121,7 @@ target again.
 
 ## OptiQ-4bit (`mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit`)
 
-The agentic-bench-winning brain (`ai_default_model`, `all.yml`). A first-class
+The agentic-bench-winning brain (`ai_default_model`, `group_vars/all/`). A first-class
 entry — NOT passthrough — so the default model carries an explicit
 `max_input_tokens`: the wildcard `"*"` entry sets none, and a null there makes
 consumers fall back to a near-zero context guess and compress every request to

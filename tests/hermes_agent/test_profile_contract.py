@@ -84,7 +84,7 @@ def _group_vars_all() -> dict[str, Any]:
     would after resolving both levels.
     """
     group_vars = yaml.safe_load(
-        (REPO_ROOT / "inventory" / "group_vars" / "all.yml").read_text()
+        (REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml").read_text()
     )
     group_vars["tofu_data"] = {"constants": {"serving": {"llm_concurrency": 8}}}
     group_vars["ai_llm_concurrency"] = (
