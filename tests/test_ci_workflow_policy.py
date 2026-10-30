@@ -220,7 +220,7 @@ def test_molecule_callers_preserve_roles_galaxy_and_doppler_settings() -> None:
         assert "galaxy_force_install" not in inputs
         assert inputs["galaxy_retry_attempts"] == 4
         assert inputs["galaxy_step_timeout_minutes"] == 10
-        assert inputs["galaxy_refresh_contracts_v5"] == "on_cache_hit"
+        assert inputs["galaxy_refresh_contracts_v5"] == "never"
         assert inputs["docker_timeout_seconds"] == 180
         assert inputs["doppler_enabled"] is True
 
@@ -231,6 +231,13 @@ def test_molecule_callers_preserve_roles_galaxy_and_doppler_settings() -> None:
 def test_router_jobs_share_the_cached_dependency_action(job: str) -> None:
     steps = yaml.safe_load((WORKFLOWS / "_llm-router-contract.yml").read_text())["jobs"][job]["steps"]
     assert any(step.get("uses") == "./.github/actions/router-deps" for step in steps)
+
+
+def test_refresh_action_installs_pinned_requirements() -> None:
+    action = yaml.safe_load((WORKFLOWS.parent / "actions/refresh-contracts/action.yml").read_text())
+    step = next(step for step in action["runs"]["steps"]
+                if step.get("uses", "").startswith("nick-fields/retry@"))
+    assert step["with"]["command"] == '"$GALAXY" collection install -r requirements.yml --force'
 
 
 def test_router_dependency_action_caches_pinned_requirements() -> None:
