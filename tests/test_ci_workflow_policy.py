@@ -284,6 +284,7 @@ def test_hermes_memory_dependency_families_share_manual_compatibility_group() ->
 
     assert image_rule["pinDigests"] is True
     assert image_rule["minimumReleaseAge"] == "0 days"
+    assert "matchManagers" not in image_rule
     assert [rule for rule in rules if rule.get("minimumReleaseAge") == "0 days"] == [image_rule]
 
 
