@@ -257,6 +257,8 @@ def test_hermes_memory_dependency_families_share_manual_compatibility_group() ->
     rules = config["packageRules"]
     group = "Hermes memory plugin compatibility"
 
+    assert config["vulnerabilityAlerts"]["automerge"] is False
+
     hermes_rule = next(
         rule for rule in rules
         if "NousResearch/hermes-agent" in rule.get("matchPackageNames", [])
@@ -285,6 +287,14 @@ def test_hermes_memory_dependency_families_share_manual_compatibility_group() ->
     assert image_rule["pinDigests"] is True
     assert image_rule["minimumReleaseAge"] == "0 days"
     assert "matchManagers" not in image_rule
+
+    assert "ordinary Hindsight client updates" in sdk_rule["description"]
+    assert "review vulnerability fixes manually" in sdk_rule["description"]
+    assert "ordinary SDK major proposals" in next(
+        rule["description"] for rule in rules
+        if rule.get("matchDepNames") == ["hindsight-client", "hindsight-embed"]
+        and rule.get("matchUpdateTypes") == ["major"]
+    )
     assert [rule for rule in rules if rule.get("minimumReleaseAge") == "0 days"] == [image_rule]
 
 
