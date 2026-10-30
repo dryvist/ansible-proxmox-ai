@@ -78,7 +78,7 @@ ROLE_TESTS = {
     "hermes_agent": {"tests/hermes_agent/"},
     "fabric_watchdog": {"tests/hermes_agent/"},
     "dify_docker": set(),
-    "langflow_docker": {"tests/agent_concurrency/"},
+    "langflow_docker": {"tests/agent_concurrency/", "tests/langflow_docker/"},
     "langfuse_docker": {"tests/langfuse_docker/"},
     "hindsight_docker": {"tests/hindsight_docker/"},
     "hindsight_bank_dr": {"tests/hindsight_bank_dr/"},
@@ -174,6 +174,8 @@ def select(paths: list[str]) -> Selection:
         if role in OTEL_CONSUMER_ROLES and Path(OTEL_CONSUMER_TEST).is_file():
             pytest_targets.add(OTEL_CONSUMER_TEST)
         ansible_tests.update(test for test in ANSIBLE_TESTS if test.startswith(f"tests/{role}/"))
+        if role in {"dify_docker", "langflow_docker", "phoenix_docker"}:
+            ansible_tests.add("tests/openbao_secrets/verify_hermes_api_key_seed.yml")
         if role in {"llamacpp_serving", "vllm_serving", "strata_serving", "nvidia_gpu_guest", "llm_gpu_serving"}:
             ansible_tests.update(GPU_ANSIBLE)
         if role == "llm_router":

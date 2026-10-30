@@ -40,6 +40,7 @@ def router_paths(shards: list[dict[str, str]]) -> list[str]:
     ("roles/llama_cpp/tasks/main.yml", "tests/llama_cpp/"),
     ("roles/llamacpp_release/tasks/load.yml", "tests/llamacpp_release/"),
     ("roles/langflow_docker/templates/docker-compose.yml.j2", "tests/agent_concurrency/"),
+    ("roles/langflow_docker/tasks/main.yml", "tests/langflow_docker/"),
     ("roles/langfuse_docker/tasks/reconcile-stage0-evaluation.yml", "tests/langfuse_docker/"),
 ])
 def test_production_role_selects_its_existing_contract_family(path: str, target: str) -> None:
@@ -48,6 +49,13 @@ def test_production_role_selects_its_existing_contract_family(path: str, target:
     selection = json.loads(result.stdout)
     assert target in selection["pytest_targets"]
     assert "tests/" not in selection["pytest_targets"]
+
+
+@pytest.mark.parametrize("role", ["dify_docker", "langflow_docker", "phoenix_docker"])
+def test_secret_seeding_roles_select_controller_become_contract(role: str) -> None:
+    result = run_selector(f"roles/{role}/tasks/main.yml")
+    assert result.returncode == 0, result.stderr
+    assert "tests/openbao_secrets/verify_hermes_api_key_seed.yml" in json.loads(result.stdout)["ansible_tests"]
 
 
 @pytest.mark.parametrize("path", [
