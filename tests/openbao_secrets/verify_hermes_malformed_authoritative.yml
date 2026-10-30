@@ -1,0 +1,82 @@
+---
+- name: Seed an authoritative whitespace-only Hermes key
+  ansible.builtin.command:
+    argv: [bao, kv, put, secret/ai/hermes, "HERMES_API_SERVER_KEY=   ", sibling=preserve-me]
+  environment: "{{ openbao_test_env }}"
+  changed_when: true
+  no_log: true
+
+- name: Read the malformed bundle and version before reconciliation
+  ansible.builtin.uri:
+    url: "{{ openbao_test_addr }}/v1/secret/data/ai/hermes"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ openbao_test_root_token }}"
+  register: openbao_test_malformed_before
+  no_log: true
+
+- name: Mint a writer for the malformed authoritative value
+  ansible.builtin.command:
+    argv:
+      - bao
+      - token
+      - create
+      - -policy=hermes-write
+      - -ttl=10m
+      - -explicit-max-ttl=10m
+      - -renewable=false
+      - -orphan
+      - -format=json
+  environment: "{{ openbao_test_env }}"
+  register: openbao_test_malformed_writer_create
+  changed_when: true
+  no_log: true
+
+- name: Set the malformed prefetch fixture
+  ansible.builtin.set_fact:
+    openbao_secrets_by_domain:
+      local-llm:
+        HERMES_API_SERVER_KEY: "   "
+        sibling: preserve-me
+    openbao_test_malformed_rejected: false
+  delegate_facts: true
+  no_log: true
+
+- name: Refuse the malformed authoritative value
+  block:
+    - name: Reconcile the whitespace-only value
+      ansible.builtin.include_tasks: ../../playbooks/tasks/openbao_secrets_seed_local_llm.yml
+      vars:
+        openbao_secrets_kv_mount: secret
+        openbao_secrets_validate_certs: false
+        local_llm_secret:
+          label: hermes
+          path: ai/hermes
+          field: HERMES_API_SERVER_KEY
+          fallback: ""
+          writer_token: "{{ (openbao_test_malformed_writer_create.stdout | from_json).auth.client_token }}"
+          writer_policy: hermes-write
+          writer_max_ttl: 600
+  rescue:
+    - name: Record the malformed value refusal
+      ansible.builtin.set_fact:
+        openbao_test_malformed_rejected: true
+      no_log: true
+
+- name: Read the malformed bundle after reconciliation
+  ansible.builtin.uri:
+    url: "{{ openbao_test_addr }}/v1/secret/data/ai/hermes"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ openbao_test_root_token }}"
+  register: openbao_test_malformed_after
+  no_log: true
+
+- name: Require refusal without publishing or replacing the stored value
+  ansible.builtin.assert:
+    that:
+      - openbao_test_malformed_rejected | bool
+      - hostvars['localhost'].openbao_secrets_by_domain['local-llm'].HERMES_API_SERVER_KEY == '   '
+      - hostvars['localhost'].openbao_secrets_by_domain['local-llm'].sibling == 'preserve-me'
+      - openbao_test_malformed_after.json.data == openbao_test_malformed_before.json.data
+  no_log: true
