@@ -24,6 +24,7 @@ FIX=0
 # itself stays bare so a version bump can write it cleanly.
 readonly PINS=(
   "roles/hermes_agent/defaults/main/10-installer-and-bundles.yml|hermes_agent_version|hermes_agent_installer_sha256|https://api.github.com/repos/NousResearch/hermes-agent/contents/scripts/install.sh?ref=v%s"
+  "roles/hermes_agent/defaults/main/155-plugins.yml|hermes_agent_hindsight_plugin_revision|hermes_agent_hindsight_plugin_archive_sha256|https://codeload.github.com/vectorize-io/hindsight/tar.gz/%s"
 )
 
 # One workdir for the whole run, removed once. A trap set inside the loop would
@@ -68,8 +69,10 @@ for pin in "${PINS[@]}"; do
   tmp="${workdir}/$(basename "$file").installer"
   accept=()
   [[ "$url" == https://api.github.com/* ]] && accept=(-H 'Accept: application/vnd.github.raw')
+  request_auth=()
+  [[ "$url" == https://api.github.com/* ]] && request_auth=(${auth[@]+"${auth[@]}"})
 
-  if ! http_code=$(curl -fsS ${auth[@]+"${auth[@]}"} ${accept[@]+"${accept[@]}"} --max-time 30 --retry 4 --retry-delay 20 -w '%{http_code}' -o "$tmp" "$url") || [[ "$http_code" != 200 ]]; then
+  if ! http_code=$(curl -fsS ${request_auth[@]+"${request_auth[@]}"} ${accept[@]+"${accept[@]}"} --max-time 30 --retry 4 --retry-delay 20 -w '%{http_code}' -o "$tmp" "$url") || [[ "$http_code" != 200 ]]; then
     echo "FAIL ${version_var}=${version}: cannot fetch ${url}" >&2
     echo "     A version whose installer does not exist is not a version to pin." >&2
     fail=1
@@ -115,7 +118,9 @@ for release_pin in "${RELEASE_PINS[@]}"; do
   release_url=$(printf "$release_url_tmpl" "$release_tag")
   release_metadata="${workdir}/release.json"
   # API responses are read directly: never forward auth headers on redirects.
-  if ! http_code=$(curl -fsS ${auth[@]+"${auth[@]}"} --max-time 30 --retry 4 --retry-delay 20 -w '%{http_code}' -o "$release_metadata" "$release_url") || [[ "$http_code" != 200 ]]; then
+  request_auth=()
+  [[ "$release_url" == https://api.github.com/* ]] && request_auth=(${auth[@]+"${auth[@]}"})
+  if ! http_code=$(curl -fsS ${request_auth[@]+"${request_auth[@]}"} --max-time 30 --retry 4 --retry-delay 20 -w '%{http_code}' -o "$release_metadata" "$release_url") || [[ "$http_code" != 200 ]]; then
     echo "FAIL ${release_var}=${release_tag}: cannot fetch release metadata" >&2
     fail=1
     continue

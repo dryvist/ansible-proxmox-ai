@@ -14,6 +14,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github/workflows/fix-installer-sha.yml"
 INSTALLER_FILE = "roles/hermes_agent/defaults/main/10-installer-and-bundles.yml"
+HINDSIGHT_PLUGIN_FILE = "roles/hermes_agent/defaults/main/155-plugins.yml"
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -151,3 +152,14 @@ printf '%s' "$content" > "$GH_STUB_WRITES"
     else:
         assert result.returncode == 0, result.stderr
         assert writes.read_text() == b64encode(installer.read_bytes()).decode()
+
+
+def test_hindsight_plugin_pin_is_watched_and_allowlisted_for_checksum_fix() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    pull_request = workflow.get("on", workflow.get(True))["pull_request"]
+    commit_step = next(
+        step for step in workflow["jobs"]["fix"]["steps"]
+        if step.get("name") == "Commit the fix onto the Renovate branch"
+    )
+    assert HINDSIGHT_PLUGIN_FILE in pull_request["paths"]
+    assert HINDSIGHT_PLUGIN_FILE in commit_step["run"]
