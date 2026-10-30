@@ -91,11 +91,19 @@ def build_record(kwargs, response_obj, start_time, end_time):
 
 def apply_trace_contract(data, key_metadata, key_alias=None):
     """Fill key defaults, preserve request attribution, and validate benchmarks."""
+    slot = "litellm_metadata" if "litellm_metadata" in data else "metadata"
+    metadata = data.setdefault(slot, {})
+    authenticated_alias = key_alias if isinstance(key_alias, str) else None
+    # Failure callbacks also run when later trace validation rejects a request.
+    for carrier in ("requester_metadata", "spend_logs_metadata", "trace_metadata"):
+        existing = metadata.get(carrier)
+        metadata[carrier] = {
+            **(existing if isinstance(existing, dict) else {}),
+            "key_alias": authenticated_alias,
+        }
     defaults = (key_metadata or {}).get("trace_defaults") or {}
     if not defaults:
         defaults = {"client": key_alias or "unattributed", "runner": "unattributed", "purpose": "unattributed"}
-    slot = "litellm_metadata" if "litellm_metadata" in data else "metadata"
-    metadata = data.setdefault(slot, {})
     request_attribution = {field: metadata.get(field) for field in ("runner", "purpose", "tier")}
     metadata.update(defaults)
     metadata.update({field: value for field, value in request_attribution.items() if value not in (None, "")})
@@ -125,7 +133,7 @@ def apply_trace_contract(data, key_metadata, key_alias=None):
                                "tool_category", "tool_name"] + required
     contract = {field: metadata[field] for field in fields if metadata.get(field) is not None}
     # Attribution comes from the authenticated key, even when callers supplied metadata.
-    contract["key_alias"] = key_alias if isinstance(key_alias, str) else None
+    contract["key_alias"] = authenticated_alias
     metadata["requester_metadata"] = {**(metadata.get("requester_metadata") or {}), **contract}
     metadata["spend_logs_metadata"] = {**(metadata.get("spend_logs_metadata") or {}), **contract}
     metadata["trace_metadata"] = {**(metadata.get("trace_metadata") or {}), **contract}

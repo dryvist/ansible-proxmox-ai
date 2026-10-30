@@ -126,6 +126,25 @@ def test_missing_authenticated_alias_does_not_fall_back_to_caller_metadata(modul
     assert record["key_alias"] is None
 
 
+@pytest.mark.parametrize("required", [None, ["run_id"]])
+def test_rejected_benchmark_keeps_authenticated_alias(module, capsys, required):
+    key = {
+        "trace_defaults": {"client": "eval", "runner": "eval", "purpose": "benchmark"},
+        "trace_required": required,
+    }
+    data = {"metadata": {"requester_metadata": {"key_alias": "caller-value"}}}
+    with pytest.raises(module["HTTPException"]):
+        module["apply_trace_contract"](data, key, key_alias="authenticated-eval")
+    for carrier in ("requester_metadata", "spend_logs_metadata", "trace_metadata"):
+        assert data["metadata"][carrier]["key_alias"] == "authenticated-eval"
+    asyncio.run(module["RequestMetrics"]().async_log_failure_event(
+        _kwargs({"metadata": data["metadata"]}), None, 0, 1
+    ))
+    output = capsys.readouterr().out
+    assert json.loads(output)["key_alias"] == "authenticated-eval"
+    assert "caller-value" not in output
+
+
 def test_no_prompt_or_response_content_leaks(module):
     payload = {
         "model_group": "medium",
