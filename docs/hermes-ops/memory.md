@@ -1,16 +1,17 @@
 # Memory
 
-- **Provider:** Hindsight (knowledge-graph + multi-strategy retrieval) in
-  `local_external` mode — the standalone HA Hindsight service (two stateless
-  replicas behind the Traefik pool at `hindsight.<sub>`, state in the
-  dedicated ai-VLAN Postgres cluster), running alongside the always-on
-  built-in `MEMORY.md` / `USER.md`. Set in `defaults/main.yml`
-  (`hermes_agent_memory_provider: hindsight`, `hermes_agent_memory_mode:
-  local_external`, `hermes_agent_memory_api_url`). The plugin config is
-  rendered to `$HERMES_HOME/hindsight/config.json` (`mode` + `api_url`).
-  Rollback: set `hermes_agent_memory_mode: local_embedded` and converge — the
-  embedded-daemon path (hindsight-embed in the venv, extraction LLM at the
-  router) is still fully wired.
+- **Provider selection:** Hermes uses Hindsight (knowledge-graph + multi-strategy
+  retrieval) in `local_external` mode — the standalone HA Hindsight service (two
+  stateless replicas behind the Traefik pool at `hindsight.<sub>`, state in the
+  dedicated ai-VLAN Postgres cluster) — when `hindsight_service_enabled` is true.
+  Otherwise the fail-closed selection is Hermes builtin memory. Both run
+  alongside the always-on `MEMORY.md` / `USER.md`. The provider is selected in
+  `defaults/main/70-memory.yml`; Hindsight mode and URL are configured by
+  `hermes_agent_memory_mode: local_external` and
+  `hermes_agent_memory_api_url`. The plugin config is rendered to
+  `$HERMES_HOME/hindsight/config.json` (`mode` + `api_url`). To use the embedded
+  rollback path, set `hermes_agent_memory_mode: local_embedded` and converge;
+  the embedded daemon remains wired.
 - **Persistence:** memory now lives in the ai-VLAN Postgres cluster (backed
   up under the database DR standard). The rest of `HERMES_HOME`
   (`/var/lib/hermes/.hermes`) — skills, profiles, the Kanban DB, sessions,
@@ -21,8 +22,10 @@
   call warns "Memory is not available" — a repeated, useless status line.
   An explicit mode (`local_external` today) + the rendered
   `hindsight/config.json` is what makes memory actually work. Verify with a
-  non-fatal `hermes memory status` probe (run in `verify.yml`).
-- **Managed client and readiness gate:** the role installs its exact
+  non-fatal `hermes memory status` probe (run in `verify.yml`). When builtin
+  memory is selected, that command reports the configured core provider and
+  does not prove external Hindsight health; the watchdog omits Hindsight probes.
+- **Managed client and readiness gate:** when Hindsight is selected, the role installs its exact
   `hindsight-client` pin with the installer's uv binary into Hermes's own venv;
   it never relies on the plugin's lazy pip/ensurepip fallback. The post-converge
   gate verifies that distribution and performs a read-only recall through the

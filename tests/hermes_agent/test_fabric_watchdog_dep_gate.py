@@ -164,14 +164,14 @@ def test_version_ordering_including_prereleases(tmp_path, installed, expected) -
 # --- the command-target mechanism in the shell template ---------------------
 
 
-def _render_shell(targets: list[dict]) -> str:
+def _render_shell(targets: list[dict], hindsight_enabled: bool = True) -> str:
     return _env().from_string(SHELL_TEMPLATE).render(
         ansible_managed="ansible managed",
         fabric_watchdog_state_dir="/var/lib/fabric-watchdog",
         fabric_watchdog_probe_timeout=8,
         fabric_watchdog_down_after=3,
         fabric_watchdog_up_after=2,
-        fabric_watchdog_hindsight_enabled=True,
+        fabric_watchdog_hindsight_enabled=hindsight_enabled,
         fabric_watchdog_targets=targets,
     )
 
@@ -230,6 +230,28 @@ def test_the_probe_is_deployed_and_runs_under_the_hermes_venv() -> None:
     assert "/usr/local/bin/hindsight-dep-gate.py" in TASKS
     target = next(t for t in DEFAULTS["fabric_watchdog_targets"] if t["name"] == "hindsight-dep-gate")
     assert "fabric_watchdog_hermes_venv_python" in target["cmd"]
+
+
+def test_hindsight_targets_use_explicit_metadata_and_pause_with_builtin_memory() -> None:
+    required = [target for target in DEFAULTS["fabric_watchdog_targets"] if target.get("requires_hindsight")]
+    assert {target["name"] for target in required} == {"hindsight", "hindsight-dep-gate"}
+    assert "t.requires_hindsight | default(false) | bool" in SHELL_TEMPLATE
+    assert 't.name not in ["hindsight", "hindsight-dep-gate"]' not in SHELL_TEMPLATE
+
+    targets = [
+        {"name": "hindsight", "requires_hindsight": True, "url": "https://memory/health"},
+        {"name": "hindsight-dep-gate", "requires_hindsight": True, "cmd": "/bin/true"},
+        {"name": "future-memory-check", "requires_hindsight": True, "url": "https://memory/check"},
+        {"name": "other", "url": "https://other/health"},
+    ]
+    builtin = _render_shell(targets, hindsight_enabled=False)
+    assert "https://memory/health" not in builtin
+    assert "future-memory-check" not in builtin
+    assert "other/health" in builtin
+
+    external = _render_shell(targets, hindsight_enabled=True)
+    assert "https://memory/health" in external
+    assert "future-memory-check" in external
 
 
 if __name__ == "__main__":

@@ -2,8 +2,9 @@
 # --- Service pulse and Splunk platform health ---------------------------------
 # Two direct crons whose bodies live in the pinned ai-llm-prompts catalog
 # (hermes_agent_prompts_flake_ref) and are loaded by tasks/prompt_catalog.yml.
-# Both keep history in Hindsight between runs (baselines, flaky list, ingest
-# curve, lessons). The open-incident baseline is operator configuration and is
+# Their memory instructions follow the configured provider. Hindsight keeps
+# longer baselines when selected; builtin memory keeps only a compact latest
+# snapshot. The open-incident baseline is operator configuration and is
 # appended to the pulse prompt at load time.
 #
 # service-pulse: hourly at :20, one report to #hermes-all with live values and
@@ -23,7 +24,6 @@ hermes_agent_service_pulse_endpoints: |
     tracing service        https://langfuse.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/api/public/health
     Splunk tool route      https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/splunk
     own gateway            https://hermes-api.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health
-    memory service         https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health
     open incidents (count) https://zammad.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/api/v1/tickets/search
                            ?query=state.name:open&only_total_count=true (one URL: join the two lines)
     high incidents (count) https://zammad.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/api/v1/tickets/search
@@ -32,10 +32,18 @@ hermes_agent_service_pulse_endpoints: |
     both with header "Authorization: Token token=${ZAMMAD_API_TOKEN}"; each answers {"total_count": N}
     and nothing else, so read the number and never fetch the tickets themselves.
 
+  Health evidence: only HTTP 200 means a health endpoint is healthy; HTTP 5xx
+  means unhealthy. HTTP 401, 403, or 404 only proves that something answered,
+  so report health as unverified. A GET to the Splunk tool route returning 401
+  or 406 proves reachability only; never count either as healthy.
+
+hermes_agent_service_pulse_hindsight_endpoint: >-
+  memory service https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health
+
 # splunk-health: every two hours at :01 (a minute no other agentic job uses),
 # under the Splunk admin profile so the findings share that profile's memory
 # bank. An open-ended review of Splunk's own health: the catalog body chooses
-# what to inspect and keeps its baselines and known noise in Hindsight.
+# what to inspect; prompt memory follows the configured provider.
 hermes_agent_splunk_health_enabled: true
 hermes_agent_splunk_health_cron_name: splunk-health
 hermes_agent_splunk_health_cron_schedule: "1 */2 * * *"
@@ -51,7 +59,6 @@ hermes_agent_direct_cron_jobs_service_pulse:
     deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
     enabled: >-
       {{ hermes_agent_service_pulse_enabled | bool
-         and (hindsight_service_enabled | default(false) | bool)
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}

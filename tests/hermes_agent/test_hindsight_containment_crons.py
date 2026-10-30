@@ -18,6 +18,8 @@ def _enabled(expression: str, service_enabled: bool) -> bool:
     context = {
         "hindsight_service_enabled": service_enabled,
         "hermes_agent_service_pulse_enabled": True,
+        "hermes_agent_splunk_health_enabled": True,
+        "hermes_agent_llm_stats_hourly_enabled": service_enabled,
         "hermes_agent_self_audit_enabled": True,
         "hermes_agent_splunk_monitor_enabled": True,
         "hermes_agent_splunk_mcp_url": "https://mcp.example.test/splunk",
@@ -29,7 +31,7 @@ def _enabled(expression: str, service_enabled: bool) -> bool:
     return yaml.safe_load(ENV.from_string(expression).render(**context))
 
 
-def test_only_self_audit_and_service_pulse_follow_hindsight_containment() -> None:
+def test_only_hindsight_dependent_crons_follow_hindsight_containment() -> None:
     service = yaml.safe_load((DEFAULTS / "48-service-pulse-and-splunk-health.yml").read_text())
     self_audit = yaml.safe_load((DEFAULTS / "145-self-audit.yml").read_text())
     pulse_jobs = service["hermes_agent_direct_cron_jobs_service_pulse"]
@@ -37,11 +39,19 @@ def test_only_self_audit_and_service_pulse_follow_hindsight_containment() -> Non
     splunk_health = next(job for job in pulse_jobs if job["name"] == "{{ hermes_agent_splunk_health_cron_name }}")
     audit = self_audit["hermes_agent_direct_cron_jobs_self_audit"][0]
 
-    assert not _enabled(pulse["enabled"], False)
+    assert _enabled(pulse["enabled"], False)
     assert _enabled(pulse["enabled"], True)
+    assert _enabled(splunk_health["enabled"], False)
+    assert _enabled(splunk_health["enabled"], True)
     assert not _enabled(audit["enabled"], False)
     assert _enabled(audit["enabled"], True)
-    assert "hindsight_service_enabled" not in splunk_health["enabled"]
+    hourly = yaml.safe_load((DEFAULTS / "49-llm-stats-hourly.yml").read_text())
+    assert "hindsight_service_enabled | default(false) | bool" in hourly[
+        "hermes_agent_llm_stats_hourly_enabled"
+    ]
+    job = hourly["hermes_agent_direct_cron_jobs_llm_stats"][0]
+    assert not _enabled(job["enabled"], False)
+    assert _enabled(job["enabled"], True)
 
 
 def test_direct_cron_disabled_state_withdraws_installed_job() -> None:
