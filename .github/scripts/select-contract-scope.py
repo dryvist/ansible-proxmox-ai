@@ -78,7 +78,7 @@ ROLE_TESTS = {
     "hermes_agent": {"tests/hermes_agent/"},
     "fabric_watchdog": {"tests/hermes_agent/"},
     "dify_docker": set(),
-    "langflow_docker": {"tests/agent_concurrency/"},
+    "langflow_docker": {"tests/agent_concurrency/", "tests/langflow_docker/"},
     "langfuse_docker": {"tests/langfuse_docker/"},
     "hindsight_docker": {"tests/hindsight_docker/"},
     "hindsight_bank_dr": {"tests/hindsight_bank_dr/"},

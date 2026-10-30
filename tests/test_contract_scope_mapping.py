@@ -40,6 +40,7 @@ def router_paths(shards: list[dict[str, str]]) -> list[str]:
     ("roles/llama_cpp/tasks/main.yml", "tests/llama_cpp/"),
     ("roles/llamacpp_release/tasks/load.yml", "tests/llamacpp_release/"),
     ("roles/langflow_docker/templates/docker-compose.yml.j2", "tests/agent_concurrency/"),
+    ("roles/langflow_docker/tasks/main.yml", "tests/langflow_docker/"),
     ("roles/langfuse_docker/tasks/reconcile-stage0-evaluation.yml", "tests/langfuse_docker/"),
 ])
 def test_production_role_selects_its_existing_contract_family(path: str, target: str) -> None:
