@@ -17,9 +17,7 @@ def test_classifier_pass_through_render():
     template = env.from_string(TEMPLATE.read_text())
     context = {
         "groups": {"llm_classify": ["classifier"]},
-        "hostvars": {"classifier": {"laya_systemone_port": 1234}},
-        "_llm_router_laya_defaults": {"laya_systemone_port": 5678},
-        "llm_router_apex_domain": "domain",
+        "llm_router_classifier_url": "http://classifier.domain:1234/v1/systemone",
         "llm_router_enforce_fallback_model_access": True,
         "llm_router_background_health_checks": False,
     }
