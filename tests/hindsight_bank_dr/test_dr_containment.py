@@ -61,7 +61,7 @@ def test_dr_defaults_follow_the_service_gate():
 @pytest.mark.parametrize(("task_name", "valid", "invalid"), [
     ("Require every DR unit-file check to complete", {"stat": {"exists": True}}, {"unreachable": True}),
     ("Require every requested DR stop to complete", {"changed": True}, {"unreachable": True}),
-    ("Require existing DR units to be inactive", {"rc": 3, "stdout": "inactive"}, {"rc": 3, "stdout": "failed"}),
+    ("Require existing DR units to be stopped", {"rc": 3, "stdout": "inactive"}, {"rc": 0, "stdout": "active"}),
     ("Require existing DR timers to be disabled", {"rc": 1, "stdout": "disabled"}, {"rc": 1, "stdout": "enabled"}),
 ])
 def test_dr_checks_reject_lost_or_unverified_operations(task_name, valid, invalid):
@@ -73,3 +73,18 @@ def test_dr_checks_reject_lost_or_unverified_operations(task_name, valid, invali
     assert not all(check(item=invalid) for check in checks)
     assert not all(check(item={**valid, "unreachable": True}) for check in checks)
     assert not all(check(item={**valid, "failed": True}) for check in checks)
+
+
+@pytest.mark.parametrize(("rc", "state", "accepted"), [
+    (3, "inactive", True),
+    (3, "failed", True),
+    (0, "failed", False),
+    (1, "failed", False),
+    (0, "active", False),
+])
+def test_dr_unit_stopped_state_keeps_failed_status(rc, state, accepted):
+    tasks = yaml.safe_load((ROLE / "tasks/stop.yml").read_text())
+    task = next(task for task in tasks if task["name"] == "Require existing DR units to be stopped")
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+    checks = [env.compile_expression(expr) for expr in task["ansible.builtin.assert"]["that"]]
+    assert all(check(item={"rc": rc, "stdout": state}) for check in checks) is accepted

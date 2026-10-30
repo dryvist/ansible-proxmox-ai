@@ -42,6 +42,7 @@ def lifecycle(tmp_path: Path):
     (backend / "tasks/main.yml").write_text("- ansible.builtin.debug: {msg: BACKEND_MAIN}\n")
     (router / "tasks/registry.yml").write_text("- ansible.builtin.debug: {msg: REGISTRY}\n")
     (dr / "tasks/stop.yml").write_text(
+        "- ansible.builtin.debug: {msg: DR_STOP}\n"
         "- ansible.builtin.set_fact:\n"
         "    ansible_connection: ssh\n    ansible_host: 127.0.0.1\n    ansible_port: 1\n"
         "  when: fixture_disconnect | default(false) | bool and inventory_hostname == 'h1'\n"
@@ -201,4 +202,4 @@ def test_maintenance_rejects_wrong_target_or_partial_fleet_before_stop(lifecycle
     assert result.returncode != 0
     assert "Approved maintenance requires the exact immutable target" in result.stdout
     assert "BACKEND_STOP" not in result.stdout
-    assert "Stop DR timers and active jobs" not in result.stdout
+    assert "DR_STOP" not in result.stdout

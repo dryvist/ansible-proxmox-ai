@@ -60,6 +60,52 @@
   loop_control:
     label: "{{ item.item.0 }}.{{ item.item.1 }}"
 
+- name: Stop one fixture service before making it a failed oneshot
+  ansible.builtin.systemd_service:
+    name: hindsight-bank-export.service
+    state: stopped
+
+- name: Install a harmless failing oneshot fixture
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/hindsight-bank-export.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Molecule failed Hindsight DR fixture
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/false
+
+- name: Reload systemd after changing the fixture service
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Run the failing oneshot fixture
+  ansible.builtin.command:
+    argv: [systemctl, start, hindsight-bank-export.service]
+  register: hindsight_fixture_dr_failure
+  changed_when: true
+  failed_when: false
+
+- name: Require the oneshot fixture to have failed
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_dr_failure.rc != 0
+
+- name: Read the failed fixture state before containment
+  ansible.builtin.command:
+    argv: [systemctl, is-active, hindsight-bank-export.service]
+  register: hindsight_fixture_dr_failed_before
+  changed_when: false
+  failed_when: false
+
+- name: Require the service to retain its failed state before containment
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_dr_failed_before.rc == 3
+      - hindsight_fixture_dr_failed_before.stdout | trim == 'failed'
+
 - name: Apply the real disabled DR role without S3 credentials
   ansible.builtin.include_role:
     name: hindsight_bank_dr
@@ -91,11 +137,13 @@
   changed_when: false
   failed_when: false
 
-- name: Require every timer and active service to be stopped
+- name: Require every timer and service to be stopped without resetting the failed state
   ansible.builtin.assert:
     that:
       - item.rc == 3
-      - item.stdout | trim == 'inactive'
+      - >-
+        item.stdout | trim ==
+        ('failed' if item.item.0 == 'hindsight-bank-export' and item.item.1 == 'service' else 'inactive')
   loop: "{{ hindsight_fixture_dr_active.results }}"
   loop_control:
     label: "{{ item.item.0 }}.{{ item.item.1 }}"
