@@ -132,6 +132,7 @@ if __name__ == "__main__":
         test_incident_baseline_is_rendered_from_config_and_compared_to_live_total,
         test_builtin_service_pulse_keeps_provider_neutral_catalog_and_omits_hindsight_health,
         test_service_pulse_health_endpoint_is_provider_specific,
+        test_daily_status_adds_hindsight_health_endpoint_only_for_hindsight_provider,
         test_splunk_health_prompt_adapts_to_builtin_memory,
     ]
     for check in checks:
