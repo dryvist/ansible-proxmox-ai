@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -233,11 +234,34 @@ def test_router_jobs_share_the_cached_dependency_action(job: str) -> None:
     assert any(step.get("uses") == "./.github/actions/router-deps" for step in steps)
 
 
-def test_refresh_action_installs_pinned_requirements() -> None:
-    action = yaml.safe_load((WORKFLOWS.parent / "actions/refresh-contracts/action.yml").read_text())
-    step = next(step for step in action["runs"]["steps"]
-                if step.get("uses", "").startswith("nick-fields/retry@"))
-    assert step["with"]["command"] == '"$GALAXY" collection install -r requirements.yml --force'
+def test_exact_galaxy_cache_hits_do_not_force_reinstall_pinned_requirements() -> None:
+    action_files = (
+        WORKFLOWS.parent / "actions/router-deps/action.yml",
+        WORKFLOWS.parent / "actions/inventory-load-contract/action.yml",
+    )
+    for path in action_files:
+        steps = yaml.safe_load(path.read_text())["runs"]["steps"]
+        assert not any(step.get("uses") == "./.github/actions/refresh-contracts" for step in steps)
+        install = next(step for step in steps if step.get("uses", "").startswith("nick-fields/retry@"))
+        assert install["if"].endswith("outputs.cache-hit != 'true'")
+
+    workflow = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())
+    syntax_steps = workflow["jobs"]["syntax-check"]["steps"]
+    assert not any(step.get("uses") == "./.github/actions/refresh-contracts" for step in syntax_steps)
+    install = next(step for step in syntax_steps if step.get("uses", "").startswith("nick-fields/retry@"))
+    assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
+
+
+def test_hermes_and_hindsight_plugin_updates_share_manual_compatibility_group() -> None:
+    config = json.loads((WORKFLOWS.parents[1] / "renovate.json").read_text())
+    hermes_rule = next(rule for rule in config["packageRules"]
+                       if "NousResearch/hermes-agent" in rule.get("matchPackageNames", []))
+    plugin_rule = next(rule for rule in config["packageRules"]
+                       if "vectorize-io/hindsight" in rule.get("matchPackageNames", [])
+                       and rule.get("matchDatasources") == ["github-tags"])
+    assert hermes_rule["groupName"] == plugin_rule["groupName"]
+    assert hermes_rule["automerge"] is False
+    assert plugin_rule["automerge"] is False
 
 
 def test_router_dependency_action_caches_pinned_requirements() -> None:
