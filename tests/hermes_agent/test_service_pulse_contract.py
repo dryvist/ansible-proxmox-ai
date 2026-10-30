@@ -130,7 +130,7 @@ if __name__ == "__main__":
     checks = [
         test_router_readiness_probe_matches_the_current_response_shape,
         test_incident_baseline_is_rendered_from_config_and_compared_to_live_total,
-        test_builtin_service_pulse_uses_compact_memory_and_omits_hindsight_health,
+        test_builtin_service_pulse_keeps_provider_neutral_catalog_and_omits_hindsight_health,
         test_service_pulse_health_endpoint_is_provider_specific,
         test_splunk_health_prompt_adapts_to_builtin_memory,
     ]
