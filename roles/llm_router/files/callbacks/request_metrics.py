@@ -49,6 +49,7 @@ def build_record(kwargs, response_obj, start_time, end_time):
     payload = kwargs.get("standard_logging_object") or {}
     metadata = payload.get("metadata") or {}
     error_info = payload.get("error_information") or {}
+    contract = metadata.get("requester_metadata") or {}
 
     start = payload.get("startTime")
     end = payload.get("endTime")
@@ -73,12 +74,11 @@ def build_record(kwargs, response_obj, start_time, end_time):
         "prompt_tokens": payload.get("prompt_tokens"),
         "completion_tokens": payload.get("completion_tokens"),
         "cache_hit": payload.get("cache_hit"),
-        "key_alias": metadata.get("user_api_key_alias"),
+        "key_alias": contract.get("key_alias"),
         "call_id": payload.get("litellm_call_id") or payload.get("id"),
         "trace_id": payload.get("trace_id"),
     }
     # Emit only the explicit contract, never arbitrary metadata or credentials.
-    contract = metadata.get("requester_metadata") or {}
     safe_fields = (
         "client", "runtime", "runner", "purpose", "tier", "environment", "release",
         "session_id", "trace_user_id", "trace_name", "generation_name", "tool_category", "tool_name",
@@ -124,6 +124,8 @@ def apply_trace_contract(data, key_metadata, key_alias=None):
     fields = list(defaults) + ["session_id", "trace_user_id", "trace_name", "generation_name", "trace_release", "trace_version",
                                "tool_category", "tool_name"] + required
     contract = {field: metadata[field] for field in fields if metadata.get(field) is not None}
+    # Attribution comes from the authenticated key, even when callers supplied metadata.
+    contract["key_alias"] = key_alias if isinstance(key_alias, str) else None
     metadata["requester_metadata"] = {**(metadata.get("requester_metadata") or {}), **contract}
     metadata["spend_logs_metadata"] = {**(metadata.get("spend_logs_metadata") or {}), **contract}
     metadata["trace_metadata"] = {**(metadata.get("trace_metadata") or {}), **contract}

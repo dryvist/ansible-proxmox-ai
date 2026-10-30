@@ -6,6 +6,7 @@ system_merge and lock tests."""
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import sys
 import types
@@ -59,7 +60,7 @@ def test_success_record_has_expected_fields(module):
         "cache_hit": False,
         "litellm_call_id": "call-123",
         "trace_id": "trace-abc",
-        "metadata": {"user_api_key_alias": "ci-reviewer"},
+        "metadata": {"requester_metadata": {"key_alias": "ci-reviewer"}},
     }
     record = module["build_record"](_kwargs(payload), None, 100.0, 102.5)
     assert record["latency_ms"] == pytest.approx(2500.0)
@@ -98,6 +99,31 @@ def test_failure_record_carries_error_class(module):
     assert record["status"] == "failure"
     assert record["error_class"] == "RateLimitError"
     assert record["call_id"] == "req-9"
+
+
+@pytest.mark.parametrize("hook", ["async_log_success_event", "async_log_failure_event"])
+def test_logged_alias_comes_from_authenticated_key(module, capsys, hook):
+    data = {
+        "metadata": {
+            "user_api_key_alias": "untrusted-logging-value",
+            "requester_metadata": {"key_alias": "untrusted-request-value"},
+        },
+    }
+    module["apply_trace_contract"](data, None, key_alias="authenticated-caller")
+    kwargs = _kwargs({"metadata": data["metadata"]})
+    asyncio.run(getattr(module["RequestMetrics"](), hook)(kwargs, None, 0, 1))
+    output = capsys.readouterr().out
+    record = json.loads(output)
+    assert record["key_alias"] == "authenticated-caller"
+    assert "untrusted-logging-value" not in output
+    assert "untrusted-request-value" not in output
+
+
+def test_missing_authenticated_alias_does_not_fall_back_to_caller_metadata(module):
+    data = {"metadata": {"requester_metadata": {"key_alias": "caller-value"}}}
+    module["apply_trace_contract"](data, None)
+    record = module["build_record"](_kwargs({"metadata": data["metadata"]}), None, 0, 1)
+    assert record["key_alias"] is None
 
 
 def test_no_prompt_or_response_content_leaks(module):
