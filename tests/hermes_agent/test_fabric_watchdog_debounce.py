@@ -49,6 +49,9 @@ class Watchdog:
         context = {
             **DEFAULTS,
             "ansible_managed": "test render",
+            # The template harness reads YAML defaults as data; model the
+            # resolved builtin-provider value used by this probe fixture.
+            "fabric_watchdog_hindsight_enabled": False,
             "fabric_watchdog_state_dir": str(self.state_dir),
             "fabric_watchdog_ntfy_url": NTFY_URL,
             "fabric_watchdog_targets": [{"name": "probe", "url": TARGET_URL, "ok_codes": "200"}],

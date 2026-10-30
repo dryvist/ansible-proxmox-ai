@@ -54,8 +54,9 @@ hermes_agent_daily_status_cron_prompt_file: hermes-daily-fabric-status.md
 # hermes_agent_api_server_port and a dashboard on hermes_agent_dashboard_port,
 # localhost ports for two services that live behind their own FQDNs, and a
 # domain that does not resolve at all. Every probe returned 000, so it posted an
-# hourly total-outage alarm while the fabric was healthy (mcp 406, llm 401, both
-# the documented healthy codes). That card now reports to the issues channel,
+# hourly total-outage alarm while MCP returned its documented 406 protocol
+# response and the LLM endpoint returned 401 (reachable, but not a health
+# signal). That card now reports to the issues channel,
 # where the operator asked for near-silence, so fabricated alarms are the one
 # failure mode that would make the channel worthless.
 #
@@ -75,13 +76,16 @@ hermes_agent_daily_status_endpoints: |
     gateway process   pgrep -fa hermes-gateway
     gateway API       http://localhost:{{ hermes_agent_api_server_port }}/
     dashboard         http://localhost:{{ hermes_agent_dashboard_port }}/
-    memory pool       https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/
+  {% if hermes_agent_memory_provider == 'hindsight' %}
+    memory service    https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health
+  {% endif %}
 
-  Reading the results. Any HTTP status at all — 200, 302, 401, 403, 404 — means
-  the service answered, so it is UP; authentication and routing are not health.
-  Only 000 means the probe never reached anything, and 000 is reported as a
-  "probe failed" observation, never as a service being down. Never escalate a
-  single 000: state what you saw and re-check it next run.
+  Reading the results. For health endpoints, only HTTP 200 means healthy; HTTP
+  5xx means unhealthy. HTTP 401, 403, or 404 only proves an endpoint answered,
+  not that the service is healthy. The Splunk tool route is a protocol probe:
+  its documented 401 or 406 means reachable, not healthy. HTTP 000 means the
+  probe got no response; report it as unverified and re-check next run. Never
+  call a 401/404 health or escalate one as a service outage by itself.
 
   Do NOT probe the MCP fabric or the LLM front door. fabric_watchdog already
   probes both every 2 minutes and alerts to this same channel on each

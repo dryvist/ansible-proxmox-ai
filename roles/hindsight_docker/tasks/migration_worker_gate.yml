@@ -1,0 +1,42 @@
+---
+- name: Read processing workers with the source image before a schema change
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network=host
+      - -e
+      - HINDSIGHT_API_DATABASE_URL
+      - "{{ hindsight_docker_backup_image }}"
+      - hindsight-admin
+      - worker-status
+  environment:
+    HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
+  register: hindsight_docker_migration_workers
+  run_once: true
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Require recognized worker output and only identities from the stopped fleet
+  ansible.builtin.assert:
+    that:
+      - hindsight_docker_migration_workers.rc | default(-1) == 0
+      - >-
+        (_worker_output | trim == 'No processing tasks found')
+        or (_worker_totals | length == 1
+            and _worker_ids | length > 0
+            and (_worker_totals | first | int) == (_worker_ids | length)
+            and (_worker_output | regex_findall('(?m)^Worker: ') | length) == (_worker_ids | length)
+            and (_worker_ids | difference(groups['hindsight_group']) | length) == 0)
+    fail_msg: >-
+      Hindsight worker status could not prove that all claimed worker identities
+      belong to the stopped inventory. Check unknown workers before migrating.
+    quiet: true
+  vars:
+    _worker_output: "{{ hindsight_docker_migration_workers.stdout | default('') }}"
+    _worker_ids: "{{ _worker_output | regex_findall('(?m)^Worker: (.+) [(][0-9]+ task[(]s[)][)]$') }}"
+    _worker_totals: "{{ _worker_output | regex_findall('^Processing tasks across ([0-9]+) worker[(]s[)]:') }}"
+  run_once: true
+  no_log: true

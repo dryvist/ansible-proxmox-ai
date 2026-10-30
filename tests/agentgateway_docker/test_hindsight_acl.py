@@ -79,6 +79,17 @@ def test_route_is_omitted_without_the_tenant_key_or_an_agent_with_a_trust_tier()
     assert not [r for r in none_tiered if r["matches"][0]["path"].get("pathPrefix") == "/hindsight"]
 
 
+def test_service_containment_omits_only_the_hindsight_route() -> None:
+    routes = _routes(_render_hindsight(service_enabled=False))
+    paths = {
+        route["matches"][0]["path"].get("pathPrefix")
+        or route["matches"][0]["path"].get("exact")
+        for route in routes
+    }
+    assert not any(path and path.startswith("/hindsight") for path in paths)
+    assert "/splunk" in paths
+
+
 # --- positive cases ---------------------------------------------------------
 
 

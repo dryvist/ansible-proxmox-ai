@@ -30,7 +30,7 @@ def test_compose_render_fails_without_the_api_key() -> None:
 
 
 def test_hindsight_health_probe_stays_unauthenticated() -> None:
-    tasks = yaml.safe_load((REPO_ROOT / "roles/hindsight_docker/tasks/main.yml").read_text())
+    tasks = yaml.safe_load((REPO_ROOT / "roles/hindsight_docker/tasks/deploy.yml").read_text())
     health = next(task for task in tasks if task.get("name") == "Verify hindsight health endpoint")
     request = health["ansible.builtin.uri"]
     assert request["method"] == "GET"

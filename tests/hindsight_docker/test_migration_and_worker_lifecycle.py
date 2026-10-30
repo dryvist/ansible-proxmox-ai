@@ -213,7 +213,7 @@ def test_site_yml_imports_the_hindsight_play() -> None:
 
 def test_site_yml_wires_the_migration_gate_before_the_isolated_block() -> None:
     hindsight_plays = yaml.safe_load(HINDSIGHT_PLAYBOOK.read_text())
-    rolling_play = hindsight_plays[0]
+    rolling_play = next(play for play in hindsight_plays if play["name"] == "Configure Hindsight agent-memory service")
     assert rolling_play["max_fail_percentage"] == 0
     assert rolling_play["serial"] == 1
     pre_task_names = [t["name"] for t in rolling_play["pre_tasks"]]
@@ -247,12 +247,12 @@ def test_decommission_runs_from_its_own_final_play_not_serial_one() -> None:
     # non-serial play that runs after every batch of the rolling play above
     # has redeployed and passed its health check.
     hindsight_plays = yaml.safe_load(HINDSIGHT_PLAYBOOK.read_text())
-    # 3 plays: the rolling hindsight_docker redeploy, this decommission
-    # sweep, and (a separate lane's) hindsight_bank_dr logical-DR play —
-    # order matters for the two asserted below, the third is out of scope
-    # for this test file.
-    assert len(hindsight_plays) == 3
-    decommission_play = hindsight_plays[1]
+    decommission_play = next(
+        play for play in hindsight_plays
+        if play["name"] == "Decommission stale Hindsight worker ids after every replica has redeployed"
+    )
+    rolling_play = next(play for play in hindsight_plays if play["name"] == "Configure Hindsight agent-memory service")
+    assert hindsight_plays.index(decommission_play) > hindsight_plays.index(rolling_play)
     assert decommission_play["hosts"] == "hindsight_group"
     assert "serial" not in decommission_play
     task_names = [t["name"] for t in decommission_play["tasks"]]
@@ -264,6 +264,7 @@ def test_decommission_runs_from_its_own_final_play_not_serial_one() -> None:
         "name": "hindsight_docker",
         "tasks_from": "decommission_stale_workers.yml",
     }
+    assert "hindsight_service_enabled" in decommission_task["when"]
 
 
 if __name__ == "__main__":

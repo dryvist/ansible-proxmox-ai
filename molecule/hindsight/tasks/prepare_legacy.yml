@@ -1,0 +1,194 @@
+---
+- name: Start pinned PostgreSQL and pgvector fixture
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - hindsight-postgres
+      - -p
+      - "5432:5432"
+      - -e
+      - POSTGRES_USER=hindsight
+      - -e
+      - POSTGRES_PASSWORD=molecule-test-password
+      - -e
+      - POSTGRES_DB=hindsight
+      - "{{ hindsight_fixture_postgres.image }}"
+  changed_when: true
+
+- name: Wait for PostgreSQL
+  ansible.builtin.command: docker exec hindsight-postgres pg_isready -U hindsight
+  register: hindsight_fixture_pg
+  until: hindsight_fixture_pg.rc == 0
+  retries: 30
+  delay: 2
+  changed_when: false
+
+- name: Discover the Docker bridge gateway
+  ansible.builtin.command: >-
+    docker network inspect bridge
+    --format {% raw %}'{{ (index .IPAM.Config 0).Gateway }}'{% endraw %}
+  register: hindsight_fixture_gateway
+  changed_when: false
+
+- name: Deploy the legacy image through the managed Compose role
+  vars:
+    hindsight_service_enabled: true
+    hindsight_docker_migration_approved_image: "{{ hindsight_docker_image }}"
+    hindsight_docker_image: "{{ hindsight_fixture_legacy_image }}"
+    hindsight_docker_storage_driver: fuse-overlayfs
+    hindsight_docker_api_port: 8888
+    hindsight_docker_cp_port: 9999
+    hindsight_docker_db_host: "{{ hindsight_fixture_gateway.stdout | trim }}"
+    hindsight_docker_db_port: 5432
+    hindsight_docker_db_password: molecule-test-password
+    hindsight_docker_cp_access_key: molecule-test-cp-key
+    hindsight_docker_api_key: molecule-test-hindsight-api-key
+    hindsight_docker_llm_api_key: molecule-test-llm-key
+    hindsight_docker_llm_base_url: "http://127.0.0.1:9/v1"
+    hindsight_docker_llm_provider: mock
+    hindsight_retain_model: ai-default
+    hindsight_docker_worker_id: hindsight-test
+    ai_orchestration_otel_endpoint: "http://127.0.0.1:9/molecule-fixture"
+    hindsight_docker_startup_timeout: 300
+    hindsight_docker_health_retries: 18
+    hindsight_docker_health_delay: 5
+  block:
+    - name: Initialize the fresh fixture using the legacy image
+      ansible.builtin.include_role:
+        name: hindsight_docker
+        tasks_from: run_db_migration.yml
+
+    - name: Start the legacy managed Compose service
+      ansible.builtin.include_role:
+        name: hindsight_docker
+
+- name: Capture the legacy container's cache mount
+  ansible.builtin.command: docker inspect hindsight
+  register: hindsight_fixture_legacy_container
+  changed_when: false
+
+- name: Select the legacy named cache
+  ansible.builtin.set_fact:
+    hindsight_fixture_legacy_cache: >-
+      {{ (hindsight_fixture_legacy_container.stdout | from_json | first).Mounts
+         | selectattr('Destination', 'equalto', '/home/hindsight/.cache')
+         | map(attribute='Name') | first | default('') }}
+
+- name: Require the legacy service to use a named cache
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_legacy_cache | length > 0
+
+- name: Preserve the legacy cache name for upgrade verification
+  ansible.builtin.copy:
+    dest: /tmp/hindsight-legacy-cache-name
+    content: "{{ hindsight_fixture_legacy_cache }}"
+    mode: "0600"
+
+- name: Retain a real legacy memory
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8888/v1/default/banks/molecule-migration/memories
+    method: POST
+    headers:
+      Authorization: Bearer molecule-test-hindsight-api-key
+    body_format: json
+    body:
+      items:
+        - content: Alice lives in Berlin and grows orchids.
+          document_id: molecule-legacy-document
+      async: false
+    status_code: 200
+    timeout: 120
+  changed_when: true
+
+- name: Recall the legacy memory
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8888/v1/default/banks/molecule-migration/memories/recall
+    method: POST
+    headers:
+      Authorization: Bearer molecule-test-hindsight-api-key
+    body_format: json
+    body:
+      query: Where does Alice live?
+    return_content: true
+    status_code: 200
+    timeout: 120
+  register: hindsight_legacy_recall
+
+- name: Require the legacy API to recall the retained fact
+  ansible.builtin.assert:
+    that:
+      - "'Berlin' in hindsight_legacy_recall.content"
+
+- name: Capture actual legacy memory IDs, text and vectors
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - hindsight-postgres
+      - psql
+      - -U
+      - hindsight
+      - -d
+      - hindsight
+      - -tAc
+      - >-
+        SELECT coalesce(json_agg(json_build_object('id', id, 'document_id', document_id,
+        'text', text, 'embedding', embedding::text) ORDER BY id), '[]'::json)
+        FROM memory_units WHERE bank_id = 'molecule-migration'
+        AND document_id = 'molecule-legacy-document' AND embedding IS NOT NULL
+  register: hindsight_legacy_rows
+  changed_when: false
+
+- name: Require populated legacy facts and vectors
+  ansible.builtin.assert:
+    that:
+      - hindsight_legacy_rows.stdout | from_json | length > 0
+      - "'Berlin' in hindsight_legacy_rows.stdout"
+
+- name: Persist the original rows for independent Molecule stages
+  ansible.builtin.copy:
+    dest: /tmp/hindsight-legacy-rows.json
+    content: "{{ hindsight_legacy_rows.stdout }}"
+    mode: "0600"
+
+- name: Hash the legacy Hugging Face model blobs
+  ansible.builtin.import_tasks: hash_cache_blobs.yml
+  vars:
+    hindsight_fixture_cache_name: "{{ hindsight_fixture_legacy_cache }}"
+
+- name: Preserve the legacy model-blob hashes for later stages
+  ansible.builtin.copy:
+    dest: /tmp/hindsight-legacy-cache-hashes.json
+    content: "{{ hindsight_fixture_cache_hash_lines | to_json }}"
+    mode: "0600"
+
+- name: Stop the old managed API before migration without deleting its cache
+  ansible.builtin.include_role:
+    name: hindsight_docker
+    tasks_from: contain.yml
+
+- name: Back up legacy data with the matching legacy image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --user=root
+      - --network=host
+      - -v
+      - /tmp:/fixture
+      - -e
+      - HINDSIGHT_API_DATABASE_URL
+      - "{{ hindsight_fixture_legacy_image }}"
+      - hindsight-admin
+      - backup
+      - /fixture/hindsight-legacy-backup.zip
+  environment:
+    HINDSIGHT_API_DATABASE_URL: >-
+      {{ 'postgresql://hindsight:molecule-test-password@'
+         ~ (hindsight_fixture_gateway.stdout | trim) ~ ':5432/hindsight' }}
+  changed_when: true
