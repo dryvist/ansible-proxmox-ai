@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.11.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.10.0...v2.11.0) (2026-10-30)
+
+
+### Features
+
+* **hindsight:** upgrade to 1.1 with explicit service controls ([a376a53](https://github.com/dryvist/ansible-proxmox-ai/commit/a376a534358ab5a1d77a4c9d9710de640a5fa09b))
+
+
+### Bug Fixes
+
+* **dify_docker:** bind-mount sandbox /var/sandbox ([#1802](https://github.com/dryvist/ansible-proxmox-ai/issues/1802)) ([ef285e5](https://github.com/dryvist/ansible-proxmox-ai/commit/ef285e50c858c219dbe7b28b899c0ed65f88456c))
+* **fabric_watchdog:** keep the ceiling at or above a job's own cadence ([#1805](https://github.com/dryvist/ansible-proxmox-ai/issues/1805)) ([3ff16a5](https://github.com/dryvist/ansible-proxmox-ai/commit/3ff16a5eecc361e7a682c89430af9b56d231036d))
+* **gpu-serving:** expose nvidia_gpu_guest defaults to engine roles ([#1804](https://github.com/dryvist/ansible-proxmox-ai/issues/1804)) ([b13c317](https://github.com/dryvist/ansible-proxmox-ai/commit/b13c3175e20a7e66e23dd23da95896dc82459196))
+
 ## [2.10.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.9.0...v2.10.0) (2026-10-30)
 
 
