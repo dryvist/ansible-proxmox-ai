@@ -33,7 +33,11 @@ def test_front_door_probe_accepts_the_live_unauthenticated_health_response() -> 
 def test_rendered_script_keeps_only_the_front_door_llm_target() -> None:
     rendered = render(
         template_text(ROLE, "fabric-watchdog.sh.j2"),
-        {**DEFAULTS, "ansible_managed": "test render"},
+        {
+            **DEFAULTS,
+            "fabric_watchdog_hindsight_enabled": False,
+            "ansible_managed": "test render",
+        },
     )
     target_names = re.findall(
         r"^# --- ([a-z][a-z0-9-]*) -{3,}$", rendered, re.MULTILINE
@@ -42,10 +46,25 @@ def test_rendered_script_keeps_only_the_front_door_llm_target() -> None:
     assert set(target_names) == {
         "mcp-fabric",
         "llm-front-door",
-        "hindsight",
-        "hindsight-dep-gate",
     }
     assert all(
-        name == "llm-front-door" or not name.startswith("llm-")
+        name in {"mcp-fabric", "llm-front-door"}
         for name in target_names
     )
+
+
+def test_hindsight_targets_return_only_when_the_service_is_enabled() -> None:
+    template = template_text(ROLE, "fabric-watchdog.sh.j2")
+    enabled = render(
+        template,
+        {**DEFAULTS, "fabric_watchdog_hindsight_enabled": True, "ansible_managed": "test render"},
+    )
+    disabled = render(
+        template,
+        {**DEFAULTS, "fabric_watchdog_hindsight_enabled": False, "ansible_managed": "test render"},
+    )
+    def target_names(text: str) -> set[str]:
+        return set(re.findall(r"^# --- ([a-z][a-z0-9-]*) -{3,}$", text, re.MULTILINE))
+
+    assert target_names(enabled) - target_names(disabled) == {"hindsight", "hindsight-dep-gate"}
+    assert {"mcp-fabric", "llm-front-door"} <= target_names(disabled)

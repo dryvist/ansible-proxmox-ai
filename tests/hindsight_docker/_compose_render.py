@@ -23,6 +23,24 @@ INVENTORY_DEFAULTS = yaml.safe_load(
 )
 
 DEFAULT_CONTEXT = {
+    **{
+        key: ROLE_DEFAULTS[key]
+        for key in (
+            "hindsight_docker_llm_provider",
+            "hindsight_docker_embeddings_local_force_cpu",
+            "hindsight_docker_reranker_provider",
+            "hindsight_docker_reranker_local_force_cpu",
+            "hindsight_docker_hf_hub_offline",
+            "hindsight_docker_workers",
+            "hindsight_docker_worker_enabled",
+            "hindsight_docker_worker_max_slots",
+            "hindsight_docker_worker_consolidation_reserved_slots",
+            "hindsight_docker_enable_auto_consolidation",
+            "hindsight_docker_consolidation_reconcile_interval_seconds",
+            "hindsight_docker_mental_model_refresh_tick_seconds",
+        )
+    },
+    "hindsight_service_enabled": INVENTORY_DEFAULTS["hindsight_service_enabled"],
     "hindsight_docker_image": ROLE_DEFAULTS["hindsight_docker_image"],
     "hindsight_docker_container_name": "hindsight",
     "hindsight_docker_api_port": 8888,
@@ -89,6 +107,8 @@ DEFAULT_CONTEXT = {
     "hindsight_docker_worker_id": "hindsight-1",
     "hindsight_docker_cp_access_key": "test-cp-key",
     "hindsight_docker_api_key": "test-hindsight-api-key",
+    "hindsight_docker_otel_endpoint": "http://localhost:4318",
+    "hindsight_docker_otel_service_name": "hindsight-test",
 }
 
 
@@ -106,6 +126,9 @@ def render(
     env.filters["string"] = str
     env.filters["lower"] = str.lower
     env.filters["to_json"] = json.dumps
+    env.filters["bool"] = lambda value: (
+        value if isinstance(value, bool) else str(value).lower() in {"1", "true", "yes", "on"}
+    )
     template = env.from_string(TEMPLATE_PATH.read_text())
     render_context = {**DEFAULT_CONTEXT, **(context or {})}
     if not include_api_key:

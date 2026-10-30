@@ -1,0 +1,196 @@
+---
+- name: Read the legacy cache volume name
+  ansible.builtin.slurp:
+    src: /tmp/hindsight-legacy-cache-name
+  register: hindsight_fixture_legacy_cache_file
+
+- name: Read the target container's cache mount
+  ansible.builtin.command: docker inspect hindsight
+  register: hindsight_fixture_target_container
+  changed_when: false
+
+- name: Require the target container to reuse the legacy cache volume
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((hindsight_fixture_target_container.stdout | from_json | first).Mounts
+         | selectattr('Destination', 'equalto', '/home/hindsight/.cache')
+         | map(attribute='Name') | first | default(''))
+        == (hindsight_fixture_legacy_cache_file.content | b64decode | trim)
+
+- name: Read the legacy model-blob hash list
+  ansible.builtin.slurp:
+    src: /tmp/hindsight-legacy-cache-hashes.json
+  register: hindsight_fixture_legacy_cache_hash_file
+
+- name: Record the legacy model-blob hashes
+  ansible.builtin.set_fact:
+    hindsight_fixture_expected_cache_hashes: >-
+      {{ hindsight_fixture_legacy_cache_hash_file.content | b64decode | from_json }}
+
+- name: Hash the model blobs after the target starts offline
+  ansible.builtin.import_tasks: hash_cache_blobs.yml
+  vars:
+    hindsight_fixture_cache_name: "{{ hindsight_fixture_legacy_cache_file.content | b64decode | trim }}"
+
+- name: Require all original cache blobs to remain byte-identical after migration
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_cache_hash_lines == hindsight_fixture_expected_cache_hashes
+
+- name: Read the original legacy rows
+  ansible.builtin.slurp:
+    src: /tmp/hindsight-legacy-rows.json
+  register: hindsight_fixture_expected_file
+
+- name: Record the expected legacy rows
+  ansible.builtin.set_fact:
+    hindsight_fixture_expected: "{{ hindsight_fixture_expected_file.content | b64decode | from_json }}"
+
+- name: Read the migrated memory IDs, document IDs, text and vectors
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - hindsight-postgres
+      - psql
+      - -U
+      - hindsight
+      - -d
+      - hindsight
+      - -tAc
+      - >-
+        SELECT coalesce(json_agg(json_build_object('id', id, 'document_id', document_id,
+        'text', text, 'embedding', embedding::text) ORDER BY id), '[]'::json)
+        FROM memory_units WHERE bank_id = 'molecule-migration'
+        AND document_id = 'molecule-legacy-document' AND embedding IS NOT NULL
+  register: hindsight_fixture_migrated_rows
+  changed_when: false
+
+- name: Require every legacy row and vector to survive migration
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_expected | length > 0
+      - hindsight_fixture_migrated_rows.stdout | from_json == hindsight_fixture_expected
+
+- name: Recall the legacy fact from the migrated API
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8888/v1/default/banks/molecule-migration/memories/recall
+    method: POST
+    headers:
+      Authorization: Bearer molecule-test-hindsight-api-key
+    body_format: json
+    body:
+      query: Where does Alice live?
+    return_content: true
+    status_code: 200
+    timeout: 120
+  register: hindsight_fixture_target_recall
+
+- name: Require the migrated API to recall the fact
+  ansible.builtin.assert:
+    that:
+      - "'Berlin' in hindsight_fixture_target_recall.content"
+
+- name: Verify the migrated API rejects an unauthenticated recall
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8888/v1/default/banks/molecule-migration/memories/recall
+    method: POST
+    body_format: json
+    body:
+      query: Where does Alice live?
+    status_code: [401, 403]
+
+- name: Discover the Docker bridge gateway for the isolated restore
+  ansible.builtin.command: >-
+    docker network inspect bridge
+    --format {% raw %}'{{ (index .IPAM.Config 0).Gateway }}'{% endraw %}
+  register: hindsight_restore_gateway
+  changed_when: false
+
+- name: Create an independent scratch database
+  ansible.builtin.command: docker exec hindsight-postgres createdb -U hindsight hindsight_restore
+  changed_when: true
+
+- name: Initialize scratch with the legacy schema
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network=host
+      - -e
+      - HINDSIGHT_API_DATABASE_URL
+      - ghcr.io/vectorize-io/hindsight:0.10.3@sha256:b5da1a9aece1f53a15f12821fb1470f358ed6c74dfaa0c4b1a39c3f3ae93e002
+      - hindsight-admin
+      - run-db-migration
+  environment:
+    HINDSIGHT_API_DATABASE_URL: >-
+      {{ 'postgresql://hindsight:molecule-test-password@'
+         ~ (hindsight_restore_gateway.stdout | trim) ~ ':5432/hindsight_restore' }}
+  changed_when: true
+
+- name: Restore the legacy archive only into scratch
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network=host
+      - -v
+      - /tmp:/fixture:ro
+      - -e
+      - HINDSIGHT_API_DATABASE_URL
+      - ghcr.io/vectorize-io/hindsight:0.10.3@sha256:b5da1a9aece1f53a15f12821fb1470f358ed6c74dfaa0c4b1a39c3f3ae93e002
+      - hindsight-admin
+      - restore
+      - /fixture/hindsight-legacy-backup.zip
+      - --yes
+  environment:
+    HINDSIGHT_API_DATABASE_URL: >-
+      {{ 'postgresql://hindsight:molecule-test-password@'
+         ~ (hindsight_restore_gateway.stdout | trim) ~ ':5432/hindsight_restore' }}
+  changed_when: true
+
+- name: Migrate the restored scratch database using the target image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network=host
+      - -e
+      - HINDSIGHT_API_DATABASE_URL
+      - "{{ hindsight_docker_image }}"
+      - hindsight-admin
+      - run-db-migration
+  environment:
+    HINDSIGHT_API_DATABASE_URL: >-
+      {{ 'postgresql://hindsight:molecule-test-password@'
+         ~ (hindsight_restore_gateway.stdout | trim) ~ ':5432/hindsight_restore' }}
+  changed_when: true
+
+- name: Read the restored and migrated rows and vectors
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - hindsight-postgres
+      - psql
+      - -U
+      - hindsight
+      - -d
+      - hindsight_restore
+      - -tAc
+      - >-
+        SELECT coalesce(json_agg(json_build_object('id', id, 'document_id', document_id,
+        'text', text, 'embedding', embedding::text) ORDER BY id), '[]'::json)
+        FROM memory_units WHERE bank_id = 'molecule-migration'
+        AND document_id = 'molecule-legacy-document' AND embedding IS NOT NULL
+  register: hindsight_fixture_restored_rows
+  changed_when: false
+
+- name: Require the restored rows and vectors to match the legacy capture
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_restored_rows.stdout | from_json == hindsight_fixture_expected

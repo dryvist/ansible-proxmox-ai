@@ -48,6 +48,7 @@ def _env() -> Environment:
     env = Environment()
     # `comment` is an Ansible filter, not a stock Jinja2 one.
     env.filters["comment"] = lambda text: "# " + str(text)
+    env.filters["bool"] = lambda value: str(value).lower() in {"true", "1", "yes", "on"}
     return env
 
 
@@ -170,6 +171,7 @@ def _render_shell(targets: list[dict]) -> str:
         fabric_watchdog_probe_timeout=8,
         fabric_watchdog_down_after=3,
         fabric_watchdog_up_after=2,
+        fabric_watchdog_hindsight_enabled=True,
         fabric_watchdog_targets=targets,
     )
 

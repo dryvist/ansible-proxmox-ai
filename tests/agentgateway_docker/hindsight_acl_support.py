@@ -46,6 +46,7 @@ def _hindsight_context(
     agents: dict[str, Any] | None = None,
     keys: dict[str, str] | None = None,
     registry: dict[str, Any] | None = None,
+    service_enabled: bool = True,
 ) -> dict[str, Any]:
     roster = AGENTS if agents is None else agents
     caller_keys = KEYS if keys is None else keys
@@ -64,6 +65,7 @@ def _hindsight_context(
     }
     context["agentgateway_docker_hindsight_host"] = "hindsight.example.com"
     context["agentgateway_docker_hindsight_api_key"] = tenant_key
+    context["agentgateway_docker_hindsight_enabled"] = service_enabled
     context["agentgateway_docker_hindsight_roster_tiers"] = _render_map(
         HINDSIGHT_DEFAULTS["agentgateway_docker_hindsight_roster_tiers"],
         agentgateway_docker_roster_keys=roster_keys,

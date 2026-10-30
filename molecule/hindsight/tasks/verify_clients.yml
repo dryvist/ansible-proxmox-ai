@@ -1,0 +1,42 @@
+---
+- name: Load the Hermes memory client pin from its canonical defaults
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../roles/hermes_agent/defaults/main/70-memory.yml"
+    name: hindsight_fixture_hermes_memory_defaults
+
+- name: Install the Debian test runner for the disposable guest
+  ansible.builtin.apt:
+    name: python3-pytest
+    state: present
+
+- name: Install the exact deployed Hindsight client into an isolated guest venv
+  ansible.builtin.pip:
+    name: "hindsight-client=={{ hindsight_fixture_hermes_memory_defaults.hermes_agent_hindsight_client_version }}"
+    virtualenv: /tmp/hindsight-client-compat-venv
+    virtualenv_command: /usr/bin/python3 -m venv
+    virtualenv_site_packages: true
+
+- name: Copy the client compatibility test to the disposable guest
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/fixtures/client_compat.py"
+    dest: /tmp/test_hindsight_client_compat.py
+    mode: "0644"
+
+- name: Exercise the pinned SDK against the upgraded API
+  ansible.builtin.command:
+    argv:
+      - /tmp/hindsight-client-compat-venv/bin/python
+      - -m
+      - pytest
+      - -q
+      - -p
+      - no:cacheprovider
+      - /tmp/test_hindsight_client_compat.py
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+    HINDSIGHT_FIXTURE_EXPECTED_CLIENT_VERSION: >-
+      {{ hindsight_fixture_hermes_memory_defaults.hermes_agent_hindsight_client_version }}
+  changed_when: false
+
+- name: Exercise the actual stateless MCP protocol
+  ansible.builtin.import_tasks: verify_mcp.yml

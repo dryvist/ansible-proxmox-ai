@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import jinja2
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +26,28 @@ def _load_role_tasks(name: str) -> list[dict]:
 
 def _load_drain_tasks() -> list[dict]:
     doc = _load_role_tasks("run_db_migration_drain_and_migrate.yml")
-    return doc[0]["block"]
+    return next(task["block"] for task in doc if "block" in task and "rescue" in task)
+
+
+def test_pending_migration_requires_explicit_approval_before_database_mutation() -> None:
+    tasks = _load_role_tasks("run_db_migration.yml")
+    approval = next(
+        task for task in tasks
+        if "hindsight_docker_migration_approved | bool" in task.get("ansible.builtin.assert", {}).get("that", [])
+    )
+    sequence = next(
+        task for task in tasks
+        if task.get("ansible.builtin.import_tasks") == "run_db_migration_drain_and_migrate.yml"
+    )
+    assert approval["when"] == "hindsight_docker_migration_pending"
+    assert sequence["when"] == "hindsight_docker_migration_pending"
+    assert tasks.index(approval) < tasks.index(sequence)
+    assert approval.get("run_once") is True
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+    env.filters["bool"] = bool
+    required = env.compile_expression(approval["ansible.builtin.assert"]["that"][0])
+    assert required(hindsight_docker_migration_approved=False) is False
+    assert required(hindsight_docker_migration_approved=True) is True
 
 
 def test_schema_probe_positively_detects_a_first_deploy() -> None:

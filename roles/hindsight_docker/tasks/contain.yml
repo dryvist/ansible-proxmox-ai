@@ -1,0 +1,50 @@
+---
+- name: Check for the existing Hindsight compose project
+  ansible.builtin.stat:
+    path: "{{ hindsight_docker_data_dir }}/docker-compose.yml"
+  register: hindsight_docker_contain_compose
+
+- name: Stop every service in the existing Hindsight compose project
+  community.docker.docker_compose_v2:
+    project_src: "{{ hindsight_docker_data_dir }}"
+    state: stopped
+  when: hindsight_docker_contain_compose.stat.exists
+
+- name: Find a running managed Hindsight container even without its compose file
+  ansible.builtin.command:
+    argv:
+      - docker
+      - ps
+      - --quiet
+      - --filter
+      - "name=^/{{ hindsight_docker_container_name }}$"
+  register: hindsight_docker_contain_running
+  changed_when: false
+
+- name: Stop a managed Hindsight container found outside its compose project
+  ansible.builtin.command:
+    argv: [docker, stop, --time, "30", "{{ item }}"]
+  loop: "{{ hindsight_docker_contain_running.stdout_lines }}"
+  changed_when: true
+
+- name: Verify the managed Hindsight container is stopped
+  ansible.builtin.command:
+    argv:
+      - docker
+      - ps
+      - --quiet
+      - --filter
+      - "name=^/{{ hindsight_docker_container_name }}$"
+  register: hindsight_docker_contain_verified
+  changed_when: false
+
+- name: Require a positive stopped-state result
+  ansible.builtin.assert:
+    that:
+      - hindsight_docker_contain_verified.stdout | trim | length == 0
+    fail_msg: Hindsight is still running; the stopped-state gate failed.
+    quiet: true
+
+- name: Check stopped-staging support after containment and before an approved upgrade
+  ansible.builtin.import_tasks: check_compose.yml
+  when: hindsight_docker_migration_approved | default(false) | bool

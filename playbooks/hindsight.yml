@@ -10,6 +10,33 @@
 # facts, so gather_facts stays off like qdrant. A second, non-serial play
 # below decommissions stale worker ids only after every replica above has
 # redeployed and passed its health check.
+- name: Stop every Hindsight replica before a contained or approved maintenance run
+  hosts: hindsight_group
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tags:
+    - hindsight_docker
+    - hindsight_bank_dr
+    - memory
+    - ai
+  tasks:
+    - name: Stop existing Hindsight DR timers and active jobs
+      ansible.builtin.include_role:
+        name: hindsight_bank_dr
+        tasks_from: stop.yml
+      when: >-
+        not (hindsight_service_enabled | default(false) | bool)
+        or (hindsight_docker_migration_approved | default(false) | bool)
+
+    - name: Stop and verify every managed Hindsight replica
+      ansible.builtin.include_role:
+        name: hindsight_docker
+        tasks_from: contain.yml
+      when: >-
+        not (hindsight_service_enabled | default(false) | bool)
+        or (hindsight_docker_migration_approved | default(false) | bool)
+
 - name: Configure Hindsight agent-memory service
   hosts: hindsight_group
   become: true
@@ -27,6 +54,9 @@
       ansible.builtin.import_tasks: tasks/load_fabric_registry.yml
     - name: Run the Hindsight database-migration gate
       ansible.builtin.import_tasks: tasks/hindsight_lifecycle_gates.yml
+      when: >-
+        (hindsight_service_enabled | default(false) | bool)
+        or (hindsight_docker_migration_approved | default(false) | bool)
   tags:
     - hindsight_docker
     - memory
@@ -61,6 +91,7 @@
       ansible.builtin.include_role:
         name: hindsight_docker
         tasks_from: decommission_stale_workers.yml
+      when: hindsight_service_enabled | default(false) | bool
 
 # hosts: hindsight_group[0] is deliberate, not an oversight: every replica in
 # hindsight_group shares the same ai-VLAN Postgres backend, so a nightly

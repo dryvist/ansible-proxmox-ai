@@ -4,7 +4,12 @@
 # last task. See run_db_migration.yml's own header for the full B1-B2/
 # S1-S5 design; this file is purely the block/rescue split, no new logic.
 
-- name: Drain, back up, verify, and migrate, restoring drained replicas on failure
+- name: Reset the migration attempt state
+  ansible.builtin.set_fact:
+    hindsight_docker_migration_attempted: false
+  run_once: true
+
+- name: Drain, back up, verify, and migrate
   block:
     - name: Check whether each replica has already been deployed at least once
       ansible.builtin.stat:
@@ -57,12 +62,37 @@
           - docker
           - inspect
           - --format
-          - "{{ '{{' }}.Config.Image{{ '}}' }}"
+          - "{{ '{{' }}.Image{{ '}}' }}"
           - "{{ hindsight_docker_container_name }}"
       register: hindsight_docker_deployed_image_probe
       run_once: true
       changed_when: false
       failed_when: false
+      when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
+
+    - name: Select the immutable source image for the existing database
+      ansible.builtin.set_fact:
+        hindsight_docker_backup_image: >-
+          {{ (hindsight_docker_deployed_image_probe.stdout | default('') | trim)
+             if (hindsight_docker_deployed_image_probe.rc | default(1)) == 0
+                and (hindsight_docker_deployed_image_probe.stdout | default('') | trim | length) > 0
+             else hindsight_docker_migration_source_image }}
+      run_once: true
+      when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
+
+    - name: Require an identified immutable source image before backing up an existing database
+      ansible.builtin.assert:
+        that:
+          - hindsight_docker_backup_image is match('^(.*@)?sha256:[0-9a-f]{64}$')
+        fail_msg: >-
+          The existing Hindsight image could not be identified. Check the deployed
+          release and supply its immutable migration source image before retrying.
+        quiet: true
+      run_once: true
+      when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
+
+    - name: Verify claimed worker identities before migrating the stopped fleet
+      ansible.builtin.include_tasks: migration_worker_gate.yml
       when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
 
     - name: Take a pre-migration database backup
@@ -78,11 +108,7 @@
           - HINDSIGHT_API_DATABASE_URL
           - -v
           - "{{ hindsight_docker_migration_backup_dir }}:/backup"
-          - >-
-            {{ (hindsight_docker_deployed_image_probe.stdout | default('') | trim)
-               if (hindsight_docker_deployed_image_probe.rc | default(1)) == 0
-                  and (hindsight_docker_deployed_image_probe.stdout | default('') | trim | length) > 0
-               else hindsight_docker_image }}
+          - "{{ hindsight_docker_backup_image }}"
           - hindsight-admin
           - backup
           - "/backup/{{ hindsight_docker_premigration_backup_filename }}"
@@ -133,7 +159,7 @@
       run_once: true
       when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
 
-    - name: Verify the pre-migration backup archive is a valid, restorable zip
+    - name: Verify the pre-migration backup archive has valid ZIP integrity
       ansible.builtin.command:
         argv:
           - python3
@@ -144,6 +170,12 @@
       changed_when: false
       run_once: true
       when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
+
+    - name: Record that a database migration is being attempted
+      ansible.builtin.set_fact:
+        hindsight_docker_migration_attempted: true
+      run_once: true
+      when: hindsight_docker_migration_pending
 
     - name: Run the Hindsight database migration once, using the target image
       ansible.builtin.command:
@@ -187,52 +219,42 @@
       run_once: true
       when: hindsight_docker_migration_pending
 
-  rescue:
-    - name: Determine whether the migration command was ever attempted
-      ansible.builtin.set_fact:
-        hindsight_docker_migration_attempted: "{{ hindsight_docker_migration_result is defined }}"
-      run_once: true
-
-    - name: Read the database's current Alembic revision via the vendor CLI (recovery classification)
+    - name: Read the database revision after the migration command
       ansible.builtin.command:
         argv:
-          - docker
-          - run
-          - --rm
-          - --network=host
-          - -e
-          - HINDSIGHT_API_DATABASE_URL
-          - -v
-          - "{{ hindsight_docker_migration_backup_dir }}/alembic-heads.ini:/tmp/alembic-heads.ini:ro"
-          - "{{ hindsight_docker_image }}"
-          - alembic
-          - -c
-          - /tmp/alembic-heads.ini
-          - current
+          - psql
+          - >-
+            postgresql://{{ hindsight_docker_db_user }}@{{ hindsight_docker_db_host }}:{{
+            hindsight_docker_db_port }}/{{ hindsight_docker_db_name }}
+          - -tAc
+          - SELECT version_num FROM public.alembic_version
       environment:
-        HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
-      register: hindsight_docker_recovery_revision_probe
+        PGPASSWORD: "{{ hindsight_docker_db_password }}"
+      register: hindsight_docker_migrated_revision
       run_once: true
       changed_when: false
       failed_when: false
-      when: hindsight_docker_schema_exists and hindsight_docker_migration_attempted
+      no_log: true
+      when: hindsight_docker_migration_pending
 
-    - name: Determine whether the failed attempt left the schema unchanged
+    - name: Require the database to have reached the requested schema revision
+      ansible.builtin.assert:
+        that:
+          - hindsight_docker_migrated_revision.rc | default(-1) == 0
+          - (hindsight_docker_migrated_revision.stdout | default('') | trim) == hindsight_docker_target_head_revision
+        fail_msg: The Hindsight database did not reach the requested schema revision; replicas remain stopped.
+        quiet: true
+      run_once: true
+      when: hindsight_docker_migration_pending
+
+  rescue:
+    - name: Determine whether a pre-migration restart is allowed
       ansible.builtin.set_fact:
-        # The only case treated as definitely safe: migration never even
-        # started (drain/backup/integrity failed first). Any failure to
-        # cleanly re-read the current revision (bad rc, output that isn't
-        # exactly one line — e.g. a branched multi-head schema, the same
-        # stdout_lines == 1 fail-closed check every sibling probe in this
-        # role already applies — or a line that doesn't exactly match the
-        # pre-attempt revision) is treated as "changed" — a restart is
-        # never guessed to be safe.
-        hindsight_docker_schema_unchanged: >-
+        # A failed migration can commit DDL before Alembic records a revision.
+        # Revision equality therefore cannot make an old image safe to start.
+        hindsight_docker_restart_allowed: >-
           {{ not hindsight_docker_migration_attempted
-          or (hindsight_docker_recovery_revision_probe.rc | default(1) == 0
-          and (hindsight_docker_recovery_revision_probe.stdout_lines | default([]) | length) == 1
-          and (hindsight_docker_recovery_revision_probe.stdout | default('') | trim).split(' ')[0]
-          == (hindsight_docker_current_revision_probe.stdout | default('__unreadable__') | trim)) }}
+             and (hindsight_service_enabled | default(false) | bool) }}
       run_once: true
 
     - name: Restart every replica this task file stopped, on its current (unchanged) image
@@ -246,20 +268,17 @@
       delegate_to: "{{ hindsight_docker_replica_check.item }}"
       run_once: true
       when: >-
-        hindsight_docker_schema_unchanged
+        hindsight_docker_restart_allowed
         and (hindsight_docker_replica_check.stat.exists | default(false))
 
     - name: Re-raise so the play still fails after recovery
       ansible.builtin.fail:
         msg: >-
-          {{ 'hindsight_docker: the pre-migration sequence failed before changing the schema
-          — every drained replica was restarted on its current image. See the preceding task
-          failure for the root cause.'
-          if hindsight_docker_schema_unchanged
-          else 'hindsight_docker: the migration failed AFTER changing the schema — replicas
-          are deliberately left stopped rather than served against a schema their current
-          image may not understand. Restore from '
-          ~ (hindsight_docker_premigration_backup_filename | default('the pre-migration backup'))
-          ~ ' in ' ~ hindsight_docker_migration_backup_dir ~ " using `hindsight-admin restore`,"
-          ~ ' then re-run this playbook to redeploy.' }}
+          {{ 'Hindsight maintenance failed before a migration attempt; the enabled replicas were restarted.'
+             if hindsight_docker_restart_allowed
+             else 'Hindsight maintenance failed; replicas remain stopped. Do not start an older image after '
+             ~ 'a migration attempt. Check the failure and the backup at '
+             ~ hindsight_docker_migration_backup_dir ~ '/'
+             ~ (hindsight_docker_premigration_backup_filename | default('no backup was created'))
+             ~ ' before choosing a recovery action.' }}
       run_once: true

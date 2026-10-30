@@ -122,6 +122,7 @@ def test_real_ansible_play_reconciles_bank_config_idempotently() -> None:
                 "connection": "local",
                 "vars": {
                     "hermes_agent_splunk_memory_bank_id": "hermes-splunk",
+                    "hermes_agent_memory_provider": "hindsight",
                     MODE: mode,
                     "hermes_agent_memory_api_url": api_url,
                     "hermes_agent_memory_api_key": API_KEY,

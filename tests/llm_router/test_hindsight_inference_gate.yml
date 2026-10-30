@@ -1,0 +1,204 @@
+---
+# Exercise the real router defaults, registry-derived Hindsight scope and
+# seeded-key policy expression in both shared desired-state modes.
+#
+# Run (from the repo root):
+#   ansible-playbook tests/llm_router/test_hindsight_inference_gate.yml -i localhost, -c local
+- name: Keep the Hindsight inference key registered but model-denied in containment
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    hindsight_service_enabled: true
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      hindsight_llm_router_key: sk-fixture-hindsight
+      open_webui_llm_router_key: sk-fixture-open-webui
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: test-openrouter-provider-key
+      OPENCODE_API_KEY: test-opencode-provider-key
+      OPENAI_API_KEY: test-openai-provider-key
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: medium
+    hermes_goal_judge_model: judge
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+    llm_router_seed_mode: initial
+    _policy_file: "{{ _role_dir }}/tasks/reconcile-seeded-key-policy.yml"
+  tasks:
+    - name: Load the role defaults and registry projections
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Disable GPU and unprobed vLLM projections for the fixture
+      ansible.builtin.set_fact:
+        llm_router_llm_vllm_enabled: false
+        llm_router_vllm_precheck_passed: false
+
+    - name: Materialize the production registry and key projections
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Capture the production key catalog while Hindsight is enabled
+      ansible.builtin.set_fact:
+        _keys_enabled: "{{ llm_router_virtual_keys }}"
+
+    - name: Select containment and rematerialize the production key catalog
+      ansible.builtin.set_fact:
+        hindsight_service_enabled: false
+
+    - name: Refresh materialized projections for contained state
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Capture the production key catalog while Hindsight is contained
+      ansible.builtin.set_fact:
+        _keys_contained: "{{ llm_router_virtual_keys }}"
+
+    - name: Prove containment preserves the key while denying model use
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _key_enabled.value == _key_contained.value == bao_apps_secrets.hindsight_llm_router_key
+          - _key_enabled.models == [llm_router_small_capability_name]
+          - _key_enabled.models_authoritative | bool
+          - _key_contained.models == [_llm_router_hindsight_disabled_model_sentinel]
+          - _key_contained.models | length > 0
+          - _key_contained.models_authoritative | bool
+          - _open_webui_enabled == _open_webui_contained
+        fail_msg: >-
+          Hindsight containment must retain its seeded key and authoritative
+          policy, narrow it to the non-empty denial sentinel, and leave the
+          Open WebUI key unchanged.
+      vars:
+        _key_enabled: "{{ _keys_enabled | selectattr('alias', 'equalto', 'hindsight') | first }}"
+        _key_contained: "{{ _keys_contained | selectattr('alias', 'equalto', 'hindsight') | first }}"
+        _open_webui_enabled: "{{ _keys_enabled | selectattr('alias', 'equalto', 'open-webui') | first }}"
+        _open_webui_contained: "{{ _keys_contained | selectattr('alias', 'equalto', 'open-webui') | first }}"
+
+    - name: Extract the production seeded-key reconciliation expression
+      ansible.builtin.set_fact:
+        _policy_expr: >-
+          {{ (lookup('ansible.builtin.file', _policy_file) | from_yaml
+              | selectattr('name', 'equalto', 'Compute the key policy update each live key still needs, if any')
+              | first)['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
+
+    - name: Create a native Jinja fixture for the policy expression
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _policy_template
+
+    - name: Persist the exact production policy expression for evaluation
+      ansible.builtin.copy:
+        dest: "{{ _policy_template.path }}"
+        content: "{{ _policy_expr }}"
+        mode: "0600"
+
+    - name: Select the two real declared keys for reconciliation fixtures
+      ansible.builtin.set_fact:
+        _hindsight_test_keys: >-
+          {{ _keys_contained
+             | selectattr('alias', 'equalto', 'hindsight') | list }}
+        _hindsight_key_enabled: >-
+          {{ _keys_enabled | selectattr('alias', 'equalto', 'hindsight') | first }}
+
+    - name: Seed the production Hindsight policy for reconciliation
+      ansible.builtin.set_fact:
+        llm_router_virtual_keys: "{{ _hindsight_test_keys }}"
+        llm_router_existing_keys:
+          json:
+            keys:
+              - key_alias: hindsight
+                models: "{{ _hindsight_key_enabled.models + ['retired-model'] }}"
+                metadata:
+                  app: hindsight
+                  tier: local
+                  tags: ['&sensitivity:sensitive']
+                  allowed_passthrough_routes: []
+                object_permission: "{{ llm_router_mcp_default_object_permission }}"
+        _llm_router_live_key_aliases: [hindsight]
+
+    - name: Render the actual model-deny update for the contained key
+      ansible.builtin.set_fact:
+        _contained_policy_updates: "{{ lookup('ansible.builtin.template', _policy_template.path) }}"
+
+    - name: Reconcile the model-deny update when Hindsight is enabled again
+      ansible.builtin.set_fact:
+        llm_router_virtual_keys: >-
+          {{ _keys_enabled | selectattr('alias', 'equalto', 'hindsight') | list }}
+        llm_router_existing_keys:
+          json:
+            keys:
+              - key_alias: hindsight
+                models: "{{ [_llm_router_hindsight_disabled_model_sentinel] }}"
+                metadata:
+                  app: hindsight
+                  tier: local
+                  tags: ['&sensitivity:sensitive']
+                  allowed_passthrough_routes: []
+                object_permission: "{{ llm_router_mcp_default_object_permission }}"
+
+    - name: Render the actual registered-model update for the enabled key
+      ansible.builtin.set_fact:
+        _enabled_policy_updates: "{{ lookup('ansible.builtin.template', _policy_template.path) }}"
+
+    - name: Assert both policy states reconcile only Hindsight models authoritatively
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _contained_policy_updates | map(attribute='alias') | list == ['hindsight']
+          - _contained_policy_updates[0].body.models == [_llm_router_hindsight_disabled_model_sentinel]
+          - _enabled_policy_updates | map(attribute='alias') | list == ['hindsight']
+          - _enabled_policy_updates[0].body.models == [llm_router_small_capability_name]
+        fail_msg: >-
+          Reconciliation must update only the existing Hindsight key to the
+          current authoritative models list in either service state. Got
+          contained aliases={{ _contained_policy_updates | map(attribute='alias') | list }}
+          and enabled aliases={{ _enabled_policy_updates | map(attribute='alias') | list }}.
+
+    - name: Exercise the production sentinel collision assertion against the actual registry
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-hindsight-key-model.yml"
+
+    - name: Add the reserved sentinel as an impossible registry client id
+      ansible.builtin.set_fact:
+        llm_router_model_registry: >-
+          {{ llm_router_model_registry
+             + [{'client_model_id': _llm_router_hindsight_disabled_model_sentinel}] }}
+
+    - name: Prove a registry collision fails the production assertion
+      block:
+        - name: Re-run the production sentinel collision assertion
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-hindsight-key-model.yml"
+      rescue:
+        - name: Record the expected assertion failure
+          ansible.builtin.set_fact:
+            _hindsight_sentinel_collision_rejected: true
+
+    - name: Require the sentinel collision assertion to fail closed
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _hindsight_sentinel_collision_rejected | default(false) | bool
+
+    - name: Remove the temporary policy template
+      ansible.builtin.file:
+        path: "{{ _policy_template.path }}"
+        state: absent
