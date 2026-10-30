@@ -323,7 +323,7 @@ def test_existing_file_mismatch_fails_without_replacing_the_stored_value(tmp_pat
     with _openbao(stored) as (address, state):
         process = _run_playbook(address, data_dir)
         assert process.returncode != 0
-        output = _safe_output(process, {**stored, **mismatched_file})
+        output = _safe_output(process, {**stored, "mismatched_salt": mismatched_file["salt"]})
         assert "does not match OpenBao field(s): salt" in output
         assert "[redacted]" not in output
         assert state.values == stored
