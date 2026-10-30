@@ -62,6 +62,7 @@ def _render_env(price_map_url: str) -> str:
     )
     values = {
         "ansible_managed": "managed by Ansible",
+        "groups": {},
         "llm_router_mcp_zammad_url": "https://zammad.example",
         "llm_router_mcp_zammad_http_token": "placeholder",
         "llm_router_mcp_slack_enabled": False,
