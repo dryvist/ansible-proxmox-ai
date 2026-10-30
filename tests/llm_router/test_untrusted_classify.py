@@ -165,6 +165,14 @@ def test_responses_input_text_is_classified(ns, monkeypatch):
     assert "from the input field" in classifier.calls[0]["body"]["messages"][1]["content"]
 
 
+def test_classifier_pass_through_state_is_classified(ns, monkeypatch):
+    classifier = Classifier(reply="sensitive")
+    monkeypatch.setitem(ns, "_post", classifier)
+    data = {"state": "from the state field", "questions": {"route": {"type": "choice"}}}
+    _refused(ns, _key("untrusted"), data)
+    assert "from the state field" in classifier.calls[0]["body"]["messages"][1]["content"]
+
+
 def test_classify_call_is_local_capped_and_uses_the_master_key(ns, monkeypatch):
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHARS", "5")
     classifier = Classifier(reply="public")

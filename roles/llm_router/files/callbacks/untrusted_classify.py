@@ -17,7 +17,8 @@ _UNTRUSTED = "untrusted"
 _PUBLIC = "public"
 _SENSITIVE = "sensitive"
 _REFUSAL = "Request refused: the content is not cleared for this key."
-_TEXT_KEYS = ("messages", "input", "instructions", "system", "prompt")
+# "state" carries the request text on the classifier pass-through (/v1/systemone).
+_TEXT_KEYS = ("messages", "input", "instructions", "system", "prompt", "state")
 _LABEL_KEYS = frozenset({"role", "type"})
 # The text is data. Wrapping it in tags and saying so makes an embedded instruction
 # to answer "public" less likely to be followed; it does not make that impossible.
