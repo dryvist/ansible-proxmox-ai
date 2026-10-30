@@ -235,7 +235,7 @@ def test_the_probe_is_deployed_and_runs_under_the_hermes_venv() -> None:
 def test_hindsight_targets_use_explicit_metadata_and_pause_with_builtin_memory() -> None:
     required = [target for target in DEFAULTS["fabric_watchdog_targets"] if target.get("requires_hindsight")]
     assert {target["name"] for target in required} == {"hindsight", "hindsight-dep-gate"}
-    assert "t.requires_hindsight | default(false) | bool" in SHELL_TEMPLATE
+    assert "t.get('requires_hindsight', false) | bool" in SHELL_TEMPLATE
     assert 't.name not in ["hindsight", "hindsight-dep-gate"]' not in SHELL_TEMPLATE
 
     targets = [
