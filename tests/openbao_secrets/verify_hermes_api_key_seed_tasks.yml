@@ -197,3 +197,55 @@
       - malformed_result_rejected | default(false) | bool
       - not (malformed_result_published | default(false) | bool)
       - hostvars['localhost'].openbao_secrets_by_domain['local-llm'].HERMES_API_SERVER_KEY == 'valid-ambient-key'
+
+- name: Verify each application seed block disables controller become
+  vars:
+    seed_role_files:
+      - path: roles/dify_docker/tasks/storage_and_secret.yml
+        name: Seed the Dify SECRET_KEY through the shared seed_generated task
+      - path: roles/langflow_docker/tasks/main.yml
+        name: Seed the LangFlow secrets through the shared seed_generated task
+      - path: roles/phoenix_docker/tasks/main.yml
+        name: Seed the Phoenix signing secret through the shared seed_generated task
+    seed_role_tasks: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../' ~ item.path) | from_yaml }}"
+    seed_role_block: "{{ seed_role_tasks | selectattr('name', 'equalto', item.name) | first }}"
+  ansible.builtin.assert:
+    that:
+      - seed_role_block.delegate_to == 'localhost'
+      - seed_role_block.become == false
+      - seed_role_block.vars.ansible_become == false
+  loop: "{{ seed_role_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Demonstrate the delegated connection-variable override without sudo
+  vars:
+    ansible_become: true
+    ansible_become_exe: /usr/bin/false
+  block:
+    - name: Confirm the inherited become setting would fail
+      block:
+        - name: Run a harmless delegated command with inherited become
+          ansible.builtin.command: /usr/bin/true
+          delegate_to: localhost
+          connection: local
+          become: false
+          changed_when: false
+      rescue:
+        - name: Record the expected inherited-become failure
+          ansible.builtin.set_fact:
+            inherited_become_failed: true
+
+    - name: Run a harmless delegated command with the application block override
+      ansible.builtin.command: /usr/bin/true
+      delegate_to: localhost
+      connection: local
+      become: false
+      vars:
+        ansible_become: false
+      changed_when: false
+
+    - name: Require the inherited become setting to have failed
+      ansible.builtin.assert:
+        that:
+          - inherited_become_failed | default(false) | bool

@@ -51,6 +51,13 @@ def test_production_role_selects_its_existing_contract_family(path: str, target:
     assert "tests/" not in selection["pytest_targets"]
 
 
+@pytest.mark.parametrize("role", ["dify_docker", "langflow_docker", "phoenix_docker"])
+def test_secret_seeding_roles_select_controller_become_contract(role: str) -> None:
+    result = run_selector(f"roles/{role}/tasks/main.yml")
+    assert result.returncode == 0, result.stderr
+    assert "tests/openbao_secrets/verify_hermes_api_key_seed.yml" in json.loads(result.stdout)["ansible_tests"]
+
+
 @pytest.mark.parametrize("path", [
     "tests/langfuse_docker/fixtures/api-response-shapes.json",
     "tests/llm_gpu_engine_roles/fixtures/pro6000-target/nvidia-smi-query.csv",
