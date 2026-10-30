@@ -53,6 +53,32 @@ def test_backup_outcomes_post_name_and_count_then_stay_silent_until_cleared():
     assert "HomelabAlert - backup PBS outcome" in new_finding
 
 
+def test_a_run_killed_during_the_backup_query_still_marks_today_checked():
+    async def tstats(url, token):
+        return []
+
+    async def killed(url, token):
+        raise KeyboardInterrupt  # stands in for the cron timeout killing the run
+
+    patches = {
+        "load_env": lambda path: {"SPLUNK_MCP_URL": "u", "SPLUNK_MCP_TOKEN": "t"},
+        "backup_outcome_due": lambda now, state: True,
+        "run_tstats": tstats,
+        "run_backup_outcomes": killed,
+    }
+    saved = {name: getattr(DIGEST, name) for name in patches}
+    vars(DIGEST).update(patches)
+    try:
+        DIGEST.main()
+        raise AssertionError("the killed query must not be caught")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        vars(DIGEST).update(saved)
+    today = DIGEST.dt.datetime.now(DIGEST.dt.timezone.utc).strftime("%Y-%m-%d")
+    assert DIGEST.load_state()["backup_outcome_checked_date"] == today
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:
