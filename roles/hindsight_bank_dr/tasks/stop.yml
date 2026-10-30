@@ -4,6 +4,19 @@
     path: "/etc/systemd/system/{{ item.0 }}.{{ item.1 }}"
   loop: "{{ hindsight_bank_dr_jobs | product(['timer', 'service']) | list }}"
   register: hindsight_bank_dr_existing_units
+  ignore_unreachable: true
+
+- name: Require every DR unit-file check to complete
+  ansible.builtin.assert:
+    that:
+      - not (item.unreachable | default(false))
+      - not (item.failed | default(false))
+      - item.stat is defined
+    fail_msg: A Hindsight DR unit-file check did not complete.
+    quiet: true
+  loop: "{{ hindsight_bank_dr_existing_units.results }}"
+  loop_control:
+    label: "{{ item.item.0 }}.{{ item.item.1 }}"
 
 - name: Stop and disable existing Hindsight DR timers
   ansible.builtin.systemd_service:
@@ -14,6 +27,8 @@
   loop: "{{ hindsight_bank_dr_existing_units.results }}"
   loop_control:
     label: "{{ item.item.0 }}.{{ item.item.1 }}"
+  register: hindsight_bank_dr_timer_stops
+  ignore_unreachable: true
   when:
     - item.stat.exists
     - item.item.1 == 'timer'
@@ -25,6 +40,73 @@
   loop: "{{ hindsight_bank_dr_existing_units.results }}"
   loop_control:
     label: "{{ item.item.0 }}.{{ item.item.1 }}"
+  register: hindsight_bank_dr_service_stops
+  ignore_unreachable: true
   when:
     - item.stat.exists
     - item.item.1 == 'service'
+
+- name: Require every requested DR stop to complete
+  ansible.builtin.assert:
+    that:
+      - not (item.unreachable | default(false))
+      - not (item.failed | default(false))
+    fail_msg: A Hindsight DR unit stop did not complete.
+    quiet: true
+  loop: "{{ hindsight_bank_dr_timer_stops.results + hindsight_bank_dr_service_stops.results }}"
+  loop_control:
+    label: "{{ item.item.item.0 }}.{{ item.item.item.1 }}"
+
+- name: Check that existing DR units are inactive
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ item.item.0 }}.{{ item.item.1 }}"]
+  loop: "{{ hindsight_bank_dr_existing_units.results }}"
+  loop_control:
+    label: "{{ item.item.0 }}.{{ item.item.1 }}"
+  register: hindsight_bank_dr_active_checks
+  changed_when: false
+  failed_when: false
+  ignore_unreachable: true
+  when: item.stat.exists
+
+- name: Require existing DR units to be inactive
+  ansible.builtin.assert:
+    that:
+      - not (item.unreachable | default(false))
+      - not (item.failed | default(false))
+      - >-
+        (item.skipped | default(false)) or
+        (item.rc | default(-1) == 3 and item.stdout | default('') | trim == 'inactive')
+    fail_msg: A Hindsight DR unit could not be verified inactive.
+    quiet: true
+  loop: "{{ hindsight_bank_dr_active_checks.results }}"
+  loop_control:
+    label: "{{ item.item.item.0 }}.{{ item.item.item.1 }}"
+
+- name: Check that existing DR timers are disabled
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, "{{ item.item.0 }}.{{ item.item.1 }}"]
+  loop: "{{ hindsight_bank_dr_existing_units.results }}"
+  loop_control:
+    label: "{{ item.item.0 }}.{{ item.item.1 }}"
+  register: hindsight_bank_dr_enabled_checks
+  changed_when: false
+  failed_when: false
+  ignore_unreachable: true
+  when:
+    - item.stat.exists
+    - item.item.1 == 'timer'
+
+- name: Require existing DR timers to be disabled
+  ansible.builtin.assert:
+    that:
+      - not (item.unreachable | default(false))
+      - not (item.failed | default(false))
+      - >-
+        (item.skipped | default(false)) or
+        (item.rc | default(-1) == 1 and item.stdout | default('') | trim == 'disabled')
+    fail_msg: A Hindsight DR timer could not be verified disabled.
+    quiet: true
+  loop: "{{ hindsight_bank_dr_enabled_checks.results }}"
+  loop_control:
+    label: "{{ item.item.item.0 }}.{{ item.item.item.1 }}"

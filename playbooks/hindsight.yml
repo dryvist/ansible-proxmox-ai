@@ -26,16 +26,73 @@
         tasks_from: maintenance_preflight.yml
       when: hindsight_docker_migration_approved_image | default('') | length > 0
 
+    - name: Probe every maintenance member before stopping services
+      ansible.builtin.ping:
+      become: false
+      vars:
+        ansible_become: false
+      ignore_unreachable: true
+      failed_when: false
+      register: hindsight_maintenance_probe
+      when: hindsight_docker_migration_approved_image | default('') | length > 0
+
+    - name: Require every maintenance member to answer
+      ansible.builtin.assert:
+        that: hindsight_maintenance_probe.ping | default('') == 'pong'
+        fail_msg: Every Hindsight member must be reachable before approved maintenance.
+        quiet: true
+      when: hindsight_docker_migration_approved_image | default('') | length > 0
+
     - name: Stop existing Hindsight DR timers and active jobs
-      ansible.builtin.include_role:
-        name: hindsight_bank_dr
-        tasks_from: stop.yml
+      ignore_unreachable: true
+      when: hindsight_docker_migration_approved_image | default('') | length > 0
+      block:
+        - name: Stop existing DR units
+          ansible.builtin.include_role:
+            name: hindsight_bank_dr
+            tasks_from: stop.yml
+
+    - name: Probe every member after stopping DR jobs
+      ansible.builtin.ping:
+      become: false
+      vars:
+        ansible_become: false
+      ignore_unreachable: true
+      failed_when: false
+      register: hindsight_maintenance_dr_probe
+      when: hindsight_docker_migration_approved_image | default('') | length > 0
+
+    - name: Require every member after stopping DR jobs
+      ansible.builtin.assert:
+        that: hindsight_maintenance_dr_probe.ping | default('') == 'pong'
+        fail_msg: A Hindsight member became unavailable during DR containment.
+        quiet: true
       when: hindsight_docker_migration_approved_image | default('') | length > 0
 
     - name: Stop and verify every managed Hindsight replica
-      ansible.builtin.include_role:
-        name: hindsight_docker
-        tasks_from: contain.yml
+      ignore_unreachable: true
+      when: hindsight_docker_migration_approved_image | default('') | length > 0
+      block:
+        - name: Stop and verify the managed replica
+          ansible.builtin.include_role:
+            name: hindsight_docker
+            tasks_from: contain.yml
+
+    - name: Probe every member after stopping replicas
+      ansible.builtin.ping:
+      become: false
+      vars:
+        ansible_become: false
+      ignore_unreachable: true
+      failed_when: false
+      register: hindsight_maintenance_backend_probe
+      when: hindsight_docker_migration_approved_image | default('') | length > 0
+
+    - name: Require every member after stopping replicas
+      ansible.builtin.assert:
+        that: hindsight_maintenance_backend_probe.ping | default('') == 'pong'
+        fail_msg: A Hindsight member became unavailable during backend containment.
+        quiet: true
       when: hindsight_docker_migration_approved_image | default('') | length > 0
 
 - name: Contain Hindsight without blocking downstream callers
@@ -205,7 +262,25 @@
     - memory
     - ai
   tasks:
+    - name: Probe the logical DR host before convergence
+      ansible.builtin.ping:
+      become: false
+      vars:
+        ansible_become: false
+      ignore_unreachable: true
+      failed_when: false
+      register: hindsight_dr_probe
+
+    - name: Record an unreachable logical DR host
+      ansible.builtin.set_fact:
+        site_isolated_failures: >-
+          {{ (site_isolated_failures | default([])) +
+             [inventory_hostname ~ ' (hindsight_bank_dr): replica unreachable'] }}
+      when: hindsight_dr_probe.ping | default('') != 'pong'
+
     - name: Converge hindsight_bank_dr (isolated — failure does not abort downstream plays)
+      ignore_unreachable: true
+      when: hindsight_dr_probe.ping | default('') == 'pong'
       block:
         - name: Include hindsight_bank_dr role
           ansible.builtin.include_role:
@@ -215,3 +290,22 @@
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: hindsight_bank_dr
+
+    - name: Verify the logical DR host remained reachable
+      ansible.builtin.ping:
+      become: false
+      vars:
+        ansible_become: false
+      ignore_unreachable: true
+      failed_when: false
+      register: hindsight_dr_final_probe
+      when: hindsight_dr_probe.ping | default('') == 'pong'
+
+    - name: Record a logical DR host lost during convergence
+      ansible.builtin.set_fact:
+        site_isolated_failures: >-
+          {{ (site_isolated_failures | default([])) +
+             [inventory_hostname ~ ' (hindsight_bank_dr): replica became unreachable'] }}
+      when:
+        - hindsight_dr_probe.ping | default('') == 'pong'
+        - hindsight_dr_final_probe.ping | default('') != 'pong'

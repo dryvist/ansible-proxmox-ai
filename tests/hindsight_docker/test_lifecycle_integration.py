@@ -28,6 +28,9 @@ def lifecycle(tmp_path: Path):
         "hindsight_docker_image": IMAGE,
         "hindsight_docker_migration_approved_image": "",
     }))
+    (dr / "defaults/main.yml").write_text(yaml.safe_dump({
+        "hindsight_bank_dr_jobs": ["hindsight-bank-export", "hindsight-bank-dr-drill"],
+    }))
     preflight = ROOT / "roles/hindsight_docker/tasks/maintenance_preflight.yml"
     (backend / "tasks/maintenance_preflight.yml").write_text(yaml.safe_dump([
         {"ansible.builtin.import_tasks": str(preflight)},
@@ -39,9 +42,19 @@ def lifecycle(tmp_path: Path):
     (backend / "tasks/main.yml").write_text("- ansible.builtin.debug: {msg: BACKEND_MAIN}\n")
     (router / "tasks/registry.yml").write_text("- ansible.builtin.debug: {msg: REGISTRY}\n")
     (dr / "tasks/stop.yml").write_text(
+        "- ansible.builtin.set_fact:\n"
+        "    ansible_connection: ssh\n    ansible_host: 127.0.0.1\n    ansible_port: 1\n"
+        "  when: fixture_disconnect | default(false) | bool and inventory_hostname == 'h1'\n"
+        f"- ansible.builtin.include_tasks: {ROOT / 'roles/hindsight_bank_dr/tasks/stop.yml'}\n"
+        "  when: fixture_real_dr | default(false) | bool\n"
+        "- ansible.builtin.ping:\n"
+        "  when: not (fixture_real_dr | default(false) | bool)\n"
         "- ansible.builtin.assert:\n    that: not (fixture_dr_failure | default(false) | bool)\n"
     )
-    (dr / "tasks/main.yml").write_text("- ansible.builtin.debug: {msg: DR_MAIN}\n")
+    (dr / "tasks/main.yml").write_text(
+        "- ansible.builtin.ping:\n"
+        "- ansible.builtin.assert:\n    that: not (fixture_dr_role_failure | default(false) | bool)\n"
+    )
     playbook = tmp_path / "play.yml"
     site = yaml.safe_load((ROOT / "playbooks/site.yml").read_text())
     final_gate = next(play for play in site
@@ -110,6 +123,74 @@ def test_backend_containment_continues_to_callers(lifecycle, case):
     assert "CALLER_REACHED" in result.stdout
     assert "isolated play failure(s)" in result.stdout
     assert "hindsight_docker_containment" in result.stdout or "replica unreachable" in result.stdout
+
+
+@pytest.mark.parametrize("tag", ["hindsight_docker", "hindsight_bank_dr"])
+def test_unreachable_dr_leader_does_not_block_callers(lifecycle, tag):
+    run, inventory = lifecycle
+    data = yaml.safe_load(inventory.read_text())
+    data["all"]["children"]["hindsight_group"]["hosts"]["h1"] = {
+        "ansible_connection": "ssh", "ansible_become": False, "ansible_host": "127.0.0.1",
+        "ansible_port": 1, "ansible_ssh_common_args": "-o ConnectTimeout=1",
+    }
+    inventory.write_text(yaml.safe_dump(data))
+    result = run("--tags", tag)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "CALLER_REACHED" in result.stdout
+    assert "isolated play failure(s)" in result.stdout
+    assert "replica unreachable" in result.stdout
+
+
+def test_dr_role_failure_is_reported_after_callers(lifecycle):
+    run, _ = lifecycle
+    result = run("--tags", "hindsight_bank_dr", "-e", "fixture_dr_role_failure=true")
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "CALLER_REACHED" in result.stdout
+    assert "isolated play failure(s)" in result.stdout
+    assert "hindsight_bank_dr):" in result.stdout
+
+
+def test_approved_maintenance_stops_on_unreachable_member(lifecycle):
+    run, inventory = lifecycle
+    data = yaml.safe_load(inventory.read_text())
+    data["all"]["children"]["hindsight_group"]["hosts"]["h1"] = {
+        "ansible_connection": "ssh", "ansible_become": False, "ansible_host": "127.0.0.1",
+        "ansible_port": 1, "ansible_ssh_common_args": "-o ConnectTimeout=1",
+    }
+    inventory.write_text(yaml.safe_dump(data))
+    result = run("--tags", "hindsight_docker", "-e", f"hindsight_docker_migration_approved_image={IMAGE}")
+    assert result.returncode != 0
+    assert "UNREACHABLE" in result.stdout
+    assert "CALLER_REACHED" not in result.stdout
+
+
+def test_approved_maintenance_stops_if_member_disconnects_during_drain(lifecycle):
+    run, _ = lifecycle
+    result = run("--tags", "hindsight_docker", "-e",
+                 f"hindsight_docker_migration_approved_image={IMAGE} fixture_disconnect=true")
+    assert result.returncode != 0
+    assert "UNREACHABLE" in result.stdout, result.stdout
+    assert "BACKEND_STOP" not in result.stdout
+    assert "CALLER_REACHED" not in result.stdout
+
+
+def test_real_dr_stop_lost_connection_blocks_maintenance(lifecycle):
+    run, _ = lifecycle
+    result = run("--tags", "hindsight_docker", "-e",
+                 f"hindsight_docker_migration_approved_image={IMAGE} fixture_disconnect=true fixture_real_dr=true")
+    assert result.returncode != 0
+    assert "UNREACHABLE" in result.stdout, result.stdout
+    assert "BACKEND_STOP" not in result.stdout
+    assert "CALLER_REACHED" not in result.stdout
+
+
+def test_real_dr_stop_lost_connection_is_recorded_before_callers(lifecycle):
+    run, _ = lifecycle
+    result = run("--tags", "hindsight_bank_dr", "-e", "fixture_disconnect=true fixture_real_dr=true")
+    assert result.returncode != 0
+    assert "CALLER_REACHED" in result.stdout, result.stdout
+    assert "isolated play failure(s)" in result.stdout
+    assert "hindsight_bank_dr_containment" in result.stdout or "replica became unreachable" in result.stdout
 
 
 @pytest.mark.parametrize("target,limit", [("wrong", "h1,h2"), (IMAGE, "h1")])

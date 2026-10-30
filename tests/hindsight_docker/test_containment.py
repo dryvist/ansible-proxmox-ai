@@ -145,9 +145,10 @@ def test_all_replicas_and_dr_jobs_stop_before_serial_migration():
     assert "serial" not in preplay
     assert preplay["any_errors_fatal"] is True
     assert not preplay.get("ignore_unreachable", False)
-    includes = [task for task in preplay["tasks"] if "ansible.builtin.include_role" in task]
-    assert [task["ansible.builtin.include_role"]["tasks_from"] for task in includes] == ["maintenance_preflight.yml", "stop.yml", "contain.yml"]
-    for task in includes:
+    preflight = next(task for task in preplay["tasks"] if task.get("ansible.builtin.include_role", {}).get("tasks_from") == "maintenance_preflight.yml")
+    stop_blocks = [task for task in preplay["tasks"] if "block" in task]
+    assert [task["block"][0]["ansible.builtin.include_role"]["tasks_from"] for task in stop_blocks] == ["stop.yml", "contain.yml"]
+    for task in [preflight, *stop_blocks]:
         for enabled, approved in ((False, False), (False, True), (True, True), (True, False)):
             assert _condition(
                 task["when"],

@@ -56,3 +56,20 @@ def test_dr_defaults_follow_the_service_gate():
     assert template.render() == "False"
     assert template.render(hindsight_service_enabled=False) == "False"
     assert template.render(hindsight_service_enabled=True) == "True"
+
+
+@pytest.mark.parametrize(("task_name", "valid", "invalid"), [
+    ("Require every DR unit-file check to complete", {"stat": {"exists": True}}, {"unreachable": True}),
+    ("Require every requested DR stop to complete", {"changed": True}, {"unreachable": True}),
+    ("Require existing DR units to be inactive", {"rc": 3, "stdout": "inactive"}, {"rc": 3, "stdout": "failed"}),
+    ("Require existing DR timers to be disabled", {"rc": 1, "stdout": "disabled"}, {"rc": 1, "stdout": "enabled"}),
+])
+def test_dr_checks_reject_lost_or_unverified_operations(task_name, valid, invalid):
+    tasks = yaml.safe_load((ROLE / "tasks/stop.yml").read_text())
+    task = next(task for task in tasks if task["name"] == task_name)
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+    checks = [env.compile_expression(expr) for expr in task["ansible.builtin.assert"]["that"]]
+    assert all(check(item=valid) for check in checks)
+    assert not all(check(item=invalid) for check in checks)
+    assert not all(check(item={**valid, "unreachable": True}) for check in checks)
+    assert not all(check(item={**valid, "failed": True}) for check in checks)
