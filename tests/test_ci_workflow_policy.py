@@ -252,16 +252,39 @@ def test_exact_galaxy_cache_hits_do_not_force_reinstall_pinned_requirements() ->
     assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
 
 
-def test_hermes_and_hindsight_plugin_updates_share_manual_compatibility_group() -> None:
+def test_hermes_memory_dependency_families_share_manual_compatibility_group() -> None:
     config = json.loads((WORKFLOWS.parents[1] / "renovate.json").read_text())
-    hermes_rule = next(rule for rule in config["packageRules"]
-                       if "NousResearch/hermes-agent" in rule.get("matchPackageNames", []))
-    plugin_rule = next(rule for rule in config["packageRules"]
-                       if "vectorize-io/hindsight" in rule.get("matchPackageNames", [])
-                       and rule.get("matchDatasources") == ["github-tags"])
-    assert hermes_rule["groupName"] == plugin_rule["groupName"]
-    assert hermes_rule["automerge"] is False
-    assert plugin_rule["automerge"] is False
+    rules = config["packageRules"]
+    group = "Hermes memory plugin compatibility"
+
+    hermes_rule = next(
+        rule for rule in rules
+        if "NousResearch/hermes-agent" in rule.get("matchPackageNames", [])
+    )
+    plugin_rule = next(
+        rule for rule in rules
+        if "vectorize-io/hindsight" in rule.get("matchPackageNames", [])
+        and rule.get("matchDatasources") == ["github-tags"]
+    )
+    sdk_rule = next(
+        rule for rule in rules
+        if rule.get("matchDepNames") == ["hindsight-client", "hindsight-embed"]
+        and rule.get("allowedVersions") == "<1.0.0"
+    )
+    image_rule = next(
+        rule for rule in rules
+        if "ghcr.io/vectorize-io/hindsight" in rule.get("matchPackageNames", [])
+        and rule.get("matchDatasources") == ["docker"]
+    )
+
+    for rule in (hermes_rule, plugin_rule, sdk_rule, image_rule):
+        assert rule["groupName"] == group
+        assert rule["automerge"] is False
+        assert "dep:review" in rule["addLabels"]
+
+    assert image_rule["pinDigests"] is True
+    assert image_rule["minimumReleaseAge"] == "0 days"
+    assert [rule for rule in rules if rule.get("minimumReleaseAge") == "0 days"] == [image_rule]
 
 
 def test_router_dependency_action_caches_pinned_requirements() -> None:
