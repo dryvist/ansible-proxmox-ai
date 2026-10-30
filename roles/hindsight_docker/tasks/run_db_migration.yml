@@ -75,9 +75,13 @@
 # may restart a service whose desired state is enabled. A contained service
 # stays stopped on every failure path. The play always reports the failure.
 
+- name: Validate maintenance approval before database work
+  ansible.builtin.import_tasks: maintenance_preflight.yml
+  when: hindsight_docker_migration_approved_image | length > 0
+
 - name: Check stopped-staging support before database work
   ansible.builtin.import_tasks: check_compose.yml
-  when: hindsight_docker_migration_approved | bool
+  when: hindsight_docker_migration_approved_image | length > 0
 
 - name: Ensure the pre-migration backup directory exists
   ansible.builtin.file:
@@ -209,7 +213,9 @@
 - name: Require approval for a pending Hindsight schema migration
   ansible.builtin.assert:
     that:
-      - hindsight_docker_migration_approved | bool
+      - hindsight_docker_migration_approved_image | length > 0
+      - hindsight_docker_migration_approved_image == hindsight_docker_image
+      - hindsight_docker_image is match('^.+@sha256:[0-9a-f]{64}$')
     fail_msg: A pending Hindsight schema migration requires explicit operator approval.
     quiet: true
   run_once: true

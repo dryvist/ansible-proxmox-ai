@@ -40,7 +40,9 @@ DEFAULT_CONTEXT = {
             "hindsight_docker_mental_model_refresh_tick_seconds",
         )
     },
-    "hindsight_service_enabled": INVENTORY_DEFAULTS["hindsight_service_enabled"],
+    "hindsight_service_enabled": yaml.safe_load(
+        jinja2.Environment().from_string(INVENTORY_DEFAULTS["hindsight_service_enabled"]).render()
+    ),
     "hindsight_docker_image": ROLE_DEFAULTS["hindsight_docker_image"],
     "hindsight_docker_container_name": "hindsight",
     "hindsight_docker_api_port": 8888,

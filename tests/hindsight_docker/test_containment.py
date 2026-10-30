@@ -29,22 +29,31 @@ def test_normal_containment_neither_renders_nor_requires_secrets():
     main = _tasks("main.yml")
     contain = next(task for task in main if task.get("ansible.builtin.import_tasks") == "contain.yml")
     deploy = next(task for task in main if task.get("ansible.builtin.import_tasks") == "deploy.yml")
-    assert INVENTORY_DEFAULTS["hindsight_service_enabled"] is False
-    assert ROLE_DEFAULTS["hindsight_docker_migration_approved"] is False
+    assert yaml.safe_load(jinja2.Environment().from_string(
+        INVENTORY_DEFAULTS["hindsight_service_enabled"]
+    ).render()) is False
+    assert ROLE_DEFAULTS["hindsight_docker_migration_approved_image"] == ""
     for enabled, approved, contains, deploys in (
         (False, False, True, False),
         (False, True, True, True),
         (True, False, False, True),
         (True, True, False, True),
     ):
-        values = dict(hindsight_service_enabled=enabled, hindsight_docker_migration_approved=approved)
+        values = dict(hindsight_service_enabled=enabled, hindsight_docker_migration_approved_image="target" if approved else "")
         assert _condition(contain["when"], **values) is contains
         assert _condition(deploy["when"], **values) is deploys
     assert _condition(contain["when"]) is True
-    assert _condition(deploy["when"], hindsight_docker_migration_approved=False) is False
+    assert _condition(deploy["when"], hindsight_docker_migration_approved_image="") is False
     deploy_tasks = _tasks("deploy.yml")
     assert any("ansible.builtin.template" in task for task in deploy_tasks)
     assert any("ansible.builtin.assert" in task for task in deploy_tasks)
+
+
+@pytest.mark.parametrize("state,enabled", [(True, True), (False, False), ("false", False), ("true", False), (None, False)])
+def test_published_service_state_requires_a_real_boolean(state, enabled):
+    template = jinja2.Environment().from_string(INVENTORY_DEFAULTS["hindsight_service_enabled"])
+    rendered = template.render(tofu_data={"constants": {"service_state": {"hindsight_enabled": state}}})
+    assert yaml.safe_load(rendered) is enabled
 
 
 def test_stop_preserves_cache_and_never_runs_compose_down():
@@ -112,7 +121,7 @@ def test_rendered_worker_and_inference_defaults_are_bounded_per_process():
         )
     } == {
         "HINDSIGHT_API_WORKERS": "1",
-        "HINDSIGHT_API_WORKER_ENABLED": "false",
+        "HINDSIGHT_API_WORKER_ENABLED": "true",
         "HINDSIGHT_API_WORKER_MAX_SLOTS": "1",
         "HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS": "0",
         "HINDSIGHT_API_LLM_MAX_CONCURRENT": "1",
@@ -137,11 +146,11 @@ def test_all_replicas_and_dr_jobs_stop_before_serial_migration():
     assert preplay["any_errors_fatal"] is True
     assert not preplay.get("ignore_unreachable", False)
     includes = [task for task in preplay["tasks"] if "ansible.builtin.include_role" in task]
-    assert [task["ansible.builtin.include_role"]["tasks_from"] for task in includes] == ["stop.yml", "contain.yml"]
+    assert [task["ansible.builtin.include_role"]["tasks_from"] for task in includes] == ["maintenance_preflight.yml", "stop.yml", "contain.yml"]
     for task in includes:
         for enabled, approved in ((False, False), (False, True), (True, True), (True, False)):
             assert _condition(
                 task["when"],
                 hindsight_service_enabled=enabled,
-                hindsight_docker_migration_approved=approved,
-            ) is (not enabled or approved)
+                hindsight_docker_migration_approved_image="target" if approved else "",
+            ) is approved

@@ -10,32 +10,127 @@
 # facts, so gather_facts stays off like qdrant. A second, non-serial play
 # below decommissions stale worker ids only after every replica above has
 # redeployed and passed its health check.
-- name: Stop every Hindsight replica before a contained or approved maintenance run
+- name: Stop every Hindsight replica before approved maintenance
   hosts: hindsight_group
   become: true
   gather_facts: false
   any_errors_fatal: true
   tags:
     - hindsight_docker
-    - hindsight_bank_dr
     - memory
     - ai
   tasks:
+    - name: Validate the target and fleet before maintenance changes
+      ansible.builtin.include_role:
+        name: hindsight_docker
+        tasks_from: maintenance_preflight.yml
+      when: hindsight_docker_migration_approved_image | default('') | length > 0
+
     - name: Stop existing Hindsight DR timers and active jobs
       ansible.builtin.include_role:
         name: hindsight_bank_dr
         tasks_from: stop.yml
-      when: >-
-        not (hindsight_service_enabled | default(false) | bool)
-        or (hindsight_docker_migration_approved | default(false) | bool)
+      when: hindsight_docker_migration_approved_image | default('') | length > 0
 
     - name: Stop and verify every managed Hindsight replica
       ansible.builtin.include_role:
         name: hindsight_docker
         tasks_from: contain.yml
-      when: >-
-        not (hindsight_service_enabled | default(false) | bool)
-        or (hindsight_docker_migration_approved | default(false) | bool)
+      when: hindsight_docker_migration_approved_image | default('') | length > 0
+
+- name: Contain Hindsight without blocking downstream callers
+  hosts: hindsight_group
+  become: true
+  gather_facts: false
+  tags:
+    - memory
+    - ai
+  tasks:
+    - name: Probe the replica before ordinary containment
+      ansible.builtin.ping:
+      become: false
+      vars:
+        ansible_become: false
+      ignore_unreachable: true
+      failed_when: false
+      register: hindsight_containment_probe
+      when:
+        - not (hindsight_service_enabled | default(false) | bool)
+        - hindsight_docker_migration_approved_image | default('') | length == 0
+      tags: [hindsight_docker, hindsight_bank_dr]
+
+    - name: Record unreachable ordinary containment
+      ansible.builtin.set_fact:
+        site_isolated_failures: >-
+          {{ (site_isolated_failures | default([])) +
+             [inventory_hostname ~ ' (hindsight containment): replica unreachable'] }}
+      when:
+        - not (hindsight_service_enabled | default(false) | bool)
+        - hindsight_docker_migration_approved_image | default('') | length == 0
+        - hindsight_containment_probe.ping | default('') != 'pong'
+      tags: [hindsight_docker, hindsight_bank_dr]
+
+    - name: Stop DR jobs during ordinary containment
+      ignore_unreachable: true
+      when:
+        - not (hindsight_service_enabled | default(false) | bool)
+        - hindsight_docker_migration_approved_image | default('') | length == 0
+        - hindsight_containment_probe.ping | default('') == 'pong'
+      tags: [hindsight_bank_dr, hindsight_docker]
+      block:
+        - name: Stop DR timers and active jobs
+          ansible.builtin.include_role:
+            name: hindsight_bank_dr
+            tasks_from: stop.yml
+      rescue:
+        - name: Record DR containment failure
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: hindsight_bank_dr_containment
+
+    - name: Stop the backend during ordinary containment
+      ignore_unreachable: true
+      when:
+        - not (hindsight_service_enabled | default(false) | bool)
+        - hindsight_docker_migration_approved_image | default('') | length == 0
+        - hindsight_containment_probe.ping | default('') == 'pong'
+      tags: [hindsight_docker]
+      block:
+        - name: Stop the managed replica
+          ansible.builtin.include_role:
+            name: hindsight_docker
+            tasks_from: contain.yml
+      rescue:
+        - name: Record backend containment failure
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: hindsight_docker_containment
+
+    - name: Verify the replica remained reachable during containment
+      ansible.builtin.ping:
+      become: false
+      vars:
+        ansible_become: false
+      ignore_unreachable: true
+      failed_when: false
+      register: hindsight_containment_final_probe
+      when:
+        - not (hindsight_service_enabled | default(false) | bool)
+        - hindsight_docker_migration_approved_image | default('') | length == 0
+        - hindsight_containment_probe.ping | default('') == 'pong'
+      tags: [hindsight_docker, hindsight_bank_dr]
+
+    - name: Record a replica lost during containment
+      ansible.builtin.set_fact:
+        site_isolated_failures: >-
+          {{ (site_isolated_failures | default([])) +
+             [inventory_hostname ~ ' (hindsight containment): replica became unreachable'] }}
+      when:
+        - not (hindsight_service_enabled | default(false) | bool)
+        - hindsight_docker_migration_approved_image | default('') | length == 0
+        - hindsight_containment_probe.ping | default('') == 'pong'
+        - hindsight_containment_final_probe.ping | default('') != 'pong'
+      tags: [hindsight_docker, hindsight_bank_dr]
 
 - name: Configure Hindsight agent-memory service
   hosts: hindsight_group
@@ -56,7 +151,7 @@
       ansible.builtin.import_tasks: tasks/hindsight_lifecycle_gates.yml
       when: >-
         (hindsight_service_enabled | default(false) | bool)
-        or (hindsight_docker_migration_approved | default(false) | bool)
+        or (hindsight_docker_migration_approved_image | default('') | length > 0)
   tags:
     - hindsight_docker
     - memory

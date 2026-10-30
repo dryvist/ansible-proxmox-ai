@@ -33,7 +33,7 @@ def test_pending_migration_requires_explicit_approval_before_database_mutation()
     tasks = _load_role_tasks("run_db_migration.yml")
     approval = next(
         task for task in tasks
-        if "hindsight_docker_migration_approved | bool" in task.get("ansible.builtin.assert", {}).get("that", [])
+        if "hindsight_docker_migration_approved_image | length > 0" in task.get("ansible.builtin.assert", {}).get("that", [])
     )
     sequence = next(
         task for task in tasks
@@ -46,8 +46,8 @@ def test_pending_migration_requires_explicit_approval_before_database_mutation()
     env = jinja2.Environment(undefined=jinja2.StrictUndefined)
     env.filters["bool"] = bool
     required = env.compile_expression(approval["ansible.builtin.assert"]["that"][0])
-    assert required(hindsight_docker_migration_approved=False) is False
-    assert required(hindsight_docker_migration_approved=True) is True
+    assert required(hindsight_docker_migration_approved_image="") is False
+    assert required(hindsight_docker_migration_approved_image="target") is True
 
 
 def test_schema_probe_positively_detects_a_first_deploy() -> None:
