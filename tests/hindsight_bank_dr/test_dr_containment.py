@@ -32,13 +32,17 @@ def test_existing_timers_and_oneshot_services_are_stopped_without_install_or_sec
     assert set(defaults["hindsight_bank_dr_jobs"]) == {"hindsight-bank-export", "hindsight-bank-dr-drill"}
     tasks = yaml.safe_load((ROLE / "tasks/stop.yml").read_text())
     stat = next(task for task in tasks if "ansible.builtin.stat" in task)
-    stop = next(task for task in tasks if "ansible.builtin.systemd_service" in task)
+    units = [task for task in tasks if "ansible.builtin.systemd_service" in task]
+    assert len(units) == 2
+    timer, service = units
     assert "product(['timer', 'service'])" in stat["loop"]
     assert stat["register"] == "hindsight_bank_dr_existing_units"
-    assert stop["loop"] == "{{ hindsight_bank_dr_existing_units.results }}"
-    assert stop["when"] == "item.stat.exists"
-    assert stop["ansible.builtin.systemd_service"]["state"] == "stopped"
-    assert stop["ansible.builtin.systemd_service"]["enabled"] is False
+    assert all(task["loop"] == "{{ hindsight_bank_dr_existing_units.results }}" for task in units)
+    assert timer["when"] == ["item.stat.exists", "item.item.1 == 'timer'"]
+    assert service["when"] == ["item.stat.exists", "item.item.1 == 'service'"]
+    assert all(task["ansible.builtin.systemd_service"]["state"] == "stopped" for task in units)
+    assert timer["ansible.builtin.systemd_service"]["enabled"] is False
+    assert "enabled" not in service["ansible.builtin.systemd_service"]
     assert all("include_role" not in str(task) and "secret" not in str(task).lower() for task in tasks)
 
 

@@ -14,8 +14,6 @@
       Type=simple
       ExecStart=/usr/bin/sleep 3600
 
-      [Install]
-      WantedBy=multi-user.target
       {% else %}
       [Timer]
       OnActiveSec=1h
@@ -31,14 +29,18 @@
   ansible.builtin.systemd_service:
     daemon_reload: true
 
-- name: Enable and start both fixture services and timers
+- name: Start both static fixture services
   ansible.builtin.systemd_service:
-    name: "{{ item.0 }}.{{ item.1 }}"
+    name: "{{ item }}.service"
+    state: started
+  loop: [hindsight-bank-export, hindsight-bank-dr-drill]
+
+- name: Enable and start both fixture timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}.timer"
     enabled: true
     state: started
-  loop: "{{ ['hindsight-bank-export', 'hindsight-bank-dr-drill'] | product(['service', 'timer']) | list }}"
-  loop_control:
-    label: "{{ item.0 }}.{{ item.1 }}"
+  loop: [hindsight-bank-export, hindsight-bank-dr-drill]
 
 - name: Read the active state before invoking the DR role
   ansible.builtin.command:
@@ -98,11 +100,11 @@
   loop_control:
     label: "{{ item.item.0 }}.{{ item.item.1 }}"
 
-- name: Require every timer and service to be disabled
+- name: Require timers to be disabled and services to remain static
   ansible.builtin.assert:
     that:
-      - item.rc == 1
-      - item.stdout | trim == 'disabled'
+      - item.rc == (0 if item.item.1 == 'service' else 1)
+      - item.stdout | trim == ('static' if item.item.1 == 'service' else 'disabled')
   loop: "{{ hindsight_fixture_dr_enabled.results }}"
   loop_control:
     label: "{{ item.item.0 }}.{{ item.item.1 }}"
