@@ -110,6 +110,32 @@ def test_a_daily_job_is_not_judged_by_a_frequent_jobs_clock() -> None:
     assert len(run(quarter, settle(quarter), now=later)[0]) == 1
 
 
+def test_a_weekly_cron_job_waits_for_its_cadence_and_missed_cycle_grace() -> None:
+    cadence_minutes = 7 * 24 * 60
+    weekly = [{
+        "id": "weekly",
+        "name": "weekly",
+        "enabled": True,
+        "schedule": {"kind": "cron", "expr": "19 9 * * 1"},
+        "last_run_at": _iso(NOW),
+        "next_run_at": _iso(NOW + cadence_minutes * MINUTE),
+        "last_status": "ok",
+    }]
+    state = settle(weekly)
+
+    before_next_run, _, _, _ = run(
+        weekly, state, now=NOW + (cadence_minutes - 1) * MINUTE
+    )
+    assert before_next_run == []
+
+    past_grace, _, _, _ = run(
+        weekly,
+        state,
+        now=NOW + (cadence_minutes * WD.MISSED_CYCLES + 1) * MINUTE,
+    )
+    assert len(past_grace) == 1
+
+
 def test_a_disabled_job_is_not_silence() -> None:
     state = settle([job("seasonal", cadence_min=15, last_ok_ago_min=1)])
     off = [job("seasonal", cadence_min=15, last_ok_ago_min=1, enabled=False)]
