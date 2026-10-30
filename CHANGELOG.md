@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.10.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.9.0...v2.10.0) (2026-10-30)
+
+
+### Features
+
+* **hermes_agent:** presence-gated Home Assistant plugin for homelab-admin ([#1761](https://github.com/dryvist/ansible-proxmox-ai/issues/1761)) ([5216d03](https://github.com/dryvist/ansible-proxmox-ai/commit/5216d031ea178eaef8190a19ba9bc3bb2b2a921c))
+* **hermes_agent:** wire the Home Assistant URL and token read for Hermes ([#1799](https://github.com/dryvist/ansible-proxmox-ai/issues/1799)) ([f9ee94e](https://github.com/dryvist/ansible-proxmox-ai/commit/f9ee94e16eda5f248dbeb2cd4829a3f9c1a2e4d7))
+* **langfuse:** provision Hermes agent project keys behind a never tag ([#1794](https://github.com/dryvist/ansible-proxmox-ai/issues/1794)) ([a33bf79](https://github.com/dryvist/ansible-proxmox-ai/commit/a33bf79c95697ff2a29b8162b3b956ee2bd8742d))
+* **llm_router:** grant the workstation key the classifier pass-through ([#1796](https://github.com/dryvist/ansible-proxmox-ai/issues/1796)) ([6e22899](https://github.com/dryvist/ansible-proxmox-ai/commit/6e228993456f3872df76b9d02613347a9f8be64b))
+* **llm_router:** pass /v1/systemone through to the classifier ([#1777](https://github.com/dryvist/ansible-proxmox-ai/issues/1777)) ([09c2e64](https://github.com/dryvist/ansible-proxmox-ai/commit/09c2e64fadcc540f76ba24391eca7a9d01848a2f))
+
+
+### Bug Fixes
+
+* align controller provisioning and fixture checks ([#1798](https://github.com/dryvist/ansible-proxmox-ai/issues/1798)) ([6ae2d8e](https://github.com/dryvist/ansible-proxmox-ai/commit/6ae2d8e9178a0e2f177e57ca9ce81990fbb67b3e))
+* **ci:** remove data-contract step for deleted login test ([#1776](https://github.com/dryvist/ansible-proxmox-ai/issues/1776)) ([eef1ec6](https://github.com/dryvist/ansible-proxmox-ai/commit/eef1ec618b4016836598d8179573dd0fb6e49134))
+* enforce request attribution and shared seed contracts ([45f03c7](https://github.com/dryvist/ansible-proxmox-ai/commit/45f03c72d97ff19fe66b3b23fa207974bf03be69))
+* **hermes_agent:** list cron jobs only in job homes that exist ([#1774](https://github.com/dryvist/ansible-proxmox-ai/issues/1774)) ([eb207e0](https://github.com/dryvist/ansible-proxmox-ai/commit/eb207e0e2d3766bd5048aa28835bf1dbda85db35))
+* **hermes_agent:** mark the backup-outcome day checked before querying ([#1795](https://github.com/dryvist/ansible-proxmox-ai/issues/1795)) ([fe64ed4](https://github.com/dryvist/ansible-proxmox-ai/commit/fe64ed4f7be9705a62968f3ea90a5fc1063dfdcd))
+* **hermes_agent:** match the gateway gate on the gateway subcommand ([#1782](https://github.com/dryvist/ansible-proxmox-ai/issues/1782)) ([36dbc09](https://github.com/dryvist/ansible-proxmox-ai/commit/36dbc09a7859edde134a082f04e57b55add10e1b))
+* **hermes_agent:** pass the service user to the Hermes install ([#1767](https://github.com/dryvist/ansible-proxmox-ai/issues/1767)) ([8972cd0](https://github.com/dryvist/ansible-proxmox-ai/commit/8972cd0b0db65a910f25232e1e010f33ff27e641))
+* **hermes_agent:** read each Slack agent's bot token from its platform env field ([#1785](https://github.com/dryvist/ansible-proxmox-ai/issues/1785)) ([f3019dd](https://github.com/dryvist/ansible-proxmox-ai/commit/f3019dd03475661a2970db33681e6c650ac1ccc4))
+* **hermes_agent:** use the PM-selected Hermes virtualenv ([#1766](https://github.com/dryvist/ansible-proxmox-ai/issues/1766)) ([1bb9cd9](https://github.com/dryvist/ansible-proxmox-ai/commit/1bb9cd900b4231f95dce5be541aa1b927f22c112))
+* **hermes_agent:** verify readback asserts and re-anchor them to v0.22.5 ([#1762](https://github.com/dryvist/ansible-proxmox-ai/issues/1762)) ([630f035](https://github.com/dryvist/ansible-proxmox-ai/commit/630f035c6f94cb0c1b26833307269f0ecb873db8))
+* **hermes_agent:** wait for the api_server listener after a gateway restart ([#1784](https://github.com/dryvist/ansible-proxmox-ai/issues/1784)) ([9f16e17](https://github.com/dryvist/ansible-proxmox-ai/commit/9f16e173a39b2301733cee7a30f84ef6129cebb3))
+* **llamaindex:** run the agent-session export before the index rebuild ([#1797](https://github.com/dryvist/ansible-proxmox-ai/issues/1797)) ([6c6b6f3](https://github.com/dryvist/ansible-proxmox-ai/commit/6c6b6f3953a7c51b8f5f77ed48b6a9e3f78ce7ef))
+* **llm_router:** assert the classifier bearer with the shared guard ([#1788](https://github.com/dryvist/ansible-proxmox-ai/issues/1788)) ([ba78268](https://github.com/dryvist/ansible-proxmox-ai/commit/ba78268f6e4586b497282e8d062fcd8bf23b8e09))
+* **llm_router:** classify the classifier pass-through's state text ([#1800](https://github.com/dryvist/ansible-proxmox-ai/issues/1800)) ([49338e8](https://github.com/dryvist/ansible-proxmox-ai/commit/49338e8ff4e54b24845ea9de74c5f80f6395c170))
+* **llm_router:** fall back to the controller env for the classifier bearer ([#1789](https://github.com/dryvist/ansible-proxmox-ai/issues/1789)) ([d8d8642](https://github.com/dryvist/ansible-proxmox-ai/commit/d8d8642f99f720f3381b51c70c3ed9ca6e50fa8d))
+* **llm_router:** resolve GPU member ports from a tofu constant key ([#1791](https://github.com/dryvist/ansible-proxmox-ai/issues/1791)) ([6a10a29](https://github.com/dryvist/ansible-proxmox-ai/commit/6a10a29f3086e727b2d28ca7bb6a9de89eb20f07))
+* **llm_router:** resolve the classifier target as a role default ([#1792](https://github.com/dryvist/ansible-proxmox-ai/issues/1792)) ([4adcb56](https://github.com/dryvist/ansible-proxmox-ai/commit/4adcb560bc25012daa4a037cd4f9f24e9e61b5e3))
+* **schedules:** move scheduled jobs off the grid ([#1773](https://github.com/dryvist/ansible-proxmox-ai/issues/1773)) ([293ce0d](https://github.com/dryvist/ansible-proxmox-ai/commit/293ce0d78a8f9fb5de93acb3aac1b2ed8304b0d2))
+
 ## [2.9.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.8.0...v2.9.0) (2026-10-28)
 
 
