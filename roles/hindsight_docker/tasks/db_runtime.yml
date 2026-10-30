@@ -1,0 +1,52 @@
+---
+- name: Read PostgreSQL and vector-extension capabilities without changing data
+  ansible.builtin.command:
+    argv:
+      - psql
+      - >-
+        postgresql://{{ hindsight_docker_db_user }}@{{ hindsight_docker_db_host }}:{{
+        hindsight_docker_db_port }}/{{ hindsight_docker_db_name }}
+      - -tAc
+      - >-
+        SELECT json_build_object(
+          'server_version', current_setting('server_version'),
+          'server_version_num', current_setting('server_version_num')::integer,
+          'vector_version', (SELECT extversion FROM pg_extension WHERE extname = 'vector'),
+          'vector_available', EXISTS(SELECT 1 FROM pg_available_extensions WHERE name = 'vector'),
+          'superuser', current_setting('is_superuser')::boolean)
+  environment:
+    PGPASSWORD: "{{ hindsight_docker_db_password }}"
+  register: hindsight_docker_db_runtime_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require a successful database capability read
+  ansible.builtin.assert:
+    that:
+      - hindsight_docker_db_runtime_probe.rc | default(-1) == 0
+    fail_msg: Hindsight database capabilities could not be read; no schema change is allowed.
+    quiet: true
+
+- name: Record the database versions returned by PostgreSQL
+  ansible.builtin.set_fact:
+    hindsight_docker_db_runtime: "{{ hindsight_docker_db_runtime_probe.stdout | from_json }}"
+  no_log: true
+
+- name: Require the database capabilities supported by Hindsight
+  ansible.builtin.assert:
+    that:
+      - hindsight_docker_db_runtime.server_version_num | int >= 140000
+      - >-
+        hindsight_docker_vector_extension != 'pgvector'
+        or (hindsight_docker_db_runtime.vector_version | default('', true) | length > 0)
+        or (hindsight_docker_db_runtime.vector_available and hindsight_docker_db_runtime.superuser)
+    fail_msg: Hindsight requires PostgreSQL 14 or later and a usable vector extension before migration.
+    quiet: true
+
+- name: Report the checked database versions
+  ansible.builtin.debug:
+    msg: >-
+      PostgreSQL {{ hindsight_docker_db_runtime.server_version }};
+      pgvector {{ hindsight_docker_db_runtime.vector_version | default('not installed yet', true) }}.

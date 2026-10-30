@@ -10,6 +10,8 @@
   vars:
     hindsight_docker_data_dir: /opt/hindsight
     hindsight_docker_api_port: 8888
+    hindsight_retain_model: ai-default
+    ai_orchestration_otel_endpoint: "http://127.0.0.1:9/molecule-fixture"
 
   tasks:
     - name: Read the nested Docker storage driver
@@ -73,6 +75,20 @@
           - hindsight_env.HINDSIGHT_API_WORKER_ID | default('') | length > 0
           - hindsight_env.HINDSIGHT_API_VECTOR_EXTENSION == 'pgvector'
           - hindsight_env.HINDSIGHT_API_EMBEDDINGS_PROVIDER == 'local'
+          - hindsight_env.HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU == 'true'
+          - hindsight_env.HINDSIGHT_API_RERANKER_PROVIDER == 'local'
+          - hindsight_env.HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU == 'true'
+          - hindsight_env.HINDSIGHT_API_LLM_PROVIDER == 'mock'
+          - hindsight_env.HF_HUB_OFFLINE == '1'
+          - hindsight_env.HINDSIGHT_API_LLM_MAX_CONCURRENT == '1'
+          - hindsight_env.HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT == '1'
+          - hindsight_env.HINDSIGHT_API_WORKERS == '1'
+          - hindsight_env.HINDSIGHT_API_WORKER_ENABLED == 'true'
+          - hindsight_env.HINDSIGHT_API_WORKER_MAX_SLOTS == '1'
+          - hindsight_env.HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS == '0'
+          - hindsight_env.HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION == 'false'
+          - hindsight_env.HINDSIGHT_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS == '0'
+          - hindsight_env.HINDSIGHT_API_MENTAL_MODEL_REFRESH_TICK_SECONDS == '0'
         fail_msg: >-
           hindsight compose wiring is wrong. Keys present:
           {{ hindsight_env.keys() | list }}
@@ -99,10 +115,14 @@
       register: hindsight_verify_health
       until: hindsight_verify_health.status == 200
 
-    # prepare.yml seeds the pgvector database one revision behind the image's
-    # head (production's real steady state, not an empty database) before
-    # converge ever runs, so the converge playbook's call to
-    # tasks/run_db_migration.yml exercises the real backup+migrate path —
+    - name: Verify migrated data and an isolated legacy restore
+      ansible.builtin.import_tasks: tasks/verify_migration.yml
+
+    - name: Verify the pinned Hermes client and stateless MCP against the target API
+      ansible.builtin.import_tasks: tasks/verify_clients.yml
+
+    # prepare.yml populates a legacy 0.10.3 database before converge, so the
+    # call to tasks/run_db_migration.yml exercises the real backup+migrate path —
     # confirm both actually happened. The filename carries the from->to
     # revisions plus a timestamp (S2), computed during converge and not
     # available here (facts don't persist across Molecule's separate
@@ -184,3 +204,6 @@
           Database is at revision {{ hindsight_verify_current_revision.stdout | trim }},
           but the image's head is {{ (hindsight_verify_head_probe.stdout | trim).split(' ')[0] }} —
           run_db_migration.yml did not migrate all the way to head.
+
+    - name: Verify the stopped containment state after the running checks
+      ansible.builtin.import_tasks: tasks/verify_stopped.yml

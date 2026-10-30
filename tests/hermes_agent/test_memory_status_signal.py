@@ -36,12 +36,13 @@ def _memory_status_task() -> dict[str, Any]:
     raise AssertionError("'Report the active memory provider' task not found in verify.yml")
 
 
-def _render_verdict(rc: int, stdout: str) -> str:
+def _render_verdict(rc: int, stdout: str, provider: str = "hindsight") -> str:
     env = Environment(autoescape=False)
     env.tests["search"] = _search_test
     msg_template = _memory_status_task()["ansible.builtin.debug"]["msg"]
     return env.from_string(msg_template).render(
-        hermes_agent_memory_status={"rc": rc, "stdout": stdout, "stdout_lines": stdout.splitlines()}
+        hermes_agent_memory_status={"rc": rc, "stdout": stdout, "stdout_lines": stdout.splitlines()},
+        hermes_agent_memory_provider=provider,
     )
 
 
@@ -69,3 +70,8 @@ def test_clean_exit_with_no_known_bad_string_reports_healthy() -> None:
     verdict = _render_verdict(rc=0, stdout="Provider: hindsight\nAvailable: true")
     assert "HEALTHY" in verdict
     assert "DEGRADED" not in verdict
+
+
+def test_builtin_memory_status_does_not_claim_hindsight_health() -> None:
+    verdict = _render_verdict(rc=0, stdout="Available: true", provider="builtin")
+    assert verdict == "Builtin Hermes memory selected; this status does not check Hindsight."

@@ -109,6 +109,65 @@ def test_hindsight_client_is_managed_in_the_hermes_uv_venv() -> None:
     assert "hermes_agent_hindsight_client_version" in str(assert_pin)
 
 
+def test_service_containment_selects_builtin_memory_without_disabling_core_files() -> None:
+    defaults = role_defaults(ROLE_ROOT)
+    provider_template = Environment().from_string(
+        str(defaults["hermes_agent_memory_provider"])
+    )
+    provider_template.environment.filters["bool"] = lambda value: str(value).lower() in {"true", "1", "yes", "on"}
+    assert provider_template.render().strip() == "builtin"
+    assert provider_template.render(hindsight_service_enabled=False).strip() == "builtin"
+    assert provider_template.render(hindsight_service_enabled=True).strip() == "hindsight"
+
+    for template_name in ("config.yaml.j2", "config-profile.yaml.j2"):
+        source = (ROLE_ROOT / "templates" / template_name).read_text()
+        memory = source.split("memory:\n", 1)[1].split("\nlogging:", 1)[0]
+        assert "provider: {{ hermes_agent_memory_provider }}" in memory
+        assert "memory_enabled: true" in memory
+        assert "user_profile_enabled: true" in memory
+
+
+def test_builtin_provider_skips_every_hindsight_http_and_readiness_task() -> None:
+    config_tasks = yaml.safe_load((ROLE_ROOT / "tasks" / "config_and_content.yml").read_text())
+    splunk_config = next(
+        task
+        for task in config_tasks
+        if task.get("name") == "Manage Splunk memory bank extraction mode"
+    )
+    assert "hermes_agent_memory_provider == 'hindsight'" in splunk_config["when"]
+
+    config_task_names = (
+        "Ensure the hindsight config dir exists",
+        "Deploy the hindsight provider config (mode + embedded-daemon LLM)",
+    )
+    for task_name in config_task_names:
+        task = next(task for task in config_tasks if task.get("name") == task_name)
+        assert task["when"] == "hermes_agent_memory_provider == 'hindsight'"
+
+    verify = yaml.safe_load((ROLE_ROOT / "tasks" / "verify.yml").read_text())[0]["block"]
+    recall = next(
+        task
+        for task in verify
+        if task.get("name") == "Gate — Hindsight performs a read-only recall from this agent bank"
+    )
+    assert recall["when"] == "hermes_agent_memory_provider == 'hindsight'"
+
+
+def test_provider_change_restarts_full_gateway_process() -> None:
+    finalize = yaml.safe_load((ROLE_ROOT / "tasks" / "finalize.yml").read_text())
+    stats = next(task for task in finalize if task.get("name") == "Stat the gateway input files")
+    assert "config.yaml" in str(stats)
+    restart = next(
+        task
+        for task in finalize
+        if task.get("name") == "Restart a gateway whose inputs differ from the recorded digest"
+    )
+    assert restart["notify"] == "Restart hermes-gateway"
+    handler = yaml.safe_load((ROLE_ROOT / "handlers" / "main.yml").read_text())
+    gateway_restart = next(task for task in handler if task.get("name") == "Restart hermes-gateway")
+    assert gateway_restart["ansible.builtin.command"] == "{{ hermes_agent_cron_drain_restart_script }}"
+
+
 def test_hindsight_readiness_probe_is_read_only_and_uses_rendered_agent_config() -> None:
     probe = _verify_task("Gate — Hindsight performs a read-only recall from this agent bank")
     argv = probe["ansible.builtin.command"]["argv"]

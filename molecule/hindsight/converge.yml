@@ -22,19 +22,21 @@
     bao_apps_secrets:
       hindsight_api_key: molecule-test-hindsight-api-key
     hindsight_docker_llm_api_key: molecule-test-llm-key
-    hindsight_docker_llm_base_url: "http://127.0.0.1:9/v1"  # never called during converge
-    hindsight_retain_model: ai-default  # mirrors the inventory selection
+    hindsight_docker_llm_base_url: "http://127.0.0.1:9/v1"  # mock provider makes no network calls
+    hindsight_retain_model: ai-default
     hindsight_docker_worker_id: hindsight-test
+    hindsight_service_enabled: true
+    hindsight_docker_migration_approved_image: "{{ hindsight_docker_image }}"
+    hindsight_docker_llm_provider: mock
     ai_orchestration_otel_endpoint: "http://127.0.0.1:9/molecule-fixture"  # never called during converge
     # Matches production (false): the migration runs explicitly, once, from
     # tasks/run_db_migration.yml — see the task below that calls it via
     # include_role/tasks_from before the role itself is included, exercising
-    # the real pre-migration-backup + migration tasks against the fresh
-    # pgvector container instead of letting the API self-migrate on startup.
+    # the real pre-migration-backup + migration tasks against the populated
+    # legacy database instead of letting the API self-migrate on startup.
     hindsight_docker_run_migrations_on_startup: false
-    # The production cold-start ceiling (10 min) is sized for HuggingFace model
-    # downloads + a real fabric-router LLM verify; the scenario has neither, so
-    # keep the readiness gate short to fail fast on a genuinely broken converge.
+    # Load the image's cached models offline, using the production CPU reranker.
+    # The mock provider makes no router calls; keep the existing fixture budget.
     hindsight_docker_startup_timeout: 120
     hindsight_docker_health_retries: 18
     hindsight_docker_health_delay: 5
@@ -46,25 +48,6 @@
       vars:
         docker_engine_configure_daemon_json: true
         docker_engine_storage_driver: fuse-overlayfs
-
-# docker CLI, not community.docker.docker_container: the repo's roles deploy
-    # via the compose CLI and never install the Python docker SDK the module
-    # needs (same reason the roles use docker_compose_v2).
-    - name: Check whether the pgvector Postgres is already running
-      ansible.builtin.command: docker ps -q --filter name=hindsight-postgres --filter status=running
-      register: hindsight_molecule_pg_running
-      changed_when: false
-
-    - name: Start a pgvector Postgres for the API to persist into
-      ansible.builtin.command: >-
-        docker run -d --name hindsight-postgres --restart unless-stopped
-        -p 5432:5432
-        -e POSTGRES_USER=hindsight
-        -e POSTGRES_PASSWORD=molecule-test-password
-        -e POSTGRES_DB=hindsight
-        pgvector/pgvector:pg17
-      when: hindsight_molecule_pg_running.stdout == ''
-      changed_when: true
 
     - name: Discover the Docker bridge gateway (compose -> host-published ports)
       ansible.builtin.command: >-
@@ -111,10 +94,9 @@
               {{ hindsight_molecule_logs.stderr | default('') }}
 
     # S6: runs the real decommission task file (playbooks/hindsight.yml's
-    # own second play, not re-typed here) against the live container this
-    # scenario just deployed. No task was ever claimed during this converge
-    # (no LLM calls are made — see hindsight_docker_llm_base_url above), so
-    # worker-status reports zero workers and this proves the wiring/ordering
+    # own final play, not re-typed here) against the live container this
+    # scenario just deployed. The bounded worker has no queued work yet, so
+    # this proves the wiring/ordering
     # (role defaults resolve, groups['hindsight_group'] is populated, the
     # dead-signal filter runs against a live hindsight-admin CLI) without
     # decommissioning anything real.

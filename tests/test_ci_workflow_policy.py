@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -220,7 +221,7 @@ def test_molecule_callers_preserve_roles_galaxy_and_doppler_settings() -> None:
         assert "galaxy_force_install" not in inputs
         assert inputs["galaxy_retry_attempts"] == 4
         assert inputs["galaxy_step_timeout_minutes"] == 10
-        assert inputs["galaxy_refresh_contracts_v5"] == "on_cache_hit"
+        assert inputs["galaxy_refresh_contracts_v5"] == "never"
         assert inputs["docker_timeout_seconds"] == 180
         assert inputs["doppler_enabled"] is True
 
@@ -231,6 +232,70 @@ def test_molecule_callers_preserve_roles_galaxy_and_doppler_settings() -> None:
 def test_router_jobs_share_the_cached_dependency_action(job: str) -> None:
     steps = yaml.safe_load((WORKFLOWS / "_llm-router-contract.yml").read_text())["jobs"][job]["steps"]
     assert any(step.get("uses") == "./.github/actions/router-deps" for step in steps)
+
+
+def test_exact_galaxy_cache_hits_do_not_force_reinstall_pinned_requirements() -> None:
+    action_files = (
+        WORKFLOWS.parent / "actions/router-deps/action.yml",
+        WORKFLOWS.parent / "actions/inventory-load-contract/action.yml",
+    )
+    for path in action_files:
+        steps = yaml.safe_load(path.read_text())["runs"]["steps"]
+        assert not any(step.get("uses") == "./.github/actions/refresh-contracts" for step in steps)
+        install = next(step for step in steps if step.get("uses", "").startswith("nick-fields/retry@"))
+        assert install["if"].endswith("outputs.cache-hit != 'true'")
+
+    workflow = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())
+    syntax_steps = workflow["jobs"]["syntax-check"]["steps"]
+    assert not any(step.get("uses") == "./.github/actions/refresh-contracts" for step in syntax_steps)
+    install = next(step for step in syntax_steps if step.get("uses", "").startswith("nick-fields/retry@"))
+    assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
+
+
+def test_hermes_memory_dependency_families_share_manual_compatibility_group() -> None:
+    config = json.loads((WORKFLOWS.parents[1] / "renovate.json").read_text())
+    rules = config["packageRules"]
+    group = "Hermes memory plugin compatibility"
+
+    assert config["vulnerabilityAlerts"]["automerge"] is False
+
+    hermes_rule = next(
+        rule for rule in rules
+        if "NousResearch/hermes-agent" in rule.get("matchPackageNames", [])
+    )
+    plugin_rule = next(
+        rule for rule in rules
+        if "vectorize-io/hindsight" in rule.get("matchPackageNames", [])
+        and rule.get("matchDatasources") == ["github-tags"]
+    )
+    sdk_rule = next(
+        rule for rule in rules
+        if rule.get("matchDepNames") == ["hindsight-client", "hindsight-embed"]
+        and rule.get("allowedVersions") == "<1.0.0"
+    )
+    image_rule = next(
+        rule for rule in rules
+        if "ghcr.io/vectorize-io/hindsight" in rule.get("matchPackageNames", [])
+        and rule.get("matchDatasources") == ["docker"]
+    )
+
+    for rule in (hermes_rule, plugin_rule, sdk_rule, image_rule):
+        assert rule["groupName"] == group
+        assert rule["automerge"] is False
+        assert "dep:review" in rule["addLabels"]
+
+    assert image_rule["pinDigests"] is True
+    assert image_rule["minimumReleaseAge"] == "0 days"
+    assert "matchManagers" not in image_rule
+
+    assert "ordinary Hindsight client updates" in sdk_rule["description"]
+    assert "review vulnerability fixes manually" in sdk_rule["description"]
+    assert "ordinary SDK major proposals" in next(
+        rule["description"] for rule in rules
+        if rule.get("matchDepNames") == ["hindsight-client", "hindsight-embed"]
+        and rule.get("matchUpdateTypes") == ["major"]
+    )
+    assert [rule for rule in rules if rule.get("minimumReleaseAge") == "0 days"] == [image_rule]
 
 
 def test_router_dependency_action_caches_pinned_requirements() -> None:

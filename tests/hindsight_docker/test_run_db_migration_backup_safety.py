@@ -27,7 +27,7 @@ def _load_drain_tasks() -> list[dict]:
     # file (token budget) and its own block: (B2 rescue) — this unwraps it
     # back to a flat task list so existing name-based lookups keep working.
     doc = _load_role_tasks("run_db_migration_drain_and_migrate.yml")
-    return doc[0]["block"]
+    return next(task["block"] for task in doc if "block" in task and "rescue" in task)
 
 
 def test_migration_task_takes_an_automated_pre_migration_backup() -> None:
@@ -40,7 +40,7 @@ def test_migration_task_takes_an_automated_pre_migration_backup() -> None:
     names = [t["name"] for t in tasks]
     assert "Take a pre-migration database backup" in names
     assert "Assert the pre-migration backup succeeded" in names
-    assert "Verify the pre-migration backup archive is a valid, restorable zip" in names
+    assert "Verify the pre-migration backup archive has valid ZIP integrity" in names
 
     backup = next(t for t in tasks if t["name"] == "Take a pre-migration database backup")
     argv = backup["ansible.builtin.command"]["argv"]
@@ -69,7 +69,7 @@ def test_migration_task_takes_an_automated_pre_migration_backup() -> None:
         "not (hindsight_docker_backup_result.failed | default(false))",
     ]
 
-    integrity = next(t for t in tasks if t["name"] == "Verify the pre-migration backup archive is a valid, restorable zip")
+    integrity = next(t for t in tasks if t["name"] == "Verify the pre-migration backup archive has valid ZIP integrity")
     assert integrity["ansible.builtin.command"]["argv"] == [
         "python3",
         "-m",

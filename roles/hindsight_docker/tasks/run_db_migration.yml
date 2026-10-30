@@ -8,8 +8,10 @@
 #
 # Takes its own pre-migration backup via the vendored `hindsight-admin
 # backup` command and refuses to migrate unless that file exists, is
-# non-empty, AND is a valid, restorable zip archive — no human confirmation
-# step. HINDSIGHT_API_DATABASE_URL and HINDSIGHT_API_VECTOR_EXTENSION are
+# non-empty, AND passes ZIP integrity checking. The populated migration and
+# restore scenario tests recovery separately; ZIP integrity alone does not.
+# A pending migration also requires explicit operator approval.
+# HINDSIGHT_API_DATABASE_URL and HINDSIGHT_API_VECTOR_EXTENSION are
 # passed via `environment:` and a bare `-e` (no inline value): the DSN never
 # appears in argv/`ps` output on the host, and the vector extension matches
 # the compose template's own value (run-db-migration reconciles indexes
@@ -63,47 +65,23 @@
 # followed by an explicit rc-only assertion so a real failure still
 # surfaces without depending on the withheld output.
 #
-# The whole drain -> backup -> verify -> migrate sequence below is wrapped
-# in block/rescue: a pre_tasks failure here is fatal to the whole play (see
-# hindsight_lifecycle_gates.yml's header), and with nothing to bring a
-# stopped replica back up, that would leave the entire pool down on any
-# backup/integrity/migration failure — worse than the single-host failure
-# this whole file exists to make safe. The rescue re-reads the database's
-# actual current revision via the vendored `alembic ... current` (not a
-# guess): unchanged (or the migration never started) restarts every
-# drained replica on its own current image, as-is; changed (partially or
-# fully) never restarts an old image against a schema it may not
-# understand — the pool is left down on purpose, and the failure message
-# names the pre-migration backup to restore from. Either branch re-raises
-# via `ansible.builtin.fail`, so the play still fails either way.
+# The all-host maintenance play stops replicas and DR jobs before an approved
+# migration. Unknown worker identities or an unreachable inventory member
+# prevent a schema change. Claimed tasks on known stopped workers are kept.
 #
-# Known gap: Ansible's own documentation states that block `rescue:` does
-# not trigger on an unreachable-host error. The stop/restart tasks below
-# are `delegate_to`-looped across every host in the group, so a replica
-# that goes unreachable mid-loop (not a command failure — a genuine
-# connectivity loss) skips this whole recovery path: any replica already
-# stopped by that point stays stopped, with no restart attempt at all.
-# This is a generic Ansible limitation surfaced by drain now spanning
-# multiple hosts, not a defect in the recovery logic itself, and fixing
-# it (e.g. `ignore_unreachable` plus explicit per-host error tracking) is
-# a bigger design change than this fix; tracked as separate follow-up
-# work rather than solved here.
-#
-# The unchanged/changed split above assumes a failed migration rolls back
-# cleanly to the pre-attempt revision (the vendor's alembic env.py runs
-# every pending revision inside one wrapping transaction). That does not
-# universally hold: grepping every revision script under
-# hindsight_api/alembic/versions/ at the previous image tag (v0.9.0) found
-# 11 revisions that use `op.get_context().autocommit_block()` for
-# `CREATE INDEX CONCURRENTLY` (which Postgres refuses inside a
-# transaction) — those statements commit outside the wrapping
-# transaction regardless of whether the overall migration later fails.
-# The ones inspected build defensively (an invalid-leftover sweep plus
-# `IF NOT EXISTS` before each CONCURRENTLY build), so a retry after a
-# failure in one of these is expected to be safe, but this recovery
-# logic's binary revision comparison cannot by itself detect "an index
-# was left behind outside the transaction" the way it detects a changed
-# `alembic_version`.
+# A failed migration can commit DDL before Alembic records its revision.
+# Therefore, once a migration is attempted, old replicas stay stopped even
+# if the recorded revision is unchanged. Only a failure before that attempt
+# may restart a service whose desired state is enabled. A contained service
+# stays stopped on every failure path. The play always reports the failure.
+
+- name: Validate maintenance approval before database work
+  ansible.builtin.import_tasks: maintenance_preflight.yml
+  when: hindsight_docker_migration_approved_image | length > 0
+
+- name: Check stopped-staging support before database work
+  ansible.builtin.import_tasks: check_compose.yml
+  when: hindsight_docker_migration_approved_image | length > 0
 
 - name: Ensure the pre-migration backup directory exists
   ansible.builtin.file:
@@ -116,6 +94,10 @@
   ansible.builtin.apt:
     name: postgresql-client
     state: present
+  run_once: true
+
+- name: Check actual database versions and extension capabilities before migration
+  ansible.builtin.import_tasks: db_runtime.yml
   run_once: true
 
 - name: Probe whether the Alembic migration tracker table already exists
@@ -228,5 +210,17 @@
       ~ ', target ' ~ hindsight_docker_target_head_revision ~ ') — taking a pre-migration backup.') }}
   run_once: true
 
-- name: Drain, back up, verify, and migrate (recoverable on failure)
+- name: Require approval for a pending Hindsight schema migration
+  ansible.builtin.assert:
+    that:
+      - hindsight_docker_migration_approved_image | length > 0
+      - hindsight_docker_migration_approved_image == hindsight_docker_image
+      - hindsight_docker_image is match('^.+@sha256:[0-9a-f]{64}$')
+    fail_msg: A pending Hindsight schema migration requires explicit operator approval.
+    quiet: true
+  run_once: true
+  when: hindsight_docker_migration_pending
+
+- name: Run the approved Hindsight migration sequence
   ansible.builtin.import_tasks: run_db_migration_drain_and_migrate.yml
+  when: hindsight_docker_migration_pending

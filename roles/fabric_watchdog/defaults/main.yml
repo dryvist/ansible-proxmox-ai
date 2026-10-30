@@ -43,6 +43,7 @@ fabric_watchdog_success_state_path: "{{ fabric_watchdog_state_dir }}/cron-succes
 fabric_watchdog_success_missed_cycles: 3
 # Floor: a 1-minute job must not page over ordinary lateness. Ceiling: a daily
 # job must not be allowed to sit silent for most of a week (3 x daily = 3 days).
+# The ceiling never cuts a job below its own cadence plus the floor.
 fabric_watchdog_success_floor_minutes: 30
 fabric_watchdog_success_ceiling_minutes: 1440
 # A total fleet death must arrive as one message, not one per job.
@@ -77,6 +78,12 @@ fabric_watchdog_ntfy_url: >-
 # the hub yet.
 fabric_watchdog_ntfy_token: ""
 
+# The memory service and its dependency probe are only watched while the
+# shared Hindsight service switch is enabled. Builtin memory does not prove
+# external Hindsight health.
+fabric_watchdog_hindsight_enabled: >-
+  {{ hindsight_service_enabled | default(false) | bool }}
+
 # Probed endpoints. ok_codes are space-separated HTTP codes counted as UP:
 # the MCP proxy answers 406 (protocol negotiation rejection) to a plain GET
 # when healthy and 502 when the backend pool is gone; LiteLLM's
@@ -99,6 +106,7 @@ fabric_watchdog_targets:
   # the same endpoint Traefik's own pool health check uses (hindsight_docker
   # role) and returns {"status":"healthy","database":"connected"} — 200 only.
   - name: hindsight
+    requires_hindsight: true
     url: "https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health"
     ok_codes: "200"
   # The target above watches the memory SERVICE. This one watches whether the
@@ -113,6 +121,7 @@ fabric_watchdog_targets:
   # each stood on the wrong side of that boundary. ok_codes is "0": exit 1 is a
   # live rejection, exit 2 is the probe unable to tell, and both must alarm.
   - name: hindsight-dep-gate
+    requires_hindsight: true
     cmd: "{{ fabric_watchdog_hermes_venv_python }} /usr/local/bin/hindsight-dep-gate.py"
     ok_codes: "0"
 

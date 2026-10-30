@@ -1,0 +1,87 @@
+---
+- name: Record the model cache volume mounted by the running service
+  ansible.builtin.command: docker inspect hindsight
+  register: hindsight_fixture_container
+  changed_when: false
+
+- name: Select the named cache volume
+  ansible.builtin.set_fact:
+    hindsight_fixture_cache_volume: >-
+      {{ (hindsight_fixture_container.stdout | from_json | first).Mounts
+         | selectattr('Destination', 'equalto', '/home/hindsight/.cache')
+         | map(attribute='Name') | first | default('') }}
+
+- name: Require a named model cache before containment
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_cache_volume | trim | length > 0
+
+- name: Select the stopped Hindsight state
+  ansible.builtin.set_fact:
+    hindsight_service_enabled: false
+
+- name: Exercise containment of active DR timers and jobs
+  ansible.builtin.import_tasks: verify_dr_stop.yml
+
+- name: Apply the stopped Hindsight state
+  ansible.builtin.include_role:
+    name: hindsight_docker
+  vars:
+    hindsight_docker_storage_driver: fuse-overlayfs
+    hindsight_docker_api_port: 8888
+    hindsight_docker_cp_port: 9999
+    hindsight_docker_db_host: "{{ hindsight_verify_bridge_gw.stdout | trim }}"
+    hindsight_docker_db_port: 5432
+    hindsight_docker_migration_approved_image: ""
+    hindsight_docker_db_password: ""
+    hindsight_docker_cp_access_key: ""
+    hindsight_docker_api_key: ""
+    hindsight_docker_llm_api_key: ""
+    hindsight_docker_llm_provider: mock
+    hindsight_docker_worker_id: hindsight-test
+
+- name: Require Hindsight to be stopped
+  ansible.builtin.command: docker inspect hindsight --format {% raw %}'{{ .State.Running }}'{% endraw %}
+  register: hindsight_fixture_stopped
+  changed_when: false
+  failed_when: hindsight_fixture_stopped.rc != 0 or hindsight_fixture_stopped.stdout | trim != 'false'
+
+- name: Require the same cache volume to survive containment
+  ansible.builtin.command:
+    argv:
+      - docker
+      - volume
+      - inspect
+      - "{{ hindsight_fixture_cache_volume | trim }}"
+  changed_when: false
+
+- name: Hash the model blobs after containment
+  ansible.builtin.import_tasks: hash_cache_blobs.yml
+  vars:
+    hindsight_fixture_cache_name: "{{ hindsight_fixture_cache_volume | trim }}"
+
+- name: Require all original cache blobs to remain byte-identical after containment
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_cache_hash_lines == hindsight_fixture_expected_cache_hashes
+
+- name: Require retained database rows to survive containment
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - hindsight-postgres
+      - psql
+      - -U
+      - hindsight
+      - -d
+      - hindsight
+      - -tAc
+      - >-
+        SELECT coalesce(json_agg(json_build_object('id', id, 'document_id', document_id,
+        'text', text, 'embedding', embedding::text) ORDER BY id), '[]'::json)
+        FROM memory_units WHERE bank_id = 'molecule-migration'
+        AND document_id = 'molecule-legacy-document' AND embedding IS NOT NULL
+  register: hindsight_fixture_stopped_rows
+  changed_when: false
+  failed_when: hindsight_fixture_stopped_rows.stdout | from_json != hindsight_fixture_expected

@@ -1,111 +1,14 @@
 ---
-# Hindsight agent-memory deployment (Docker in LXC). One stateless replica per
-# hindsight-tagged guest; Traefik load-balances the pool at hindsight.<domain>.
+- name: Validate maintenance approval before changing service state
+  ansible.builtin.import_tasks: maintenance_preflight.yml
+  when: hindsight_docker_migration_approved_image | length > 0
 
-# =============================================================================
-# Validation
-# =============================================================================
+- name: Enforce the stopped state without changing stored data
+  ansible.builtin.import_tasks: contain.yml
+  when: not (hindsight_service_enabled | default(false) | bool)
 
-- name: Validate required Hindsight secrets are set
-  ansible.builtin.assert:
-    that:
-      - hindsight_docker_db_password | length > 0
-      - hindsight_docker_llm_api_key | length > 0
-      - hindsight_docker_cp_access_key | length > 0
-      - hindsight_docker_api_key | length > 0
-    fail_msg: >-
-      Hindsight secrets missing — hindsight_docker_db_password /
-      hindsight_docker_cp_access_key / hindsight_docker_api_key resolve
-      bao-first from the apps/hindsight KV fields;
-      hindsight_docker_llm_api_key resolves its own hindsight_llm_router_key
-      field there, mandatory, with no other fallback.
-    quiet: true
-
-# Docker itself (docker-ce + compose plugin, LXC-conditional fuse-overlayfs,
-# daemon.json) is installed by the docker_engine meta dependency.
-
-# =============================================================================
-# Configuration + deploy via Docker Compose. No data dirs beyond the compose
-# project dir: the model cache is a named volume (ownership handled by
-# Docker) and all real state lives in the ai-VLAN Postgres cluster.
-# =============================================================================
-
-- name: Create hindsight project directory
-  ansible.builtin.file:
-    path: "{{ hindsight_docker_data_dir }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0750"
-
-- name: Assert every secret rendered into the hindsight compose file is present
-  ansible.builtin.include_role:
-    name: dryvist.homelab.openbao_secrets
-    tasks_from: assert_nonempty.yml
-  vars:
-    openbao_secrets_required_vars:
-      - hindsight_docker_db_password
-      - hindsight_docker_cp_access_key
-      - hindsight_docker_llm_api_key
-      - hindsight_docker_api_key
-
-- name: Deploy hindsight docker-compose template
-  ansible.builtin.template:
-    src: docker-compose.yml.j2
-    dest: "{{ hindsight_docker_data_dir }}/docker-compose.yml"
-    owner: root
-    group: root
-    mode: "0600"
-  no_log: true
-  notify: Restart hindsight
-
-- name: Check if hindsight container is running
-  ansible.builtin.command: docker ps -q --filter name={{ hindsight_docker_container_name }} --filter status=running
-  register: hindsight_docker_running_check
-  changed_when: false
-  failed_when: false
-
-- name: Clean stale hindsight Docker state before fresh deployment
-  ansible.builtin.command:
-    cmd: docker compose down --volumes --remove-orphans
-    chdir: "{{ hindsight_docker_data_dir }}"
-  when: hindsight_docker_running_check.stdout == ''
-  changed_when: true
-  failed_when: false
-
-- name: Deploy hindsight via docker compose
-  community.docker.docker_compose_v2:
-    project_src: "{{ hindsight_docker_data_dir }}"
-    state: present
-
-# =============================================================================
-# Health check — /health is the same endpoint Traefik's pool check uses.
-#
-# The window is sized for a COLD start, not a warm one. On a fresh guest the
-# API does not listen until it has: downloaded the local embeddings + reranker
-# models from HuggingFace, initialized both, and verified the LLM connection
-# against the fabric router — and that last step blocks on a llama-swap model
-# load that can take minutes. Measured cold start: the LLM verification alone
-# had not returned 2m07s in. A 2-minute window therefore failed EVERY first
-# converge (and with serial: 1 that aborted the play before the second replica
-# ever deployed). A warm converge returns 200 on the first try, so the longer
-# ceiling costs nothing on the idempotent path.
-# =============================================================================
-
-- name: Wait for hindsight API port to be ready
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: "{{ hindsight_docker_api_port }}"
-    timeout: "{{ hindsight_docker_startup_timeout }}"
-
-- name: Verify hindsight health endpoint
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ hindsight_docker_api_port }}/health"
-    method: GET
-    status_code: 200
-  register: hindsight_docker_health
-  retries: "{{ hindsight_docker_health_retries }}"
-  delay: "{{ hindsight_docker_health_delay }}"
-  until: hindsight_docker_health.status == 200
-  changed_when: false
-  when: not ansible_check_mode
+- name: Configure Hindsight for an enabled service or an approved upgrade
+  ansible.builtin.import_tasks: deploy.yml
+  when: >-
+    (hindsight_service_enabled | default(false) | bool)
+    or (hindsight_docker_migration_approved_image | length > 0)

@@ -1,0 +1,128 @@
+---
+# Streamable HTTP may return application/json or a text/event-stream. Parse
+# the JSON-RPC data in either representation without retaining a session.
+- name: Require MCP initialization to reject a missing bearer token
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8888/mcp/
+    method: POST
+    headers:
+      Accept: "application/json, text/event-stream"
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      id: 0
+      method: initialize
+      params:
+        protocolVersion: "2025-03-26"
+        capabilities: {}
+        clientInfo:
+          name: molecule-hindsight
+          version: "1"
+    status_code: [401, 403]
+
+- name: Initialize the stateless MCP endpoint
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8888/mcp/
+    method: POST
+    headers:
+      Authorization: Bearer molecule-test-hindsight-api-key
+      Accept: "application/json, text/event-stream"
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      id: 1
+      method: initialize
+      params:
+        protocolVersion: "2025-03-26"
+        capabilities: {}
+        clientInfo:
+          name: molecule-hindsight
+          version: "1"
+    return_content: true
+    status_code: 200
+  register: hindsight_fixture_mcp_initialize
+
+- name: Parse the MCP initialization response
+  ansible.builtin.set_fact:
+    hindsight_fixture_mcp_init_json: >-
+      {{ (hindsight_fixture_mcp_initialize.content | from_json)
+         if (hindsight_fixture_mcp_initialize.content | trim).startswith('{')
+         else ((hindsight_fixture_mcp_initialize.content
+                | regex_findall('(?m)^data: (.+)$') | last) | from_json) }}
+
+- name: Require a successful MCP initialization
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_mcp_init_json.id == 1
+      - hindsight_fixture_mcp_init_json.result.protocolVersion | length > 0
+
+- name: List MCP tools without a session ID
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8888/mcp/
+    method: POST
+    headers:
+      Authorization: Bearer molecule-test-hindsight-api-key
+      Accept: "application/json, text/event-stream"
+      MCP-Protocol-Version: "{{ hindsight_fixture_mcp_init_json.result.protocolVersion }}"
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      id: 2
+      method: tools/list
+      params: {}
+    return_content: true
+    status_code: 200
+  register: hindsight_fixture_mcp_tools
+
+- name: Parse the MCP tool list
+  ansible.builtin.set_fact:
+    hindsight_fixture_mcp_tools_json: >-
+      {{ (hindsight_fixture_mcp_tools.content | from_json)
+         if (hindsight_fixture_mcp_tools.content | trim).startswith('{')
+         else ((hindsight_fixture_mcp_tools.content
+                | regex_findall('(?m)^data: (.+)$') | last) | from_json) }}
+
+- name: Require the expected MCP memory tools
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_mcp_tools_json.id == 2
+      - "'recall' in (hindsight_fixture_mcp_tools_json.result.tools | map(attribute='name') | list)"
+      - "'retain' in (hindsight_fixture_mcp_tools_json.result.tools | map(attribute='name') | list)"
+
+- name: Recall the migrated fact through MCP without a session ID
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8888/mcp/
+    method: POST
+    headers:
+      Authorization: Bearer molecule-test-hindsight-api-key
+      Accept: "application/json, text/event-stream"
+      MCP-Protocol-Version: "{{ hindsight_fixture_mcp_init_json.result.protocolVersion }}"
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      id: 3
+      method: tools/call
+      params:
+        name: recall
+        arguments:
+          bank_id: molecule-migration
+          query: Where does Alice live?
+    return_content: true
+    status_code: 200
+    timeout: 120
+  register: hindsight_fixture_mcp_call
+
+- name: Parse the MCP recall response
+  ansible.builtin.set_fact:
+    hindsight_fixture_mcp_call_json: >-
+      {{ (hindsight_fixture_mcp_call.content | from_json)
+         if (hindsight_fixture_mcp_call.content | trim).startswith('{')
+         else ((hindsight_fixture_mcp_call.content
+                | regex_findall('(?m)^data: (.+)$') | last) | from_json) }}
+
+- name: Require MCP recall to return the migrated fact
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_mcp_call_json.id == 3
+      - not (hindsight_fixture_mcp_call_json.result.isError | default(false) | bool)
+      - "'Berlin' in (hindsight_fixture_mcp_call_json.result | to_json)"

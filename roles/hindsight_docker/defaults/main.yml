@@ -6,10 +6,24 @@
 # Concrete release tag, never :latest. Renovate's docker datasource cannot
 # order a floating tag, so it can never compute an upgrade target and silently
 # proposes nothing — the pin reads as managed while no bump is possible.
-hindsight_docker_image: "ghcr.io/vectorize-io/hindsight:0.10.3"
+hindsight_docker_image: >-
+  ghcr.io/vectorize-io/hindsight:1.1.0@sha256:50311d02b4d5d2b7c5242bd336edf8735df8374eaad496a92f49c83b37d2aa06
 hindsight_docker_container_name: hindsight
 hindsight_docker_data_dir: /opt/hindsight
 hindsight_docker_storage_driver: "fuse-overlayfs"
+
+# Schema changes require a separate, explicit operator decision. A contained
+# converge can stop an existing service without changing its database.
+hindsight_docker_migration_approved_image: ""
+# Only needed when no prior managed container remains to identify its image.
+hindsight_docker_migration_source_image: ""
+hindsight_docker_worker_enabled: true
+hindsight_docker_worker_max_slots: 1
+hindsight_docker_worker_consolidation_reserved_slots: 0
+hindsight_docker_workers: 1
+hindsight_docker_enable_auto_consolidation: false
+hindsight_docker_consolidation_reconcile_interval_seconds: 0
+hindsight_docker_mental_model_refresh_tick_seconds: 0
 
 # Ports come from the tofu-owned pipeline constants (memory_ports) — never
 # literals here. mandatory() fails the play loudly on a stale inventory.
@@ -62,6 +76,7 @@ hindsight_docker_vector_extension: pgvector
 # 56-virtual-keys.yml); selected once in inventory/group_vars/all/.
 hindsight_docker_retain_llm_model: "{{ hindsight_retain_model }}"
 hindsight_docker_llm_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
+hindsight_docker_llm_provider: openai
 # The base model, backing reflect + consolidation (and any other operation
 # upstream adds) via Hindsight's own per-operation fallback. Reuses the
 # retain route above rather than a second literal or ai_default_model (the
@@ -74,8 +89,8 @@ hindsight_docker_llm_api_key: >-
      | default(bao_apps_secrets.hindsight_llm_router_key, true)
      | mandatory('hindsight_llm_router_key is not seeded: run the apps openbao provisioning first') }}
 
-# The GPU lane batches concurrent requests; a single serial slot fell days behind.
-hindsight_docker_retain_llm_max_concurrent: 4
+# These limits apply per Python process, not across the fleet.
+hindsight_docker_retain_llm_max_concurrent: 1
 hindsight_docker_retain_llm_max_retries: 2
 # Hindsight 0.9.0 applies exponential backoff with jitter to provider status
 # errors. Three total attempts and a 30/60-second delay cap retries per call;
@@ -181,8 +196,13 @@ hindsight_docker_reflect_wall_timeout: 120
 hindsight_docker_backup_wall_timeout_seconds: 300
 hindsight_docker_migration_wall_timeout_seconds: 600
 
-# Local ONNX embeddings (bundled BGE model) — no external embedding dependency.
+# Keep the existing local model cache and refuse network model downloads.
+# Cached model revisions must be checked before re-enabling the service.
 hindsight_docker_embeddings_provider: local
+hindsight_docker_embeddings_local_force_cpu: true
+hindsight_docker_reranker_provider: local
+hindsight_docker_reranker_local_force_cpu: true
+hindsight_docker_hf_hub_offline: true
 
 # POST-only stateless MCP so the two-replica pool needs no session affinity
 # (see the compose template comment). Only flip to false for a single-replica
@@ -194,11 +214,9 @@ hindsight_docker_mcp_stateless: true
 hindsight_docker_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
 hindsight_docker_otel_service_name: hindsight
 
-# Cold-start budget for the readiness gate. A fresh guest must download the
-# local embeddings + reranker models and verify the LLM connection (which
-# blocks on a llama-swap model load) before /health answers; a warm converge
-# answers immediately, so these ceilings only bite on first deploy. Molecule
-# overrides them down — its scenario has no fabric router to wait on.
+# Cold-start budget for local embedding and reranker model initialization.
+# Offline mode requires model weights to be present already. LLM connection
+# failures warn and do not establish readiness of the inference endpoint.
 hindsight_docker_startup_timeout: 600
 hindsight_docker_health_retries: 60
 hindsight_docker_health_delay: 10

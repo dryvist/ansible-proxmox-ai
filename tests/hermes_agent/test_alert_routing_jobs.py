@@ -113,7 +113,8 @@ def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> N
     so the worker invented every one — localhost:8000/:8001 for services on other
     ports, localhost for two that live behind their own FQDNs, and a domain that
     does not resolve. All probes returned 000 and it posted hourly total-outage
-    alarms while mcp answered 406 and llm answered 401, their healthy codes.
+    alarms while MCP answered 406 and the LLM endpoint answered 401, which only
+    proved reachability and did not establish health.
 
     That card feeds the channel the operator wants near-silent, so a fabricated
     alarm is the one failure that makes the channel worthless."""
@@ -127,9 +128,9 @@ def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> N
         assert invented not in ep, f"{invented} was one of the invented endpoints"
 
     assert "NOTHING ELSE" in ep and "Do not guess" in ep
-    # 000 is a failed probe, not a down service. Reporting it as an outage is what
-    # produced the alarms.
-    assert "probe failed" in ep
+    # 000 is an unanswered probe, not proof of a service outage.
+    assert "HTTP 000 means the probe got no response" in " ".join(ep.split())
+    assert "report it as unverified" in " ".join(ep.split())
 
     # fabric_watchdog owns the external front doors on a 2-minute cadence and
     # alerts to this same channel; a second prober here only double-reports.

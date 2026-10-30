@@ -185,6 +185,11 @@ def test_engine_roles_depend_on_the_shared_nvidia_guest_role() -> None:
         ]
         assert includes == ["nvidia_gpu_guest", "nvidia_gpu_guest"]
 
+    for role in ("laya_systemone", "llamacpp_serving", "sglang_serving", "strata_serving", "vllm_serving"):
+        # The role's own defaults read nvidia_gpu_guest_* values; a private include leaves them undefined.
+        install = _load(REPO_ROOT / f"roles/{role}/tasks/main.yml")[0]["ansible.builtin.include_role"]
+        assert install == {"name": "nvidia_gpu_guest", "public": True}, role
+
     context = _load(NVIDIA_ROLE_ROOT / "defaults/main/10-engine-context.yml")
     assert "sglang_serving_engine" in context["nvidia_gpu_guest_engine"]
     assert "sglang_serving_profiles" in context["nvidia_gpu_guest_profiles"]

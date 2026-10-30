@@ -1,0 +1,39 @@
+---
+# Hash only public Hugging Face model blobs; token and credential files are
+# outside these blob directories. The Docker volume path is stable across runs.
+- name: Resolve the named model-cache volume mountpoint
+  ansible.builtin.command:
+    argv:
+      - docker
+      - volume
+      - inspect
+      - --format
+      - "{% raw %}{{ .Mountpoint }}{% endraw %}"
+      - "{{ hindsight_fixture_cache_name }}"
+  register: hindsight_fixture_cache_mount
+  changed_when: false
+
+- name: Hash every cached Hugging Face model blob
+  ansible.builtin.command:
+    argv:
+      - find
+      - "{{ hindsight_fixture_cache_mount.stdout | trim }}/huggingface/hub"
+      - -type
+      - f
+      - -path
+      - "*/blobs/*"
+      - -exec
+      - sha256sum
+      - "{}"
+      - +
+  register: hindsight_fixture_cache_hashes
+  changed_when: false
+
+- name: Sort and require nonempty model-blob hashes
+  ansible.builtin.set_fact:
+    hindsight_fixture_cache_hash_lines: "{{ hindsight_fixture_cache_hashes.stdout_lines | sort }}"
+
+- name: Require cached model blobs to be present
+  ansible.builtin.assert:
+    that:
+      - hindsight_fixture_cache_hash_lines | length > 0
