@@ -90,6 +90,19 @@
     seed_call_module: "{{ seed_call_task['ansible.builtin.include_role'] }}"
     seed_call_vars: "{{ seed_call_task.vars }}"
 
+- name: Require validation before the local-llm accumulator is updated
+  vars:
+    seed_names: "{{ seed_task_file | map(attribute='name') | list }}"
+    seed_validation: "{{ seed_task_file | selectattr('name', 'equalto', seed_validation_name) | first }}"
+    seed_validation_name: Require a usable reconciled local-llm secret before publication
+  ansible.builtin.assert:
+    that:
+      - >-
+        seed_names.index(seed_validation_name)
+        < seed_names.index('Add the reconciled local-llm secret value to the controller accumulator')
+      - seed_validation['ansible.builtin.include_tasks'] == 'assert_local_llm_seed_result.yml'
+      - seed_validation.no_log | bool
+
 - name: Pin the two local-llm specs to their writer policies, tokens and TTLs
   ansible.builtin.assert:
     that:
@@ -156,3 +169,31 @@
     that:
       - hostvars['localhost'].openbao_secrets_by_domain['local-llm'].HERMES_API_SERVER_KEY == 'valid-ambient-key'
       - hostvars['localhost'].openbao_secrets_by_domain['local-llm'].sibling == 'preserve-me'
+
+- name: Set a malformed seed result fixture
+  ansible.builtin.set_fact:
+    openbao_secrets_local_llm_seed_result:
+      HERMES_API_SERVER_KEY: "   "
+  no_log: true
+
+- name: Verify the production validation rejects whitespace before publication
+  vars:
+    local_llm_secret:
+      field: HERMES_API_SERVER_KEY
+  block:
+    - name: Run the production validation on the malformed result
+      ansible.builtin.include_tasks: ../../playbooks/tasks/assert_local_llm_seed_result.yml
+    - name: Record an incorrectly accepted value
+      ansible.builtin.set_fact:
+        malformed_result_published: true
+  rescue:
+    - name: Record that validation refused the malformed result
+      ansible.builtin.set_fact:
+        malformed_result_rejected: true
+
+- name: Assert the malformed result could not reach publication
+  ansible.builtin.assert:
+    that:
+      - malformed_result_rejected | default(false) | bool
+      - not (malformed_result_published | default(false) | bool)
+      - hostvars['localhost'].openbao_secrets_by_domain['local-llm'].HERMES_API_SERVER_KEY == 'valid-ambient-key'
