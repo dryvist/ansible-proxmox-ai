@@ -29,11 +29,12 @@
     # A second `hermes gateway run` — Studio's auto-spawned child was the
     # 2026-09-02 case — takes the runtime lock and the Slack app token from the
     # unit and SIGTERMs it, so "active" above can be true of the wrong process.
-    # Exactly one gateway, and systemd (pid 1) is its parent.
+    # Exactly one gateway, and systemd (pid 1) is its parent. A checkout launcher
+    # runs `python3 -I -c <launcher> gateway run`, so match the subcommand, not a path.
     - name: Gate — exactly one gateway process, owned by systemd
       ansible.builtin.shell: |
         set -o pipefail
-        ps -eo pid=,ppid=,args= | awk '$3 ~ /python/ && /\/hermes gateway run/ {print $1, $2}'
+        ps -eo pid=,ppid=,args= | awk '$3 ~ /python/ && / gateway run( |$)/ {print $1, $2}'
       args:
         executable: /bin/bash
       register: hermes_agent_gateway_procs
@@ -205,7 +206,7 @@
       register: hermes_agent_api_health
       # Read-only; a check run needs the live value to preview API health.
       check_mode: false
-      retries: "{{ hermes_agent_verify_probe_retries }}"
+      retries: "{{ hermes_agent_verify_api_startup_retries }}"
       delay: "{{ hermes_agent_verify_probe_delay }}"
       until: hermes_agent_api_health.status | default(0) == 200
       when: hermes_agent_api_server_key | length > 0

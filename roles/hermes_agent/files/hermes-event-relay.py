@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -140,8 +141,9 @@ class StsCredentials:
     """Short-lived queue credentials read from OpenBao, refreshed before expiry."""
 
     def __init__(self, cfg: dict, http: Callable[..., dict] = bao_post,
-                 clock: Callable[[], float] = time.monotonic, margin: float = 300):
-        self.cfg, self.http, self.clock, self.margin = cfg, http, clock, margin
+                 clock: Callable[[], float] = time.monotonic, margin: float = 300,
+                 run: Callable[..., subprocess.CompletedProcess] = subprocess.run):
+        self.cfg, self.http, self.clock, self.margin, self.run = cfg, http, clock, margin, run
         self.creds: dict[str, str] = {}
         self.expires = 0.0
 
@@ -149,18 +151,30 @@ class StsCredentials:
         return not self.creds or self.clock() >= self.expires - self.margin
 
     def refresh(self) -> dict[str, str]:
-        addr = self.cfg["RELAY_BAO_ADDR"].rstrip("/")
-        login = self.http(f"{addr}/v1/auth/approle/login",
-                          {"role_id": self.cfg["RELAY_BAO_ROLE_ID"], "secret_id": self.cfg["RELAY_BAO_SECRET_ID"]})
-        token = (login.get("auth") or {}).get("client_token")
+        addr = checked_url(self.cfg["RELAY_BAO_ADDR"].rstrip("/"))
+        env = os.environ.copy()
+        env.update({
+            "BAO_ADDR": addr,
+            "BAO_APPROLE_ROLE_ID": self.cfg["RELAY_BAO_ROLE_ID"],
+            "BAO_APPROLE_SECRET_ID": self.cfg["RELAY_BAO_SECRET_ID"],
+            "FLOW_LOCK_API_MAX_TIME": "15",
+        })
+        try:
+            login = self.run(["bao-approle", "login"], check=True, capture_output=True, text=True, env=env)
+        except subprocess.CalledProcessError:
+            raise ValueError("AppRole login failed") from None
+        token = login.stdout.strip()
         if not token:
             raise ValueError("AppRole login returned no client_token")
         try:
             reply = self.http(f"{addr}/v1/{self.cfg['RELAY_BAO_CREDS_PATH']}", None, token)
         finally:
+            revoke_env = os.environ.copy()
+            revoke_env.update({"BAO_ADDR": addr, "FLOW_LOCK_API_MAX_TIME": "15"})
             try:
-                self.http(f"{addr}/v1/auth/token/revoke-self", {}, token)
-            except OSError as exc:
+                self.run(["bao-approle", "revoke-self"], input=f"{token}\n", check=True,
+                         capture_output=True, text=True, env=revoke_env)
+            except (OSError, subprocess.CalledProcessError) as exc:
                 log(msg="revoke_failed", error=type(exc).__name__)
         data = reply.get("data") or {}
         session = data.get("session_token") or data.get("security_token")

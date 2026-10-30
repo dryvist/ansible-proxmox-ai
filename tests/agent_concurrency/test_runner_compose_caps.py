@@ -8,7 +8,7 @@ from jinja2 import meta
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ALL_VARS = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all.yml").read_text())
+ALL_VARS = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all/00-core.yml").read_text())
 AGENT_CAP = int(ALL_VARS["ai_agent_default_concurrency"])
 
 

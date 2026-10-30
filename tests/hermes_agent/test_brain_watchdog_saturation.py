@@ -47,7 +47,7 @@ def test_probe_deadline_exceeds_the_router_rate_limit_backoff() -> None:
     # otherwise this assertion guards a value the router no longer uses.
     assert "llm_router_retry_after_seconds: \"{{ ai_router_retry_after_seconds }}\"" in (
         ROUTER_DEFAULTS
-    ), "llm_router_retry_after_seconds must derive from the all.yml constant this test reads"
+    ), "llm_router_retry_after_seconds must derive from the group_vars/all/ constant this test reads"
     assert probe_timeout > retry_after, (
         f"probe timeout {probe_timeout}s must exceed the router's {retry_after}s retry_after"
     )

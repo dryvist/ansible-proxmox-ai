@@ -4,13 +4,13 @@ from conftest import (
     PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
     PATCHED_TURN_ITERATION_PREP_SOURCE,
+    PATCHED_TURN_TRUNCATION_SOURCE,
     PINNED_JUDGE_AVAILABLE_SOURCE,
     PINNED_BOOST_CAP_SOURCE,
     PINNED_COMPRESSOR_SCAN_SOURCE,
     PINNED_CREATE_TASK_SOURCE,
     PINNED_CRON_DELIVERY_SOURCE,
     PINNED_GOAL_COMPLETION_SOURCE,
-    PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PATCHED_JUDGE_CALL_SOURCE,
     PINNED_JUDGE_CALL_SOURCE,
     PINNED_JUDGE_ERROR_SENTINEL_SOURCE,
@@ -63,7 +63,7 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
         _apply_runtime_patch(
             "Patch Hermes worker-reap timeout path to signal the worker's process group",
             _apply_runtime_patch(
-                "Patch Hermes worker-reap timeout path to verify PID safety before signaling",
+                "Patch Hermes worker-reap timeout path to skip init and self PIDs before signaling",
                 PINNED_WORKER_REAP_SOURCE,
             ),
         ),
@@ -73,13 +73,13 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
         _apply_runtime_patch(
             "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
             _apply_runtime_patch(
-                "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
+                "Patch Hermes stale-reclaim worker termination to skip init and self PIDs before signaling",
                 PINNED_STALE_RECLAIM_TERMINATE_SOURCE,
             ),
         ),
     )
     kanban_dispatch_source = (
-        _task("Patch Hermes worker-reap helper to verify PID identity before signaling")[
+        _task("Patch Hermes worker-reap legacy-row identity guard before signaling")[
             "ansible.builtin.blockinfile"
         ]["block"]
         + worker_reap_source
@@ -256,16 +256,10 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
             ),
         )
     )
-    # The length-continuation boost (turn_iteration_prep_source, its own
-    # dedicated var since PR C moved this patch's target file) dropped: the
-    # needle `_boost_cap = agent.max_tokens ...` reverting to the unpatched
-    # `_boost_cap = max(...)` form must go red on its own, independent of
-    # the unrelated _tc_boost_cap patch (now on its own turn_truncation_
-    # source var, PR I — see the default PATCHED_TURN_TRUNCATION_SOURCE).
-    unpatched_turn_iteration_prep_source = PATCHED_TURN_ITERATION_PREP_SOURCE.replace(
-        "_boost_cap = agent.max_tokens if agent.max_tokens else max("
-        "32768, _requested_cap or 0)",
-        "_boost_cap = max(32768, _requested_cap or 0)",
+    # v0.22.5: the length-continuation caller routes through boosted_output_cap()
+    # (turn_iteration_prep.py); unrouting it must go red on its own.
+    unrouted_turn_iteration_prep_source = PATCHED_TURN_ITERATION_PREP_SOURCE.replace(
+        "boosted_output_cap(", "max("
     )
     assert not all(
         _source_postconditions(
@@ -273,16 +267,22 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
             reconcile_source,
             retry_source,
             auxiliary_source,
-            turn_iteration_prep_source=unpatched_turn_iteration_prep_source,
+            turn_iteration_prep_source=unrouted_turn_iteration_prep_source,
         )
     )
+    # The configured-ceiling substitution inside boosted_output_cap()
+    # (turn_truncation.py) is checked on its own: reverting only it must go red.
+    unpatched_turn_truncation_source = PATCHED_TURN_TRUNCATION_SOURCE.replace(
+        "agent.max_tokens if agent.max_tokens else max(32768, anchor * 2)",
+        "max(32768, anchor * 2)",
+    )
     assert not all(
         _source_postconditions(
             completion_source,
             reconcile_source,
             retry_source,
             auxiliary_source,
-            hindsight_plugin_source=PINNED_HINDSIGHT_PREFETCH_SOURCE,
+            turn_truncation_source=unpatched_turn_truncation_source,
         )
     )
     # Worker-reap process-group guard dropped: kanban_dispatch_source

@@ -25,13 +25,13 @@ from jinja2 import Environment
 
 from conftest import _task
 
-# Verbatim from cron/scheduler.py — the two remedies being overridden.
-# Re-anchored (patches_cron_wall_clock.yml): upstream reflowed this string
-# from three lines to two (the last two merged); no wording change.
+# Verbatim from cron/scheduler.py at v0.22.5 — the two remedies being overridden.
+# Re-anchored (patches_cron_wall_clock.yml): upstream reworded the no-chain
+# branch to "No backup provider is configured" and "cron-wide default".
 UPSTREAM_FALLBACK_BRANCH = '''\
     return (
-        "No fallback chain configured — add one with `hermes fallback add`, "
-        "or set a cron fleet default via `cron.model` + `cron.model_provider` in config.yaml."
+        "No backup provider is configured — add one with `hermes fallback add`, "
+        "or set a cron-wide default via `cron.model` + `cron.model_provider` in config.yaml."
     )
 '''
 

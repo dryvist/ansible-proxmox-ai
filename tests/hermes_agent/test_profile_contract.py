@@ -14,6 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
 
 _RENDER_CONTEXT: dict[str, Any] = {
+    "hermes_agent_plugins_enabled": ["dryvist-guardrails", "hindsight"],
+    "hermes_agent_guardrails_github_readonly_profiles": ["github-maint"],
     "ansible_managed": "managed",
     "hermes_agent_model": "hermes-default",
     "hermes_agent_model_provider": "custom",
@@ -82,7 +84,7 @@ def _group_vars_all() -> dict[str, Any]:
     would after resolving both levels.
     """
     group_vars = yaml.safe_load(
-        (REPO_ROOT / "inventory" / "group_vars" / "all.yml").read_text()
+        (REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml").read_text()
     )
     group_vars["tofu_data"] = {"constants": {"serving": {"llm_concurrency": 8}}}
     group_vars["ai_llm_concurrency"] = (
@@ -303,6 +305,7 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
     for profile in _profiles():
         context = dict(_RENDER_CONTEXT)
         context["hermes_agent_langfuse_enabled"] = True
+        context["hermes_agent_plugins_enabled"] = ["dryvist-guardrails", "hindsight", "langfuse"]
         context["hermes_agent_disabled_toolsets"] = defaults["hermes_agent_disabled_toolsets"]
         context["hermes_agent_cron_toolsets"] = defaults["hermes_agent_api_server_toolsets"]
         context["hermes_agent_context_limits"] = {}
@@ -310,7 +313,7 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
         parsed = yaml.safe_load(rendered)
 
         assert parsed["model"]["provider"] == defaults["hermes_agent_model_provider"]
-        assert parsed["plugins"]["enabled"] == ["observability/langfuse"]
+        assert parsed["plugins"]["enabled"] == ["dryvist-guardrails", "hindsight", "langfuse"]
         assert parsed["kanban"] == {"dispatch_in_gateway": False}
         assert parsed["agent"]["run_budget_seconds"] == wall_timeout_seconds()
         assert "dashboard" not in parsed

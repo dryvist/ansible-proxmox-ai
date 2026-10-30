@@ -61,68 +61,22 @@
   notify: Restart langfuse
 
 # =============================================================================
-# Application secrets (generate-once, persist on disk)
+# Application secrets (OpenBao generate-if-absent)
 # =============================================================================
-# NEXTAUTH_SECRET, SALT and ENCRYPTION_KEY must be stable across runs; persist
-# each in a root-only file the first time the role runs and reuse it thereafter.
-# ENCRYPTION_KEY must be 64 hex chars — SHA-256 of a random string yields exactly
-# that; SALT / NEXTAUTH_SECRET accept any high-entropy string.
 
-- name: Check for existing generated Langfuse secrets
-  ansible.builtin.stat:
-    path: "{{ langfuse_docker_data_dir }}/{{ item.file }}"
-  loop: "{{ langfuse_docker_generated_secrets }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: langfuse_docker_secret_stats
-
-- name: Generate Langfuse secrets (first run only)
-  ansible.builtin.copy:
-    dest: "{{ langfuse_docker_data_dir }}/{{ item.item.file }}"
-    content: >-
-      {{ (lookup('community.general.random_string', length=item.item.length,
-                 upper=true, lower=true, numbers=true, special=false) | hash('sha256'))
-         if item.item.hex
-         else lookup('community.general.random_string', length=item.item.length,
-                     upper=true, lower=true, numbers=true, special=false) }}
-    owner: root
-    group: root
-    mode: "0600"
-  loop: "{{ langfuse_docker_secret_stats.results }}"
-  loop_control:
-    label: "{{ item.item.name }}"
-  when: not item.stat.exists
-  no_log: true
-
-- name: Read generated Langfuse secrets into memory
-  ansible.builtin.slurp:
-    src: "{{ langfuse_docker_data_dir }}/{{ item.file }}"
-  loop: "{{ langfuse_docker_generated_secrets }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: langfuse_docker_secret_slurps
-  no_log: true
-
-- name: Resolve generated Langfuse secrets into a fact
-  ansible.builtin.set_fact:
-    langfuse_docker_secrets: "{{ dict(_langfuse_docker_secret_names | zip(_langfuse_docker_secret_values)) }}"
-  vars:
-    _langfuse_docker_secret_names: "{{ langfuse_docker_generated_secrets | map(attribute='name') | list }}"
-    _langfuse_docker_secret_values: >-
-      {{ langfuse_docker_secret_slurps.results
-         | map(attribute='content') | map('b64decode') | map('trim') | list }}
-  no_log: true
+- name: Seed and reconcile Langfuse application secrets
+  ansible.builtin.import_tasks: seed_secrets.yml
 
 # =============================================================================
 # Compose Deployment
 # =============================================================================
 
 - name: Assert every secret rendered into the Langfuse compose file is present
-  ansible.builtin.include_tasks: >-
-    {{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml
+  ansible.builtin.include_role:
+    name: dryvist.homelab.openbao_secrets
+    tasks_from: assert_nonempty.yml
   vars:
-    openbao_secrets_assert_context: the Langfuse compose file
-    openbao_secrets_assert_names: >-
+    openbao_secrets_required_vars: >-
       {{ ['langfuse_docker_postgres_password']
          + (['langfuse_docker_clickhouse_password']
             if langfuse_docker_clickhouse_endpoint == 'embedded'

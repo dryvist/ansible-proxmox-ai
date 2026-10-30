@@ -4,6 +4,7 @@ import hashlib
 import textwrap
 
 from conftest import _apply_runtime_patch
+from _pinned_sources import PINNED_CRON_FAILURE_ARTIFACT_SOURCE, PINNED_CRON_SUCCESS_ARTIFACT_SOURCE
 
 # Re-anchored (2026-09): upstream centralized the artifact header behind a
 # shared _run_doc_header(job, title, job_id, prompt) call — the failure and
@@ -11,12 +12,8 @@ from conftest import _apply_runtime_patch
 # rather than two separate "## Prompt...{prompt}..." template strings. The
 # patch wraps the failure call site's own `prompt` argument, distinguished
 # from the success call site by the `f"{job_name} (FAILED)"` title.
-PINNED_CRON_FAILURE_ARTIFACT_SOURCE = (
-    '                    _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)\n'
-)
-
 NAME = "Hash the prompt in a failed cron run's artifact"
-SUCCESS_ARTIFACT = '                _run_doc_header(job, job_name, job_id, prompt)\n'
+SUCCESS_ARTIFACT = PINNED_CRON_SUCCESS_ARTIFACT_SOURCE
 
 
 def _rendered_prompt_arg(patched: str, prompt: str) -> str:
@@ -44,6 +41,7 @@ def test_the_failure_artifact_prompt_becomes_a_hash_and_a_length():
 
 
 def test_the_success_artifact_keeps_its_prompt():
+    assert "_run_doc_header(job, job_name, job_id, framed_prompt," in SUCCESS_ARTIFACT
     try:
         _apply_runtime_patch(NAME, SUCCESS_ARTIFACT)
     except AssertionError:

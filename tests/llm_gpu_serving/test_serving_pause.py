@@ -50,7 +50,7 @@ def _jinja() -> jinja2.Environment:
 
 
 def test_shared_pause_flag_defaults_to_false():
-    assert _load("inventory/group_vars/all.yml")[PAUSE_VAR] is False
+    assert _load("inventory/group_vars/all/00-core.yml")[PAUSE_VAR] is False
 
 
 def test_pause_stops_the_selected_unit_without_disabling_it():

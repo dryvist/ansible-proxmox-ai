@@ -96,18 +96,17 @@ def _render_hindsight_config(
 
 
 def test_hindsight_client_is_managed_in_the_hermes_uv_venv() -> None:
-    tasks = role_tasks(ROLE_ROOT)
-    install = _task("Install the Hindsight stack into the Hermes venv")
-    read_version = _task("Read the installed Hindsight client version from the Hermes venv")
-    assert_pin = _task("Assert the Hermes venv has the pinned Hindsight client")
+    hindsight = next(
+        plugin for plugin in role_defaults(ROLE_ROOT)["hermes_agent_plugins_core"] if plugin["name"] == "hindsight"
+    )
+    assert "'hindsight-client' ~ hermes_agent_hindsight_client_pin" in str(hindsight["requirements"])
 
-    assert "{{ hermes_agent_uv_bin }} pip install" in install["ansible.builtin.command"]["cmd"]
-    assert "--python {{ hermes_agent_venv_python }}" in install["ansible.builtin.command"]["cmd"]
-    assert "hindsight-client{{ hermes_agent_hindsight_client_pin }}" in install["ansible.builtin.command"]["cmd"]
+    assert_tasks = yaml.safe_load((ROLE_ROOT / "tasks" / "assert_plugins.yml").read_text())
+    read_version = next(t for t in assert_tasks if t.get("name") == "Read the installed Hindsight client version from the Hermes venv")
+    assert_pin = next(t for t in assert_tasks if t.get("name") == "Assert the Hermes venv has the pinned Hindsight client")
     assert read_version["ansible.builtin.command"]["argv"][0] == "{{ hermes_agent_venv_python }}"
     assert "version('hindsight-client')" in read_version["ansible.builtin.command"]["argv"][2]
     assert "hermes_agent_hindsight_client_version" in str(assert_pin)
-    assert "hindsight-client" not in " ".join(map(str, tasks[: tasks.index(install)]))
 
 
 def test_hindsight_readiness_probe_is_read_only_and_uses_rendered_agent_config() -> None:

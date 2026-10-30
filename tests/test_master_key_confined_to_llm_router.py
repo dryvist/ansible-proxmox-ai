@@ -6,7 +6,7 @@ inside roles/llm_router itself.
 
 This is the regression guard for a real incident: agentgateway_docker,
 dify_docker, langfuse_docker, langgraph_docker, llamaindex and herdr_server
-all read this value directly or through inventory/group_vars/all.yml's
+all read this value directly or through inventory/group_vars/all/'s
 now-deleted ai_orchestration_model_api_key, so every consumer's spend was
 unattributable and revoking one tool meant rotating everyone.
 """
@@ -21,7 +21,7 @@ ALLOWED_ROLE = "llm_router"
 SUFFIXES = {".yml", ".yaml", ".j2"}
 # Scanned as plain text, not just roles/: a consumer could just as easily
 # reintroduce this at the inventory layer, which is exactly how it leaked
-# before (inventory/group_vars/all.yml's ai_orchestration_model_api_key).
+# before (inventory/group_vars/all/'s ai_orchestration_model_api_key).
 SCAN_DIRS = ("roles", "inventory", "playbooks")
 
 

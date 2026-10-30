@@ -34,6 +34,7 @@ ANSIBLE_TESTS = {
     "tests/nvidia_gpu_guest/test_cache_only_sync.yml",
     "tests/llamacpp_release/verify_inventory_proxy.yml",
     "tests/llamaindex/test_hardening.yml",
+    "tests/llamaindex/test_unit_ordering.yml",
     "tests/llm_gpu_legacy/test_render_host_contract.yml",
     "tests/llm_gpu_legacy/test_render_host_contract_all.yml",
     "tests/langfuse_docker/test_stage0_evaluation.yml",
@@ -77,7 +78,7 @@ ROLE_TESTS = {
     "hermes_agent": {"tests/hermes_agent/"},
     "fabric_watchdog": {"tests/hermes_agent/"},
     "dify_docker": set(),
-    "langflow_docker": {"tests/agent_concurrency/"},
+    "langflow_docker": {"tests/agent_concurrency/", "tests/langflow_docker/"},
     "langfuse_docker": {"tests/langfuse_docker/"},
     "hindsight_docker": {"tests/hindsight_docker/"},
     "hindsight_bank_dr": {"tests/hindsight_bank_dr/"},
@@ -89,8 +90,6 @@ ROLE_TESTS = {
     "nvidia_gpu_guest": GPU_PYTEST,
     "llm_gpu_serving": GPU_PYTEST,
     "llm_model_trial": {"tests/llm_model_trial/"},
-    "openbao_secrets": {"tests/test_openbao_login_classification.py",
-                        "tests/test_openbao_secrets_approle_name_resolution.py"},
     "phoenix_docker": set(),
     "llamaindex": set(),
     "qdrant_docker": {"tests/qdrant_docker/"},
@@ -175,6 +174,8 @@ def select(paths: list[str]) -> Selection:
         if role in OTEL_CONSUMER_ROLES and Path(OTEL_CONSUMER_TEST).is_file():
             pytest_targets.add(OTEL_CONSUMER_TEST)
         ansible_tests.update(test for test in ANSIBLE_TESTS if test.startswith(f"tests/{role}/"))
+        if role in {"dify_docker", "langflow_docker", "phoenix_docker"}:
+            ansible_tests.add("tests/openbao_secrets/verify_hermes_api_key_seed.yml")
         if role in {"llamacpp_serving", "vllm_serving", "strata_serving", "nvidia_gpu_guest", "llm_gpu_serving"}:
             ansible_tests.update(GPU_ANSIBLE)
         if role == "llm_router":
@@ -262,7 +263,7 @@ def select(paths: list[str]) -> Selection:
             role_scope("llm_router")
             run_selector_checks = True
         elif path == "scripts/run-ansible.sh":
-            pytest_targets.update({"tests/test_run_ansible_runner.py", "tests/test_run_ansible_identity.py"})
+            pytest_targets.add("tests/test_run_ansible_runner.py")
         elif path == "scripts/verify-pinned-patches.py":
             role_scope("hermes_agent")
         elif path == "renovate.json":

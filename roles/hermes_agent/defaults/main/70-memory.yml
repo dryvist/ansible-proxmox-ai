@@ -5,8 +5,8 @@
 # The provider name alone is NOT enough: hindsight defaults to CLOUD mode, and
 # with no HINDSIGHT_API_KEY its is_available() returns false — every memory
 # tool call warns "Memory is not available" (the recurring digest warning).
-# local_embedded runs the daemon in-guest (hindsight-all, ~200 MB, installed
-# below) and needs an LLM for entity extraction — pointed at the same router
+# local_embedded runs the daemon in-guest (hindsight-embed, a requirement of
+# the Hindsight plugin in 155-plugins.yml) and needs an LLM for entity extraction — pointed at the same router
 # alias the agent brain uses, so memory never adds an external dependency.
 hermes_agent_memory_provider: hindsight
 # local_external: the plugin dials the standalone HA Hindsight service (two
@@ -83,13 +83,9 @@ hermes_agent_splunk_memory_bank_id: >-
      else hermes_agent_id ~ '-splunk' }}
 # Store raw text chunks without LLM extraction in the Splunk memory bank.
 hermes_agent_splunk_memory_retain_extraction_mode: chunks
-# The gateway's hindsight plugin lazily installs its client when it is absent,
-# but that path can never succeed in this uv venv (no pip/ensurepip). The role
-# therefore installs an explicit, Renovate-managed client pin into the Hermes
-# venv and asserts it immediately. The current Hermes v2026.8.3 plugin accepts
-# hindsight-client >=0.6.1; the exact pin is this deployment's tested version,
-# not a copy of that minimum. Bump it with the Hermes package and keep the
-# managed post-install assertion passing.
+# The Hindsight plugin's client requirement is installed by the plugins task
+# (155-plugins.yml) and read back by tasks/assert_plugins.yml. The plugin declares
+# hindsight-client>=0.10.1,<1; this exact pin is the deployment's tested version.
 #
 # Split into a bare version plus a derived constraint so Renovate can see it.
 # The annotation manager captures whatever follows the colon as the version, so
@@ -101,43 +97,10 @@ hermes_agent_splunk_memory_retain_extraction_mode: chunks
 hermes_agent_hindsight_client_version: "0.10.3"
 hermes_agent_hindsight_client_pin: "=={{ hermes_agent_hindsight_client_version }}"
 
-# The catalog plugin that will replace the bundled provider above (Hermes
-# tags at or after the one whose plugin-catalog/hindsight.yaml points to
-# vectorize-io/hindsight's hindsight-integrations/hermes v1.0.1) declares
-# `hindsight-client>=0.10.1,<1`. The managed client pin 0.10.3 satisfies
-# that range. Keep hermes_agent_version on the bundled-provider tag until the
-# catalog switches to this plugin and the client/plugin combination is
-# validated.
-
-# --- Memory failure visibility ------------------------------------------------
-# Read from the bundled Hindsight provider in the pinned Hermes v2026.9.11.
-# In local_external mode is_available() checks configuration only; the
-# MemoryProvider contract explicitly forbids a network check there. Recall and
-# retain calls instead share _run_hindsight_operation, which now emits one
-# prompt-safe ERROR with request_id, operation, hindsight_failure_count=1 and
-# hindsight_degraded=true. The request id is included in the next prefetch as
-# [HINDSIGHT_MEMORY_DEGRADED ...], so the agent sees failures even when the
-# provider's best-effort recall contract returns an empty context. Direct tool
-# errors include the same id. Async retain completion failures and unresolved
-# retain timeouts use the same reporting path; successful queue acceptance is
-# still non-blocking and does not claim durable storage.
-#
-# Before the patch, _do_recall caught recall/reflect exceptions at DEBUG and
-# returned an empty result; writer errors had only a WARNING after sync_turn
-# returned; status-poll exceptions were DEBUG-only; and server-side `failed`
-# status counted as complete. The source patch also reports these paths. It
-# does not change local_external is_available() into a network probe, nor add
-# retries: the provider contract says that check must not perform network I/O.
-# Explicit tools already returned tool_error; they now also receive the
-# request id and share the central ERROR event. The `/version` capability
-# probe is separate from recall/retain: failure falls back to legacy document
-# ids and is already followed by a warning when append mode is unavailable.
-#
-# Bundled-provider-only: these source patches target
-# plugins/memory/hindsight/__init__.py in the pinned package. Delete their
-# Hindsight-specific patch tasks after the catalog plugin cutover, after
-# checking the catalog source for equivalent behavior.
-hermes_agent_hindsight_prefetch_timeout_seconds: 10
+# Requirement of the Hindsight plugin in local_embedded mode only (155-plugins.yml).
+# renovate: datasource=pypi depName=hindsight-embed
+hermes_agent_hindsight_embed_version: "0.10.3"
+hermes_agent_hindsight_embed_pin: "=={{ hermes_agent_hindsight_embed_version }}"
 
 # --- Logging: config.yaml `logging.level` (installed hermes-agent's
 # hermes_logging.py reads cfg["logging"]["level"], default "INFO" if unset).

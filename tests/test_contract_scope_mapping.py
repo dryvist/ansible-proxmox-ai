@@ -40,6 +40,7 @@ def router_paths(shards: list[dict[str, str]]) -> list[str]:
     ("roles/llama_cpp/tasks/main.yml", "tests/llama_cpp/"),
     ("roles/llamacpp_release/tasks/load.yml", "tests/llamacpp_release/"),
     ("roles/langflow_docker/templates/docker-compose.yml.j2", "tests/agent_concurrency/"),
+    ("roles/langflow_docker/tasks/main.yml", "tests/langflow_docker/"),
     ("roles/langfuse_docker/tasks/reconcile-stage0-evaluation.yml", "tests/langfuse_docker/"),
 ])
 def test_production_role_selects_its_existing_contract_family(path: str, target: str) -> None:
@@ -48,6 +49,13 @@ def test_production_role_selects_its_existing_contract_family(path: str, target:
     selection = json.loads(result.stdout)
     assert target in selection["pytest_targets"]
     assert "tests/" not in selection["pytest_targets"]
+
+
+@pytest.mark.parametrize("role", ["dify_docker", "langflow_docker", "phoenix_docker"])
+def test_secret_seeding_roles_select_controller_become_contract(role: str) -> None:
+    result = run_selector(f"roles/{role}/tasks/main.yml")
+    assert result.returncode == 0, result.stderr
+    assert "tests/openbao_secrets/verify_hermes_api_key_seed.yml" in json.loads(result.stdout)["ansible_tests"]
 
 
 @pytest.mark.parametrize("path", [
@@ -84,7 +92,7 @@ def test_registry_selects_all_consumers_without_global_pytest() -> None:
 
 
 @pytest.mark.parametrize("path", [
-    "inventory/group_vars/all.yml", "group_vars/all.yml", "host_vars/example.yml",
+    "inventory/group_vars/all/00-core.yml", "group_vars/all/00-core.yml", "host_vars/example.yml",
     "playbooks/site.yml", "playbooks/ai-orchestration.yml", "requirements.yml",
 ])
 def test_inventory_and_playbook_edits_route_to_full_suite(path: str) -> None:
@@ -194,14 +202,17 @@ def test_changed_router_shards_are_sorted_independently_of_path_order() -> None:
 ])
 def test_molecule_filters_cover_every_role_the_scenario_loads(scenario: str, role: str) -> None:
     filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_scenario_filters"]
-    assert f"roles/{role}/**" in yaml.safe_load(filters)[scenario]
+    # openbao_secrets is a collection role; the repo-owned input the scenario reads is its catalog.
+    pattern = ("inventory/group_vars/all/**" if role == "openbao_secrets"
+               else f"roles/{role}/**")
+    assert pattern in yaml.safe_load(filters)[scenario]
 
 
 def test_roles_consumed_by_molecule_scenarios_are_not_contract_only() -> None:
     filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_contract_filters"]
     contract_only = yaml.safe_load(filters)["contract_only"]
     for path in ("roles/llamacpp_release/defaults/main/00-release.yml",
-                 "roles/openbao_secrets/defaults/main/10-domains.yml"):
+                 "inventory/group_vars/all/openbao_secrets/10-domains.yml"):
         assert not any(fnmatch.fnmatchcase(path, pattern) for pattern in contract_only)
 
 

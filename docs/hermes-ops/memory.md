@@ -9,7 +9,7 @@
   local_external`, `hermes_agent_memory_api_url`). The plugin config is
   rendered to `$HERMES_HOME/hindsight/config.json` (`mode` + `api_url`).
   Rollback: set `hermes_agent_memory_mode: local_embedded` and converge — the
-  embedded-daemon path (hindsight-all in the venv, extraction LLM at the
+  embedded-daemon path (hindsight-embed in the venv, extraction LLM at the
   router) is still fully wired.
 - **Persistence:** memory now lives in the ai-VLAN Postgres cluster (backed
   up under the database DR standard). The rest of `HERMES_HOME`

@@ -119,26 +119,27 @@
           delegate_facts: true
           no_log: true
 
-        - name: Execute the unchanged production seed success lane
+        - name: Execute the shared seed success lane for the local-llm Hermes key
           ansible.builtin.include_tasks: >-
-            ../../roles/openbao_secrets/tasks/seed_hermes_api_key.yml
+            ../../playbooks/tasks/openbao_secrets_seed_local_llm.yml
           vars:
             openbao_secrets_kv_mount: secret
             openbao_secrets_validate_certs: false
-            openbao_secrets_hermes_api_key_path: ai/hermes
-            openbao_secrets_hermes_api_key_field: HERMES_API_SERVER_KEY
-            openbao_secrets_hermes_api_key_fallback: ""
-            openbao_secrets_hermes_writer_max_ttl_seconds: 600
-            openbao_secrets_hermes_writer_token: >-
-              {{ hostvars['localhost'].openbao_test_success_writer_token }}
+            local_llm_secret:
+              label: hermes
+              path: ai/hermes
+              field: HERMES_API_SERVER_KEY
+              fallback: ""
+              writer_token: "{{ hostvars['localhost'].openbao_test_success_writer_token }}"
+              writer_policy: hermes-write
+              writer_max_ttl: 600
 
         - name: Read the authoritative bundle after production seeding
-          community.hashi_vault.vault_kv2_get:
-            url: "{{ openbao_test_addr }}"
-            auth_method: token
-            token: "{{ openbao_test_root_token }}"
-            engine_mount_point: secret
-            path: ai/hermes
+          ansible.builtin.uri:
+            url: "{{ openbao_test_addr }}/v1/secret/data/ai/hermes"
+            method: GET
+            headers:
+              X-Vault-Token: "{{ openbao_test_root_token }}"
             validate_certs: false
           register: openbao_test_seeded_bundle
           no_log: true
@@ -147,14 +148,13 @@
           ansible.builtin.assert:
             that:
               - >-
-                openbao_test_seeded_bundle.secret.HERMES_API_SERVER_KEY
+                openbao_test_seeded_bundle.json.data.data.HERMES_API_SERVER_KEY
                 is match('^[0-9a-f]{64}$')
               - >-
-                openbao_test_seeded_bundle.secret.HERMES_API_SERVER_KEY
+                openbao_test_seeded_bundle.json.data.data.HERMES_API_SERVER_KEY
                 == hostvars['localhost'].openbao_secrets_by_domain['local-llm']
                    .HERMES_API_SERVER_KEY
-              - openbao_test_seeded_bundle.secret.sibling == 'preserve-me'
-              - openbao_secrets_hermes_write is changed
+              - openbao_test_seeded_bundle.json.data.data.sibling == 'preserve-me'
 
         - name: Verify the production writer token was revoked
           ansible.builtin.command:
@@ -173,6 +173,9 @@
           ansible.builtin.assert:
             that:
               - openbao_test_revoked_lookup.rc != 0
+
+        - name: Verify malformed authoritative credentials fail closed
+          ansible.builtin.import_tasks: verify_hermes_malformed_authoritative.yml
 
         - name: Reset the Hermes bundle for the concurrent CAS test
           ansible.builtin.command:
@@ -232,18 +235,20 @@
 
         - name: Execute production seeding during concurrent version advances
           block:
-            - name: Include the unchanged production seed tasks
+            - name: Include the shared seed task for the local-llm Hermes key
               ansible.builtin.include_tasks: >-
-                ../../roles/openbao_secrets/tasks/seed_hermes_api_key.yml
+                ../../playbooks/tasks/openbao_secrets_seed_local_llm.yml
               vars:
                 openbao_secrets_kv_mount: secret
                 openbao_secrets_validate_certs: false
-                openbao_secrets_hermes_api_key_path: ai/hermes
-                openbao_secrets_hermes_api_key_field: HERMES_API_SERVER_KEY
-                openbao_secrets_hermes_api_key_fallback: ""
-                openbao_secrets_hermes_writer_max_ttl_seconds: 600
-                openbao_secrets_hermes_writer_token: >-
-                  {{ hostvars['localhost'].openbao_test_conflict_writer_token }}
+                local_llm_secret:
+                  label: hermes
+                  path: ai/hermes
+                  field: HERMES_API_SERVER_KEY
+                  fallback: ""
+                  writer_token: "{{ hostvars['localhost'].openbao_test_conflict_writer_token }}"
+                  writer_policy: hermes-write
+                  writer_max_ttl: 600
 
           rescue:
             - name: Record the production CAS rejection
@@ -265,8 +270,8 @@
             that:
               - hostvars['localhost'].openbao_test_conflict_rejected | bool
               - >-
-                hostvars['localhost'].openbao_secrets_hermes_seed_failed_task
-                == 'CAS-write the merged Hermes bundle'
+                hostvars['localhost'].openbao_secrets_by_domain['local-llm']
+                .HERMES_API_SERVER_KEY == ''
 
       always:
         - name: Resolve a still-running concurrent writer

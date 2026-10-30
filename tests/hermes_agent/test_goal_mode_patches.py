@@ -16,7 +16,6 @@ from conftest import (
     _patched_goal_loop,
     _task,
     _task_db,
-    PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PATCHED_JUDGE_CALL_SOURCE,
     PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
@@ -76,17 +75,6 @@ def test_goal_judge_availability_probe_logs_both_declines() -> None:
     assert all("goal judge unavailable" in str(call[0]) for call in warnings)
 
 
-def test_hindsight_recall_failure_keeps_best_effort_result_after_central_logging() -> None:
-    patched = _apply_runtime_patch(
-        "Keep failed Hindsight recall best effort without a duplicate debug log",
-        PINNED_HINDSIGHT_PREFETCH_SOURCE,
-    )
-    assert "if not getattr(e, \"hindsight_request_id\", None):" in patched
-    assert 'self._report_hindsight_failure("recall", e)' in patched
-    assert 'return "", 0' in patched
-    assert "logger.debug" not in patched
-
-
 def test_auxiliary_retry_budgets_are_bounded() -> None:
     """What remains true after the client-side backoff hacks were reverted.
 
@@ -118,10 +106,10 @@ REVERTED_CLIENT_BACKOFF_PATCH_NAMES = (
     "Enable prompt-safe Hermes request size metrics at DEBUG",
     "Enable prompt-safe Hermes token usage metrics at DEBUG",
 )
+# v0.22.5 routes the length-continuation caller through boosted_output_cap(),
+# so only the retry-boost ceiling patch is still needed.
 KEPT_MAX_TOKENS_CEILING_PATCH_NAMES = (
     "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
-    "Patch hermes-agent length-continuation boost to respect the configured "
-    "max_tokens ceiling",
 )
 
 
@@ -142,11 +130,11 @@ def test_client_side_backoff_hacks_stay_reverted() -> None:
 
 
 # The worker-spawn "--quiet" patch this used to exercise is retired
-# (2026-09): upstream's own kanban dispatcher already appends "-Q" for a
-# goal-mode task, so there is no role-patch before/after diff left to unit
-# test here. Coverage moved to "Assert upstream still supplies the behavior
-# these retired patches used to add" (patches_verify.yml), asserted against
-# the live installed source at converge time.
+# (2026-09): v0.22.5 runs the goal loop on the profile owner, so there is no
+# role-patch before/after diff left to unit test here. Coverage moved to
+# "Assert upstream still supplies the behavior these retired patches used to
+# add" (patches_verify.yml), asserted against the live installed source at
+# converge time.
 
 
 def test_judge_call_failure_consumes_no_turns_and_blocks_retryable() -> None:

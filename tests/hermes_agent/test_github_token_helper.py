@@ -2,6 +2,7 @@
 import getpass
 import os
 import runpy
+import subprocess
 import types
 from pathlib import Path
 
@@ -12,20 +13,20 @@ MOD = types.SimpleNamespace(**runpy.run_path(str(ROLE / "files" / "hermes-gh-tok
 ADDR = "https://bao.example.test/"
 
 
-class FakeBao:
+class FakeCLI:
     def __init__(self, tokens=None, login_token="bao-tok"):
         self.calls = []
         self.tokens = tokens or {}
         self.login_token = login_token
 
-    def __call__(self, url, body, token=None):
-        self.calls.append((url, body, token))
-        if url.endswith("/auth/approle/login"):
-            return {"auth": {"client_token": self.login_token}} if self.login_token else {}
-        if url.endswith("/revoke-self"):
-            return {}
-        name = url.rsplit("/", 1)[1]
-        return {"data": {"token": self.tokens[name]}} if name in self.tokens else {"data": {}}
+    def __call__(self, args, **kwargs):
+        self.calls.append((args, kwargs))
+        if args[1] == "login":
+            return subprocess.CompletedProcess(args, 0, f"{self.login_token}\n", "")
+        name = args[3]
+        if name not in self.tokens:
+            raise subprocess.CalledProcessError(22, args, stderr="secret_id leaked by mock")
+        return subprocess.CompletedProcess(args, 0, f"{self.tokens[name]}\n", "")
 
 
 def test_parse_sets_groups_by_boundary():
@@ -39,31 +40,55 @@ def test_parse_sets_groups_by_boundary():
             MOD.parse_sets(bad)
 
 
-def test_mint_paths_and_revoke():
-    bao = FakeBao({"hermes-review-public": "ghs_r", "hermes-author-public": "ghs_a"})
+def test_mint_paths_through_shared_cli():
+    cli = FakeCLI({"hermes-review-public": "ghs_r", "hermes-author-public": "ghs_a"})
     sets = {"review-public": "hermes-review-public", "author-public": "hermes-author-public"}
-    out = MOD.mint_boundary(ADDR, "github-hermes", "rid", "sid", sets, http=bao)
+    out = MOD.mint_boundary(ADDR, "github-hermes", "rid", "sid", sets, run=cli)
     assert out == {"review-public": "ghs_r", "author-public": "ghs_a"}
-    assert [c[0] for c in bao.calls] == [
-        "https://bao.example.test/v1/auth/approle/login",
-        "https://bao.example.test/v1/github-hermes/token/hermes-review-public",
-        "https://bao.example.test/v1/github-hermes/token/hermes-author-public",
-        "https://bao.example.test/v1/auth/token/revoke-self",
+    assert [call[0] for call in cli.calls] == [
+        ["bao-approle", "login"],
+        ["bao-approle", "gh-token", "github-hermes", "hermes-review-public"],
+        ["bao-approle", "login"],
+        ["bao-approle", "gh-token", "github-hermes", "hermes-author-public"],
     ]
-    assert bao.calls[0][1] == {"role_id": "rid", "secret_id": "sid"}
-    assert all(c[2] == "bao-tok" for c in bao.calls[1:])
+    login_env = cli.calls[0][1]["env"]
+    assert login_env["BAO_ADDR"] == "https://bao.example.test"
+    assert login_env["BAO_APPROLE_ROLE_ID"] == "rid"
+    assert login_env["BAO_APPROLE_SECRET_ID"] == "sid"
+    assert cli.calls[1][1]["env"]["BAO_TOKEN"] == "bao-tok"
+    assert "sid" not in " ".join(arg for call in cli.calls for arg in call[0])
+    assert all(call[1]["check"] is True and call[1]["capture_output"] is True for call in cli.calls)
 
 
-def test_missing_token_still_revokes():
-    bao = FakeBao({})
-    with pytest.raises(RuntimeError):
-        MOD.mint_boundary(ADDR, "m", "r", "s", {"review-public": "hermes-review-public"}, http=bao)
-    assert bao.calls[-1][0].endswith("/auth/token/revoke-self")
+def test_cli_mint_failure_hides_credentials():
+    cli = FakeCLI({})
+    with pytest.raises(RuntimeError) as exc:
+        MOD.mint_boundary(ADDR, "m", "r", "secret-value", {"review-public": "hermes-review-public"}, run=cli)
+    assert str(exc.value) == "bao-approle gh-token failed"
+    assert "secret-value" not in str(exc.value)
+    assert cli.calls[-1][0] == ["bao-approle", "gh-token", "m", "hermes-review-public"]
+
+
+def test_revoke_warning_is_logged_without_cli_output(capsys):
+    def warn(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, "ghs_r\n", "bao-approle: revoke-self failed")
+
+    token = MOD.run_bao_approle(["gh-token", "m", "x"], ADDR, token="bao-tok", run=warn)
+    assert token == "ghs_r"
+    assert capsys.readouterr().err == "hermes-gh-token: revoke-self failed; token expires with its TTL\n"
 
 
 def test_failed_login_raises():
     with pytest.raises(RuntimeError):
-        MOD.mint_boundary(ADDR, "m", "r", "s", {"k": "x"}, http=FakeBao(login_token=""))
+        MOD.mint_boundary(ADDR, "m", "r", "s", {"k": "x"}, run=FakeCLI(login_token=""))
+
+
+@pytest.mark.parametrize("addr", ["http://bao.example.test", "file:///etc/shadow"])
+def test_refuses_non_https_before_cli(addr):
+    cli = FakeCLI({"hermes-review-public": "ghs_r"})
+    with pytest.raises(ValueError):
+        MOD.mint_boundary(addr, "m", "r", "s", {"review-public": "hermes-review-public"}, run=cli)
+    assert cli.calls == []
 
 
 def test_write_tokens_mode(tmp_path):
@@ -82,9 +107,3 @@ def test_main_requires_per_boundary_credentials(monkeypatch, capsys):
     monkeypatch.delenv("HERMES_BAO_SECRET_ID_PUBLIC", raising=False)
     assert MOD.main() == 2
     assert "HERMES_BAO_ROLE_ID_PUBLIC" in capsys.readouterr().err
-
-
-def test_post_refuses_non_https():
-    for url in ("http://bao.example.test/v1/x", "file:///etc/shadow"):
-        with pytest.raises(ValueError):
-            MOD.post(url, {})

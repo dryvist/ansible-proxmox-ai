@@ -37,7 +37,7 @@ def test_exporter_returns_only_lane_class_names(tmp_path: Path) -> None:
         "    note: !unsafe role-fixture\n",
         encoding="utf-8",
     )
-    inventory = tmp_path / "inventory/group_vars/all.yml"
+    inventory = tmp_path / "inventory/group_vars/all/00-core.yml"
     inventory.parent.mkdir(parents=True)
     inventory.write_text(
         "small_model: !unsafe small\n"

@@ -1,8 +1,8 @@
 ---
 # Arize Phoenix Docker deployment.
 #
-# Generates (and persists) the session-signing secret on first run, then
-# deploys phoenix + postgres via Docker Compose with the database bind-mounted
+# Seeds the session-signing secret in OpenBao (ai/phoenix), keeps an on-guest
+# copy, then deploys phoenix + postgres via Docker Compose with the database bind-mounted
 # under /opt/phoenix. Docker itself is installed by the docker_engine meta
 # dependency (meta/main.yml). No venv: docker_compose_v2 drives the compose
 # CLI, not the docker SDK.
@@ -28,55 +28,79 @@
     label: "{{ item.path }}"
 
 # =============================================================================
-# Application secrets (generate-once, persist on disk)
+# Application secrets (stored in OpenBao, persisted on disk)
 # =============================================================================
-# PHOENIX_SECRET must be stable across runs (it signs every session and
-# access token); persist it in a root-only file the first time the role runs
-# and reuse it thereafter. Same loop shape as langfuse_docker.
+# PHOENIX_SECRET must be stable across runs (it signs every session and access
+# token). The secret store (ai/phoenix) is the authority: a stored value is never
+# replaced. An on-guest copy is imported when the store lacks the field, and is
+# rewritten from the store when absent. A value is generated only when neither holds one.
 
-- name: Check for existing generated Phoenix secrets
+- name: Check for existing Phoenix signing secret
   ansible.builtin.stat:
-    path: "{{ phoenix_docker_data_dir }}/{{ item.file }}"
-  loop: "{{ phoenix_docker_generated_secrets }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: phoenix_docker_secret_stats
+    path: "{{ phoenix_docker_data_dir }}/.phoenix_secret"
+  register: phoenix_docker_secret_stat
 
-- name: Generate Phoenix secrets (first run only)
+- name: Read the Phoenix signing secret into memory
+  ansible.builtin.slurp:
+    src: "{{ phoenix_docker_data_dir }}/.phoenix_secret"
+  register: phoenix_docker_secret_file
+  when: phoenix_docker_secret_stat.stat.exists
+  no_log: true
+
+- name: Seed the Phoenix signing secret through the shared seed_generated task
+  delegate_to: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  no_log: true
+  block:
+    - name: Store PHOENIX_SECRET in ai/phoenix, keeping any stored value
+      ansible.builtin.include_role:
+        name: dryvist.homelab.openbao_secrets
+        tasks_from: seed_generated
+      vars:
+        openbao_secrets_seed_addr: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+        openbao_secrets_seed_mount: "{{ openbao_secrets_kv_mount }}"
+        openbao_secrets_seed_path: ai/phoenix
+        openbao_secrets_seed_fields:
+          - name: PHOENIX_SECRET
+            length: 48
+            charset: alnum
+            value: >-
+              {{ (phoenix_docker_secret_file.content | default('') | b64decode | trim)
+                 if phoenix_docker_secret_stat.stat.exists else '' }}
+        openbao_secrets_seed_token: "{{ lookup('ansible.builtin.env', 'BAO_TOKEN') }}"
+        openbao_secrets_seed_expected_writer_policy: ansible-converge
+        openbao_secrets_seed_check_capabilities: "{{ not ansible_check_mode }}"
+        openbao_secrets_seed_revoke_token: false
+        openbao_secrets_seed_register: phoenix_docker_seed_result
+
+- name: Resolve the Phoenix signing secret into a fact
+  ansible.builtin.set_fact:
+    phoenix_docker_secrets:
+      phoenix_secret: "{{ phoenix_docker_seed_result.PHOENIX_SECRET }}"
+  no_log: true
+
+- name: Require the on-guest Phoenix signing secret to match the stored value
+  ansible.builtin.assert:
+    that:
+      - (phoenix_docker_secret_file.content | b64decode | trim) == phoenix_docker_secrets.phoenix_secret
+    fail_msg: >-
+      The on-guest Phoenix signing secret differs from the stored PHOENIX_SECRET field.
+      The stored value is authoritative and the guest file was not rewritten.
+    quiet: true
+  when: phoenix_docker_secret_stat.stat.exists
+  no_log: true
+
+- name: Write the on-guest Phoenix signing secret from the stored value when absent
   ansible.builtin.copy:
-    dest: "{{ phoenix_docker_data_dir }}/{{ item.item.file }}"
-    content: >-
-      {{ (lookup('community.general.random_string', length=item.item.length,
-                 upper=true, lower=true, numbers=true, special=false) | hash('sha256'))
-         if item.item.hex
-         else lookup('community.general.random_string', length=item.item.length,
-                     upper=true, lower=true, numbers=true, special=false) }}
+    dest: "{{ phoenix_docker_data_dir }}/.phoenix_secret"
+    content: "{{ phoenix_docker_secrets.phoenix_secret }}"
     owner: root
     group: root
     mode: "0600"
-  loop: "{{ phoenix_docker_secret_stats.results }}"
-  loop_control:
-    label: "{{ item.item.name }}"
-  when: not item.stat.exists
-  no_log: true
-
-- name: Read generated Phoenix secrets into memory
-  ansible.builtin.slurp:
-    src: "{{ phoenix_docker_data_dir }}/{{ item.file }}"
-  loop: "{{ phoenix_docker_generated_secrets }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: phoenix_docker_secret_slurps
-  no_log: true
-
-- name: Resolve generated Phoenix secrets into a fact
-  ansible.builtin.set_fact:
-    phoenix_docker_secrets: "{{ dict(_phoenix_docker_secret_names | zip(_phoenix_docker_secret_values)) }}"
-  vars:
-    _phoenix_docker_secret_names: "{{ phoenix_docker_generated_secrets | map(attribute='name') | list }}"
-    _phoenix_docker_secret_values: >-
-      {{ phoenix_docker_secret_slurps.results
-         | map(attribute='content') | map('b64decode') | map('trim') | list }}
+  when: not phoenix_docker_secret_stat.stat.exists
   no_log: true
 
 # =============================================================================
@@ -84,11 +108,11 @@
 # =============================================================================
 
 - name: Assert every secret rendered into the Phoenix compose file is present
-  ansible.builtin.include_tasks: >-
-    {{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml
+  ansible.builtin.include_role:
+    name: dryvist.homelab.openbao_secrets
+    tasks_from: assert_nonempty.yml
   vars:
-    openbao_secrets_assert_context: the Phoenix compose file
-    openbao_secrets_assert_names:
+    openbao_secrets_required_vars:
       - phoenix_docker_postgres_password
       - phoenix_docker_admin_secret
       - phoenix_docker_default_admin_initial_password

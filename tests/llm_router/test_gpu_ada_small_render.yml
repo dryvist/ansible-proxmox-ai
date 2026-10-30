@@ -35,15 +35,19 @@
     hermes_brain_model: "{{ llm_router_primary_model }}"
     hindsight_retain_model: "{{ llm_router_small_model }}"
   tasks:
-    # Mirrors inventory/host_vars/llm-ada-lovelace-6X-16GB-embed.yml: the port is the tofu constant.
+    - name: Load the GPU guest inventory variables
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/host_vars/{{ _ada_host }}.yml"
+        name: _ada_inventory
+
+    # The GPU guest is outside this play; its port key must be resolved here.
     - name: Add Ada as a GPU member on the tofu serving port
       ansible.builtin.add_host:
         name: "{{ _ada_host }}"
         groups: [llm_gpu_group, llm_gpu_legacy_group, llm_fast_group]
         ansible_connection: local
-        llm_active_profile: small
-        llm_gpu_serving_model_cache_mount_path: /var/lib/llm
-        llm_gpu_serving_api_port: "{{ tofu_data.constants.service_ports.llm_gpu_serving_api }}"
+        llm_active_profile: "{{ _ada_inventory.llm_active_profile }}"
+        llm_gpu_serving_api_port_key: "{{ _ada_inventory.llm_gpu_serving_api_port_key }}"
 
     - name: Add the existing Pro6000 member on the default light-lane port
       ansible.builtin.add_host:
@@ -88,6 +92,9 @@
           - _gpu_small_deployments | length == 1
           - _gpu_small_deployments[0].model_info.profile == 'small'
           - _gpu_small_deployments[0].litellm_params.api_base == _ada_url
+          - >-
+            llm_router_gpu_deployment_targets | selectattr('profile', 'equalto', 'small')
+            | map(attribute='api_base') | list == [_ada_url]
           - _gpu_small_deployments[0].litellm_params.order | int == 2
           - _gpu_small_deployments[0].litellm_params.max_parallel_requests | int == 4
           - _pro6000_deployments | length >= 1

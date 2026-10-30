@@ -53,12 +53,12 @@ def resolved_defaults() -> dict:
 
 
 def router_request_timeout_seconds() -> int:
-    """ai_router_request_timeout_seconds, read live from group_vars/all.yml —
+    """ai_router_request_timeout_seconds, read live from group_vars/all/ —
     the wall-clock ceiling is capped below it, so tests must read the same
     source rather than pin a copy of the number that could drift from it.
     """
     all_vars = yaml.safe_load(
-        (REPO_ROOT / "inventory" / "group_vars" / "all.yml").read_text()
+        (REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml").read_text()
     )
     return int(all_vars["ai_router_request_timeout_seconds"])
 

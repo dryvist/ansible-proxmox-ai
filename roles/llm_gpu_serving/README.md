@@ -20,7 +20,7 @@ declared. Once the set exists, the loader selects one engine-specific serving
 group and routes `llm_gpu_group` to that same member. `playbooks/site.yml`
 imports the serving playbook before the router pool. `llm_active_profile`
 defaults through the Tofu selector and shared profile map in
-`inventory/group_vars/all.yml`; a host variable in
+`inventory/group_vars/all/`; a host variable in
 `inventory/host_vars/<inventory_hostname>.yml` overrides that selection. The
 small guest selects `small` there, while the unoverridden medium guest keeps the
 `medium-a` fallback. Cache and origin paths come from the inventory's

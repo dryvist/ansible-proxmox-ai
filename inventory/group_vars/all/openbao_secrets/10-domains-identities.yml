@@ -1,0 +1,115 @@
+---
+# Repository-owned identity-domain paths for dryvist.homelab.openbao_secrets.
+# Second part of the static OpenBao domain list (see 10-domains.yml). Agent identities, then the
+# local-llm and clickhouse domains. Order is preserved by the concatenation in 10-domains.yml.
+_openbao_secrets_static_domains_identities:
+  # Hermes' own least-privilege AppRole (policy `hermes`, exact paths — NOT
+  # local-llm's ai/* grant). Every field hermes_agent reads from OpenBao lives
+  # on these paths; once this domain resolves, hermes_agent_group.yml drops the
+  # local-llm layer for Hermes.
+  - name: hermes
+    paths:
+      - ai/hermes      # HERMES_VIKUNJA_API_TOKEN, HERMES_API_SERVER_KEY,
+                       #   WEBHOOK_SECRET, CODEX_AUTH_JSON
+      - ai/mcp/splunk  # SPLUNK_MCP_TOKEN
+      - ai/mcp/zammad  # ZAMMAD_MCP_URL, ZAMMAD_MCP_TOKEN
+      - mount: secrets-external
+        path: ai/saas/context7
+      # Home Assistant read-only token (field `token`). Off until the hermes read grant
+      # exists: a denied read fails the whole hermes fetch.
+      - path: ai/public/homeassistant
+        optional: true
+        enabled: "{{ hermes_agent_homeassistant_token_bao_enabled | default(false) | bool }}"
+  # Second agent identity, same shape as `hermes` above. Deliberately NOT given
+  # a fallback onto local-llm's ai/* grant: that grant can read ai/hermes, so
+  # falling back would hand this agent the FIRST agent's Slack, Vikunja and
+  # GitHub credentials. Absent creds resolve empty and each feature stays off
+  # (see roles/hermes_agent/defaults, every integration is presence-gated).
+  - name: donna
+    paths:
+      - ai/donna
+  - name: hermes-private
+    paths:
+      - ai/hermes-private # private Hermes Slack/API-server/firecrawl fields
+      - ai/mcp/splunk     # read-only gateway route credential, independent of local-llm
+  - name: local-llm
+    paths:
+      - ai/llm         # the router's own master key, LLM_LARGE_BEARER_TOKEN (single seeded KV path)
+      - ai/llm-router  # LLM_ROUTER_REDIS_PASSWORD — the shared spend store's
+                       #   AUTH credential, read by BOTH roles/redis (templated
+                       #   into requirepass) and roles/llm_router (handed to
+                       #   LiteLLM). One field, so the two ends cannot drift.
+                       #   Every path in a domain merges into one flat dict, so
+                       #   the key resolves regardless of which path holds it;
+                       #   it lives here rather than in ai/llm to keep the
+                       #   router's store credential separable later.
+      - ai/qdrant      # QDRANT_API_KEY
+      - path: ai/mcp/qdrant  # QDRANT_MEMORY_MCP_JWT
+        optional: true
+      - ai/open-webui  # OPEN_WEBUI_SECRET_KEY, OPEN_WEBUI_OPENAI_API_KEY
+      - ai/hermes      # HERMES_GITHUB_APP_{ID,INSTALLATION_ID,
+                       #   PRIVATE_KEY}.
+      # OPENROUTER_API_KEY (the free rung and the general openrouter tier) AND
+      # OPENROUTER_HERMES_KEY (the hermes-cloud-openrouter paid rung only, see
+      # llm-models.d/40-hermes-cloud.yml) are two fields in this ONE secret —
+      # every path merges its whole field set into bao_local_llm_secrets, so
+      # no second path is needed for the second field.
+      - mount: "{{ openbao_secrets_ai_api_key_mount }}"
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/openrouter"  # OPENROUTER_API_KEY, OPENROUTER_HERMES_KEY
+      # OPENCODE_API_KEY — the OpenCode Go subscription tier
+      # (llm-models.d/35-opencode.yml). Optional until seeded: an absent
+      # path leaves both deployments unrendered, never fails the converge
+      # closed.
+      - mount: "{{ openbao_secrets_ai_api_key_mount }}"
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/opencode"    # OPENCODE_API_KEY
+        optional: true
+      - mount: "{{ openbao_secrets_ai_api_key_mount }}"
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/gemini"      # GEMINI_API_KEY
+        optional: true
+      - mount: "{{ openbao_secrets_ai_api_key_mount }}"
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/alibaba"     # DASHSCOPE_API_KEY
+        optional: true
+      # OPENAI_API_KEY — the terminal paid rung of every chat ladder
+      # (llm-models.d/40-hermes-cloud.yml codex-api-model). Optional
+      # until seeded: an absent path leaves the rung unrendered, never fails
+      # the converge closed.
+      - mount: "{{ openbao_secrets_ai_api_key_mount }}"
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/openai"      # OPENAI_API_KEY
+        optional: true
+      - ai/mcp/splunk  # SPLUNK_MCP_URL, SPLUNK_MCP_TOKEN; merged into the same
+                       #   bao_local_llm_secrets fact consumed by Hermes
+      - ai/mcp/zammad  # ZAMMAD_MCP_URL, ZAMMAD_MCP_TOKEN; authoritative incident API pair
+      - ai/mcp/vikunja # VIKUNJA_MCP_URL, VIKUNJA_MCP_TOKEN_RO/_RW; RO field
+                       #   feeds agentgateway_docker's Vikunja sidecar
+      # NAUTOBOT_MCP_URL, NAUTOBOT_MCP_TOKEN — read-only IPAM/DCIM token from
+      # ansible-proxmox-apps' roles/nautobot, published opt-in. optional:
+      # an empty token omits the sidecar and the /nautobot route.
+      - mount: "{{ openbao_secrets_kv_mount }}"
+        path: ai/mcp/nautobot
+        optional: true
+      - ai/langfuse    # LANGFUSE_{POSTGRES_PASSWORD,CLICKHOUSE_PASSWORD,REDIS_AUTH,
+                       #   S3_ACCESS_KEY_ID,S3_SECRET_ACCESS_KEY,PUBLIC_KEY,SECRET_KEY,
+                       #   INIT_USER_EMAIL,INIT_USER_PASSWORD} — fully seeded 2026-07-05
+      # PHOENIX_SECRET is seeded by roles/phoenix_docker through seed_generated.
+      # PHOENIX_{POSTGRES_PASSWORD,ADMIN_SECRET,DEFAULT_ADMIN_INITIAL_PASSWORD,
+      # INGEST_API_KEY} — optional until the Phoenix guest exists and the path is
+      # operator-seeded like its ai/* siblings. Declared required before it was
+      # seeded, which failed every local-llm converge on a 404 (2026-09-04).
+      # A 403 still fails. TODO: drop the flag once the path is seeded.
+      - mount: "{{ openbao_secrets_kv_mount }}"
+        path: ai/phoenix
+        optional: true
+      - ai/langflow    # LANGFLOW_{SUPERUSER,SUPERUSER_PASSWORD,DB_PASSWORD,SECRET_KEY}
+                       #   Seeded by roles/langflow_docker through seed_generated.
+      - ai/dify        # DIFY_SECRET_KEY — the session/credential-protection key.
+                       #   Seeded by roles/dify_docker: the on-guest copy is imported
+                       #   when the field is absent; never regenerated once stored.
+                       #   A fresh value cannot decrypt what the existing value
+                       #   encrypted, and nothing reports an error when that
+                       #   happens.
+  # The ClickHouse domain reads internal datastore credentials from secret/.
+  # Its AppRole and policy are declared in the secrets-management repository.
+  - name: clickhouse
+    paths:
+      - ai/clickhouse  # APP_PASSWORD, GRAFANA_PASSWORD, HYPERDX_PASSWORD, SPLUNK_PASSWORD
+      - ai/clickhouse-ingest  # CRIBL_PASSWORD (ClickHouse ingest writer)

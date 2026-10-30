@@ -45,6 +45,10 @@
 - name: Install Hermes system prerequisites and normalize the checkout refspec
   ansible.builtin.include_tasks: install_prerequisites.yml
 
+- name: Install the shared OpenBao AppRole CLI
+  ansible.builtin.include_role:
+    name: dryvist.homelab.bao_approle_cli
+
 - name: Install the pinned Hermes runtime
   ansible.builtin.include_role:
     name: dryvist.ai_agents.hermes_runtime
@@ -58,6 +62,8 @@
     hermes_runtime_installer_path: "{{ hermes_agent_installer_path }}"
     hermes_runtime_install_dir: "{{ hermes_agent_install_dir }}"
     hermes_runtime_bin: "{{ hermes_agent_bin }}"
+    hermes_runtime_hermes_home: "{{ hermes_agent_hermes_home }}"
+    hermes_runtime_user: "{{ hermes_agent_user }}"
 
 - name: Preserve the installer change state for consumer check-mode guards
   ansible.builtin.set_fact:
@@ -90,11 +96,8 @@
 - name: Pinned-source patches — worker-reap process group handling
   ansible.builtin.include_tasks: patches_worker_reap.yml
 
-- name: Pinned-source patches — Hindsight operation failures
-  ansible.builtin.include_tasks: patches_hindsight_failures.yml
-
-- name: Pinned-source patches — Hindsight prefetch handling
-  ansible.builtin.include_tasks: patches_hindsight_prefetch.yml
+- name: Pinned-source patches — external-memory sync logging in run_agent.py
+  ansible.builtin.include_tasks: patches_run_agent_memory_sync.yml
 
 - name: Pinned-source patch — widen the truncated provider-error snippet
   ansible.builtin.include_tasks: patches_provider_error_snippet.yml
@@ -140,19 +143,48 @@
 - name: Deploy secrets, config.yaml, persona content, and Hindsight provider config
   ansible.builtin.include_tasks: config_and_content.yml
 
-# Deliberately AFTER config_and_content.yml, which installs the pinned client.
-# The gate is patched to accept what is already installed, so patching it before
-# the install would assert against a venv that has no client yet. The readiness
-# contract in tests/hermes_agent enforces this ordering — nothing may reference
-# hindsight-client ahead of the install task.
-- name: Patch the Hindsight lazy-dep gate so the installed client satisfies it
-  ansible.builtin.include_tasks: patches_lazy_deps.yml
-
 - name: Harden guest SSH and remove drifted or superseded seeded crons
   ansible.builtin.include_tasks: ssh_and_cron_drift.yml
 
 - name: Materialize skills and reconcile named operating profiles
   ansible.builtin.include_tasks: skills_and_profiles.yml
+
+# After skills_and_profiles.yml so every profile home exists. The collection
+# installs each plugin's pinned requirements into the Hermes venv and notifies
+# the gateway restart handler on change.
+- name: Install the pinned Hermes plugins (guardrails, memory provider, Langfuse)
+  ansible.builtin.include_role:
+    name: dryvist.ai_agents.hermes_runtime
+    tasks_from: plugins
+  vars:
+    hermes_runtime_user: "{{ hermes_agent_user }}"
+    hermes_runtime_group: "{{ hermes_agent_user }}"
+    hermes_runtime_hermes_home: "{{ hermes_agent_hermes_home }}"
+    hermes_runtime_install_dir: "{{ hermes_agent_install_dir }}"
+    hermes_runtime_uv_bin: "{{ hermes_agent_uv_bin }}"
+    hermes_runtime_gateway_restart_handler: Restart hermes-gateway
+    hermes_runtime_plugins: "{{ hermes_agent_plugins }}"
+    hermes_runtime_plugin_homes: "{{ hermes_agent_plugin_homes }}"
+
+- name: Assert the installed memory and tracing plugins match their pins
+  ansible.builtin.include_tasks: assert_plugins.yml
+
+# Presence-gated Home Assistant plugin: installed into the homelab-admin profile home only, so the
+# default gateway's home never carries its platform manifest. Enabled for that profile alone.
+- name: Install the Home Assistant plugin into the homelab-admin profile home
+  ansible.builtin.include_role:
+    name: dryvist.ai_agents.hermes_runtime
+    tasks_from: plugins
+  vars:
+    hermes_runtime_user: "{{ hermes_agent_user }}"
+    hermes_runtime_group: "{{ hermes_agent_user }}"
+    hermes_runtime_hermes_home: "{{ hermes_agent_hermes_home }}"
+    hermes_runtime_install_dir: "{{ hermes_agent_install_dir }}"
+    hermes_runtime_uv_bin: "{{ hermes_agent_uv_bin }}"
+    hermes_runtime_gateway_restart_handler: Restart hermes-gateway
+    hermes_runtime_plugins: "{{ hermes_agent_plugins_homeassistant }}"
+    hermes_runtime_plugin_homes: "{{ hermes_agent_homeassistant_plugin_homes }}"
+  when: hermes_agent_homeassistant_enabled | bool
 
 - name: GitHub identity — OpenBao-minted tokens behind a gh wrapper
   ansible.builtin.include_tasks: github_identity.yml

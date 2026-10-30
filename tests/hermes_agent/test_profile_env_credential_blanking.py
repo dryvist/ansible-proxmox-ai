@@ -31,6 +31,11 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         hermes_agent_wiki_enabled=True,
         hermes_agent_wiki_path="/var/lib/hermes/wiki",
         hermes_agent_github_read_token="READTOK",
+        hermes_agent_homeassistant_enabled=True,
+        hermes_agent_homeassistant_token="HATOK",
+        hermes_agent_homeassistant_url="https://ha.example.com",
+        hermes_agent_homeassistant_home_channel="",
+        hermes_agent_homeassistant_entity_denylist="",
     )
     always_blank = ("CONTEXT7_API_KEY",)
     section_keys = {
@@ -38,6 +43,7 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         "splunk": ("SPLUNK_MCP_URL", "SPLUNK_MCP_TOKEN"),
         "zammad": ("ZAMMAD_URL", "ZAMMAD_API_TOKEN"),
         "github": ("GH_PAT_WRITE_PROJECT_ISSUES",),
+        "homeassistant": ("HASS_TOKEN", "HASS_URL"),
     }
 
     for profile in _profiles():
@@ -55,6 +61,10 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
 
         assert values["HERMES_AGENT_MODEL_API_KEY"] == "MODELKEY"
         assert not any(key.startswith("HERMES_LANGFUSE_") for key in values)
+        readonly = "1" if profile["name"] in context["hermes_agent_guardrails_github_readonly_profiles"] else ""
+        assert values["DRYVIST_GUARDRAILS_GITHUB_READONLY"] == readonly, (
+            f"{profile['name']}: the GitHub read-only guard is set only for listed profiles"
+        )
         for key in always_blank:
             assert values[key] == "", f"{profile['name']}: {key} must always be blank"
         for section, keys in section_keys.items():

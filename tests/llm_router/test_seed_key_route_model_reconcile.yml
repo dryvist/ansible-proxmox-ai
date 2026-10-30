@@ -85,6 +85,7 @@
         value: "sk-{{ 'b' * 20 }}"
         models: [fixture-small]
         allowed_routes: ["/metrics", "/metrics/"]
+        metadata: {allowed_passthrough_routes: ['/v1/systemone']}
         tags: ['&zdr', '!free']
         router_settings: {enable_tag_filtering: true}
       - alias: malformed-live
@@ -215,10 +216,32 @@
           - _widened.body.models == ['fixture-small']
           - "_widened.body.object_permission == {'mcp_servers': ['no-mcp-servers']}"
           - _widened.body.metadata.tags == ['ui-edited', '&sensitivity:sensitive']
+          - _widened.body.metadata.allowed_passthrough_routes == ['/v1/systemone']
           - "'router_settings' not in _widened.body"
         fail_msg: "widened-routes body: {{ _widened.body }}"
       vars:
         _widened: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'widened-routes') | first }}"
+
+    # set_fact, not task vars: the earlier set_fact outranks a task-level override.
+    - name: Render the expression in initial mode
+      ansible.builtin.set_fact:
+        llm_router_seed_mode: initial
+
+    - name: Assert initial mode still applies the pass-through grant, without UI-owned routes
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _initial.body.metadata.allowed_passthrough_routes == ['/v1/systemone']
+          - "'allowed_routes' not in _initial.body"
+        fail_msg: "initial-mode widened-routes body: {{ _initial.body }}"
+      vars:
+        _initial: >-
+          {{ lookup('ansible.builtin.template', _diff_template_file.path)
+             | selectattr('alias', 'equalto', 'widened-routes') | first }}
+
+    - name: Restore rebuild mode for the remaining fixtures
+      ansible.builtin.set_fact:
+        llm_router_seed_mode: rebuild
 
     - name: Assert an MCP grant is reconciled for the intended caller only
       ansible.builtin.assert:
@@ -285,7 +308,11 @@
               - key_alias: widened-routes
                 models: [fixture-small]
                 allowed_routes: ["/metrics", "/metrics/"]
-                metadata: {app: widened-routes, tier: local, tags: ['ui-edited', '&sensitivity:sensitive']}
+                metadata:
+                  app: widened-routes
+                  tier: local
+                  tags: ['ui-edited', '&sensitivity:sensitive']
+                  allowed_passthrough_routes: ['/v1/systemone']
                 object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: malformed-live
                 models: [fixture-small, fixture-embed]

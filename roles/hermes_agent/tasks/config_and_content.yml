@@ -170,56 +170,18 @@
     force: false
   when: hermes_agent_seed_user_profile | bool
 
-# --- Hindsight memory: local embedded daemon ---------------------------------
-# The provider name in config.yaml is not enough: hindsight defaults to CLOUD
-# mode, and with no HINDSIGHT_API_KEY its is_available() is false — every
-# memory tool call fails with "Memory is not available" (the recurring digest
-# warning). local_embedded needs (a) the hindsight-all package in the venv,
-# (b) $HERMES_HOME/hindsight/config.json selecting the mode + the extraction
-# LLM (the same router brain), (c) HINDSIGHT_LLM_API_KEY in .env (rendered by
-# hermes-env.j2).
-# local_embedded needs the full daemon stack (hindsight-all, ~200 MB);
-# local_external only needs the pinned HTTP client the plugin drives.
-- name: Install the Hindsight stack into the Hermes venv
-  ansible.builtin.command:
-    cmd: >-
-      {{ hermes_agent_uv_bin }} pip install
-      --python {{ hermes_agent_venv_python }}
-      {{ 'hindsight-all' if hermes_agent_memory_mode == 'local_embedded' else '' }}
-      "hindsight-client{{ hermes_agent_hindsight_client_pin }}"
-  register: hermes_agent_hindsight_install
-  changed_when: >-
-    not ansible_check_mode and (
-      'Installed' in hermes_agent_hindsight_install.stderr
-      or 'Uninstalled' in hermes_agent_hindsight_install.stderr
-    )
-  when: hermes_agent_memory_provider == 'hindsight'
-  notify: Restart hermes-gateway
+# The bundle's own plugins (dryvist-guardrails) are staged here for the collection's
+# plugins task, which copies them from this guest path into each Hermes home.
+- name: Stage the nix-hermes bundle plugins on the guest
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_bundle_path }}/plugins/"
+    dest: "{{ hermes_agent_bundle_guest_dir }}/plugins/"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    directory_mode: "0750"
 
-- name: Read the installed Hindsight client version from the Hermes venv
-  ansible.builtin.command:
-    argv:
-      - "{{ hermes_agent_venv_python }}"
-      - -c
-      - "from importlib.metadata import version; print(version('hindsight-client'))"
-  register: hermes_agent_hindsight_client_version_installed
-  changed_when: false
-  # Read-only; a check run needs the live value to preview Hindsight packages.
-  check_mode: false
-  when: hermes_agent_memory_provider == 'hindsight'
-
-- name: Assert the Hermes venv has the pinned Hindsight client
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - hermes_agent_hindsight_client_version_installed.stdout == hermes_agent_hindsight_client_version
-    fail_msg: >-
-      Hermes venv Hindsight client version is {{ hermes_agent_hindsight_client_version_installed.stdout
-      | default('<missing>') }}, expected {{ hermes_agent_hindsight_client_version }}.
-      Do not repair site-packages manually; re-run the managed Hermes converge.
-  when:
-    - hermes_agent_memory_provider == 'hindsight'
-    - not ansible_check_mode
+# --- Hindsight memory config. The plugin itself is installed by the plugins task in main.yml.
 
 - name: Ensure the hindsight config dir exists
   ansible.builtin.file:

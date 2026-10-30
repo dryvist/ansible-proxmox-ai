@@ -20,17 +20,18 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "agent/auxiliary_client.py",
         "agent/context_compressor.py",
         "cron/scheduler.py",
-        "plugins/memory/hindsight/__init__.py",
         "run_agent.py",
         "hermes_cli/main.py",
         "hermes_cli/kanban_db_dispatch.py",
         "agent/turn_iteration_prep.py",
         "agent/turn_truncation.py",
+        "cron/scheduler_bookkeeping.py",
+        "gateway/session_kanban.py",
     ]
 
     assert_task = _combined_assert_task()
     conditions = " ".join(assert_task["ansible.builtin.assert"]["that"])
-    assert "verdict, reason, _, _, _ = judge_goal(" in conditions
+    assert "verdict, reason, _, _, transport_failed = judge_goal(" in conditions
     assert any(
         "goal judge unavailable:" in condition
         and ".count(" in condition
@@ -45,8 +46,8 @@ def test_installed_source_postconditions_fail_closed() -> None:
         in conditions
     )
     assert "goal_max_turns = COALESCE(?, goal_max_turns)" in conditions
-    # The worker-spawn "--quiet" patch is retired (2026-09): upstream's own
-    # kanban dispatcher already appends "-Q" for a goal-mode task, checked
+    # The worker-spawn "--quiet" patch is retired (2026-09). v0.22.5 runs the
+    # goal loop on the profile owner, so the owner-side anchors are checked
     # against the live installed source in "Assert upstream still supplies
     # the behavior these retired patches used to add", not here.
     assert "WHERE id = ? AND status IN" in conditions
@@ -80,7 +81,6 @@ def test_installed_source_postconditions_fail_closed() -> None:
         in conditions
     )
     assert "failure_limit=1 if is_systemic else None," in conditions
-    assert 'logger.debug("Hindsight prefetch failed:' in conditions
     assert "if _transport_failed:" in conditions
     assert "blocked_judge_unreachable" in conditions
     # The upstream sentinel producer must stay pinned: reworded upstream, the
@@ -95,15 +95,14 @@ def test_installed_source_postconditions_fail_closed() -> None:
         and ") == 2" in condition
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
-    # Re-anchored (PR C): this occurrence moved off hermes_agent_retry_source
-    # onto its own turn_iteration_prep_source var, and its own-file count
-    # dropped from 2 to 1 as a result.
-    assert any(
-        "_boost_cap = agent.max_tokens if agent.max_tokens else max(" in condition
-        and ".count(" in condition
-        and ") == 1" in condition
-        for condition in assert_task["ansible.builtin.assert"]["that"]
+    # v0.22.5: both retry ladders go through boosted_output_cap() in
+    # turn_truncation.py, which carries the configured-ceiling substitution;
+    # the length-continuation caller must still route through it.
+    assert (
+        "'boost = min(max(base * (2 ** n), requested_cap or 0), agent.max_tokens'"
+        in conditions
     )
+    assert "'boosted_output_cap(' in hermes_agent_turn_iteration_prep_source" in conditions
     assert 'resolved_provider != "custom"' in conditions
     assert "update the pinned-source patches" in assert_task["ansible.builtin.assert"][
         "fail_msg"

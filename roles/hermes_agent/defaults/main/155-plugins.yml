@@ -1,0 +1,83 @@
+---
+# --- Hermes plugins: the single source for what the runtime collection deploys
+# and what config.yaml / every profile config enables. Installed by
+# dryvist.ai_agents.hermes_runtime (tasks_from: plugins) into every home in
+# hermes_agent_plugin_homes; each entry is a directory under <home>/plugins/.
+#
+# Archive entries are checksum-pinned upstream tarballs. The Hindsight plugin is
+# a community-tier catalog plugin, a recorded exception: docs-private
+# d/decisions/hermes-plugin-trust.mdx. dryvist-guardrails ships in the nix-hermes
+# bundle, staged on the guest by config_and_content.yml.
+hermes_agent_bundle_guest_dir: "{{ hermes_agent_hermes_home }}/bundle"
+
+hermes_agent_plugins_core:
+  - name: dryvist-guardrails
+    src: "{{ hermes_agent_bundle_guest_dir }}/plugins/dryvist-guardrails"
+    requirements: []
+  - name: hindsight
+    archive_url: https://codeload.github.com/vectorize-io/hindsight/tar.gz/d952b6e655fccab4581ee0722b51c5f103873d12
+    archive_sha256: 618f74f97ba8e0ed3b57fd34afa051ee0de6b8413ec486ea6f5914993ff103b5
+    archive_subdir: hindsight-d952b6e655fccab4581ee0722b51c5f103873d12/hindsight-integrations/hermes
+    # hindsight-embed is imported lazily (embedded.py), so local_external needs only the client.
+    # local_embedded adds the embed daemon manager the plugin imports (hindsight_embed).
+    requirements: >-
+      {{ ['hindsight-client' ~ hermes_agent_hindsight_client_pin]
+         + (['hindsight-embed' ~ hermes_agent_hindsight_embed_pin]
+            if hermes_agent_memory_mode == 'local_embedded' else []) }}
+
+# Presence-gated: installed and enabled only when both Langfuse keys are set.
+hermes_agent_plugins_langfuse:
+  - name: langfuse
+    archive_url: >-
+      https://codeload.github.com/NousResearch/hermes-official-plugins/tar.gz/c2a95963c442f3f23e4bc6fe0da898e1dd1fb63d
+    archive_sha256: 95ff997fd89fff4c226c1fd98514001926ab8704b0d5b958989d265ddd10e0c1
+    archive_subdir: hermes-official-plugins-c2a95963c442f3f23e4bc6fe0da898e1dd1fb63d/langfuse
+    requirements:
+      - "langfuse{{ hermes_agent_langfuse_sdk_pin }}"
+
+# Presence-gated: the Home Assistant platform plugin (official, pinned commit) — read-only state and
+# service-listing tools plus outbound notify. Installed into the homelab-admin profile home only
+# (tasks/main.yml) and enabled for that profile only while hermes_agent_homeassistant_enabled holds.
+hermes_agent_plugins_homeassistant:
+  - name: homeassistant
+    archive_url: >-
+      https://codeload.github.com/NousResearch/hermes-official-plugins/tar.gz/4d492b1dc5326af3e38bb2cf3e4b9ad6d65f0072
+    archive_sha256: 47e1ea0f6509a448ecee3914de4da4c510496a45267273843278833984d6f8af
+    archive_subdir: hermes-official-plugins-4d492b1dc5326af3e38bb2cf3e4b9ad6d65f0072/homeassistant
+    # The plugin's pyproject declares aiohttp>=3.9,<4; pinned to the aiohttp version the Hermes messaging extras pin.
+    requirements:
+      - aiohttp==3.14.5
+
+# The token is the hermes domain's `token` field (inventory group_vars). URL, notify target and entity
+# denylist are inventory-supplied and empty by default. The plugin loads only when token and URL are set.
+hermes_agent_homeassistant_url: ""
+hermes_agent_homeassistant_home_channel: ""
+hermes_agent_homeassistant_entity_denylist: ""
+hermes_agent_homeassistant_enabled: >-
+  {{ (hermes_agent_homeassistant_token | default('', true) | length > 0)
+     and (hermes_agent_homeassistant_url | default('', true) | length > 0) }}
+hermes_agent_homeassistant_plugin_homes: >-
+  {{ [hermes_agent_hermes_home ~ '/profiles/homelab-admin']
+     if hermes_agent_homeassistant_enabled | bool else [] }}
+
+# Profile extras open in this render. A profile names a plugin in its `plugins` list and a toolset in its
+# `enable_toolsets` list (hermes_agent_profiles, 150-fleet-health-profiles.yml); each takes effect only
+# while it is listed here.
+hermes_agent_profile_plugins_open: >-
+  {{ ['homeassistant'] if hermes_agent_homeassistant_enabled | bool else [] }}
+hermes_agent_profile_toolsets_open: >-
+  {{ ['homeassistant'] if hermes_agent_homeassistant_enabled | bool else [] }}
+
+hermes_agent_plugins: >-
+  {{ hermes_agent_plugins_core
+     + (hermes_agent_plugins_langfuse if hermes_agent_langfuse_enabled | bool else []) }}
+hermes_agent_plugins_enabled: "{{ hermes_agent_plugins | map(attribute='name') | list }}"
+hermes_agent_plugin_homes: >-
+  {{ [hermes_agent_hermes_home]
+     + (hermes_agent_profiles | map(attribute='name')
+        | map('regex_replace', '^', hermes_agent_hermes_home ~ '/profiles/') | list) }}
+
+# Profiles whose .env sets DRYVIST_GUARDRAILS_GITHUB_READONLY=1 (blocks GitHub writes
+# from the shell and code tools). Any other profile renders the key blank.
+hermes_agent_guardrails_github_readonly_profiles:
+  - github-maint

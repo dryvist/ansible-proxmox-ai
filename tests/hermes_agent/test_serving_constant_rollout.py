@@ -21,7 +21,7 @@ import jinja2
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ALL_YML = REPO_ROOT / "inventory" / "group_vars" / "all.yml"
+ALL_YML = REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml"
 
 # The artifact's constants object as it actually was during the outage: many
 # port families, no `serving`.

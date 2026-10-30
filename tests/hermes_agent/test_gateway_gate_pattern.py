@@ -10,6 +10,10 @@ PS = (
     "   1234       1 /usr/local/lib/hermes-agent/venv/bin/python /usr/local/lib/hermes-agent/hermes gateway run --replace\n"
     "   4121     347 /usr/local/lib/hermes-agent/venv/bin/python /usr/local/lib/hermes-agent/hermes gateway run --replace\n"
     "   9999       1 /usr/bin/python3 /usr/local/bin/hermes-web-ui serve\n"
+    "   5469       1 /srv/agent/.hermes/tools/python-3.14.9-linux-x64/bin/python3 -I -c import os, re, sys?"
+    "sys.exit(main())? gateway run --replace\n"
+    "   5485    5469 /srv/agent/.hermes/tools/python-3.14.9-linux-x64/bin/python3 /usr/local/lib/hermes-agent/tools/"
+    "mcp_death_supervisor.py --parent-pgid 5469\n"
 )
 
 
@@ -21,7 +25,7 @@ def _awk_program() -> str:
 
 def test_the_gate_matches_the_real_gateway_line_and_reports_its_parent():
     out = subprocess.run(["awk", _awk_program()], input=PS, capture_output=True, text=True, check=True).stdout
-    assert out.splitlines() == ["1234 1", "4121 347"]
+    assert out.splitlines() == ["1234 1", "4121 347", "5469 1"]
 
 
 if __name__ == "__main__":

@@ -117,22 +117,63 @@
   hosts: langfuse_group
   become: true
   gather_facts: false
-  tags:
-    - langfuse_docker
-    - observability
+  vars:
+    langfuse_project_keys_agents:
+      - hermes
+      - donna
   tasks:
     - name: Converge langfuse_docker (isolated — failure does not abort downstream plays)
+      # langfuse_project_keys also converges here so the key task sees the role's public vars.
+      tags:
+        - langfuse_docker
+        - observability
+        - langfuse_project_keys
       block:
         - name: Gather facts
           ansible.builtin.include_tasks: tasks/gather_facts.yml
         - name: Include langfuse_docker role
           ansible.builtin.include_role:
             name: langfuse_docker
+            public: true
       rescue:
         - name: Record isolated failure and continue
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: langfuse_docker
+
+    - name: Provision Langfuse project API keys for Hermes agents
+      ansible.builtin.include_role:
+        name: dryvist.homelab.langfuse_project_keys
+        apply:
+          delegate_to: localhost
+          become: false
+          tags:
+            - never
+            - langfuse_project_keys
+      vars:
+        langfuse_project_keys_base_url: "{{ langfuse_docker_nextauth_url }}"
+        langfuse_project_keys_admin_email: "{{ langfuse_docker_init_user_email }}"
+        langfuse_project_keys_admin_password: "{{ langfuse_docker_init_user_password }}"
+        langfuse_project_keys_org_name: "{{ langfuse_docker_init_org }}"
+        langfuse_project_keys_project_name: "hermes-{{ langfuse_project_keys_agent }}"
+        langfuse_project_keys_openbao_addr: "{{ hostvars['localhost'].openbao_secrets_active_addr }}"
+        langfuse_project_keys_openbao_token: "{{ lookup('env', 'BAO_TOKEN') }}"
+        langfuse_project_keys_openbao_mount: "{{ openbao_secrets_kv_mount }}"
+        langfuse_project_keys_openbao_path: "ai/{{ langfuse_project_keys_agent }}"
+        langfuse_project_keys_public_key_field: LANGFUSE_PUBLIC_KEY
+        langfuse_project_keys_secret_key_field: LANGFUSE_SECRET_KEY
+        # This include is delegated to localhost from a play that inherits become: true.
+        # The task keyword alone does not override an inherited ansible_become connection var.
+        ansible_become: false
+      loop: "{{ langfuse_project_keys_agents }}"
+      loop_control:
+        loop_var: langfuse_project_keys_agent
+        label: "{{ langfuse_project_keys_agent }}"
+      run_once: true
+      no_log: true
+      tags:
+        - never
+        - langfuse_project_keys
 
 - name: Configure Arize Phoenix LLM observability
   import_playbook: phoenix.yml
@@ -145,7 +186,7 @@
     - agentgateway_docker
     - ai-orchestration
   pre_tasks:
-    # ai_callers (inventory/group_vars/all.yml) merges the registry facts this loads.
+    # ai_callers (inventory/group_vars/all/) merges the registry facts this loads.
     - name: Load the harness caller registry
       ansible.builtin.import_tasks: tasks/load_agent_callers.yml
   tasks:

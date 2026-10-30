@@ -1,218 +1,115 @@
-"""Regression tests for run-ansible.sh's converge guards: stale-checkout
-(commit behind origin), dirty-tree (uncommitted edits to tracked files), and
-zero-host --limit (a --limit that matched nothing beyond localhost).
+"""Contract for scripts/run-ansible.sh: a thin shim that pins the shared runner and sets this repo's switches."""
 
-The real network/OpenBao path is avoided entirely by setting
-PROXMOX_SSH_KEY_PATH (the static break-glass key branch), since these tests
-are about the guards that run BEFORE that branch, not about cert minting
-(see test_run_ansible_identity.py for that contract).
-"""
-
+import os
+from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
-from _runner_stubs import RunnerSandboxBase
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER = ROOT / "scripts" / "run-ansible.sh"
+SWITCHES = (
+    "RUN_ANSIBLE_IDENTITIES",
+    "RUN_ANSIBLE_FALLBACK_ON_ERROR",
+    "RUN_ANSIBLE_EXPORT_CONVERGE_IDENTITY",
+    "RUN_ANSIBLE_CHECKOUT_GUARD",
+    "RUN_ANSIBLE_LIMIT_LOCALHOST",
+    "RUN_ANSIBLE_RECAP_CHECK",
+    "RUN_ANSIBLE_LOG_DIR",
+    "RUN_ANSIBLE_RETIRING_IDENTITIES",
+)
+NIX_STUB = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$SHIM_TEST_ARGV_LOG"
+: > "$SHIM_TEST_SWITCHES_LOG"
+for name in __SWITCHES__; do
+  printf '%s=%s\n' "$name" "${!name-}" >> "$SHIM_TEST_SWITCHES_LOG"
+done
+"""
 
 
-class RunAnsibleGuardContract(RunnerSandboxBase):
-    # --- baseline -------------------------------------------------------
+class RunAnsibleShimContract(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_path = Path(self.temp_dir.name)
+        self.bin_path = self.temp_path / "bin"
+        self.bin_path.mkdir()
+        self.argv_log = self.temp_path / "nix-argv.log"
+        self.switches_log = self.temp_path / "switches.log"
+        nix = self.bin_path / "nix"
+        nix.write_text(NIX_STUB.replace("__SWITCHES__", " ".join(SWITCHES)), encoding="utf-8")
+        nix.chmod(0o700)
+        self.repo_root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=ROOT, check=True, capture_output=True, text=True
+        ).stdout.strip()
 
-    def test_clean_checkout_at_remote_head_converges(self):
-        self._write_recap("localhost")
-        result = self._run("--limit", "localhost")
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _run(self, args, overrides=None):
+        env = os.environ.copy()
+        for name in SWITCHES:
+            env.pop(name, None)
+        env.update(
+            {
+                "PATH": f"{self.bin_path}{os.pathsep}{env['PATH']}",
+                "SHIM_TEST_ARGV_LOG": str(self.argv_log),
+                "SHIM_TEST_SWITCHES_LOG": str(self.switches_log),
+            }
+        )
+        env.update(overrides or {})
+        return subprocess.run([str(RUNNER), *args], cwd=ROOT, env=env, check=False, capture_output=True, text=True)
+
+    def test_pins_the_shared_runner_and_sets_this_repos_switches(self):
+        result = self._run(["playbooks/site.yml", "--limit", "qdrant_group"])
+
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.called_log.exists())
+        self.assertEqual(
+            self.argv_log.read_text(encoding="utf-8").splitlines(),
+            [
+                "run",
+                "github:dryvist/homelab-contracts/v5.37.2#run-ansible",
+                "--",
+                "playbooks/site.yml",
+                "--limit",
+                "qdrant_group",
+            ],
+        )
+        self.assertEqual(
+            self.switches_log.read_text(encoding="utf-8").splitlines(),
+            [
+                "RUN_ANSIBLE_IDENTITIES=signer,semaphore?,ansible",
+                "RUN_ANSIBLE_FALLBACK_ON_ERROR=1",
+                "RUN_ANSIBLE_EXPORT_CONVERGE_IDENTITY=1",
+                "RUN_ANSIBLE_CHECKOUT_GUARD=1",
+                "RUN_ANSIBLE_LIMIT_LOCALHOST=1",
+                "RUN_ANSIBLE_RECAP_CHECK=1",
+                f"RUN_ANSIBLE_LOG_DIR={self.repo_root}/.ansible-run-logs",
+                "RUN_ANSIBLE_RETIRING_IDENTITIES=ansible",
+            ],
+        )
 
-    # --- stale-checkout (behind origin) ----------------------------------
+    def test_caller_overrides_are_kept(self):
+        result = self._run(
+            ["playbooks/site.yml"],
+            {
+                "RUN_ANSIBLE_IDENTITIES": "signer",
+                "RUN_ANSIBLE_LOG_DIR": "logs",
+                "RUN_ANSIBLE_RETIRING_IDENTITIES": "legacy",
+            },
+        )
 
-    def test_behind_remote_refuses(self):
-        # Simulate a teammate's push landing on origin after this checkout.
-        other = self.work.parent / "other-clone"
-        subprocess.run(
-            ["git", "clone", "-q", str(self.origin), str(other)], check=True
-        )
-        subprocess.run(
-            ["git", "config", "user.email", "t2@example.com"], cwd=other, check=True
-        )
-        subprocess.run(
-            ["git", "config", "user.name", "t2"], cwd=other, check=True
-        )
-        (other / "README.md").write_text("newer\n", encoding="utf-8")
-        subprocess.run(["git", "add", "README.md"], cwd=other, check=True)
-        subprocess.run(
-            ["git", "commit", "-q", "-m", "test: simulate remote update"],
-            cwd=other,
-            check=True,
-        )
-        subprocess.run(["git", "push", "-q"], cwd=other, check=True)
-
-        result = self._run("--limit", "localhost")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("behind origin/develop", result.stderr)
-        self._assert_playbook_not_called()
-
-    def test_allow_stale_checkout_bypasses_behind_remote(self):
-        other = self.work.parent / "other-clone2"
-        subprocess.run(
-            ["git", "clone", "-q", str(self.origin), str(other)], check=True
-        )
-        subprocess.run(
-            ["git", "config", "user.email", "t3@example.com"], cwd=other, check=True
-        )
-        subprocess.run(
-            ["git", "config", "user.name", "t3"], cwd=other, check=True
-        )
-        (other / "README.md").write_text("newer\n", encoding="utf-8")
-        subprocess.run(["git", "add", "README.md"], cwd=other, check=True)
-        subprocess.run(
-            ["git", "commit", "-q", "-m", "test: simulate remote update"],
-            cwd=other,
-            check=True,
-        )
-        subprocess.run(["git", "push", "-q"], cwd=other, check=True)
-
-        self._write_recap("localhost")
-        result = self._run("--limit", "localhost", allow_stale=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.called_log.exists())
+        switches = self.switches_log.read_text(encoding="utf-8").splitlines()
+        self.assertIn("RUN_ANSIBLE_IDENTITIES=signer", switches)
+        self.assertIn("RUN_ANSIBLE_LOG_DIR=logs", switches)
+        self.assertIn("RUN_ANSIBLE_RETIRING_IDENTITIES=legacy", switches)
 
-    # --- dirty tree (uncommitted edits to TRACKED files) -----------------
-    # The SHA check above is blind to this: local edits deploy content that
-    # matches neither the remote nor a clean checkout of HEAD, and still
-    # exit 0 with a green recap — the same silent-drift shape the SHA check
-    # exists to catch.
-
-    def test_dirty_tracked_file_refuses(self):
-        (self.work / "README.md").write_text("locally edited\n", encoding="utf-8")
-        result = self._run("--limit", "localhost")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("uncommitted changes", result.stderr)
-        self._assert_playbook_not_called()
-
-    def test_allow_stale_checkout_bypasses_dirty_tree(self):
-        (self.work / "README.md").write_text("locally edited\n", encoding="utf-8")
-        self._write_recap("localhost")
-        result = self._run("--limit", "localhost", allow_stale=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.called_log.exists())
-
-    def test_untracked_file_does_not_trigger_dirty_guard(self):
-        # This repo routinely carries untracked working state (a published
-        # tofu-inventory cache, a resolved shared role) that is not playbook
-        # drift — --untracked-files=no exists precisely so those don't
-        # refuse every routine run.
-        (self.work / "scratch-cache.json").write_text("{}", encoding="utf-8")
-        self._write_recap("localhost")
-        result = self._run("--limit", "localhost")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.called_log.exists())
-
-    def test_dirty_tree_guard_still_fires_on_detached_head(self):
-        # The staleness (SHA-vs-branch) check is deliberately skipped on a
-        # detached HEAD (no tracked branch to compare against — this is how
-        # CI checks out a specific commit). Dirty-tree has no such exemption:
-        # a pinned replay with local edits is still unreviewed drift.
-        self._git("checkout", "-q", "--detach")
-        (self.work / "README.md").write_text("locally edited\n", encoding="utf-8")
-        result = self._run("--limit", "localhost")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("uncommitted changes", result.stderr)
-        self._assert_playbook_not_called()
-
-    def test_clean_detached_head_converges(self):
-        self._git("checkout", "-q", "--detach")
-        self._write_recap("localhost")
-        result = self._run("--limit", "localhost")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.called_log.exists())
-
-    # --- zero-host --limit -------------------------------------------------
-
-    def test_limit_beyond_localhost_with_localhost_only_recap_refuses(self):
-        # The documented shape: --limit <group> without ,localhost, where the
-        # inventory-loading play (hosts: localhost) still runs but the named
-        # group never resolves to anything.
-        self._write_recap("localhost")
-        result = self._run("--limit", "hermes_agent_group")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("this run did nothing", result.stderr)
-
-    def test_limit_beyond_localhost_with_empty_recap_refuses(self):
-        # The other shape a --limit naming ONLY a dynamically-populated host
-        # (e.g. --limit splunk, where the host itself is add_host'd by the
-        # SAME localhost play --limit is about to filter out) produces: the
-        # loader play is filtered out too, so NOTHING matches ANY play,
-        # including localhost — an entirely empty recap, not merely a
-        # localhost-only one. Confirms the same "recap must show a
-        # non-localhost host" check covers this shape without a separate
-        # branch: an empty recap trivially contains none either.
-        self._write_recap()  # PLAY RECAP header present, zero host lines
-        result = self._run("--limit", "splunk")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("this run did nothing", result.stderr)
-
-    def test_limit_beyond_localhost_with_matching_host_converges(self):
-        self._write_recap("localhost", "splunk")
-        result = self._run("--limit", "localhost,splunk")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.called_log.exists())
-
-    def test_limit_localhost_only_never_triggers_recap_guard(self):
-        # No recap file at all (simulating a play that produced no PLAY
-        # RECAP section, e.g. an early failure) — the recap guard must not
-        # fire when --limit never asked for anything beyond localhost.
-        result = self._run("--limit", "localhost")
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_task_limits_include_localhost(self):
-        cases = (
-            ((), ()),
-            (
-                ("--limit", "group"),
-                ("--limit", "group", "--limit", "group,localhost"),
-            ),
-            (("--limit=group",), ("--limit=group", "--limit", "group,localhost")),
-            (
-                ("--limit", "template_group", "--limit", "task_group"),
-                (
-                    "--limit",
-                    "template_group",
-                    "--limit",
-                    "task_group",
-                    "--limit",
-                    "task_group,localhost",
-                ),
-            ),
-            (
-                ("--limit", "grp:!h,localhost"),
-                (
-                    "--limit",
-                    "grp:!h,localhost",
-                    "--limit",
-                    "grp,!h,localhost",
-                ),
-            ),
-            (
-                ("--limit", "grp"),
-                ("--limit", "grp", "--limit", "grp,localhost"),
-            ),
-            (("--limit", "grp,localhost"), ("--limit", "grp,localhost")),
-            (("--limit", "group,localhost"), ("--limit", "group,localhost")),
-            (
-                ("--limit", "all:!down"),
-                ("--limit", "all:!down", "--limit", "all,!down,localhost"),
-            ),
-        )
-        for supplied, expected in cases:
-            with self.subTest(supplied=supplied):
-                self.called_log.write_text("", encoding="utf-8")
-                self._write_recap("localhost", "group")
-                result = self._run(*supplied)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(
-                    self.called_log.read_text(encoding="utf-8"),
-                    "called: playbooks/site.yml" + (" " + " ".join(expected) if expected else "") + "\n",
-                )
+    def test_shim_carries_no_runner_logic(self):
+        text = RUNNER.read_text(encoding="utf-8")
+        for needle in ("ansible-playbook", "curl", "ssh-keygen", "BAO_", "SSH_KNOWN_HOSTS"):
+            self.assertNotIn(needle, text)
 
 
 if __name__ == "__main__":
