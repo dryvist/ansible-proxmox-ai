@@ -2,37 +2,24 @@
 """Mint GitHub installation tokens from OpenBao and write one file per set.
 
 Runs as root from hermes-gh-token.timer. GH_TOKEN_SETS lists
-`KEY=BOUNDARY:SET` entries. For each boundary it logs in with that
-boundary's AppRole (HERMES_BAO_ROLE_ID_<BOUNDARY> /
-HERMES_BAO_SECRET_ID_<BOUNDARY>), POSTs <BAO_ADDR>/v1/<GH_TOKEN_MOUNT>/token/<SET>
-for each of its sets, writes the token to <GH_TOKEN_DIR>/<KEY> (mode 0600,
-owned by GH_TOKEN_OWNER), then revokes its own OpenBao token. Stdout and logs
-never carry a token value.
+`KEY=BOUNDARY:SET` entries. For each set it logs in with that boundary's
+AppRole (HERMES_BAO_ROLE_ID_<BOUNDARY> / HERMES_BAO_SECRET_ID_<BOUNDARY>),
+then calls bao-approle gh-token MOUNT SET, which mints the installation token
+and revokes its OpenBao token. It writes the token to <GH_TOKEN_DIR>/<KEY>
+(mode 0600, owned by GH_TOKEN_OWNER). Stdout and logs never carry a token
+value.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import pwd
+import subprocess
 import sys
 import tempfile
 import urllib.parse
-import urllib.request
 
 REQUIRED = ("BAO_ADDR", "GH_TOKEN_MOUNT", "GH_TOKEN_SETS", "GH_TOKEN_DIR", "GH_TOKEN_OWNER")
-
-
-def post(url: str, body: dict, token: str | None = None) -> dict:
-    if urllib.parse.urlsplit(url).scheme != "https":
-        raise ValueError("OpenBao URL must be https")
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST")
-    req.add_header("Content-Type", "application/json")
-    if token:
-        req.add_header("X-Vault-Token", token)
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        raw = resp.read()
-    return json.loads(raw) if raw else {}
 
 
 def parse_sets(spec: str) -> dict[str, dict[str, str]]:
@@ -49,28 +36,43 @@ def parse_sets(spec: str) -> dict[str, dict[str, str]]:
     return out
 
 
-def mint_boundary(addr: str, mount: str, role_id: str, secret_id: str,
-                  sets: dict[str, str], http=post) -> dict[str, str]:
-    """Return {key: installation_token} for one AppRole. Always revokes its token."""
-    addr = addr.rstrip("/")
-    login = http(f"{addr}/v1/auth/approle/login", {"role_id": role_id, "secret_id": secret_id})
-    bao = (login.get("auth") or {}).get("client_token")
-    if not bao:
-        raise RuntimeError("AppRole login returned no client_token")
+def run_bao_approle(args: list[str], addr: str, *, role_id: str = "", secret_id: str = "",
+                    token: str = "", run=subprocess.run) -> str:
+    """Run the shared CLI without putting credentials in argv or error output."""
+    if urllib.parse.urlsplit(addr).scheme != "https":  # bao-approle login does not check the scheme
+        raise ValueError("OpenBao URL must be https")
+    env = os.environ.copy()
+    env["BAO_ADDR"] = addr.rstrip("/")
+    if role_id or secret_id:
+        env.update({
+            "BAO_APPROLE_ROLE_ID": role_id,
+            "BAO_APPROLE_SECRET_ID": secret_id,
+            "FLOW_LOCK_API_MAX_TIME": "15",
+        })
+    if token:
+        env.update({"BAO_TOKEN": token, "BAO_APPROLE_API_MAX_TIME": "15"})
     try:
-        tokens = {}
-        for key, name in sets.items():
-            data = http(f"{addr}/v1/{mount}/token/{name}", {}, bao)
-            tok = (data.get("data") or {}).get("token")
-            if not tok:
-                raise RuntimeError(f"no token in response for set {name}")
-            tokens[key] = tok
-        return tokens
-    finally:
-        try:
-            http(f"{addr}/v1/auth/token/revoke-self", {}, bao)
-        except (OSError, ValueError) as exc:  # revoke is best effort; the token TTL still bounds it
-            print(f"hermes-gh-token: revoke-self failed: {type(exc).__name__}", file=sys.stderr)
+        result = run(["bao-approle", *args], check=True, capture_output=True, text=True, env=env)
+    except subprocess.CalledProcessError:
+        raise RuntimeError(f"bao-approle {args[0]} failed") from None
+    if args[0] == "gh-token" and "revoke-self" in result.stderr:
+        print("hermes-gh-token: revoke-self failed; token expires with its TTL", file=sys.stderr)
+    return result.stdout.strip()
+
+
+def mint_boundary(addr: str, mount: str, role_id: str, secret_id: str,
+                  sets: dict[str, str], run=subprocess.run) -> dict[str, str]:
+    """Return {key: installation_token}; the CLI revokes each set's token."""
+    tokens = {}
+    for key, name in sets.items():
+        bao = run_bao_approle(["login"], addr, role_id=role_id, secret_id=secret_id, run=run)
+        if not bao:
+            raise RuntimeError("AppRole login returned no client_token")
+        token = run_bao_approle(["gh-token", mount, name], addr, token=bao, run=run)
+        if not token:
+            raise RuntimeError(f"no token in response for set {name}")
+        tokens[key] = token
+    return tokens
 
 
 def write_tokens(directory: str, owner: str, tokens: dict[str, str]) -> None:

@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import runpy
+import subprocess
 import types
 from pathlib import Path
 
@@ -113,14 +114,20 @@ class FakeBao:
 
     def __call__(self, url, body, token=None):
         self.calls.append((url, body, token))
-        if url.endswith("/auth/approle/login"):
-            return {"auth": {"client_token": "bao-tok"}}
-        if url.endswith("/revoke-self"):
-            return {}
         self.n += 1
         data = self.data if self.data is not None else {
             "access_key": f"AK{self.n}", "secret_key": "sk", "security_token": "st"}
         return {"lease_duration": self.lease, "data": data}
+
+
+class FakeCLI:
+    def __init__(self, login_token="bao-tok"):
+        self.calls = []
+        self.login_token = login_token
+
+    def __call__(self, args, **kwargs):
+        self.calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, f"{self.login_token}\n", "")
 
 
 class Clock:
@@ -132,17 +139,23 @@ class Clock:
 
 
 def test_credentials_refresh_before_expiry():
-    bao, clock = FakeBao(lease=900), Clock()
-    sts = MOD.StsCredentials(BAO_CFG, http=bao, clock=clock, margin=300)
+    bao, cli, clock = FakeBao(lease=900), FakeCLI(), Clock()
+    sts = MOD.StsCredentials(BAO_CFG, http=bao, clock=clock, margin=300, run=cli)
     assert sts.needs_refresh()
     creds = sts.refresh()
     assert creds == {"aws_access_key_id": "AK1", "aws_secret_access_key": "sk", "aws_session_token": "st"}
-    assert [c[0] for c in bao.calls] == [
-        "https://bao.example.test/v1/auth/approle/login",
-        "https://bao.example.test/v1/aws/sts/example-role",
-        "https://bao.example.test/v1/auth/token/revoke-self",
+    assert [c[0] for c in bao.calls] == ["https://bao.example.test/v1/aws/sts/example-role"]
+    assert bao.calls[0][1] is None and bao.calls[0][2] == "bao-tok"
+    assert [c[0] for c in cli.calls] == [
+        ["bao-approle", "login"],
+        ["bao-approle", "revoke-self"],
     ]
-    assert bao.calls[1][1] is None and bao.calls[1][2] == "bao-tok"
+    login_args, login_kwargs = cli.calls[0]
+    assert login_kwargs["env"]["BAO_APPROLE_ROLE_ID"] == "rid"
+    assert login_kwargs["env"]["BAO_APPROLE_SECRET_ID"] == "sid"
+    assert "sid" not in login_args
+    assert login_kwargs["check"] is True and login_kwargs["capture_output"] is True
+    assert cli.calls[1][1]["input"] == "bao-tok\n"
     clock.t += 599
     assert not sts.needs_refresh()
     clock.t += 1  # 600s in: 300s margin before the 900s lease ends
@@ -152,25 +165,40 @@ def test_credentials_refresh_before_expiry():
 
 def test_credentials_reject_incomplete_or_short_lease():
     with pytest.raises(ValueError):
-        MOD.StsCredentials(BAO_CFG, http=FakeBao(data={"access_key": "a", "secret_key": "s"})).refresh()
+        MOD.StsCredentials(BAO_CFG, http=FakeBao(data={"access_key": "a", "secret_key": "s"}),
+                           run=FakeCLI()).refresh()
     with pytest.raises(ValueError):
-        MOD.StsCredentials(BAO_CFG, http=FakeBao(lease=120), margin=300).refresh()
+        MOD.StsCredentials(BAO_CFG, http=FakeBao(lease=120), margin=300, run=FakeCLI()).refresh()
 
 
 def test_failed_read_still_revokes():
-    calls = []
-
     def http(url, body, token=None):
-        calls.append(url)
-        if url.endswith("/login"):
-            return {"auth": {"client_token": "t"}}
-        if url.endswith("/revoke-self"):
-            return {}
         raise OSError("down")
 
+    cli = FakeCLI()
     with pytest.raises(OSError):
-        MOD.StsCredentials(BAO_CFG, http=http).refresh()
-    assert calls[-1].endswith("/auth/token/revoke-self")
+        MOD.StsCredentials(BAO_CFG, http=http, run=cli).refresh()
+    assert [call[0] for call in cli.calls] == [
+        ["bao-approle", "login"],
+        ["bao-approle", "revoke-self"],
+    ]
+
+
+def test_failed_cli_login_hides_credentials():
+    def fail_login(args, **kwargs):
+        raise subprocess.CalledProcessError(1, args, stderr="secret_id leaked by mock")
+
+    with pytest.raises(ValueError) as exc:
+        MOD.StsCredentials(BAO_CFG, run=fail_login).refresh()
+    assert str(exc.value) == "AppRole login failed"
+    assert "sid" not in str(exc.value)
+
+
+def test_login_refuses_non_https_before_cli():
+    cli = FakeCLI()
+    with pytest.raises(ValueError):
+        MOD.StsCredentials({**BAO_CFG, "RELAY_BAO_ADDR": "http://bao.example.test"}, run=cli).refresh()
+    assert cli.calls == []
 
 
 @pytest.mark.parametrize("url,ok", [
