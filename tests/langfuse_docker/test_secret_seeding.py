@@ -188,7 +188,14 @@ def _read_secret_files(data_dir: Path) -> dict[str, str]:
         "salt": ".salt",
         "encryption_key": ".encryption_key",
     }
-    return {field: (data_dir / filename).read_text(encoding="utf-8") for field, filename in names.items()}
+    return {field: _read_root_file(data_dir / filename) for field, filename in names.items()}
+
+
+def _read_root_file(path: Path) -> str:
+    # The role writes these root:root 0600 through become; read them the same way when the test user cannot.
+    if os.access(path, os.R_OK):
+        return path.read_text(encoding="utf-8")
+    return subprocess.run(["sudo", "-n", "cat", str(path)], check=True, capture_output=True, text=True).stdout
 
 
 def _assert_secret_files(data_dir: Path, values: dict[str, str]) -> None:
