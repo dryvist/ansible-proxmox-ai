@@ -1,0 +1,68 @@
+---
+# The index rebuild and the agent-session export share one embedding slot at
+# the router, so the index service must start after the export. Render both
+# service units and the export timer, then assert that ordering is the only
+# coupling between the two units: no Requires, Wants, BindsTo, Conflicts or
+# reverse After=, so an export that fails or runs long never cancels or pulls
+# the index rebuild.
+- name: Verify the index rebuild waits for the agent-session export
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llamaindex"
+    _coupling_directive: "^(?:Requires|Requisite|BindsTo|PartOf|Conflicts|Wants|Upholds)="
+  tasks:
+    - name: Load llamaindex role defaults
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main.yml"
+
+    - name: Render the index service, the agent-session service and the agent-session timer
+      ansible.builtin.set_fact:
+        _index_unit: "{{ lookup('template', _role_dir ~ '/templates/llamaindex-index.service.j2') }}"
+        _sessions_unit: "{{ lookup('template', _role_dir ~ '/templates/llamaindex-agent-sessions.service.j2') }}"
+        _sessions_timer: "{{ lookup('template', _role_dir ~ '/templates/llamaindex-agent-sessions.timer.j2') }}"
+
+    - name: Extract the ordering, coupling and type directives
+      ansible.builtin.set_fact:
+        _index_after: "{{ (_index_unit | regex_findall('^After=(.*)$', multiline=true) | join(' ')).split() }}"
+        _sessions_after: "{{ (_sessions_unit | regex_findall('^After=(.*)$', multiline=true) | join(' ')).split() }}"
+        _index_coupling: >-
+          {{ _index_unit | regex_findall(_coupling_directive ~ '.*llamaindex-agent-sessions',
+             multiline=true) }}
+        _sessions_coupling: >-
+          {{ _sessions_unit | regex_findall(_coupling_directive ~ '.*llamaindex-index',
+             multiline=true) }}
+        _index_type: "{{ _index_unit | regex_findall('^Type=(.*)$', multiline=true) }}"
+        _sessions_type: "{{ _sessions_unit | regex_findall('^Type=(.*)$', multiline=true) }}"
+        _sessions_on_calendar: "{{ _sessions_timer | regex_findall('^OnCalendar=(.*)$', multiline=true) }}"
+
+    - name: Assert the index service orders itself after the export
+      ansible.builtin.assert:
+        that:
+          - "'llamaindex-agent-sessions.service' in _index_after"
+          - "'network-online.target' in _index_after"
+        fail_msg: >-
+          llamaindex-index.service must have After=llamaindex-agent-sessions.service
+          so the rebuild waits for the export
+
+    - name: Assert neither unit couples to the other beyond ordering
+      ansible.builtin.assert:
+        that:
+          - _index_coupling | length == 0
+          - "'llamaindex-index.service' not in _sessions_after"
+          - _sessions_coupling | length == 0
+        fail_msg: >-
+          the two units must order each other only through After=, with no Requires,
+          Wants, BindsTo, PartOf, Conflicts or Upholds between them, and no After= on
+          the export pointing at the index
+
+    - name: Assert both units are oneshot and the export is scheduled before the index timer
+      ansible.builtin.assert:
+        that:
+          - _index_type == ['oneshot']
+          - _sessions_type == ['oneshot']
+          - _sessions_on_calendar == ['*-*-* 06:35:00 UTC']
+          - llamaindex_index_on_calendar == '*-*-* 06:47:00 UTC'
+        fail_msg: >-
+          both units must be Type=oneshot, and the agent-session export must be
+          scheduled at 06:35 UTC, before the index timer at 06:47 UTC

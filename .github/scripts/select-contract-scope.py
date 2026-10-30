@@ -34,6 +34,7 @@ ANSIBLE_TESTS = {
     "tests/nvidia_gpu_guest/test_cache_only_sync.yml",
     "tests/llamacpp_release/verify_inventory_proxy.yml",
     "tests/llamaindex/test_hardening.yml",
+    "tests/llamaindex/test_unit_ordering.yml",
     "tests/llm_gpu_legacy/test_render_host_contract.yml",
     "tests/llm_gpu_legacy/test_render_host_contract_all.yml",
     "tests/langfuse_docker/test_stage0_evaluation.yml",
