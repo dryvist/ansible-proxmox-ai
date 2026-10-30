@@ -80,18 +80,25 @@
             | selectattr('0', 'in', ['trace_defaults', 'trace_required']) | list)
             | combine((_llm_router_key_trust_metadata | default({})).get(_k.alias, {})) -%}
       {%- set _trace_changed = (_live_metadata | combine(_trace_target, recursive=true)) != _live_metadata -%}
+      {#- Pass-through grants are capability, not attribution: reconciled in every mode, like object_permission. -#}
+      {%- set _passthrough_target = {'allowed_passthrough_routes':
+            (_k.metadata | default({})).get('allowed_passthrough_routes', [])} -%}
+      {%- set _passthrough_changed = ((_live_metadata.get('allowed_passthrough_routes', []) | default([], true) | sort)
+            != (_passthrough_target.allowed_passthrough_routes | sort)) -%}
       {%- set _sensitivity_changed = _live_sensitivity_tags != [_sensitivity_tag] -%}
       {%- set _permission_changed = _live_permission != _permission_target -%}
       {%- set _rebuild_fields_changed = (_models_changed or _routes_changed or _metadata_changed) -%}
-      {%- if _permission_changed or _trace_changed or _sensitivity_changed or (_authoritative and _models_changed)
+      {%- if _permission_changed or _trace_changed or _sensitivity_changed or _passthrough_changed
+            or (_authoritative and _models_changed)
             or _router_settings_changed
             or (llm_router_seed_mode == 'rebuild' and _rebuild_fields_changed) -%}
       {%- set _body = {'key': _k.value, 'object_permission': _permission_target} -%}
       {%- if _router_settings_changed -%}
       {%- set _body = _body | combine({'router_settings': _router_settings_target}) -%}
       {%- endif -%}
-      {%- if _trace_changed or _sensitivity_changed -%}
-      {%- set _initial_metadata_target = _trace_target | combine({'tags': _desired_tags}, recursive=true) -%}
+      {%- if _trace_changed or _sensitivity_changed or _passthrough_changed -%}
+      {%- set _initial_metadata_target = _trace_target
+            | combine({'tags': _desired_tags}, _passthrough_target, recursive=true) -%}
       {%- set _initial_live_metadata = _live_metadata | combine(_initial_metadata_target, recursive=true) -%}
       {%- set _body = _body | combine({'metadata': _initial_live_metadata}) -%}
       {%- endif -%}
