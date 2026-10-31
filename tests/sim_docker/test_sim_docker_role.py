@@ -215,12 +215,10 @@ def test_site_yml_does_not_import_the_specialist_eval_playbook() -> None:
     assert "sim_eval_group" not in site
 
 
-def test_specialist_eval_playbook_is_one_isolated_play() -> None:
+def test_specialist_eval_sim_play_is_isolated() -> None:
     plays = yaml.safe_load((ROOT / "playbooks/specialist-eval.yml").read_text(encoding="utf-8"))
 
-    assert len(plays) == 1
-    play = plays[0]
-    assert play["hosts"] == "sim_eval_group"
+    play = next(play for play in plays if play.get("hosts") == "sim_eval_group")
     assert play["become"] is True
     block = play["tasks"][0]
     assert "block" in block and "rescue" in block
@@ -231,6 +229,7 @@ def test_specialist_eval_playbook_is_one_isolated_play() -> None:
 def test_inventory_maps_only_the_sim_eval_tag_to_its_own_group() -> None:
     inventory = (ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml").read_text(encoding="utf-8")
 
-    assert inventory.count("sim_eval_group") == 1
-    assert "'sim-eval' in (item.value.tags | default([]))" in inventory
-    assert "['sim_group']" not in inventory
+    # Rendered tag-to-group coverage: tests/specialist_eval/test_eval_targeting.py.
+    assert "intersect(['sim-eval', 'dify-eval', 'langflow-eval'])" in inventory
+    assert "map('regex_replace', '-eval$', '_eval_group')" in inventory
+    assert "sim_group" not in inventory

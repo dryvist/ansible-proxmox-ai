@@ -2,6 +2,8 @@
 - name: Add AI LXC containers to inventory (proxmox_pct_remote connection)
   ansible.builtin.add_host:
     name: "{{ item.key }}"
+    # An eval tag never adds the production group of its app: dify_group and langflow_group
+    # resolve production secrets through group_vars.
     groups: >-
       {{
         ['lxc_containers', 'all'] +
@@ -168,17 +170,19 @@
         (
           ['dify_group']
           if 'dify' in (item.value.tags | default([]))
+             and 'dify-eval' not in (item.value.tags | default([]))
           else []
         ) +
         (
           ['langflow_group']
           if 'langflow' in (item.value.tags | default([]))
+             and 'langflow-eval' not in (item.value.tags | default([]))
           else []
         ) +
         (
-          ['sim_eval_group']
-          if 'sim-eval' in (item.value.tags | default([]))
-          else []
+          (item.value.tags | default([]))
+          | intersect(['sim-eval', 'dify-eval', 'langflow-eval'])
+          | map('regex_replace', '-eval$', '_eval_group') | list
         ) +
         (
           ['langgraph_group']
@@ -253,9 +257,8 @@
           else []
         )
       }}
-    # Omitted (not a plain 0/null) for an ssh-connected guest: pct exec
-    # never runs for it, so the vmid has no consumer. Checked repo-wide —
-    # nothing here reads add_host's proxmox_vmid.
+    # Omitted (not 0/null) for an ssh-connected guest: pct exec never runs
+    # for it, so nothing reads this vmid.
     proxmox_vmid: "{{ omit if container_ssh else item.value.vmid }}"
     # Per-node management FQDN, DERIVED — never a hand-pinned global host.
     # A guest reaches its own node at {node-role}.{domain}; those names
@@ -292,12 +295,9 @@
       {{ (item.value.fqdn | default(item.value.ip, true)) if container_ssh
          else (tofu_data.nodes[item.value.node] | default({})).role
               | default(item.value.node, true) ~ '.' ~ tofu_data.domain }}
-    # The else branch cannot just echo item.value.ansible_connection: a
-    # contract-declared guest whose probe failed still has the literal
-    # value 'ssh' on that field (container_ssh is what says "not ready"),
-    # so echoing it verbatim would hand Ansible the very connection the
-    # probe just proved nothing answers. Force the pct_remote default
-    # explicitly whenever container_ssh said no.
+    # The else branch cannot echo item.value.ansible_connection: a guest
+    # whose probe failed still carries 'ssh' there, a connection nothing
+    # answers. Force pct_remote whenever container_ssh said no.
     ansible_connection: >-
       {{ 'ssh' if container_ssh
          else (item.value.ansible_connection
