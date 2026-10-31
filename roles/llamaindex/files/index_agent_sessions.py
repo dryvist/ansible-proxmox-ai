@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import re
+import socket
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -61,6 +64,30 @@ def build_search(harness: dict, watermark: float) -> str:
     )
 
 
+EXPORT_ATTEMPTS = 3
+EXPORT_RETRY_DELAYS = (5, 20)  # seconds slept after attempt 1 and after attempt 2
+
+
+def is_transient(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (401, 429) or 500 <= exc.code <= 599
+    return isinstance(exc, (urllib.error.URLError, socket.timeout))
+
+
+def open_export(request: urllib.request.Request):
+    # Only the connection phase is retried. A failed attempt has yielded no
+    # rows yet, so a retry cannot duplicate rows or advance the watermark.
+    attempt = 0
+    while True:
+        try:
+            return urllib.request.urlopen(request, timeout=120)  # trusted config URL
+        except (urllib.error.URLError, socket.timeout) as exc:
+            if attempt == EXPORT_ATTEMPTS - 1 or not is_transient(exc):
+                raise
+            time.sleep(EXPORT_RETRY_DELAYS[attempt])
+            attempt += 1
+
+
 def export_rows(url: str, token: str, search: str):
     endpoint = url.rstrip("/") + "/services/search/jobs/export"
     body = urllib.parse.urlencode({"search": search, "output_mode": "json"}).encode()
@@ -73,7 +100,7 @@ def export_rows(url: str, token: str, search: str):
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=120) as response:  # trusted config URL
+    with open_export(request) as response:
         for raw_line in response:
             line = raw_line.decode("utf-8").strip()
             if not line:
@@ -173,6 +200,20 @@ def index_harness(
     return latest
 
 
+def describe_error(exc: Exception) -> str:
+    kind = type(exc).__name__
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            # 800 bytes covers 200 characters of UTF-8.
+            body = exc.read(800).decode("utf-8", "replace")[:200]
+        except (OSError, http.client.HTTPException):
+            body = ""
+        return f"{kind} status={exc.code} body={body!r}"
+    if isinstance(exc, urllib.error.URLError):
+        return f"{kind} reason={exc.reason}"
+    return kind
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
@@ -197,8 +238,8 @@ def main() -> int:
                 client,
                 embedder,
             )
-        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, KeyError, json.JSONDecodeError):
-            print(f"agent session export failed for {name}", file=sys.stderr)
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            print(f"agent session export failed for {name}: {describe_error(exc)}", file=sys.stderr)
             return 1
         watermarks[name] = latest
         write_watermarks(watermark_path, watermarks)
