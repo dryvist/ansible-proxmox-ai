@@ -1,36 +1,4 @@
 ---
-# Refuses, before any host is added, a guest that carries an evaluation tag (any *-eval) with a tag that would
-# put it in a production or secret-reading group: prefetch (managed-secrets, clickhouse), the ai-proxied pool,
-# a production app (dify, langflow, sim), or the classify and Hermes agent tags.
-# Failing here stops the whole inventory load.
-- name: Refuse an evaluation guest that also carries a production or secret-reading tag
-  ansible.builtin.assert:
-    that:
-      - >-
-        ((item.value.tags | default([])) | select('search', '-eval$') | list | length == 0)
-        or ((item.value.tags | default([])) | intersect(_eval_guard_forbidden_tags) | length == 0)
-    fail_msg: >-
-      {{ item.key }} carries an evaluation tag with a production or secret-reading tag (tags:
-      {{ item.value.tags | default([]) | join(', ') }}). An evaluation guest must not join the prefetch,
-      the ai-proxied pool or a production app group. Remove one of the tags in the published inventory.
-  loop: "{{ tofu_data.containers | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
-  vars:
-    _eval_guard_forbidden_tags:
-      - managed-secrets
-      - clickhouse
-      - ai-proxied
-      - dify
-      - langflow
-      - sim
-      - llm-gpu-classify
-      - hermes-agent
-      - hermes-donna
-  when:
-    - tofu_data.containers is defined
-    - tofu_data.containers | length > 0
-
 - name: Add AI LXC containers to inventory (proxmox_pct_remote connection)
   ansible.builtin.add_host:
     name: "{{ item.key }}"
@@ -212,19 +180,9 @@
           else []
         ) +
         (
-          ['sim_eval_group']
-          if 'sim-eval' in (item.value.tags | default([]))
-          else []
-        ) +
-        (
-          ['dify_eval_group']
-          if 'dify-eval' in (item.value.tags | default([]))
-          else []
-        ) +
-        (
-          ['langflow_eval_group']
-          if 'langflow-eval' in (item.value.tags | default([]))
-          else []
+          (item.value.tags | default([]))
+          | intersect(['sim-eval', 'dify-eval', 'langflow-eval'])
+          | map('regex_replace', '-eval$', '_eval_group') | list
         ) +
         (
           ['langgraph_group']
@@ -299,9 +257,8 @@
           else []
         )
       }}
-    # Omitted (not a plain 0/null) for an ssh-connected guest: pct exec
-    # never runs for it, so the vmid has no consumer. Checked repo-wide —
-    # nothing here reads add_host's proxmox_vmid.
+    # Omitted (not 0/null) for an ssh-connected guest: pct exec never runs
+    # for it, so nothing reads this vmid.
     proxmox_vmid: "{{ omit if container_ssh else item.value.vmid }}"
     # Per-node management FQDN, DERIVED — never a hand-pinned global host.
     # A guest reaches its own node at {node-role}.{domain}; those names
@@ -338,12 +295,9 @@
       {{ (item.value.fqdn | default(item.value.ip, true)) if container_ssh
          else (tofu_data.nodes[item.value.node] | default({})).role
               | default(item.value.node, true) ~ '.' ~ tofu_data.domain }}
-    # The else branch cannot just echo item.value.ansible_connection: a
-    # contract-declared guest whose probe failed still has the literal
-    # value 'ssh' on that field (container_ssh is what says "not ready"),
-    # so echoing it verbatim would hand Ansible the very connection the
-    # probe just proved nothing answers. Force the pct_remote default
-    # explicitly whenever container_ssh said no.
+    # The else branch cannot echo item.value.ansible_connection: a guest
+    # whose probe failed still carries 'ssh' there, a connection nothing
+    # answers. Force pct_remote whenever container_ssh said no.
     ansible_connection: >-
       {{ 'ssh' if container_ssh
          else (item.value.ansible_connection

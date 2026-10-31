@@ -10,10 +10,10 @@ import pytest
 
 from _eval_support import ROOT, load_yaml, render
 
-INVENTORY = ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml"
-TASKS = load_yaml(INVENTORY)
+LOADER = load_yaml(ROOT / "inventory/load_tofu/add_lxc_hosts.yml")
+GUARD_FILE = "refuse_eval_tag_conflicts.yml"
 GUARD_NAME = "Refuse an evaluation guest that also carries a production or secret-reading tag"
-GUARD = next(task for task in TASKS if task.get("name") == GUARD_NAME)
+GUARD = next(task for task in load_yaml(ROOT / "inventory/load_tofu" / GUARD_FILE) if task.get("name") == GUARD_NAME)
 FORBIDDEN = {"managed-secrets", "clickhouse", "ai-proxied", "dify", "langflow", "sim", "llm-gpu-classify", "hermes-agent", "hermes-donna"}
 EVAL_TAGS = ["dify-eval", "langflow-eval", "sim-eval", "future-eval"]
 
@@ -25,10 +25,11 @@ def passes(tags: list[str]) -> bool:
 
 
 def test_the_guard_runs_before_any_host_is_added() -> None:
-    names = [task.get("name") for task in TASKS]
-    first_add_host = next(i for i, task in enumerate(TASKS) if "ansible.builtin.add_host" in task)
+    imports = [task.get("ansible.builtin.import_tasks") for task in LOADER]
+    first_add_host = next(i for i, task in enumerate(LOADER) if "ansible.builtin.add_host" in task or (
+        task.get("ansible.builtin.import_tasks") == "add_lxc_host_inventory.yml"))
 
-    assert names.index(GUARD_NAME) < first_add_host
+    assert imports.index(GUARD_FILE) < first_add_host
 
 
 def test_the_guard_checks_every_published_container_and_only_when_some_are_published() -> None:

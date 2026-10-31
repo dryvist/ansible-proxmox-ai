@@ -7,7 +7,6 @@ file, so a change to either shows up here.
 
 from __future__ import annotations
 
-import re
 
 import pytest
 
@@ -18,8 +17,7 @@ PLAYBOOKS = ROOT / "playbooks"
 GROUPS_EXPRESSION = next(task for task in load_yaml(INVENTORY) if "ansible.builtin.add_host" in task)[
     "ansible.builtin.add_host"
 ]["groups"]
-INVENTORY_TEXT = INVENTORY.read_text(encoding="utf-8")
-EVAL_GROUPS = set(re.findall(r"\['([a-z_]+_eval_group)'\]", INVENTORY_TEXT))
+EVAL_GROUPS = {"sim_eval_group", "dify_eval_group", "langflow_eval_group"}
 PREFETCH_GROUPS = set(
     next(
         play
@@ -62,7 +60,9 @@ def groups_for(name: str, tags: list[str]) -> set[str]:
 
 
 def test_the_evaluation_group_set_is_exactly_the_three_known_groups() -> None:
-    assert EVAL_GROUPS == {"sim_eval_group", "dify_eval_group", "langflow_eval_group"}
+    groups = groups_for("all-eval-fixture", ["sim-eval", "dify-eval", "langflow-eval", "future-eval"])
+
+    assert {group for group in groups if group.endswith("_eval_group")} == EVAL_GROUPS
 
 
 def test_prefetch_groups_come_from_the_site_playbook() -> None:
@@ -97,9 +97,9 @@ def test_host_tagged_for_both_never_gets_the_production_group(
 
 
 def test_inventory_maps_each_evaluation_tag_to_exactly_one_group() -> None:
-    for tag, group in (("dify-eval", "dify_eval_group"), ("langflow-eval", "langflow_eval_group")):
-        assert f"'{tag}' in (item.value.tags | default([]))" in INVENTORY_TEXT
-        assert INVENTORY_TEXT.count(f"['{group}']") == 1
+    for tag, group in (("sim-eval", "sim_eval_group"), ("dify-eval", "dify_eval_group"),
+                       ("langflow-eval", "langflow_eval_group")):
+        assert groups_for("one-eval-fixture", [tag]) & EVAL_GROUPS == {group}
 
 
 def _playbook_text(path: str) -> str:
