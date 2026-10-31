@@ -33,10 +33,19 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: medium
     hermes_goal_judge_model: judge
-    hindsight_retain_model: "{{ llm_router_small_model }}"
   tasks:
+    - name: Load source inventory model selections without retyping registry aliases
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all/00-core.yml"
+        name: _source_inventory
+
+    - name: Set the Hindsight selectors from inventory
+      ansible.builtin.set_fact:
+        hermes_brain_model: "{{ _source_inventory.hermes_brain_model }}"
+        hindsight_retain_model: "{{ _source_inventory.hindsight_retain_model }}"
+        llm_router_hindsight_key_model: "{{ _source_inventory.hindsight_retain_model }}"
+
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
@@ -84,11 +93,32 @@
             config: "{{ _config_vllm_on }}"
             catalog: "{{ _keys_vllm_on }}"
 
+    - name: Hindsight retain alias shares medium deployments and has an exact empty chain
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_model_group_aliases[hindsight_retain_model] == llm_router_primary_model
+          - hindsight_retain_model in llm_router_local_only_fail_fast_names
+          - llm_router_primary_model not in llm_router_local_only_fail_fast_names
+          - _fallback_by_name[hindsight_retain_model] == []
+          - item.config.router_settings.default_fallbacks == llm_router_default_fallbacks
+        fail_msg: >-
+          Hindsight's selected alias must resolve to medium and fail fast with
+          an empty chain, while medium itself stays off the local-only list.
+      vars:
+        _fallback_entries: "{{ item.config.router_settings.fallbacks | map('dict2items') | flatten }}"
+        _fallback_by_name: >-
+          {{ dict(_fallback_entries | map(attribute='key')
+                  | zip(_fallback_entries | map(attribute='value'))) }}
+      loop: "{{ _render_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+
     - name: The hindsight key is scoped to exactly the inventory's retain model
       ansible.builtin.assert:
         quiet: true
         that:
-          - _hindsight_key.models == [llm_router_small_capability_name]
+          - _hindsight_key.models == [hindsight_retain_model]
           - "'&zdr' in _hindsight_key.tags"
           - "'!free' in _hindsight_key.tags"
           - "'!retains' in _hindsight_key.tags"
