@@ -19,7 +19,10 @@ DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/00-gateway.yml"
 MCP_ROUTE_AUTH_DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/30-mcp-route-auth.yml"
 TASKS = REPO_ROOT / "roles/agentgateway_docker/tasks/main.yml"
 TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/config.yaml.j2"
-BASELINE_SHA256 = "c6f329d4ff68fd4fbb1466bcda56033352413ab9e973ddcdf650825964f255b6"
+# Re-pinned when the facade exception was documented in the config.yaml.j2 header
+# comment. That comment is the only rendered change while the facade is disabled
+# (checked by diffing the pre-change render: four comment lines, identical routes).
+BASELINE_SHA256 = "ca78c630817e07bc5c427cac4ce2feab36de4f7cb110e4068a655616b3c41e3d"
 MCP_ROUTE_PATHS = ("/memory", "/docs", "/vikunja", "/nautobot")
 
 AGENTS = {
@@ -34,10 +37,12 @@ KEYS = {
 ENV = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
 ENV.filters.update(FilterModule().filters())
 INVENTORY_VARS = yaml.safe_load(INVENTORY.read_text())
+FACADE_DEFAULTS = yaml.safe_load((DEFAULTS.parent / "40-facade.yml").read_text())
 ROLE_DEFAULTS = {
     **yaml.safe_load(DEFAULTS.read_text()),
     **yaml.safe_load(MCP_ROUTE_AUTH_DEFAULTS.read_text()),
     **yaml.safe_load((DEFAULTS.parent / "05-a2a-targets.yml").read_text()),
+    **FACADE_DEFAULTS,
 }
 HINDSIGHT_DEFAULTS = yaml.safe_load(
     (REPO_ROOT / "roles/agentgateway_docker/defaults/main/20-hindsight-acl.yml").read_text()
@@ -127,6 +132,7 @@ def _render(
         "ai_agent_owner": owners or {},
         "agentgateway_docker_roster_keys": roster_keys,
         "agentgateway_docker_hindsight_roster_tiers": roster_tiers,
+        **FACADE_DEFAULTS,
         **(extra or {}),
     }
     return ENV.from_string(TEMPLATE_SOURCE if template_source is None else template_source).render(**context)
