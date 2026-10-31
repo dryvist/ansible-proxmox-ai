@@ -238,8 +238,10 @@ def test_role_uses_shared_seed_writer_and_guards_existing_file_values():
         "name": "dryvist.homelab.openbao_secrets",
         "tasks_from": "seed_generated",
     }
-    assert include["vars"]["openbao_secrets_seed_token"] == "{{ lookup('env', 'BAO_TOKEN') }}"
+    assert include["vars"]["openbao_secrets_seed_token"] == "{{ openbao_secrets_converge_writer_token }}"
+    assert "BAO_TOKEN" not in include["vars"]["openbao_secrets_seed_token"]
     assert include["vars"]["openbao_secrets_seed_expected_writer_policy"] == "ansible-converge"
+    assert include["vars"]["openbao_secrets_seed_revoke_token"] is False
     assert include["vars"]["openbao_secrets_seed_path"] == "ai/langfuse"
     assert "rotate_fields" not in include["vars"]
 
