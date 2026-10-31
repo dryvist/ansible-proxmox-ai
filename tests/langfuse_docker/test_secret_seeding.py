@@ -153,7 +153,7 @@ def _run_playbook(address: str, data_dir: Path) -> subprocess.CompletedProcess[s
         {
             "ANSIBLE_LOCAL_TEMP": str(ansible_temp),
             "ANSIBLE_NOCOLOR": "1",
-            "BAO_TOKEN": FIXTURE_TOKEN,
+            "OPENBAO_SEED_WRITER_TOKEN": FIXTURE_TOKEN,
             "LANGFUSE_TEST_DATA_DIR": str(data_dir),
             "LANGFUSE_TEST_OPENBAO_ADDR": address,
         }
