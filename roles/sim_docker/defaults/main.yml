@@ -1,0 +1,76 @@
+---
+# Sim visual agent-workflow builder (https://github.com/simstudioai/sim) as an isolated evaluation
+# instance in an LXC, via Docker Compose. https://docs.sim.ai/platform/self-hosting
+#
+# The stack is Sim's official production compose file, fetched unchanged from the release commit and
+# verified by SHA-256. Local changes live in templates/docker-compose.override.yml.j2. Compose reads
+# its variables from the .env written from templates/env.j2, and both files are passed explicitly.
+#
+# All literals live here; the templates reference vars only (DRY).
+
+# Vendor compose file: docker-compose.prod.yml at release v0.9.32 (published 2026-10-23T03:22:48Z),
+# commit df3db64ed17a5eb73fef8ccc95da180b0a1cf4b5.
+sim_docker_release: v0.9.32
+sim_docker_release_commit: df3db64ed17a5eb73fef8ccc95da180b0a1cf4b5
+sim_docker_compose_url: >-
+  https://raw.githubusercontent.com/simstudioai/sim/{{ sim_docker_release_commit }}/docker-compose.prod.yml
+sim_docker_compose_sha256: 0d679883a0e80ecd656abca9fc44e012b572e0f4ec945476216f9ec9a151a9ce
+sim_docker_compose_file: docker-compose.prod.yml
+sim_docker_override_file: docker-compose.override.yml
+
+# Image versions. SIM_VERSION drives the app, realtime and migrations images, and SIM_CRON_VERSION
+# drives cron. The override pins the three Sim images by digest, and the cron digest is part of
+# SIM_CRON_VERSION. Digests are registry manifest digests for the tags, resolved 2026-10-31.
+sim_docker_version: "{{ sim_docker_release }}"
+sim_docker_app_digest: sha256:6ab0f0246107f2b57b086fc091f64ecff176cf688031a5f4a216e0bcee741042
+sim_docker_realtime_digest: sha256:ed5e1c7191c0b416766877160ef60a9437aa0baa06900095939fb6d7b18368f4
+sim_docker_migrations_digest: sha256:2b0d88caab891c0cb0431182c8dcec46690cfc759944ff8affc3ee3bdf81f14e
+sim_docker_cron_digest: sha256:1949869ee92a98a097525b1ffc3786e832633d7b19f545395ba3f38bbc7ca387
+sim_docker_cron_version: "{{ sim_docker_release }}@{{ sim_docker_cron_digest }}"
+
+# Third-party images the vendor file names, pinned to the digests resolved 2026-10-31.
+sim_docker_db_image: "pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8"
+sim_docker_redis_image: "redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f"
+
+sim_docker_data_dir: /opt/sim
+sim_docker_postgres_data_dir: "{{ sim_docker_data_dir }}/postgres"
+sim_docker_uploads_data_dir: "{{ sim_docker_data_dir }}/uploads"
+
+# Container-internal mount paths (image contracts, set once and referenced in the override).
+sim_docker_postgres_internal_data: /var/lib/postgresql/data
+# The app stores local uploads in <cwd>/uploads (apps/sim/lib/uploads/core/setup.server.ts), and the
+# image runs with cwd /app.
+sim_docker_uploads_internal_data: /app/uploads
+# uid of the nextjs user the app image runs as (docker/app.Dockerfile: useradd -u 1001). The uploads
+# directory on the guest is owned by this uid so the app can write to it.
+sim_docker_app_uid: 1001
+
+# Database identity, read by the vendor file through .env.
+sim_docker_db_name: simstudio
+sim_docker_db_user: postgres
+
+# Host ports the vendor file publishes (app 3000, realtime 3002). Used for the health probes.
+sim_docker_web_port: 3000
+sim_docker_realtime_port: 3002
+
+# Origin that browsers use. Auth cookies and trusted origins derive from it, so override it per
+# deployment. The default only works from the host itself.
+sim_docker_public_url: "http://localhost:{{ sim_docker_web_port }}"
+
+# Realtime is reached by the browser on its own port unless a reverse proxy routes /socket.io.
+# Set this to the realtime URL the browser uses (for example http://<host>:3002) when not proxying.
+# Empty leaves NEXT_PUBLIC_SOCKET_URL unset, which is the vendor default.
+sim_docker_socket_url: ""
+
+# Secret store path for the seeded fields: POSTGRES_PASSWORD, BETTER_AUTH_SECRET, ENCRYPTION_KEY,
+# INTERNAL_API_SECRET, API_ENCRYPTION_KEY and CRON_SECRET. tasks/main.yml seeds them there and writes
+# the effective values to .env.
+sim_docker_openbao_path: ai/eval/specialist-platform/sim
+
+# OpenAI-compatible endpoint for Sim's model blocks (vLLM, LM Studio or a LiteLLM proxy). Empty by
+# default: no model endpoint is configured. When set, env.j2 writes VLLM_BASE_URL and VLLM_API_KEY.
+sim_docker_llm_base_url: ""
+# Controller environment variable that holds the bearer token for that endpoint. The token is read
+# from the environment at run time and is never stored in the repository.
+sim_docker_llm_api_key_env: SIM_LLM_API_KEY
+sim_docker_llm_api_key: "{{ lookup('env', sim_docker_llm_api_key_env) }}"
