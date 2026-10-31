@@ -1,7 +1,41 @@
 ---
+# Refuses, before any host is added, a guest that carries an evaluation tag (any *-eval) with a tag that would
+# put it in a production or secret-reading group: prefetch (managed-secrets, clickhouse), the ai-proxied pool,
+# a production app (dify, langflow, sim), or the classify and Hermes agent tags.
+# Failing here stops the whole inventory load.
+- name: Refuse an evaluation guest that also carries a production or secret-reading tag
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((item.value.tags | default([])) | select('search', '-eval$') | list | length == 0)
+        or ((item.value.tags | default([])) | intersect(_eval_guard_forbidden_tags) | length == 0)
+    fail_msg: >-
+      {{ item.key }} carries an evaluation tag with a production or secret-reading tag (tags:
+      {{ item.value.tags | default([]) | join(', ') }}). An evaluation guest must not join the prefetch,
+      the ai-proxied pool or a production app group. Remove one of the tags in the published inventory.
+  loop: "{{ tofu_data.containers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    _eval_guard_forbidden_tags:
+      - managed-secrets
+      - clickhouse
+      - ai-proxied
+      - dify
+      - langflow
+      - sim
+      - llm-gpu-classify
+      - hermes-agent
+      - hermes-donna
+  when:
+    - tofu_data.containers is defined
+    - tofu_data.containers | length > 0
+
 - name: Add AI LXC containers to inventory (proxmox_pct_remote connection)
   ansible.builtin.add_host:
     name: "{{ item.key }}"
+    # An eval tag never adds the production group of its app: dify_group and langflow_group
+    # resolve production secrets through group_vars.
     groups: >-
       {{
         ['lxc_containers', 'all'] +
@@ -168,16 +202,28 @@
         (
           ['dify_group']
           if 'dify' in (item.value.tags | default([]))
+             and 'dify-eval' not in (item.value.tags | default([]))
           else []
         ) +
         (
           ['langflow_group']
           if 'langflow' in (item.value.tags | default([]))
+             and 'langflow-eval' not in (item.value.tags | default([]))
           else []
         ) +
         (
           ['sim_eval_group']
           if 'sim-eval' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['dify_eval_group']
+          if 'dify-eval' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['langflow_eval_group']
+          if 'langflow-eval' in (item.value.tags | default([]))
           else []
         ) +
         (

@@ -215,12 +215,10 @@ def test_site_yml_does_not_import_the_specialist_eval_playbook() -> None:
     assert "sim_eval_group" not in site
 
 
-def test_specialist_eval_playbook_is_one_isolated_play() -> None:
+def test_specialist_eval_sim_play_is_isolated() -> None:
     plays = yaml.safe_load((ROOT / "playbooks/specialist-eval.yml").read_text(encoding="utf-8"))
 
-    assert len(plays) == 1
-    play = plays[0]
-    assert play["hosts"] == "sim_eval_group"
+    play = next(play for play in plays if play.get("hosts") == "sim_eval_group")
     assert play["become"] is True
     block = play["tasks"][0]
     assert "block" in block and "rescue" in block
