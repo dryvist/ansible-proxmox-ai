@@ -203,7 +203,7 @@ class EmbedderBudgetTests(unittest.TestCase):
             "llama_index.vector_stores.qdrant": fake.vector_stores.qdrant,
         }
         cfg = {
-            "embeddings": {"model": "embed", "base_url": "https://llm.example/v1", "api_key": "k"},
+            "embeddings": {"model": "example-embedding", "base_url": "https://llm.example/v1", "api_key": "k"},
             "qdrant": {"host": "qdrant.example", "port": 6333},
             "index": {"collection": "homelab_docs"},
         }
