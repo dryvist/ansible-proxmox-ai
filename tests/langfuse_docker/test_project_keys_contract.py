@@ -20,7 +20,7 @@ def test_project_key_provisioning_contract():
     include = key_task["ansible.builtin.include_role"]
     role_vars = key_task["vars"]
 
-    assert play["vars"]["langfuse_project_keys_agents"] == ["hermes", "donna"]
+    assert play["vars"]["langfuse_project_keys_agents"] == ["hermes", "donna", "hermes-private"]
     assert key_task["loop"] == "{{ langfuse_project_keys_agents }}"
     assert key_task["loop_control"]["loop_var"] == "langfuse_project_keys_agent"
     assert include["name"] == "dryvist.homelab.langfuse_project_keys"
@@ -41,13 +41,17 @@ def test_project_key_provisioning_contract():
     assert role_vars["langfuse_project_keys_openbao_addr"] == (
         "{{ hostvars['localhost'].openbao_secrets_active_addr }}"
     )
-    assert role_vars["langfuse_project_keys_openbao_token"] == "{{ lookup('env', 'BAO_TOKEN') }}"
+    assert role_vars["langfuse_project_keys_openbao_token"] == "{{ openbao_secrets_converge_writer_token }}"
     assert role_vars["langfuse_project_keys_openbao_mount"] == "{{ openbao_secrets_kv_mount }}"
     assert role_vars["langfuse_project_keys_openbao_path"] == (
         "ai/{{ langfuse_project_keys_agent }}"
     )
     assert role_vars["langfuse_project_keys_public_key_field"] == "LANGFUSE_PUBLIC_KEY"
     assert role_vars["langfuse_project_keys_secret_key_field"] == "LANGFUSE_SECRET_KEY"
+
+    assert role_vars["openbao_secrets_seed_expected_writer_policy"] == "ansible-converge"
+    assert role_vars["openbao_secrets_seed_check_capabilities"] == "{{ not ansible_check_mode }}"
+    assert role_vars["openbao_secrets_seed_revoke_token"] is False
 
     converge_block = play["tasks"][0]
     assert converge_block["tags"] == ["langfuse_docker", "observability", "langfuse_project_keys"]
