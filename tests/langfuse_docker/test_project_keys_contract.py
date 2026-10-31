@@ -31,7 +31,9 @@ def test_project_key_provisioning_contract():
     assert key_task["run_once"] is True
     assert key_task["no_log"] is True
 
-    assert role_vars["langfuse_project_keys_base_url"] == "{{ langfuse_docker_nextauth_url }}"
+    assert role_vars["langfuse_project_keys_base_url"] == (
+        "http://{{ hostvars[inventory_hostname].container_ip }}:{{ langfuse_docker_web_port }}"
+    )
     assert role_vars["langfuse_project_keys_admin_email"] == "{{ langfuse_docker_init_user_email }}"
     assert role_vars["langfuse_project_keys_admin_password"] == "{{ langfuse_docker_init_user_password }}"
     assert role_vars["langfuse_project_keys_org_name"] == "{{ langfuse_docker_init_org }}"
