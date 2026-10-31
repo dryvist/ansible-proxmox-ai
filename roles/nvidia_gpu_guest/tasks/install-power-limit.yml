@@ -1,0 +1,50 @@
+---
+- name: Read NVIDIA GPU power limits
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/nvidia-smi
+      - --query-gpu=index,power.limit,power.max_limit,power.min_limit
+      - --format=csv,noheader,nounits
+  register: nvidia_gpu_guest_power_limits
+  changed_when: false
+  check_mode: false
+
+- name: Validate the requested power limit for every GPU
+  ansible.builtin.assert:
+    that:
+      - item.split(',') | length == 4
+      - item.split(',')[2] | trim is match('^[0-9]+(\.[0-9]+)?$')
+      - item.split(',')[3] | trim is match('^[0-9]+(\.[0-9]+)?$')
+      - nvidia_gpu_guest_power_limit_w | float >= (item.split(',')[3] | trim | float)
+      - nvidia_gpu_guest_power_limit_w | float <= (item.split(',')[2] | trim | float)
+    fail_msg: >-
+      GPU {{ item.split(',')[0] | trim }} does not support the requested
+      {{ nvidia_gpu_guest_power_limit_w }} W power limit; minimum is
+      {{ item.split(',')[3] | trim }} W and maximum is {{ item.split(',')[2] | trim }} W.
+  loop: "{{ nvidia_gpu_guest_power_limits.stdout_lines }}"
+
+- name: Install the GPU power-limit unit
+  ansible.builtin.template:
+    src: nvidia-gpu-power-limit.service.j2
+    dest: "{{ nvidia_gpu_guest_systemd_dir }}/{{ nvidia_gpu_guest_power_limit_unit_name }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable the GPU power-limit unit for boot
+  ansible.builtin.systemd_service:
+    name: "{{ nvidia_gpu_guest_power_limit_unit_name }}"
+    daemon_reload: true
+    enabled: true
+
+- name: Set the NVIDIA GPU power limit now
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/nvidia-smi
+      - -pl
+      - "{{ nvidia_gpu_guest_power_limit_w | string }}"
+  changed_when: true
+  when: >-
+    nvidia_gpu_guest_power_limits.stdout_lines | map('split', ',')
+    | map(attribute=1) | map('trim') | map('float') | list
+    | reject('equalto', nvidia_gpu_guest_power_limit_w | float) | list | length > 0
