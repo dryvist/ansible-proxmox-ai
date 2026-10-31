@@ -1,0 +1,40 @@
+---
+services:
+  agentgateway:
+    image: ${AGENTGATEWAY_IMAGE:?set from the role default}
+    command: ["-f", "/config.yaml"]
+    restart: "no"
+    ports:
+      - "127.0.0.1:15000:15000"
+    volumes:
+      - "${GATEWAY_CONFIG:?set by pytest}:/config.yaml:ro"
+    networks:
+      - front
+
+  observer:
+    image: envoyproxy/envoy:v1.40.1@sha256:713bb146f1a7c97ebc70e13d259f77ff36f2c5d00f3145677816af5af9bd1530
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warning"]
+    restart: "no"
+    ports:
+      - "127.0.0.1:18002:8002"
+    volumes:
+      - "./envoy.yaml:/etc/envoy/envoy.yaml:ro"
+      - "${ENVOY_RUNTIME_DIR:?set by pytest}:/run/envoy"
+      - "${TAP_OUTPUT_DIR:?set by pytest}:/tap"
+    networks:
+      front:
+        aliases:
+          - mcp-vikunja
+      backend: {}
+
+  testbox:
+    image: gateway-falsifier/testbox:0.0.1
+    restart: "no"
+    networks:
+      - backend
+
+networks:
+  front:
+    internal: true
+  backend:
+    internal: true
