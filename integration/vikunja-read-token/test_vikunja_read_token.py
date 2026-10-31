@@ -96,14 +96,13 @@ def _render_sidecar(*, token: str, port: int) -> dict[str, Any]:
     # command, environment keys, and application arguments come from the role.
     sidecar.pop("container_name", None)
     sidecar["ports"] = [f"127.0.0.1::{port}"]
-    sidecar["networks"] = ["fixture", "bootstrap"]
+    sidecar["networks"] = ["fixture"]
     return sidecar
 
 
 def _compose_file(tmp_path: Path, jwt_secret: str, project: str) -> Path:
     config = yaml.safe_load(COMPOSE_BASE.read_text())
     config["networks"]["fixture"]["name"] = f"{project}-fixture"
-    config["networks"]["bootstrap"]["name"] = f"{project}-bootstrap"
     config["services"]["vikunja"]["environment"]["VIKUNJA_SERVICE_JWTSECRET"] = jwt_secret
     config["services"]["vikunja"]["image"] = VIKUNJA_IMAGE
     path = tmp_path / "compose.yml"
@@ -121,6 +120,18 @@ def _published_url(compose_file: Path, project: str, service: str, port: int) ->
     host, mapped_port = output.rsplit(":", 1)
     assert host == "127.0.0.1", f"fixture port unexpectedly published on {host}"
     return f"http://127.0.0.1:{mapped_port}"
+
+
+def _mcp_cli_diagnostics(stdout: str | bytes | None, stderr: str | bytes | None) -> dict[str, str]:
+    def as_text(output: str | bytes | None) -> str:
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        return (output or "").strip()
+
+    return _scrub(
+        {"stdout": as_text(stdout), "stderr": as_text(stderr)},
+        _FIXTURE_SECRETS,
+    )
 
 
 def _wait_for_vikunja(base_url: str) -> None:
@@ -162,21 +173,38 @@ def _mcp_cli(
         command.extend(["--tool-name", tool_name])
     if arguments is not None:
         command.extend(["--tool-args-json", json.dumps(arguments, separators=(",", ":"))])
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=COMMAND_TIMEOUT_SECONDS,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        diagnostics = _mcp_cli_diagnostics(error.stdout or error.output, error.stderr)
+        raise AssertionError(
+            "MCP Inspector timed out; sanitized stdout/stderr="
+            f"{json.dumps(diagnostics, sort_keys=True)}"
+        ) from error
     try:
         parsed = json.loads(result.stdout.strip())
     except json.JSONDecodeError as error:
+        diagnostics = _mcp_cli_diagnostics(result.stdout, result.stderr)
         raise AssertionError(
-            f"MCP Inspector returned non-JSON output (exit {result.returncode})"
+            "MCP Inspector returned non-JSON output "
+            f"(exit {result.returncode}); sanitized stdout/stderr="
+            f"{json.dumps(diagnostics, sort_keys=True)}"
         ) from error
-    assert isinstance(parsed, dict), "MCP Inspector returned a non-object JSON result"
-    return result.returncode, _scrub(parsed, _FIXTURE_SECRETS)
+    diagnostics = _mcp_cli_diagnostics(result.stdout, result.stderr)
+    assert isinstance(parsed, dict), (
+        "MCP Inspector returned a non-object JSON result; sanitized stdout/stderr="
+        f"{json.dumps(diagnostics, sort_keys=True)}"
+    )
+    parsed = _scrub(parsed, _FIXTURE_SECRETS)
+    if result.returncode not in (0, 5):
+        print(f"inspector_cli_failure_diagnostics={json.dumps(diagnostics, sort_keys=True)}")
+    return result.returncode, parsed
 
 
 def _mcp_result(envelope: dict[str, Any]) -> dict[str, Any]:
@@ -221,8 +249,6 @@ def test_read_token_allows_read_and_denies_real_sidecar_write(tmp_path: Path) ->
         assert shutil.which(executable), f"{executable} is required for this integration fixture"
 
     project = f"vikunja-ro-{uuid.uuid4().hex[:12]}"
-    fixture_network = f"{project}-fixture"
-    bootstrap_network = f"{project}-bootstrap"
     jwt_secret = secrets.token_urlsafe(48)
     _FIXTURE_SECRETS.append(jwt_secret)
     compose_file = _compose_file(tmp_path, jwt_secret, project)
@@ -306,7 +332,6 @@ def test_read_token_allows_read_and_denies_real_sidecar_write(tmp_path: Path) ->
             ("mcp-vikunja-rw", rw_token, 8003),
         ):
             service = _render_sidecar(token=token, port=port)
-            service["networks"] = ["fixture", "bootstrap"]
             config["services"][service_name] = service
         compose_file.write_text(yaml.safe_dump(config, sort_keys=False))
 
@@ -314,16 +339,10 @@ def test_read_token_allows_read_and_denies_real_sidecar_write(tmp_path: Path) ->
         ro_url = _published_url(compose_file, project, "mcp-vikunja-ro", 8002) + "/mcp"
         rw_url = _published_url(compose_file, project, "mcp-vikunja-rw", 8003) + "/mcp"
 
-        # The role starts npx from its pinned command. Bootstrap both sidecars on
-        # the temporary npm network, then disconnect that network before MCP
-        # reads or writes are attempted. The fixture bridge still permits
-        # egress; this test does not claim egress denial.
+        # The role's native npx command may use network access from this regular
+        # fixture bridge; this test does not claim egress denial.
         _wait_for_mcp(ro_url)
         _wait_for_mcp(rw_url)
-        for service_name in ("mcp-vikunja-ro", "mcp-vikunja-rw"):
-            container = _compose(compose_file, project, "ps", "--quiet", service_name).stdout.strip()
-            assert container, f"Compose did not return the container for {service_name}"
-            _run(["docker", "network", "disconnect", bootstrap_network, container])
 
         list_code, list_envelope = _mcp_cli(ro_url, "tools/list")
         assert list_code == 0, f"read-only sidecar tools/list failed: {list_envelope}"

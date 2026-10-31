@@ -17,19 +17,14 @@ The MCP services are rendered from
 `roles/agentgateway_docker/templates/docker-compose.yml.j2` using the existing
 role-template test renderer and role defaults. Their image, command, package,
 transport, and environment-variable names therefore follow the role source;
-the test only adds isolated networks and loopback-only ports, uses test service
-names, points `VIKUNJA_URL` at the local fixture, and supplies the generated
-synthetic token. The RO and RW positive-control services run the same sidecar
-command and package. The positive control uses a second service instance only
-so the two tokens remain separate.
-
-The sidecars first join a temporary bootstrap network so the role's native
-`npx -y @democratize-technology/vikunja-mcp@...` command can resolve its pinned
-package. After both answer `tools/list`, the test disconnects that network.
-Vikunja and the sidecars communicate on a unique regular Compose bridge, and
-Inspector calls use host ports bound to `127.0.0.1`. The remaining bridge can
-still reach external networks; disconnecting the bootstrap network is not an
-egress control. The fixture uses only synthetic data and tokens.
+the test only adds one uniquely named Compose bridge and loopback-only ports,
+uses test service names, points `VIKUNJA_URL` at the local fixture, and supplies
+the generated synthetic token. The RO and RW positive-control services run the
+same sidecar command and package. The positive control uses a second service
+instance only so the two tokens remain separate. Inspector calls use host ports
+bound to `127.0.0.1`. The regular bridge permits egress; this fixture does not
+test or claim network-egress restrictions. It uses only synthetic data and
+tokens.
 
 The RO token grants only read actions found in the local route catalogue;
 the RW positive-control token also grants the current task write actions. This proves
