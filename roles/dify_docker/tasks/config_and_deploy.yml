@@ -91,3 +91,17 @@
   until: dify_docker_health.status == 200
   changed_when: false
   when: not ansible_check_mode
+
+# The api runs migrations only when it starts, and `flask upgrade-db` exits 0
+# when it fails or skips on the migration lock, so a migration cut off by a
+# database restart stays half-applied. Re-run it until it reports success.
+- name: Apply pending Dify database migrations
+  ansible.builtin.command:
+    cmd: docker compose exec -T api flask upgrade-db
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_db_upgrade
+  retries: 6
+  delay: 20
+  until: "'Database migration successful' in dify_docker_db_upgrade.stdout"
+  changed_when: "'Running upgrade' in (dify_docker_db_upgrade.stdout ~ dify_docker_db_upgrade.stderr)"
+  when: not ansible_check_mode
