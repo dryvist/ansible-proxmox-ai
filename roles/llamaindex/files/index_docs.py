@@ -107,8 +107,12 @@ def build_index(cfg: dict, docs: list) -> None:
         api_key=emb["api_key"],
         # The embeddings tier is a single-slot llama.cpp server: keep request
         # batches small and retry through transient 429s instead of dying.
+        # llama-index retries each batch max_retries times, and the openai
+        # client retries inside each of those attempts max_retries times too.
+        # 12 gives each batch at least 10 minutes of capped backoff (about 730 s
+        # minimum; 8 gives about 290 s).
         embed_batch_size=8,
-        max_retries=8,
+        max_retries=12,
     )
     # The serving tier embeds one input per ubatch (now sized to ctx via the
     # llama_cpp template). Chunks are still kept small because llama-index
