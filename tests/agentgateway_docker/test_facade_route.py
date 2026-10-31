@@ -121,6 +121,7 @@ def test_enabled_facade_makes_vikunja_strict_with_the_same_caller_list() -> None
     assert vikunja["policies"]["apiKey"]["mode"] == "strict"
     assert vikunja["policies"]["apiKey"]["location"] == {"header": {"name": "X-Agent-Key"}}
     assert vikunja["policies"]["authorization"] == _route_for_path(routes, "/agents")["policies"]["authorization"]
+    assert vikunja["policies"]["requestHeaderModifier"] == {"remove": CREDENTIAL_HEADERS}
     assert vikunja["backends"][0]["mcp"]["targets"][0]["mcp"] == {"host": VIKUNJA_HOST}
 
 
