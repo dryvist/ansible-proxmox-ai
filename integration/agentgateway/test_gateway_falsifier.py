@@ -46,6 +46,7 @@ CALLER_CREDENTIAL_HEADERS = {
     "x-agent-key",
 }
 SUCCESS_URL = "https://fixture.invalid/falsifier-success"
+DIRECT_SUCCESS_URL = "https://fixture.invalid/direct-success"
 ERROR_URL = ""
 
 
@@ -209,8 +210,8 @@ def stat(socket_path: Path, name: str) -> int:
 
 
 def wait_for_capture(socket_path: Path, trace_dir: Path, minimum: int = 0) -> int:
-    total_name = "cluster.testbox.upstream_rq_total"
-    active_name = "cluster.testbox.upstream_rq_active"
+    total_name = "http.mcp_observer.downstream_rq_total"
+    active_name = "http.mcp_observer.downstream_rq_active"
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         total = stat(socket_path, total_name)
@@ -284,20 +285,41 @@ def image_identity(env: dict[str, str], image: str) -> dict[str, str]:
 
 
 def observer_positive_control(runtime: dict[str, Any]) -> None:
-    init = request(
+    deadline = time.monotonic() + 45
+    last_error = "no response"
+    while time.monotonic() < deadline:
+        try:
+            init = request(
+                OBSERVER_URL,
+                "/mcp",
+                body=rpc(
+                    "initialize",
+                    100,
+                    {
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {"name": "observer-control", "version": "1"},
+                    },
+                ),
+            )
+            if init[0] == 200 and init[1].get("mcp-session-id"):
+                break
+            last_error = f"HTTP {init[0]} without a usable MCP session"
+        except (OSError, http.client.HTTPException) as error:
+            last_error = str(error)
+        time.sleep(0.25)
+    else:
+        raise AssertionError(f"observer MCP listener did not become ready: {last_error}")
+    initialized = request(
         OBSERVER_URL,
         "/mcp",
-        body=rpc(
-            "initialize",
-            100,
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "observer-control", "version": "1"},
-            },
-        ),
+        body=rpc("notifications/initialized", None),
+        headers={
+            "Mcp-Session-Id": init[1]["mcp-session-id"],
+            "MCP-Protocol-Version": PROTOCOL_VERSION,
+        },
     )
-    assert init[0] == 200 and init[1].get("mcp-session-id"), "direct observer initialize failed"
+    assert initialized[0] in (200, 202, 204), "direct observer session initialization failed"
     call = request(
         OBSERVER_URL,
         "/mcp",
@@ -330,7 +352,7 @@ def observer_positive_control(runtime: dict[str, Any]) -> None:
     for path in trace_files(trace_dir):
         path.unlink()
     status, _ = admin(socket_path, "POST", "/reset_counters")
-    assert status == 200 and stat(socket_path, "cluster.testbox.upstream_rq_total") == 0, (
+    assert status == 200 and stat(socket_path, "http.mcp_observer.downstream_rq_total") == 0, (
         "positive-control upstream counters were not reset"
     )
 
@@ -373,7 +395,7 @@ def wait_for_gateway() -> None:
 
 
 def assert_backend_calls(traces: list[dict[str, Any]]) -> None:
-    calls: dict[str, list[dict[str, Any]]] = {SUCCESS_URL: [], ERROR_URL: []}
+    calls: dict[str, list[dict[str, Any]]] = {SUCCESS_URL: [], DIRECT_SUCCESS_URL: [], ERROR_URL: []}
     for trace in traces:
         message = body_json(trace["request"])
         if not message or message.get("method") != "tools/call":
@@ -390,6 +412,13 @@ def assert_backend_calls(traces: list[dict[str, Any]]) -> None:
         )
         for trace in calls[SUCCESS_URL]
     ), "backend trace did not contain the successful fixture fetch result"
+    assert any(
+        any(
+            content.get("text") == f"fetched: {DIRECT_SUCCESS_URL}"
+            for content in (body_json(trace["response"]) or {}).get("result", {}).get("content", [])
+        )
+        for trace in calls[DIRECT_SUCCESS_URL]
+    ), "backend trace did not contain the successful direct-route fetch result"
     assert any(
         (body_json(trace["response"]) or {}).get("result", {}).get("isError") is True
         for trace in calls[ERROR_URL]
@@ -462,6 +491,7 @@ def runtime() -> Any:
         "trace_dir": trace_dir,
     }
     stack_started = False
+    test_started = False
     try:
         stack_started = True
         compose_run("up", "--detach", "--no-build", "observer", "testbox")
@@ -477,33 +507,36 @@ def runtime() -> Any:
             "envoy": image_identity(env, ENVOY_IMAGE),
             "testbox": image_identity(env, TESTBOX_IMAGE),
         }
+        test_started = True
         yield context
     finally:
         try:
             if stack_started:
                 try:
-                    compose_run("stop", "--timeout", "3", "agentgateway")
-                    traces_count = wait_for_capture(context["socket_path"], trace_dir)
-                    traces = load_traces(trace_dir)
-                    assert traces_count > 0 and len(traces) == traces_count, (
-                        "no upstream MCP exchanges were captured or tap traces are incomplete"
-                    )
-                    for trace in traces:
-                        assert CALLER_CREDENTIAL_HEADERS.isdisjoint(trace_headers(trace)), (
-                            "a caller credential reached the Vikunja MCP backend"
+                    if test_started:
+                        compose_run("stop", "--timeout", "3", "agentgateway")
+                        traces_count = wait_for_capture(context["socket_path"], trace_dir)
+                        traces = load_traces(trace_dir)
+                        assert traces_count > 0 and len(traces) == traces_count, (
+                            "no upstream MCP exchanges were captured or tap traces are incomplete"
                         )
-                    assert_backend_calls(traces)
-                    receipt = {
-                        "acceptance_status": "pytest exit status is authoritative",
-                        "agentgateway": context["images"]["agentgateway"],
-                        "envoy": context["images"]["envoy"],
-                        "testbox": context["images"]["testbox"],
-                        "testbox_source_commit": source_commit,
-                        "host_platform": f"{platform.system().lower()}/{platform.machine().lower()}",
-                        "rendered_config_sha256": context["rendered_config_sha256"],
-                        "upstream_request_count": traces_count,
-                    }
-                    print(f"gateway_falsifier_identity_only={json.dumps(receipt, sort_keys=True)}")
+                        for trace in traces:
+                            assert CALLER_CREDENTIAL_HEADERS.isdisjoint(trace_headers(trace)), (
+                                "a caller credential reached the Vikunja MCP backend"
+                            )
+                        assert_backend_calls(traces)
+                        receipt = {
+                            "acceptance_status": "pytest exit status is authoritative",
+                            "agentgateway": context["images"]["agentgateway"],
+                            "envoy": context["images"]["envoy"],
+                            "testbox": context["images"]["testbox"],
+                            "testbox_source_commit": source_commit,
+                            "host_platform": f"{platform.system().lower()}/{platform.machine().lower()}",
+                            "rendered_config_sha256": context["rendered_config_sha256"],
+                            "client_protocol_version": PROTOCOL_VERSION,
+                            "observed_http_request_count": traces_count,
+                        }
+                        print(f"gateway_falsifier_identity_only={json.dumps(receipt, sort_keys=True)}")
                 finally:
                     compose_run("down", "--volumes", "--remove-orphans")
         finally:
@@ -515,7 +548,7 @@ def test_gateway_fixture_auth_and_mcp_lifecycle(runtime: dict[str, Any]) -> None
     for path in ("/agents", "/vikunja"):
         for key in (None, BAD_KEY, NONOWNER_KEY):
             marker = f"deny-{path.strip('/')}-{key or 'missing'}"
-            before = stat(socket_path, "cluster.testbox.upstream_rq_total")
+            before = stat(socket_path, "http.mcp_observer.downstream_rq_total")
             response = request(
                 GATEWAY_URL,
                 path,
@@ -530,7 +563,7 @@ def test_gateway_fixture_auth_and_mcp_lifecycle(runtime: dict[str, Any]) -> None
                 ),
                 headers=caller_headers(key, marker),
             )
-            after = stat(socket_path, "cluster.testbox.upstream_rq_total")
+            after = stat(socket_path, "http.mcp_observer.downstream_rq_total")
             assert response[0] in (401, 403), f"{path} did not reject {marker}"
             assert after == before, f"{path} forwarded denied request {marker} upstream"
 
@@ -551,7 +584,7 @@ def test_gateway_fixture_auth_and_mcp_lifecycle(runtime: dict[str, Any]) -> None
     assert init[0] == 200 and init[1].get("mcp-session-id"), "authorized facade initialize failed"
     session_id = init[1]["mcp-session-id"]
 
-    before = stat(socket_path, "cluster.testbox.upstream_rq_total")
+    before = stat(socket_path, "http.mcp_observer.downstream_rq_total")
     denied = request(
         GATEWAY_URL,
         "/agents",
@@ -559,7 +592,7 @@ def test_gateway_fixture_auth_and_mcp_lifecycle(runtime: dict[str, Any]) -> None
         headers=caller_headers(None, "facade-continuation-missing-key", session_id),
     )
     assert denied[0] in (401, 403), "gateway accepted a continuation without its caller key"
-    assert stat(socket_path, "cluster.testbox.upstream_rq_total") == before, (
+    assert stat(socket_path, "http.mcp_observer.downstream_rq_total") == before, (
         "keyless MCP continuation reached the backend"
     )
 
@@ -582,7 +615,7 @@ def test_gateway_fixture_auth_and_mcp_lifecycle(runtime: dict[str, Any]) -> None
         "tools/list did not expose the fixture backend's fetch tool"
     )
 
-    before = stat(socket_path, "cluster.testbox.upstream_rq_total")
+    before = stat(socket_path, "http.mcp_observer.downstream_rq_total")
     call = request(
         GATEWAY_URL,
         "/agents",
@@ -593,7 +626,7 @@ def test_gateway_fixture_auth_and_mcp_lifecycle(runtime: dict[str, Any]) -> None
     assert any(content.get("text") == f"fetched: {SUCCESS_URL}" for content in result.get("content", [])), (
         "successful fetch did not return the exact fixture result"
     )
-    assert stat(socket_path, "cluster.testbox.upstream_rq_total") > before, (
+    assert stat(socket_path, "http.mcp_observer.downstream_rq_total") > before, (
         "successful tools/call produced no backend request"
     )
 
@@ -638,4 +671,22 @@ def test_gateway_fixture_auth_and_mcp_lifecycle(runtime: dict[str, Any]) -> None
     )
     assert direct[0] == 200 and direct[1].get("mcp-session-id"), (
         "authorized direct Vikunja initialize failed"
+    )
+    direct_session_id = direct[1]["mcp-session-id"]
+    initialized = request(
+        GATEWAY_URL,
+        "/vikunja",
+        body=rpc("notifications/initialized", None),
+        headers=caller_headers(OWNER_KEY, "direct-initialized", direct_session_id),
+    )
+    assert initialized[0] in (200, 202, 204), "direct route session initialization failed"
+    direct_call = request(
+        GATEWAY_URL,
+        "/vikunja",
+        body=rpc("tools/call", 8, {"name": "fetch", "arguments": {"url": DIRECT_SUCCESS_URL}}),
+        headers=caller_headers(OWNER_KEY, "direct-tools-call", direct_session_id),
+    )
+    result = rpc_response(direct_call, 8).get("result", {})
+    assert any(content.get("text") == f"fetched: {DIRECT_SUCCESS_URL}" for content in result.get("content", [])), (
+        "direct-route fetch did not return the exact backend result"
     )
