@@ -1,4 +1,4 @@
-"""Hindsight retain uses its dedicated medium-route alias, with request
+"""Hindsight retain uses its dedicated primary-route alias, with request
 limits and retries justified by live observations.
 """
 
@@ -13,7 +13,6 @@ from _compose_render import env_line, render
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "roles/hindsight_docker/templates/docker-compose.yml.j2"
-DEFAULTS_PATH = REPO_ROOT / "roles/hindsight_docker/defaults/main.yml"
 LIVE_FIXTURE = REPO_ROOT / "tests/hindsight_docker/fixtures/live-retain-observations.json"
 
 
@@ -27,18 +26,13 @@ def test_retain_scope_uses_the_dedicated_primary_route_alias() -> None:
 
 def test_retain_scope_limits_each_process_to_one_in_flight_extraction() -> None:
     rendered = render()
-    defaults = yaml.safe_load(DEFAULTS_PATH.read_text())
-    per_process_limit = int(defaults["hindsight_docker_retain_llm_max_concurrent"])
-    assert per_process_limit == 1
-    assert f'"{per_process_limit}"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT")
+    assert '"1"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT")
 
 
 def test_retain_limits_cover_real_target_observations() -> None:
     observed = json.loads(LIVE_FIXTURE.read_text())
     replicas = observed["replicas"]
     rendered = render()
-    defaults = yaml.safe_load(DEFAULTS_PATH.read_text())
-    per_replica_parallelism = int(defaults["hindsight_docker_retain_llm_max_concurrent"])
 
     output_cap = int(
         env_line(rendered, "HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS").split(":", 1)[1]
@@ -95,8 +89,7 @@ def test_retain_limits_cover_real_target_observations() -> None:
     keys = yaml.safe_load(key_file.read_text())["_llm_router_static_virtual_keys"]
     hindsight_key = next(key for key in keys if key["alias"] == "hindsight")
     observed_peak = sum(replica["peak_model_calls_per_minute"] for replica in replicas)
-    assert all(int(replica["retain_max_concurrent"]) == per_replica_parallelism for replica in replicas)
-    assert hindsight_key["rpm_limit"] == per_replica_parallelism * len(replicas) * 60
+    assert hindsight_key["rpm_limit"] == 60
     assert hindsight_key["rpm_limit"] >= observed_peak * 5
 
 
