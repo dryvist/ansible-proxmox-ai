@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.11.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.11.0...v2.11.1) (2026-10-31)
+
+
+### Bug Fixes
+
+* **agentgateway:** install httpx for the FastMCP sidecars ([#1811](https://github.com/dryvist/ansible-proxmox-ai/issues/1811)) ([3c14224](https://github.com/dryvist/ansible-proxmox-ai/commit/3c14224ee8fd2f363f141c1b35614657416c4f6d))
+* **llamaindex:** retry transient export and embed errors and log the reason ([#1810](https://github.com/dryvist/ansible-proxmox-ai/issues/1810)) ([f8bf295](https://github.com/dryvist/ansible-proxmox-ai/commit/f8bf295c1567cbfd7c69f5da518bf84cd97962af))
+
 ## [2.11.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.10.0...v2.11.0) (2026-10-30)
 
 
