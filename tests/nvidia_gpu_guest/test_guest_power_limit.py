@@ -35,3 +35,13 @@ def test_power_limit_is_checked_against_each_gpu_range():
     assert len(assertion["ansible.builtin.assert"]["that"]) == 5
     assert "[3]" in assertion["ansible.builtin.assert"]["that"][-2]
     assert "[2]" in assertion["ansible.builtin.assert"]["that"][-1]
+
+
+def test_serving_playbook_applies_power_limit_on_every_nvidia_guest():
+    plays = _load(ROOT / "playbooks/llm-serving-gpu-engines.yml")
+    play = next(p for p in plays if p["hosts"] == "nvidia_gpu_group")
+    include = next(
+        t["ansible.builtin.include_role"] for t in play["tasks"]
+        if t.get("ansible.builtin.include_role", {}).get("tasks_from") == "install-power-limit.yml"
+    )
+    assert include["name"] == "nvidia_gpu_guest"
