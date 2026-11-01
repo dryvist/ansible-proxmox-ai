@@ -182,7 +182,7 @@ def test_pinned_fixture_contains_only_current_rate_map_rows_needed_by_registry()
     entries = _registry_entries()
     fixture = _fixture()
     rates, keys_by_entry = _resolve_rates(fixture, entries)
-    assert len(fixture) == 11
+    assert len(fixture) == 9
     assert set(fixture) == set(keys_by_entry.values())
     assert not any(entry["provider"] == "dashscope" and entry["client_model_id"] in rates for entry in entries)
     assert all(rate["input"] > 0 and rate["output"] > 0 for rate in rates.values())
