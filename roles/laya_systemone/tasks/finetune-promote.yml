@@ -1,0 +1,69 @@
+---
+- name: Promote the validated fine-tuned model atomically
+  block:
+    - name: Check the current model directory before promotion
+      ansible.builtin.stat:
+        path: "{{ laya_systemone_finetune_model_dir }}"
+      register: laya_systemone_finetune_current_before_promotion
+      become: true
+
+    - name: Rename the current model directory to .prev
+      ansible.builtin.command:
+        argv:
+          - mv
+          - -T
+          - --
+          - "{{ laya_systemone_finetune_model_dir }}"
+          - "{{ laya_systemone_finetune_model_dir }}.prev"
+      when: laya_systemone_finetune_current_before_promotion.stat.exists
+      become: true
+      changed_when: true
+      no_log: true
+
+    - name: Move the validated staging directory into place
+      ansible.builtin.command:
+        argv:
+          - mv
+          - -T
+          - --
+          - "{{ laya_systemone_finetune_staging_dir }}"
+          - "{{ laya_systemone_finetune_model_dir }}"
+      become: true
+      changed_when: true
+      no_log: true
+  rescue:
+    - name: Check model paths after a failed promotion
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ laya_systemone_finetune_model_dir }}"
+        - "{{ laya_systemone_finetune_model_dir }}.prev"
+      register: laya_systemone_finetune_paths_after_failed_promotion
+      become: true
+
+    - name: Restore the previous model after a failed promotion
+      ansible.builtin.command:
+        argv:
+          - mv
+          - -T
+          - --
+          - "{{ laya_systemone_finetune_model_dir }}.prev"
+          - "{{ laya_systemone_finetune_model_dir }}"
+      when:
+        - laya_systemone_finetune_paths_after_failed_promotion.results[1].stat.isdir | default(false)
+        - not laya_systemone_finetune_paths_after_failed_promotion.results[0].stat.exists
+      become: true
+      register: laya_systemone_finetune_restore_previous
+      changed_when: laya_systemone_finetune_restore_previous.rc == 0
+      failed_when: false
+      no_log: true
+
+    - name: Fail the promotion with a sanitized message
+      ansible.builtin.fail:
+        msg: Laya fine-tuning failed; service start was attempted where a unit was present.
+
+- name: Remove the previous model after successful promotion
+  ansible.builtin.file:
+    path: "{{ laya_systemone_finetune_model_dir }}.prev"
+    state: absent
+  become: true
