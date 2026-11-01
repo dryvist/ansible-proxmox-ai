@@ -1,0 +1,101 @@
+---
+- name: Verify the sandbox-only public cheap route reuses an OpenCode Go model
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the shared router fixture
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/ladder_keys_fixture.yml"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Add the fixture sandbox key and keep the large tier gated off
+      ansible.builtin.set_fact:
+        bao_apps_secrets: >-
+          {{ (bao_apps_secrets | default({})) | combine({
+            'sandbox_agent_router_llm_router_key': 'fixture-sandbox-agent'}) }}
+        llm_router_llm_vllm_enabled: false
+        llm_router_vllm_precheck_passed: false
+      no_log: true
+
+    - name: Refresh the router projections
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render config and effective virtual keys
+      ansible.builtin.set_fact:
+        _render_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _render_keys: "{{ llm_router_virtual_keys }}"
+
+    - name: Find sandbox-only aliases and their rendered targets
+      ansible.builtin.set_fact:
+        _sandbox_only_aliases: "{{ llm_router_sandbox_only_aliases }}"
+        _opencode_ids: "{{ llm_router_opencode_models | map(attribute='client_model_id') | list }}"
+
+    - name: The public cheap alias resolves to an OpenCode Go deployment with public-data tags
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _sandbox_only_aliases | length > 0
+          - >-
+            _render_config.router_settings.model_group_alias.keys() | list
+            | intersect(_sandbox_only_aliases) | length
+            == _sandbox_only_aliases | length
+          - _alias_targets | difference(_opencode_ids) | length == 0
+          - _alias_targets | difference(llm_router_all_servable_models) | length == 0
+          - _target_rows | length == _sandbox_only_aliases | length
+          - _public_tagged_targets | length == _target_rows | length
+          - _alias_rows | length == 0
+        fail_msg: >-
+          sandbox aliases={{ _sandbox_only_aliases }}, targets={{ _alias_targets }},
+          OpenCode ids={{ _opencode_ids }}, rendered targets={{ _target_rows }}.
+        success_msg: >-
+          The sandbox-only public route resolves to existing OpenCode Go deployment(s)
+          carrying the public-data sensitivity tag, with no duplicate model-list entries.
+      vars:
+        _alias_targets: >-
+          {%- set ns = namespace(targets=[]) -%}
+          {%- for alias in _sandbox_only_aliases -%}
+          {%- set ns.targets = ns.targets
+                + [_render_config.router_settings.model_group_alias.get(alias)] -%}
+          {%- endfor -%}
+          {{ ns.targets }}
+        _target_rows: >-
+          {{ _render_config.model_list
+             | selectattr('model_name', 'in', _alias_targets) | list }}
+        _public_tagged_targets: >-
+          {{ _target_rows
+             | selectattr('litellm_params.tags', 'defined')
+             | selectattr('litellm_params.tags', 'contains', 'sensitivity:public') | list }}
+        _alias_rows: >-
+          {{ _render_config.model_list
+             | selectattr('model_name', 'in', _sandbox_only_aliases) | list }}
+
+    - name: The sandbox virtual key is the only key granted the public route alias
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _sandbox_key.models | intersect(_sandbox_only_aliases) | length == _sandbox_only_aliases | length
+          - _keys_with_alias | length == 1
+          - _keys_with_alias[0].alias == 'sandbox-agent'
+        fail_msg: >-
+          aliases={{ _sandbox_only_aliases }}, keys={{ _keys_with_alias | map(attribute='alias') | list }}.
+        success_msg: "Only sandbox-agent can request the public route alias."
+      vars:
+        _sandbox_key: >-
+          {{ _render_keys | selectattr('alias', 'equalto', 'sandbox-agent') | first }}
+        _keys_with_alias: >-
+          {%- set ns = namespace(keys=[]) -%}
+          {%- for key in _render_keys
+                if (key.models | intersect(_sandbox_only_aliases) | length > 0) -%}
+          {%- set ns.keys = ns.keys + [key] -%}
+          {%- endfor -%}
+          {{ ns.keys }}

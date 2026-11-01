@@ -91,6 +91,16 @@ llm_router_agent_only_groups: >-
   {%- endfor -%}
   {{ ns.groups | unique | list }}
 
+# Stable aliases tagged sandbox-only stay out of every full-scope key; the
+# sandbox consumer receives them explicitly in 56a-target-keys.yml.
+llm_router_sandbox_only_aliases: >-
+  {%- set ns = namespace(aliases=[]) -%}
+  {%- for entry in llm_router_model_registry
+        if 'sandbox-only' in (entry.tags | default([])) -%}
+  {%- set ns.aliases = ns.aliases + (entry.stable_aliases | default([])) -%}
+  {%- endfor -%}
+  {{ ns.aliases | unique | list }}
+
 _llm_router_key_scope_all_source: >-
   {{ (llm_router_all_servable_models
       + (llm_router_model_group_aliases | list
@@ -98,7 +108,8 @@ _llm_router_key_scope_all_source: >-
       + (llm_router_hermes_agents | list)
       + (llm_router_role_deployments | map(attribute='role') | list)
       + _llm_router_directly_callable_ladder_names)
-     | reject('in', llm_router_agent_only_groups) | unique | list }}
+     | reject('in', llm_router_agent_only_groups + llm_router_sandbox_only_aliases)
+     | unique | list }}
 _llm_router_key_scope_all: "{{ _llm_router_m_key_scope_all }}"
 
 # Private CI can call local registry aliases whose targets it already allows.
