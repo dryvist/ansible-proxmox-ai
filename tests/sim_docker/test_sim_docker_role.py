@@ -14,7 +14,6 @@ import yaml
 from jinja2 import meta
 from jinja2.nativetypes import NativeEnvironment
 
-
 ROOT = Path(__file__).resolve().parents[2]
 ROLE = ROOT / "roles/sim_docker"
 DEFAULTS = yaml.safe_load((ROLE / "defaults/main.yml").read_text(encoding="utf-8"))
@@ -169,9 +168,8 @@ def test_llm_endpoint_renders_only_when_configured() -> None:
     assert "VLLM_API_KEY" in env
 
 
-def test_seed_never_names_a_writer_policy() -> None:
-    assert "openbao_secrets_seed_expected_writer_policy" not in _seed_task()["block"][0]["vars"]
-    assert "openbao_secrets_seed_expected_writer_policy" not in TASKS_TEXT
+def test_seed_binds_the_converge_writer_policy() -> None:
+    assert _seed_task()["block"][0]["vars"]["openbao_secrets_seed_expected_writer_policy"] == "ansible-converge"
 
 
 def test_seed_covers_every_secret_the_env_file_writes() -> None:
