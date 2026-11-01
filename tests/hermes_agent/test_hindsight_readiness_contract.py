@@ -122,17 +122,9 @@ def test_service_containment_selects_builtin_memory_without_disabling_core_files
     for template_name in ("config.yaml.j2", "config-profile.yaml.j2"):
         source = (ROLE_ROOT / "templates" / template_name).read_text()
         memory = source.split("memory:\n", 1)[1].split("\nlogging:", 1)[0]
-        if template_name == "config.yaml.j2":
-            assert "provider: {{ hermes_agent_memory_provider }}" in memory
-            assert "memory_enabled: true" in memory
-            assert "user_profile_enabled: true" in memory
-        else:
-            # Profiles default to the fleet provider with memory on; memory_enabled: false
-            # (the eval profile) switches the built-in provider and its flags off.
-            assert "{% set _memory_on = hermes_agent_profile.memory_enabled | default(true) | bool %}" in source
-            assert "provider: {{ hermes_agent_memory_provider if _memory_on else 'builtin' }}" in memory
-            assert "memory_enabled: {{ _memory_on | to_json }}" in memory
-            assert "user_profile_enabled: {{ _memory_on | to_json }}" in memory
+        assert "provider: {{ hermes_agent_memory_provider }}" in memory
+        assert "memory_enabled: true" in memory
+        assert "user_profile_enabled: true" in memory
 
 
 def test_builtin_provider_skips_every_hindsight_http_and_readiness_task() -> None:
