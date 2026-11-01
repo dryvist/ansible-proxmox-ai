@@ -104,6 +104,8 @@ def test_dashboard_unit_state_is_checked_before_the_auth_redirect() -> None:
         "Read the dashboard journal when the unit is not active",
         "Gate — fail with the dashboard journal when the unit never came up",
         "Gate — the dashboard requires authentication (302 to login)",
+        "Read the dashboard journal when the authentication redirect is missing",
+        "Gate — the dashboard redirect targets the self-hosted auth login",
     ]
     assert [names.index(name) for name in ordered] == sorted(names.index(name) for name in ordered)
     unit = _task(gates, ordered[0])
@@ -114,6 +116,14 @@ def test_dashboard_unit_state_is_checked_before_the_auth_redirect() -> None:
     message = _task(gates, ordered[2])["ansible.builtin.assert"]["fail_msg"]
     assert "hermes_agent_dashboard_journal.stdout" in message
     assert "not an authentication-redirect problem" in message
+    probe = _task(gates, ordered[3])
+    assert probe["ansible.builtin.uri"]["return_content"] is True
+    auth_journal = _task(gates, ordered[4])
+    assert auth_journal["ansible.builtin.command"] == journal["ansible.builtin.command"]
+    assert auth_journal["when"] == "hermes_agent_dashboard_probe.status | default(0) != 302"
+    redirect = _task(gates, ordered[5])["ansible.builtin.assert"]["fail_msg"]
+    assert "hermes_agent_dashboard_probe.content | default('') | truncate(2000)" in redirect
+    assert "hermes_agent_dashboard_auth_journal.stdout" in redirect
 
 
 def test_verify_includes_the_dashboard_gates_inside_its_shared_rescue_block() -> None:
