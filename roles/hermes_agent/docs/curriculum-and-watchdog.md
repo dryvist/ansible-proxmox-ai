@@ -47,7 +47,7 @@ triggered it. `api_server` and `cron` additionally exclude `clarify`
 hold for an interactive human-in-the-loop surface. Layer-1 asserts fail the
 converge if any excluded toolset creeps back into an allowlist, if a denied
 toolset is simultaneously allowlisted, or if any allowlist goes empty.
-Enabled MCP servers (splunk/context7/codex) layer onto the allowlists by
+Enabled MCP servers (splunk/context7) layer onto the allowlists by
 upstream's platform-tools semantics. `hermes_agent_slack_toolsets` renders
 only when the Slack bot token is set, matching the other Slack-gated config.
 

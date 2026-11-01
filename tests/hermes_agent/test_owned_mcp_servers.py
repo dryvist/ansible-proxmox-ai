@@ -89,8 +89,6 @@ def _config_context(identity: str, owner_map: dict[str, str] = ROSTER) -> dict:
         hermes_agent_splunk_mcp_url=_splunk_url(identity, owner_map),
         hermes_agent_owned_mcp_slugs=_owned_slugs(identity, owner_map),
         hermes_agent_gateway_key_field=_gateway_key_field(identity),
-        codex_runner_user="example-user",
-        codex_runner_mcp_command="codex mcp",
     )
     return context
 

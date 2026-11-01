@@ -44,37 +44,9 @@ profile doing homelab work.
 | `hermes_agent_docs_mcp_enabled` | `true` | Register the docs MCP server |
 | `hermes_agent_docs_mcp_url` | `mcp.<sub>/docs` | Agentgateway route (non-secret) |
 
-## Escalation (Codex via MCP)
-
-Registers `codex mcp-server` (OpenAI's Codex CLI) as an MCP tool
-(`mcp_servers.codex`) — a deliberate escalation path for problems worth a
-stronger model, or a session that's stuck/looping. This is **not** automatic
-on-error fallback (Hermes' own `fallback_providers` feature is intentionally
-unused here); tool use is inherently a per-call, model-chosen decision, so
-the agent reaches for Codex only when it judges the problem warrants it, the
-same way it decides whether to call any other tool.
-
-Codex runs under a completely separate, low-privilege OS user —
-`codex-runner`, provisioned by the sibling `codex_runner` role on the same
-host — never as `hermes`. The MCP entry invokes it through a single-command
-`sudo` grant (`hermes` → `codex-runner`, exactly `codex mcp-server`, nothing
-else); Hermes never gains filesystem access to that user's ChatGPT-OAuth
-credential, so the token itself is not directly readable by the agent even
-though the agent can fully use the tool.
-
-Codex's OAuth login is a manual, one-time, interactive step that cannot be
-automated by Ansible — see `roles/codex_runner/README.md` for both bootstrap
-options (fresh `codex login`, or copying an already-authenticated
-`~/.codex/auth.json`). Until that's done, the MCP entry is present but every
-call to it errors; the daemon itself starts and runs normally regardless.
-
 OpenRouter uses one provider-level `OPENROUTER_API_KEY`. The `llm_router` role
 constrains access with exact registry model ids and provider policy; additional
 model-specific keys are neither required nor supported. Hermes normally asks
 for `hermes-default`, whose local complexity route can reach the credentialed
 cloud provider groups only after local serving fails. Explicit OpenRouter ids
 remain available to callers that deliberately request an allowlisted model.
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `hermes_agent_codex_mcp_enabled` | `true` | Register the Codex MCP server |

@@ -35,7 +35,6 @@
       - HERMES_API_SERVER_KEY
       - GH_TOKEN_SECURITY_ALERTS_READ
       - GH_TOKEN_ORG_READ
-      - CODEX_AUTH_JSON
       - HERMES_VIKUNJA_API_TOKEN
       - LLM_ROUTER_MASTER_KEY
     _local_llm: "{{ dict(_fields | zip(_fields | map('regex_replace', '^', 'local-llm:'))) }}"
@@ -50,7 +49,6 @@
       - hermes_agent_zammad_api_token
       - hermes_agent_github_alerts_token
       - hermes_agent_github_read_token
-      - codex_runner_auth_json
       - hermes_agent_vikunja_bridge_token
     _expected_hermes_paths:
       - ai/hermes
@@ -167,7 +165,6 @@
         bao_local_llm_secrets: {}
       ansible.builtin.assert:
         that:
-          - codex_runner_auth_json == 'private-auth-fixture'
           - hermes_agent_event_relay_bao_role_id == 'private-role-fixture'
           - hermes_agent_event_relay_bao_secret_id == 'private-secret-fixture'
         fail_msg: A private Hermes credential resolved from the public environment prefix.
@@ -198,28 +195,3 @@
         fail_msg: >-
           hermes-private declares {{ _declared }}; expected only its own KV path
           and the gateway's shared read-only Splunk route credential.
-
-# codex_runner runs before the hermes_agent role, so its auth view must resolve
-# from the group vars alone, without the role's hermes_agent_id and
-# hermes_agent_env_prefix defaults (those role files are not loaded here).
-- name: Verify the Codex auth view resolves before the hermes_agent role loads
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  vars_files:
-    - ../../inventory/group_vars/hermes_agent_group/00-agent-settings.yml
-  vars:
-    bao_local_llm_secrets: {}
-    openbao_secrets_by_domain: {}
-  tasks:
-    - name: Assert each identity's Codex auth resolves from its own env fallback
-      vars:
-        hermes_agent_identity: "{{ item.identity }}"
-      ansible.builtin.assert:
-        that:
-          - codex_runner_auth_json == item.expected
-        fail_msg: >-
-          {{ item.identity }} resolved Codex auth to the wrong env fallback.
-      loop:
-        - {identity: hermes, expected: public-auth-fixture}
-        - {identity: hermes-private, expected: private-auth-fixture}

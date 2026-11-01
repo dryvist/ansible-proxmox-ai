@@ -69,7 +69,6 @@ def _render(template: str, limits: dict[str, Any]) -> tuple[str, dict[str, Any]]
         "hermes_agent_webhook_enabled": False,
         "hermes_agent_webhook_secret": "",
         "hermes_agent_github_route_private_enabled": False,
-        "hermes_agent_codex_mcp_enabled": False,
         "hermes_agent_firecrawl_enabled": False,
         "hermes_agent_dashboard_public_url": "https://dashboard.example.invalid",
         "hermes_agent_dashboard_oidc_issuer": "https://auth.example.invalid",

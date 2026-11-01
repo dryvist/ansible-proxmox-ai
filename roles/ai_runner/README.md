@@ -15,7 +15,7 @@ behind a restrictive egress profile.
 
 1. Installs the checksum-pinned Node.js runtime required by Claude Code, plus
    `python3`, then the pinned `@anthropic-ai/claude-code` and `@openai/codex` CLIs
-   (global npm, explicit prefix — same idiom as `codex_runner`).
+   (global npm, explicit prefix).
 2. Creates the `ai-runner` system user with a locked (0700) home.
 3. Renders the worker script (`ai-job-worker.py`, stdlib only), its env file
    (0600, holds the API tokens), and a systemd unit; enables the service.
