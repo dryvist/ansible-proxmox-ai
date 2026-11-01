@@ -80,13 +80,25 @@ _llm_router_directly_callable_ladder_names: "{{ _llm_router_m_directly_callable_
 # resolves to cannot reach it at all. Every existing full-scope key
 # (codex, cursor, opencode, claude-code, open-webui, raycast) picks this up
 # automatically on the next converge; no per-key edit needed.
+# Agent-only route groups are registry-marked so they can be omitted from
+# human/full-scope keys and added explicitly to agent key projections.
+llm_router_agent_only_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for entry in llm_router_model_registry -%}
+  {%- if 'agent-only' in (entry.tags | default([])) and entry.route_group is defined -%}
+  {%- set _ = ns.groups.append(entry.route_group) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups | unique | list }}
+
 _llm_router_key_scope_all_source: >-
   {{ (llm_router_all_servable_models
       + (llm_router_model_group_aliases | list
          | reject('in', llm_router_direct_route_aliases) | list)
       + (llm_router_hermes_agents | list)
       + (llm_router_role_deployments | map(attribute='role') | list)
-      + _llm_router_directly_callable_ladder_names) | unique | list }}
+      + _llm_router_directly_callable_ladder_names)
+     | reject('in', llm_router_agent_only_groups) | unique | list }}
 _llm_router_key_scope_all: "{{ _llm_router_m_key_scope_all }}"
 
 # Private CI can call local registry aliases whose targets it already allows.

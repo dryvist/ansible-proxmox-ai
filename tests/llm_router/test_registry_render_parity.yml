@@ -73,6 +73,30 @@
     - name: Run the parity guard against the shipping registry
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
 
+    - name: Keep agent-only route groups out of full-scope keys
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _registry_agent_only_groups | length > 0
+          - llm_router_agent_only_groups | difference(_registry_agent_only_groups) | length == 0
+          - _registry_agent_only_groups | difference(llm_router_agent_only_groups) | length == 0
+          - llm_router_agent_only_groups | intersect(_llm_router_key_scope_all) | length == 0
+        fail_msg: >-
+          Agent-only groups={{ llm_router_agent_only_groups }} registry groups={{
+          _registry_agent_only_groups }} full scope={{ _llm_router_key_scope_all }}.
+        success_msg: >-
+          Agent-only route groups remain registry-derived and outside the
+          human/full-scope key projection.
+      vars:
+        _registry_agent_only_groups: >-
+          {%- set ns = namespace(groups=[]) -%}
+          {%- for entry in llm_router_model_registry
+                if 'agent-only' in (entry.tags | default([]))
+                and entry.route_group is defined -%}
+          {%- set ns.groups = ns.groups + [entry.route_group] -%}
+          {%- endfor -%}
+          {{ ns.groups | unique | list }}
+
     - name: Select the disabled K2 MLX trial entries
       ansible.builtin.set_fact:
         _k2_trial_registry: >-

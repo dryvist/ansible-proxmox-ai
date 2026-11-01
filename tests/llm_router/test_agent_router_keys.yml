@@ -114,18 +114,27 @@
             purpose: Fixture standard agent
             owns: []
             router_key_class: standard
+          example-all:
+            container: example-all
+            hostname: example-all.example.com
+            display: Example all-class agent
+            purpose: Fixture all-class agent
+            owns: []
+            router_key_class: all
         ai_agent_owner: {splunk: example-owner}
         openbao_secrets_by_domain:
           llm-router-agent-keys:
             example_owner_llm_router_key: fixture-owner-key
             example_standard_llm_router_key: fixture-standard-key
+            example_all_llm_router_key: fixture-all-key
       block:
         - name: Trust the ownership fixture callers over the shared fixture
           ansible.builtin.set_fact:
             ai_callers: >-
               {{ ai_callers | combine({
                    'example-owner': {'trust_tier': _llm_router_trusted_caller_tiers | first},
-                   'example-standard': {'trust_tier': _llm_router_trusted_caller_tiers | first}
+                   'example-standard': {'trust_tier': _llm_router_trusted_caller_tiers | first},
+                   'example-all': {'trust_tier': _llm_router_trusted_caller_tiers | first}
                  }) }}
 
         - name: Refresh the router projections for the ownership fixture
@@ -161,9 +170,19 @@
           ansible.builtin.assert:
             quiet: true
             that:
-              - _roster_agent_keys | map(attribute='alias') | list == ['example-owner', 'example-standard']
+              - >-
+                _roster_agent_keys | map(attribute='alias') | list
+                == ['example-owner', 'example-standard', 'example-all']
               - _owner.allowed_classes == ['local', 'sub', 'paid-zdr']
               - _standard.allowed_classes == ['local', 'sub', 'paid-zdr', 'free']
+              - _all_agent.allowed_classes == ['local', 'sub', 'paid-zdr', 'free', 'retains']
+              - llm_router_agent_only_groups | length > 0
+              - llm_router_agent_only_groups | difference(_owner.models) | length == 0
+              - llm_router_agent_only_groups | difference(_standard.models) | length == 0
+              - llm_router_agent_only_groups | difference(_all_agent.models) | length == 0
+              - >-
+                llm_router_agent_only_groups
+                | intersect(_workstation_keys | map(attribute='models') | flatten) | length == 0
               - _owner.daily_budget == _llm_router_hermes_profile_daily_budget
               - _standard.daily_budget == _llm_router_hermes_profile_daily_budget
               - _owner.tags == ['&zdr', '!free', '!retains']
@@ -216,6 +235,7 @@
               - zammad
             _owner: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-owner') | first }}"
             _standard: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-standard') | first }}"
+            _all_agent: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-all') | first }}"
             _workstation_keys: >-
               {{ _roster_virtual_keys
                  | selectattr('alias', 'in', ['claude-code', 'codex', 'agy',

@@ -195,6 +195,34 @@
           {%- endfor -%}
           {{ ns.rows }}
 
+    - name: Keep agent-only groups in fleet keys and outside sandbox keys
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_agent_only_groups | length > 0
+          - >-
+            llm_router_agent_only_groups
+            | difference(_hermes_fleet_default.models) | length == 0
+          - >-
+            llm_router_agent_only_groups
+            | difference(_llm_router_sandbox_agent_excluded_groups) | length == 0
+          - >-
+            llm_router_agent_only_groups
+            | intersect(_sandbox_agent.models) | length == 0
+        fail_msg: >-
+          Agent-only groups={{ llm_router_agent_only_groups }}
+          fleet={{ _hermes_fleet_default.models }} sandbox={{ _sandbox_agent.models }}.
+        success_msg: >-
+          Agent-only groups are available to Hermes fleet keys and excluded
+          from sandbox-agent.
+      vars:
+        _hermes_fleet_default: >-
+          {{ _llm_router_hermes_profile_keys
+             | selectattr('alias', 'equalto', 'hermes-default') | first }}
+        _sandbox_agent: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'equalto', 'sandbox-agent') | first }}
+
     - name: Sandbox keys wait for matching generated source fields
       ansible.builtin.assert:
         quiet: true

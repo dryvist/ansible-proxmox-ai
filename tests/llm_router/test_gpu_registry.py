@@ -246,11 +246,22 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
         **{profile_name: "small" for profile_name in small_candidates},
         "medium-a": "medium",
         "qwen38-96k-11-fp8-mtp": "medium",
+        "qwen38-27b-131k-1": "agent-long-context",
         **{entry["profile"]: None for entry in entries
            if entry["profile"] not in ({"small", "small-c4-64k", "medium-a",
-                                        "qwen38-96k-11-fp8-mtp", "small-k2-horizon"}
+                                        "qwen38-96k-11-fp8-mtp", "small-k2-horizon",
+                                        "qwen38-27b-131k-1"}
                                       | set(small_candidates))},
     }
+
+    agent_lane = next(
+        entry for entry in entries if entry["profile"] == "qwen38-27b-131k-1"
+    )
+    assert agent_lane["tags"] == ["agent-only"]
+    assert agent_lane["order"] == 99
+    assert agent_lane["max_parallel_requests"] == 1
+    assert "stable_aliases" not in agent_lane
+    assert "fallback_group" not in agent_lane
 
     # The standalone medium-a profile keeps its eight-slot settings outside the sweep matrix.
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
