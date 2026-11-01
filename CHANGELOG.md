@@ -1,5 +1,36 @@
 # Changelog
 
+## [2.12.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.11.1...v2.12.0) (2026-11-01)
+
+
+### Features
+
+* **agentgateway_docker:** add the caller facade canary route and fail-closed owner checks ([#1830](https://github.com/dryvist/ansible-proxmox-ai/issues/1830)) ([c815d68](https://github.com/dryvist/ansible-proxmox-ai/commit/c815d680169fb17d121d4fb4534acf20c8dc96dd))
+* **hermes_agent:** add an isolated eval profile with a local-only router key ([#1833](https://github.com/dryvist/ansible-proxmox-ai/issues/1833)) ([33cd5f2](https://github.com/dryvist/ansible-proxmox-ai/commit/33cd5f274bc74bafc79af47979d5a94a713b9280))
+* **nvidia_gpu_guest:** set GPU power limit per host ([#1818](https://github.com/dryvist/ansible-proxmox-ai/issues/1818)) ([8fcbe74](https://github.com/dryvist/ansible-proxmox-ai/commit/8fcbe749c055851af8d2fbb0c290feabafe50c45))
+* **roles:** make the Dify and Langflow OpenBao secret paths overridable per instance ([#1826](https://github.com/dryvist/ansible-proxmox-ai/issues/1826)) ([b213955](https://github.com/dryvist/ansible-proxmox-ai/commit/b21395553f44a578b55b967ded811b07499e48c4))
+* **sim_docker:** add Sim evaluation role and opt-in specialist-eval playbook ([#1827](https://github.com/dryvist/ansible-proxmox-ai/issues/1827)) ([c2be360](https://github.com/dryvist/ansible-proxmox-ai/commit/c2be3601ec20caa031164b1c03ba0e5fb1e1eb04))
+* **specialist-eval:** add Dify and Langflow evaluation groups with secret isolation ([#1829](https://github.com/dryvist/ansible-proxmox-ai/issues/1829)) ([ffaeffe](https://github.com/dryvist/ansible-proxmox-ai/commit/ffaeffee71a6184147cd7bde87eadc524c3d97ff))
+
+
+### Bug Fixes
+
+* **dify_docker:** apply pending database migrations after deploy ([#1821](https://github.com/dryvist/ansible-proxmox-ai/issues/1821)) ([e4810d4](https://github.com/dryvist/ansible-proxmox-ai/commit/e4810d45ad9f50ea656fb600d0157f2e119faacf))
+* **dify_docker:** open the console session in check mode ([#1817](https://github.com/dryvist/ansible-proxmox-ai/issues/1817)) ([1940034](https://github.com/dryvist/ansible-proxmox-ai/commit/19400344894b17bb68ca6710fc93fdb5b81827c6))
+* **dify_docker:** send the console login password Base64-encoded ([#1825](https://github.com/dryvist/ansible-proxmox-ai/issues/1825)) ([8be5741](https://github.com/dryvist/ansible-proxmox-ai/commit/8be5741215431e0ec6453614e96bc8b8484a35fe))
+* **dify_docker:** send web server-side API calls to the internal api service ([#1822](https://github.com/dryvist/ansible-proxmox-ai/issues/1822)) ([8dc80b4](https://github.com/dryvist/ansible-proxmox-ai/commit/8dc80b41db19d976b60c2945e6ccdd67ea94e745))
+* **hermes_agent:** bracket the kanban digest truncation marker ([#1838](https://github.com/dryvist/ansible-proxmox-ai/issues/1838)) ([0597118](https://github.com/dryvist/ansible-proxmox-ai/commit/059711844138518a56dd66b4df11bd972a388079))
+* **langflow:** pin the app image by digest ([#1832](https://github.com/dryvist/ansible-proxmox-ai/issues/1832)) ([758e6a1](https://github.com/dryvist/ansible-proxmox-ai/commit/758e6a13a2e793c08534b003a5f6219efbf19105))
+* **langfuse:** provision project keys through the guest's web port ([#1824](https://github.com/dryvist/ansible-proxmox-ai/issues/1824)) ([e146233](https://github.com/dryvist/ansible-proxmox-ai/commit/e146233129aa8ab50feb962b8f9e55820f9a12cb))
+* **langfuse:** write project keys with the converge writer token ([#1813](https://github.com/dryvist/ansible-proxmox-ai/issues/1813)) ([d3c8617](https://github.com/dryvist/ansible-proxmox-ai/commit/d3c86179ad19d502b2ff805a421d5977f27808fe))
+* **llm_router:** exclude Hermes agent deployments from background health checks ([#1819](https://github.com/dryvist/ansible-proxmox-ai/issues/1819)) ([57facd3](https://github.com/dryvist/ansible-proxmox-ai/commit/57facd38a28797b469f03e407867aec705ebbc24))
+* **llm_router:** raise the Hindsight key rpm limit to 120 ([#1815](https://github.com/dryvist/ansible-proxmox-ai/issues/1815)) ([5bf5beb](https://github.com/dryvist/ansible-proxmox-ai/commit/5bf5beb350c9f574f1dda0b96463746afbb5bf96))
+* **llm-serving:** apply GPU power limit on every NVIDIA guest ([#1820](https://github.com/dryvist/ansible-proxmox-ai/issues/1820)) ([ace918b](https://github.com/dryvist/ansible-proxmox-ai/commit/ace918b7755de8d85bc77e6304b390a090c255eb))
+* **openbao_secrets:** accept the converge writer token up to the AppRole ceiling ([#1828](https://github.com/dryvist/ansible-proxmox-ai/issues/1828)) ([7077bde](https://github.com/dryvist/ansible-proxmox-ai/commit/7077bde848e16f7ac3eb2dad23ccafaa15b67513))
+* **openbao_secrets:** seed with the runner short-lived writer token ([#1809](https://github.com/dryvist/ansible-proxmox-ai/issues/1809)) ([7d231f5](https://github.com/dryvist/ansible-proxmox-ai/commit/7d231f544483637f272e5406ec12cf60fa9ad9f0))
+* **sim:** bind seed writer policy and cover wiring ([6e731a9](https://github.com/dryvist/ansible-proxmox-ai/commit/6e731a9566c5acb69ec6b3275abe516bf9e00f0a))
+* **tests:** use a non-registry model name in the llamaindex index test ([#1814](https://github.com/dryvist/ansible-proxmox-ai/issues/1814)) ([415a7b3](https://github.com/dryvist/ansible-proxmox-ai/commit/415a7b3b396a5ff5b947024f7e2152c1b2c4f036))
+
 ## [2.11.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.11.0...v2.11.1) (2026-10-31)
 
 
