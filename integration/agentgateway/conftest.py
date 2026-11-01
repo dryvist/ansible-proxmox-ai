@@ -183,8 +183,8 @@ def runtime(request: Any) -> Any:
             )
             _wait_for_vikunja(vikunja_url)
             info_status, info, _headers = _api(vikunja_url, "GET", "/api/v1/info")
-            assert info_status == 200 and info.get("version") == "2.7.1", (
-                "the pinned Vikunja fixture did not report version 2.7.1"
+            assert info_status == 200 and info.get("version") == "v2.7.1", (
+                "the pinned Vikunja fixture did not report version v2.7.1"
             )
             fixture = _provision_vikunja_fixture(vikunja_url, include_write_token=False)
 
