@@ -42,9 +42,8 @@ agent bank. Different Hermes agents receive distinct banks. This is
 deliberate — it is what lets `daily-summary` on the `default` profile recall a
 card's findings after its `assignee` moves. The one exception is a profile
 entry that sets `memory_bank_id`: `splunk-admin` does, so every Splunk job
-shares one Splunk bank (`hermes_agent_splunk_memory_bank_id`). A profile with
-`memory_enabled: false` (`eval`) gets neither a bank nor a Hindsight config. On
-the agent that owns the `splunk` system that bank is the agent bank itself. Within a
+shares one Splunk bank (`hermes_agent_splunk_memory_bank_id`). On the agent
+that owns the `splunk` system that bank is the agent bank itself. Within a
 bank, a worker can `memory recall` anything another profile of that bank ever
 wrote. The "Must NOT have" column is a **tools/MCP/skills boundary only**; it
 is not a data boundary, and nothing written to memory by any profile should be
@@ -57,7 +56,6 @@ treated as private to it.
 | `homelab-admin` | Incidents + fabric health | Docs MCP, `zammad-incidents` skill | Splunk, Vikunja, GitHub, other MCP/skills |
 | `github-maint` | Read-only repo review + proposals | Docs MCP, `github-issues` skill, read-only token | GitHub writes, `docs-pr`, Splunk, Zammad, other |
 | `orchestrator` | Kanban decomposition and assignment | Vikunja + Docs MCP; follow-up card creation | Operational MCP servers and credentials |
-| `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |
 
 `github-maint` is the one profile whose headline constraint is enforced by a
 **credential** rather than by tool availability. It renders the read-only
