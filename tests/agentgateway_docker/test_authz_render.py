@@ -1,4 +1,4 @@
-"""Per-agent keys protect owned agentgateway routes without changing defaults."""
+"""Per-agent keys protect owned agentgateway routes and staged MCP auth."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import jinja2
 import pytest
 import yaml
 from ansible.plugins.filter.core import FilterModule
-from cel_subset import authorize
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = REPO_ROOT / "inventory/group_vars/all/00-core.yml"
@@ -19,9 +18,9 @@ DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/00-gateway.yml"
 MCP_ROUTE_AUTH_DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/30-mcp-route-auth.yml"
 TASKS = REPO_ROOT / "roles/agentgateway_docker/tasks/main.yml"
 TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/config.yaml.j2"
-# Re-pinned when the facade exception was documented in the config.yaml.j2 header
-# comment. That comment is the only rendered change while the facade is disabled
-# (checked by diffing the pre-change render: four comment lines, identical routes).
+# The shared-route auth policies are normalized below so this remains a check of
+# the rest of the config render. Facade defaults and route identity are covered
+# in test_facade_route.py.
 BASELINE_SHA256 = "ca78c630817e07bc5c427cac4ce2feab36de4f7cb110e4068a655616b3c41e3d"
 MCP_ROUTE_PATHS = ("/memory", "/docs", "/vikunja", "/nautobot")
 
@@ -133,6 +132,10 @@ def _render(
         "agentgateway_docker_roster_keys": roster_keys,
         "agentgateway_docker_hindsight_roster_tiers": roster_tiers,
         **FACADE_DEFAULTS,
+        # Keep generic authorization fixtures independent of the role's live
+        # facade default; its enabled-by-default case is tested separately.
+        "agentgateway_docker_facade_enabled": False,
+        "agentgateway_docker_facade_callers": [],
         **(extra or {}),
     }
     return ENV.from_string(TEMPLATE_SOURCE if template_source is None else template_source).render(**context)
@@ -145,15 +148,20 @@ def _routes(rendered: str) -> list[dict[str, Any]]:
 
 
 def _strip_default_mcp_route_auth(rendered: str) -> str:
-    """Remove only the four additive empty-roster policies from the old golden config."""
+    """Remove shared-route policies so the baseline covers the remaining render."""
     routes = _routes(rendered)
     for path in MCP_ROUTE_PATHS:
         policy = _route_for_path(routes, path)["policies"]
-        assert set(policy) == {"apiKey"}
+        expected = {"apiKey", "requestHeaderModifier"} if path == "/vikunja" else {"apiKey"}
+        assert set(policy) == expected
         api_key = policy["apiKey"]
         assert api_key["mode"] == "optional"
         assert api_key["location"] == {"header": {"name": "X-Agent-Key"}}
         assert not api_key["keys"]
+        if path == "/vikunja":
+            assert policy["requestHeaderModifier"]["remove"] == FACADE_DEFAULTS[
+                "agentgateway_docker_caller_credential_headers"
+            ]
 
     normalized = rendered
     for path in MCP_ROUTE_PATHS:
@@ -234,7 +242,9 @@ def test_mcp_routes_render_strict_mode_when_selected() -> None:
 
 
 def test_staged_auth_mode_does_not_change_owned_hindsight_or_a2a_routes() -> None:
-    from hindsight_acl_support import AGENTS as HINDSIGHT_AGENTS, KEYS as HINDSIGHT_KEYS, _hindsight_context
+    from hindsight_acl_support import AGENTS as HINDSIGHT_AGENTS
+    from hindsight_acl_support import KEYS as HINDSIGHT_KEYS
+    from hindsight_acl_support import _hindsight_context
 
     extra = _hindsight_context()
     default_routes = _routes(
