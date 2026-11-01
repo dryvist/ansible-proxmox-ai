@@ -14,6 +14,8 @@
       - laya_systemone_finetune_eval_key is string
       - laya_systemone_finetune_eval_key | length > 0
       - laya_systemone_finetune_eval_sha256 is match('^[A-Fa-f0-9]{64}$')
+      - laya_systemone_finetune_base is string
+      - laya_systemone_finetune_base | length > 0
       - laya_systemone_finetune_root is match('^/')
       - laya_systemone_finetune_root | regex_search("'") is none
       - laya_systemone_finetune_root | regex_search("[\r\n]") is none
@@ -32,6 +34,52 @@
     - "{{ laya_systemone_finetune_root }}/datasets"
     - "{{ laya_systemone_finetune_root }}/models"
   become: true
+
+- name: Check the current model directory before recovering an interrupted promotion
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_model_dir }}"
+  register: laya_systemone_finetune_current_before_recovery
+  become: true
+
+- name: Check for a previous model left by an interrupted promotion
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_model_dir }}.prev"
+  register: laya_systemone_finetune_previous_before_recovery
+  become: true
+
+- name: Restore the previous model when an interrupted promotion left no current model
+  ansible.builtin.command:
+    argv:
+      - mv
+      - -T
+      - --
+      - "{{ laya_systemone_finetune_model_dir }}.prev"
+      - "{{ laya_systemone_finetune_model_dir }}"
+  when:
+    - laya_systemone_finetune_previous_before_recovery.stat.isdir | default(false)
+    - not laya_systemone_finetune_current_before_recovery.stat.exists
+  become: true
+  changed_when: true
+  no_log: true
+
+- name: Remove a stale previous model when the current model is present
+  ansible.builtin.file:
+    path: "{{ laya_systemone_finetune_model_dir }}.prev"
+    state: absent
+  when:
+    - laya_systemone_finetune_previous_before_recovery.stat.exists
+    - laya_systemone_finetune_current_before_recovery.stat.exists
+  become: true
+
+- name: Read the installed Laya version for fine-tune reuse
+  ansible.builtin.command:
+    argv:
+      - "{{ laya_systemone_venv }}/bin/python"
+      - -c
+      - import laya; print(laya.__version__)
+  register: laya_systemone_finetune_laya_version
+  changed_when: false
+  check_mode: false
 
 - name: Read the fine-tune completion manifest
   ansible.builtin.slurp:
@@ -70,6 +118,20 @@
       != laya_systemone_finetune_train_sha256 | lower)
       or (laya_systemone_finetune_manifest.eval_sha256 | default('')
       != laya_systemone_finetune_eval_sha256 | lower)
+      or (laya_systemone_finetune_manifest.epochs | default(none)
+      != laya_systemone_finetune_epochs | int)
+      or (laya_systemone_finetune_manifest.text_column | default('')
+      != laya_systemone_finetune_text_column)
+      or (laya_systemone_finetune_manifest.label_column | default('')
+      != laya_systemone_finetune_label_column)
+      or (laya_systemone_finetune_manifest.target_error | default(none)
+      != laya_systemone_finetune_target_error | float)
+      or (laya_systemone_finetune_manifest.seed | default(none)
+      != laya_systemone_finetune_seed | int)
+      or (laya_systemone_finetune_manifest.base | default('')
+      != laya_systemone_finetune_base)
+      or (laya_systemone_finetune_manifest.laya_version | default('')
+      != laya_systemone_finetune_laya_version.stdout | trim)
   block:
     - name: Require the shared OpenBao AppRole configuration
       ansible.builtin.fail:
@@ -168,7 +230,14 @@
         quiet: true
       no_log: true
 
-    - name: Download the labeled training and validation CSV files
+    - name: Check the existing training CSV checksum before download
+      ansible.builtin.stat:
+        path: "{{ laya_systemone_finetune_train_path }}"
+        checksum_algorithm: sha256
+      register: laya_systemone_finetune_train_existing_stat
+      become: true
+
+    - name: Download the training CSV when missing or corrupt
       ansible.builtin.command:
         argv:
           - aws
@@ -176,20 +245,117 @@
           - "{{ laya_systemone_finetune_s3_endpoint }}"
           - s3
           - cp
-          - "s3://{{ laya_systemone_finetune_bucket }}/{{ item.key }}"
-          - "{{ item.path }}"
-        creates: "{{ item.path }}"
-      loop:
-        - key: "{{ laya_systemone_finetune_train_key }}"
-          path: "{{ laya_systemone_finetune_train_path }}"
-        - key: "{{ laya_systemone_finetune_eval_key }}"
-          path: "{{ laya_systemone_finetune_eval_path }}"
+          - "s3://{{ laya_systemone_finetune_bucket }}/{{ laya_systemone_finetune_train_key }}"
+          - "{{ laya_systemone_finetune_train_path }}.download"
+      when: >-
+        not laya_systemone_finetune_train_existing_stat.stat.exists
+        or laya_systemone_finetune_train_existing_stat.stat.checksum | default('')
+        != laya_systemone_finetune_train_sha256 | lower
       environment:
         AWS_ACCESS_KEY_ID: "{{ laya_systemone_finetune_s3_access_key_id }}"
         AWS_SECRET_ACCESS_KEY: "{{ laya_systemone_finetune_s3_secret_access_key }}"
         AWS_DEFAULT_REGION: "{{ laya_systemone_finetune_s3_region }}"
       become: true
       become_user: "{{ laya_systemone_user }}"
+      changed_when: true
+      no_log: true
+
+    - name: Check the downloaded training CSV checksum
+      ansible.builtin.stat:
+        path: "{{ laya_systemone_finetune_train_path }}.download"
+        checksum_algorithm: sha256
+      register: laya_systemone_finetune_train_download_stat
+      when: >-
+        not laya_systemone_finetune_train_existing_stat.stat.exists
+        or laya_systemone_finetune_train_existing_stat.stat.checksum | default('')
+        != laya_systemone_finetune_train_sha256 | lower
+      become: true
+
+    - name: Verify the downloaded training CSV checksum
+      ansible.builtin.assert:
+        that:
+          - laya_systemone_finetune_train_download_stat.stat.exists
+          - laya_systemone_finetune_train_download_stat.stat.checksum == laya_systemone_finetune_train_sha256 | lower
+        fail_msg: The downloaded training CSV does not match its configured SHA-256 checksum.
+        quiet: true
+      when: laya_systemone_finetune_train_download_stat is not skipped
+      no_log: true
+
+    - name: Move the verified training CSV into place
+      ansible.builtin.command:
+        argv:
+          - mv
+          - -fT
+          - --
+          - "{{ laya_systemone_finetune_train_path }}.download"
+          - "{{ laya_systemone_finetune_train_path }}"
+      when: laya_systemone_finetune_train_download_stat is not skipped
+      become: true
+      changed_when: true
+      no_log: true
+
+    - name: Check the existing validation CSV checksum before download
+      ansible.builtin.stat:
+        path: "{{ laya_systemone_finetune_eval_path }}"
+        checksum_algorithm: sha256
+      register: laya_systemone_finetune_eval_existing_stat
+      become: true
+
+    - name: Download the validation CSV when missing or corrupt
+      ansible.builtin.command:
+        argv:
+          - aws
+          - --endpoint-url
+          - "{{ laya_systemone_finetune_s3_endpoint }}"
+          - s3
+          - cp
+          - "s3://{{ laya_systemone_finetune_bucket }}/{{ laya_systemone_finetune_eval_key }}"
+          - "{{ laya_systemone_finetune_eval_path }}.download"
+      when: >-
+        not laya_systemone_finetune_eval_existing_stat.stat.exists
+        or laya_systemone_finetune_eval_existing_stat.stat.checksum | default('')
+        != laya_systemone_finetune_eval_sha256 | lower
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ laya_systemone_finetune_s3_access_key_id }}"
+        AWS_SECRET_ACCESS_KEY: "{{ laya_systemone_finetune_s3_secret_access_key }}"
+        AWS_DEFAULT_REGION: "{{ laya_systemone_finetune_s3_region }}"
+      become: true
+      become_user: "{{ laya_systemone_user }}"
+      changed_when: true
+      no_log: true
+
+    - name: Check the downloaded validation CSV checksum
+      ansible.builtin.stat:
+        path: "{{ laya_systemone_finetune_eval_path }}.download"
+        checksum_algorithm: sha256
+      register: laya_systemone_finetune_eval_download_stat
+      when: >-
+        not laya_systemone_finetune_eval_existing_stat.stat.exists
+        or laya_systemone_finetune_eval_existing_stat.stat.checksum | default('')
+        != laya_systemone_finetune_eval_sha256 | lower
+      become: true
+
+    - name: Verify the downloaded validation CSV checksum
+      ansible.builtin.assert:
+        that:
+          - laya_systemone_finetune_eval_download_stat.stat.exists
+          - laya_systemone_finetune_eval_download_stat.stat.checksum == laya_systemone_finetune_eval_sha256 | lower
+        fail_msg: The downloaded validation CSV does not match its configured SHA-256 checksum.
+        quiet: true
+      when: laya_systemone_finetune_eval_download_stat is not skipped
+      no_log: true
+
+    - name: Move the verified validation CSV into place
+      ansible.builtin.command:
+        argv:
+          - mv
+          - -fT
+          - --
+          - "{{ laya_systemone_finetune_eval_path }}.download"
+          - "{{ laya_systemone_finetune_eval_path }}"
+      when: laya_systemone_finetune_eval_download_stat is not skipped
+      become: true
+      changed_when: true
       no_log: true
 
     - name: Set private ownership and permissions on the CSV files
@@ -262,6 +428,8 @@
           - "{{ laya_systemone_venv }}/bin/laya-train"
           - --data
           - "{{ laya_systemone_finetune_train_path }}"
+          - --base
+          - "{{ laya_systemone_finetune_base }}"
           - --eval-data
           - "{{ laya_systemone_finetune_eval_path }}"
           - --out
@@ -309,29 +477,88 @@
         content: >-
           {{ {'name': laya_systemone_finetune_name,
               'train_sha256': laya_systemone_finetune_train_sha256 | lower,
-              'eval_sha256': laya_systemone_finetune_eval_sha256 | lower} | to_json }}
+              'eval_sha256': laya_systemone_finetune_eval_sha256 | lower,
+              'epochs': laya_systemone_finetune_epochs | int,
+              'text_column': laya_systemone_finetune_text_column,
+              'label_column': laya_systemone_finetune_label_column,
+              'target_error': laya_systemone_finetune_target_error | float,
+              'seed': laya_systemone_finetune_seed | int,
+              'base': laya_systemone_finetune_base,
+              'laya_version': laya_systemone_finetune_laya_version.stdout | trim} | to_json }}
         dest: "{{ laya_systemone_finetune_staging_dir }}/finetune-manifest.json"
         owner: "{{ laya_systemone_user }}"
         group: "{{ laya_systemone_group }}"
         mode: "0600"
       become: true
 
-    - name: Remove the previous fine-tuned model directory
+    - name: Promote the validated fine-tuned model atomically
+      block:
+        - name: Check the current model directory before promotion
+          ansible.builtin.stat:
+            path: "{{ laya_systemone_finetune_model_dir }}"
+          register: laya_systemone_finetune_current_before_promotion
+          become: true
+
+        - name: Rename the current model directory to .prev
+          ansible.builtin.command:
+            argv:
+              - mv
+              - -T
+              - --
+              - "{{ laya_systemone_finetune_model_dir }}"
+              - "{{ laya_systemone_finetune_model_dir }}.prev"
+          when: laya_systemone_finetune_current_before_promotion.stat.exists
+          become: true
+          changed_when: true
+          no_log: true
+
+        - name: Move the validated staging directory into place
+          ansible.builtin.command:
+            argv:
+              - mv
+              - -T
+              - --
+              - "{{ laya_systemone_finetune_staging_dir }}"
+              - "{{ laya_systemone_finetune_model_dir }}"
+          become: true
+          changed_when: true
+          no_log: true
+      rescue:
+        - name: Check model paths after a failed promotion
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ laya_systemone_finetune_model_dir }}"
+            - "{{ laya_systemone_finetune_model_dir }}.prev"
+          register: laya_systemone_finetune_paths_after_failed_promotion
+          become: true
+
+        - name: Restore the previous model after a failed promotion
+          ansible.builtin.command:
+            argv:
+              - mv
+              - -T
+              - --
+              - "{{ laya_systemone_finetune_model_dir }}.prev"
+              - "{{ laya_systemone_finetune_model_dir }}"
+          when:
+            - laya_systemone_finetune_paths_after_failed_promotion.results[1].stat.isdir | default(false)
+            - not laya_systemone_finetune_paths_after_failed_promotion.results[0].stat.exists
+          become: true
+          register: laya_systemone_finetune_restore_previous
+          changed_when: laya_systemone_finetune_restore_previous.rc == 0
+          failed_when: false
+          no_log: true
+
+        - name: Fail the promotion with a sanitized message
+          ansible.builtin.fail:
+            msg: Laya fine-tuning failed; service start was attempted where a unit was present.
+
+    - name: Remove the previous model after successful promotion
       ansible.builtin.file:
-        path: "{{ laya_systemone_finetune_model_dir }}"
+        path: "{{ laya_systemone_finetune_model_dir }}.prev"
         state: absent
       become: true
-
-    - name: Promote the validated fine-tuned model atomically
-      ansible.builtin.command:
-        argv:
-          - mv
-          - -T
-          - --
-          - "{{ laya_systemone_finetune_staging_dir }}"
-          - "{{ laya_systemone_finetune_model_dir }}"
-      become: true
-      changed_when: true
   rescue:
     - name: Record the fine-tuning failure for sanitized reporting
       ansible.builtin.set_fact:

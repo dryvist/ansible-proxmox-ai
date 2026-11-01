@@ -46,6 +46,7 @@ def test_finetune_defaults_are_disabled_and_configuration_is_opt_in() -> None:
     assert DEFAULTS["laya_systemone_finetune_name"] == ""
     assert DEFAULTS["laya_systemone_finetune_bucket"] == "system1"
     assert DEFAULTS["laya_systemone_finetune_bao_kv_path"] == "rustfs/system1/ro"
+    assert DEFAULTS["laya_systemone_finetune_base"] == "convaiinnovations/laya"
     assert DEFAULTS["laya_systemone_finetune_staging_dir"].endswith(
         "/models/.staging-{{ laya_systemone_finetune_name }}"
     )
@@ -71,8 +72,50 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     training_name = "Download and train the fine-tuned checkpoint when its manifest is stale"
     training = next(task for task in tasks if task.get("name") == training_name)
     skip_condition = json.dumps(training["when"]).lower()
-    assert "train_sha256" in skip_condition
-    assert "eval_sha256" in skip_condition
+    for field in (
+        "train_sha256",
+        "eval_sha256",
+        "epochs",
+        "text_column",
+        "label_column",
+        "target_error",
+        "seed",
+        "base",
+        "laya_version",
+    ):
+        assert field in skip_condition
+
+    manifest_task = _find_task([training], "Write the fine-tune completion manifest into staging")
+    manifest_content = manifest_task["ansible.builtin.copy"]["content"]
+    for field in (
+        "epochs",
+        "text_column",
+        "label_column",
+        "target_error",
+        "seed",
+        "base",
+        "laya_version",
+    ):
+        assert f"'{field}':" in manifest_content
+
+    for prefix in ("train", "eval"):
+        name = "training" if prefix == "train" else "validation"
+        checksum = _find_task(
+            [training], f"Check the existing {name} CSV checksum before download"
+        )
+        download = _find_task([training], f"Download the {name} CSV when missing or corrupt")
+        assert checksum["ansible.builtin.stat"]["checksum_algorithm"] == "sha256"
+        assert checksum["ansible.builtin.stat"]["path"] == (
+            f"{{{{ laya_systemone_finetune_{prefix}_path }}}}"
+        )
+        assert checksum["register"].endswith(f"{prefix}_existing_stat")
+        assert "creates" not in download["ansible.builtin.command"]
+        assert download["when"]
+        assert f"{prefix}_existing_stat.stat.checksum" in download["when"]
+        assert f"{prefix}_sha256" in download["when"]
+        assert download["ansible.builtin.command"]["argv"][-1] == (
+            f"{{{{ laya_systemone_finetune_{prefix}_path }}}}.download"
+        )
 
     manifest_read = _find_task(tasks, "Read the fine-tune completion manifest")
     assert manifest_read["failed_when"] is False
@@ -86,6 +129,8 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     train_argv = train_task["ansible.builtin.command"]["argv"]
     out_index = train_argv.index("--out")
     assert train_argv[out_index + 1] == "{{ laya_systemone_finetune_staging_dir }}"
+    base_index = train_argv.index("--base")
+    assert train_argv[base_index + 1] == "{{ laya_systemone_finetune_base }}"
     assert "creates" not in train_task["ansible.builtin.command"]
 
     model_stat = _find_task([training], "Check the staged model.safetensors file")
@@ -99,12 +144,28 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     assert "staging_config_stat.stat.exists" in validation_conditions
 
     ordered_names = [task.get("name") for task in _walk_tasks([training])]
-    assert ordered_names.index(validation["name"]) < ordered_names.index(
-        "Remove the previous fine-tuned model directory"
+    promotion = _find_task([training], "Promote the validated fine-tuned model atomically")
+    promotion_names = [task.get("name") for task in promotion["block"]]
+    assert ordered_names.index(validation["name"]) < ordered_names.index(promotion["name"])
+    assert promotion_names.index("Rename the current model directory to .prev") < promotion_names.index(
+        "Move the validated staging directory into place"
     )
-    assert ordered_names.index("Remove the previous fine-tuned model directory") < ordered_names.index(
-        "Promote the validated fine-tuned model atomically"
-    )
+    restore = _find_task(promotion["rescue"], "Restore the previous model after a failed promotion")
+    restore_argv = restore["ansible.builtin.command"]["argv"]
+    assert restore_argv[-2:] == [
+        "{{ laya_systemone_finetune_model_dir }}.prev",
+        "{{ laya_systemone_finetune_model_dir }}",
+    ]
+    assert "not laya_systemone_finetune_paths_after_failed_promotion.results[0].stat.exists" in restore[
+        "when"
+    ]
+
+    tasks_by_name = {task.get("name"): task for task in tasks}
+    recovery = tasks_by_name["Restore the previous model when an interrupted promotion left no current model"]
+    assert recovery["ansible.builtin.command"]["argv"][-2:] == [
+        "{{ laya_systemone_finetune_model_dir }}.prev",
+        "{{ laya_systemone_finetune_model_dir }}",
+    ]
 
 
 def test_laya_starts_in_always_and_failures_are_reported_afterward() -> None:
