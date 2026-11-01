@@ -116,11 +116,13 @@ class ExportTestCase(unittest.TestCase):
 
 
 class ExportMainTests(ExportTestCase):
-    def test_401_logs_reason_retries_three_times_and_exits_1(self):
-        code, stderr, opener = self.run_main([http_error(401, b'{"messages":[{"text":"Unauthorized"}]}')] * 3)
+    def test_401_logs_each_attempt_retries_five_times_and_exits_1(self):
+        code, stderr, opener = self.run_main([http_error(401, b'{"messages":[{"text":"Unauthorized"}]}')] * 6)
         self.assertEqual(code, 1)
-        self.assertEqual(opener.calls, 3)
-        self.assertEqual(self.sleep.call_args_list, [mock.call(5), mock.call(20)])
+        self.assertEqual(opener.calls, 6)
+        self.assertEqual(self.sleep.call_args_list, [mock.call(d) for d in (10, 30, 60, 120, 240)])
+        self.assertIn("agent session export attempt 1 of 6 failed: HTTPError status=401, retrying in 10s", stderr)
+        self.assertIn("agent session export attempt 6 of 6 failed: HTTPError status=401, no attempts left", stderr)
         self.assertIn("agent session export failed for claude: HTTPError status=401", stderr)
         self.assertIn("Unauthorized", stderr)
         self.assertNotIn(TOKEN, stderr)
@@ -128,9 +130,9 @@ class ExportMainTests(ExportTestCase):
         self.assertFalse(self.watermarks.exists())
 
     def test_429_logs_reason_and_retries(self):
-        code, stderr, opener = self.run_main([http_error(429, b"rate limited")] * 3)
+        code, stderr, opener = self.run_main([http_error(429, b"rate limited")] * 6)
         self.assertEqual(code, 1)
-        self.assertEqual(opener.calls, 3)
+        self.assertEqual(opener.calls, 6)
         self.assertIn("HTTPError status=429 body='rate limited'", stderr)
 
     def test_404_is_not_retried(self):
@@ -141,9 +143,9 @@ class ExportMainTests(ExportTestCase):
         self.assertIn("HTTPError status=404 body='not found'", stderr)
 
     def test_url_error_logs_reason_and_retries(self):
-        code, stderr, opener = self.run_main([urllib.error.URLError("connection refused")] * 3)
+        code, stderr, opener = self.run_main([urllib.error.URLError("connection refused")] * 6)
         self.assertEqual(code, 1)
-        self.assertEqual(opener.calls, 3)
+        self.assertEqual(opener.calls, 6)
         self.assertIn("agent session export failed for claude: URLError reason=connection refused", stderr)
 
 
@@ -154,13 +156,31 @@ class ExportRowsTests(ExportTestCase):
         )
         self.assertEqual(rows, [{"_time": "1", "_agent_session": "s1"}, {"_time": "2", "_agent_session": "s1"}])
         self.assertEqual(opener.calls, 3)
-        self.assertEqual(self.sleep.call_args_list, [mock.call(5), mock.call(20)])
+        self.assertEqual(self.sleep.call_args_list, [mock.call(10), mock.call(30)])
 
     def test_socket_timeout_before_first_row_is_retried(self):
         rows, opener = self.export([socket.timeout("timed out"), response(row("1"))])
         self.assertEqual(rows, [{"_time": "1", "_agent_session": "s1"}])
         self.assertEqual(opener.calls, 2)
-        self.sleep.assert_called_once_with(5)
+        self.sleep.assert_called_once_with(10)
+
+    def test_five_401_failures_then_success_returns_the_response(self):
+        ok = response(row("1"))
+        opener = FakeUrlopen([http_error(401) for _ in range(5)] + [ok])
+        with mock.patch.object(agent.urllib.request, "urlopen", opener):
+            self.assertIs(agent.open_export(mock.sentinel.request), ok)
+        self.assertEqual(opener.calls, 6)
+        self.assertEqual(self.sleep.call_args_list, [mock.call(d) for d in (10, 30, 60, 120, 240)])
+
+    def test_six_401_failures_raise(self):
+        opener = FakeUrlopen([http_error(401) for _ in range(6)])
+        with (
+            mock.patch.object(agent.urllib.request, "urlopen", opener),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            agent.open_export(mock.sentinel.request)
+        self.assertEqual(opener.calls, 6)
+        self.assertEqual(self.sleep.call_args_list, [mock.call(d) for d in (10, 30, 60, 120, 240)])
 
     def test_malformed_json_is_not_retried(self):
         opener = FakeUrlopen([response("not json")])
