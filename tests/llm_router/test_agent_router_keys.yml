@@ -114,6 +114,13 @@
             purpose: Fixture standard agent
             owns: []
             router_key_class: standard
+          example-local:
+            container: example-local
+            hostname: example-local.example.com
+            display: Example local agent
+            purpose: Fixture local-only agent
+            owns: []
+            router_key_class: local
           example-all:
             container: example-all
             hostname: example-all.example.com
@@ -126,6 +133,7 @@
           llm-router-agent-keys:
             example_owner_llm_router_key: fixture-owner-key
             example_standard_llm_router_key: fixture-standard-key
+            example_local_llm_router_key: fixture-local-key
             example_all_llm_router_key: fixture-all-key
       block:
         - name: Trust the ownership fixture callers over the shared fixture
@@ -134,6 +142,7 @@
               {{ ai_callers | combine({
                    'example-owner': {'trust_tier': _llm_router_trusted_caller_tiers | first},
                    'example-standard': {'trust_tier': _llm_router_trusted_caller_tiers | first},
+                   'example-local': {'trust_tier': _llm_router_trusted_caller_tiers | first},
                    'example-all': {'trust_tier': _llm_router_trusted_caller_tiers | first}
                  }) }}
 
@@ -172,16 +181,22 @@
             that:
               - >-
                 _roster_agent_keys | map(attribute='alias') | list
-                == ['example-owner', 'example-standard', 'example-all']
+                == ['example-owner', 'example-standard', 'example-local', 'example-all']
               - _owner.allowed_classes == ['local', 'sub', 'paid-zdr']
               - _standard.allowed_classes == ['local', 'sub', 'paid-zdr', 'free']
+              - _local.allowed_classes == _llm_router_consumer_classes_local
+              - _local.models == _expected_local_models
+              - _expected_local_models | length == 4
+              - _local.models | intersect(_non_local_registry_names) | length == 0
+              - _local.metadata.router_key_class == 'agent'
+              - _local.metadata.router_request_priority == 10
               - _all_agent.allowed_classes == ['local', 'sub', 'paid-zdr', 'free', 'retains']
               - >-
                 _roster_virtual_keys | selectattr('alias', 'in', _roster_agent_keys | map(attribute='alias') | list)
-                | selectattr('metadata.router_key_class', 'equalto', 'agent') | list | length == 3
+                | selectattr('metadata.router_key_class', 'equalto', 'agent') | list | length == 4
               - >-
                 _roster_virtual_keys | selectattr('alias', 'in', _roster_agent_keys | map(attribute='alias') | list)
-                | selectattr('metadata.router_request_priority', 'equalto', 10) | list | length == 3
+                | selectattr('metadata.router_request_priority', 'equalto', 10) | list | length == 4
               - >-
                 _workstation_keys | selectattr('metadata.router_request_priority', 'defined')
                 | list | length == 0
@@ -219,7 +234,10 @@
                 (_workstation_keys | selectattr('alias', 'equalto', 'litellm-local-workstation')
                  | first).object_permission.mcp_servers == ['splunk']
               - _roster_virtual_keys | selectattr('owner_filter', 'defined') | list | length == 0
-            fail_msg: "Roster ownership was not applied in the shared key projection."
+            fail_msg: >-
+              Roster ownership was not applied in the shared key projection:
+              local groups={{ _expected_local_models }};
+              agent-only groups={{ llm_router_agent_only_groups }}.
           vars:
             _expected_hub_servers:
               - context7
@@ -244,7 +262,22 @@
               - zammad
             _owner: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-owner') | first }}"
             _standard: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-standard') | first }}"
+            _local: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-local') | first }}"
             _all_agent: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-all') | first }}"
+            _expected_local_models: >-
+              {{ ([llm_router_small_capability_name, llm_router_primary_model]
+                  + llm_router_agent_only_groups + [llm_router_embedding_model])
+                 | unique | list }}
+            _non_local_registry_names: >-
+              {%- set ns = namespace(names=[]) -%}
+              {%- for m in llm_router_model_registry
+                    if m.tier not in llm_router_local_registry_tiers -%}
+              {%- set ns.names = ns.names + [m.client_model_id]
+                    + ([m.route_group] if m.route_group is defined else [])
+                    + ([m.fallback_group] if m.fallback_group is defined else [])
+                    + (m.stable_aliases | default([])) -%}
+              {%- endfor -%}
+              {{ ns.names | unique | list }}
             _workstation_keys: >-
               {{ _roster_virtual_keys
                  | selectattr('alias', 'in', ['claude-code', 'codex', 'agy',

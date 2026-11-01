@@ -18,6 +18,7 @@ _llm_router_hermes_profile_names: >-
 _llm_router_consumer_classes_all: [local, sub, paid-zdr, free, retains]
 _llm_router_consumer_classes_standard: [local, sub, paid-zdr, free]
 _llm_router_consumer_classes_zdr: [local, sub, paid-zdr]
+_llm_router_consumer_classes_local: [local]
 _llm_router_sandbox_agent_excluded_groups: >-
   {%- set ns = namespace(names=[]) -%}
   {%- for m in llm_router_registry_enabled
@@ -112,6 +113,11 @@ _llm_router_agent_keys: >-
                   'groups': llm_router_d1_standard_key_groups},
         zdr={'classes': _llm_router_consumer_classes_zdr,
              'groups': llm_router_d1_zdr_key_groups},
+        local={'classes': _llm_router_consumer_classes_local,
+               'groups': [llm_router_small_capability_name,
+                          llm_router_primary_model]
+                         + llm_router_agent_only_groups
+                         + [llm_router_embedding_model]},
       ) -%}
   {%- set _domain = (openbao_secrets_by_domain | default({}, true))
         .get('llm-router-agent-keys', {}) -%}
@@ -123,13 +129,16 @@ _llm_router_agent_keys: >-
   {%- set _value = _domain.get(_field) or undef(
         'Router key missing for roster agent ' ~ _name) -%}
   {%- set _zdr = _agent.router_key_class == 'zdr' -%}
+  {%- set _models = (_scope.groups | unique | list
+        if _agent.router_key_class == 'local'
+        else _base_models + _scope.groups + llm_router_agent_only_groups
+             + ([llm_router_review_aliases.local] if _zdr else [])) -%}
   {%- set _key = {
         'alias': _name,
         'value': _value,
         'enabled': true,
         'allowed_classes': _scope.classes,
-        'models': _base_models + _scope.groups + llm_router_agent_only_groups
-                   + ([llm_router_review_aliases.local] if _zdr else []),
+        'models': _models,
         'models_authoritative': true,
         'metadata': {
           'router_key_class': 'agent',
