@@ -70,8 +70,8 @@ From the repository root, build the pinned upstream fixture image and run the ac
 
 ```sh
 make -C "$AGENTGATEWAY_SOURCE_DIR/controller" testbox-docker IMAGE_REGISTRY=gateway-falsifier
-python -m pytest -o pythonpath=tests/agentgateway_docker -q -s integration/agentgateway
+python -m pytest -o pythonpath=tests/agentgateway_docker -v -s integration/agentgateway
 ```
 
 CI performs the same build from `.agentgateway` and runs
-`python -m pytest -o pythonpath=tests/agentgateway_docker -q -s integration/agentgateway`.
+`python -m pytest -o pythonpath=tests/agentgateway_docker -v -s integration/agentgateway`.
