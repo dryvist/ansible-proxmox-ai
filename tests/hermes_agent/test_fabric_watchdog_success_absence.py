@@ -136,6 +136,27 @@ def test_a_weekly_cron_job_waits_for_its_cadence_and_missed_cycle_grace() -> Non
     assert len(past_grace) == 1
 
 
+def test_a_run_in_flight_does_not_repin_the_cadence() -> None:
+    """The scheduler advances next_run_at when a run STARTS, while last_run_at and
+    last_status still describe the previous run. Re-pinning on that tick reads
+    two cycles as one cadence (a daily job read as 2872m on 2026-11-01).
+    """
+    day = 24 * 60
+    daily = {
+        "id": "daily",
+        "name": "daily",
+        "enabled": True,
+        "schedule": {"kind": "cron", "expr": "16 6 * * *"},
+        "last_run_at": _iso(NOW),
+        "next_run_at": _iso(NOW + day * MINUTE),
+        "last_status": "ok",
+    }
+    state = settle([daily])
+    in_flight = dict(daily, next_run_at=_iso(NOW + 2 * day * MINUTE))
+    run([in_flight], state, now=NOW + (day + 1) * MINUTE)
+    assert state["jobs"]["default/daily"]["cadence"] == day * MINUTE
+
+
 def test_a_disabled_job_is_not_silence() -> None:
     state = settle([job("seasonal", cadence_min=15, last_ok_ago_min=1)])
     off = [job("seasonal", cadence_min=15, last_ok_ago_min=1, enabled=False)]
