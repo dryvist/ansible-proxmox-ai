@@ -6,6 +6,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULTS = role_defaults_text(REPO_ROOT / "roles" / "hermes_agent")
 RSYSLOG = (REPO_ROOT / "roles/hermes_agent/templates/hermes-agent-rsyslog.conf.j2").read_text()
 TASKS = role_tasks_text(REPO_ROOT / "roles" / "hermes_agent")
+DASHBOARD_LOGGING = (
+    REPO_ROOT / "roles/hermes_agent/templates/hermes-dashboard-logging.conf.j2"
+).read_text()
+DASHBOARD_UNIT_TASKS = (
+    REPO_ROOT / "roles/hermes_agent/tasks/gateway_and_dashboard_units.yml"
+).read_text()
 
 
 def test_debug_logging_remains_enabled() -> None:
@@ -21,6 +27,15 @@ def test_rsyslog_routes_unit_children_and_file_logs() -> None:
     assert 'File="{{ hermes_agent_hermes_home }}/profiles/*/logs/*.log"' in RSYSLOG
     assert 'Ruleset="hermes_agent"' in RSYSLOG
     assert 'freshStartTail="off"' in RSYSLOG
+
+
+def test_dashboard_journal_uses_the_existing_hermes_rsyslog_route() -> None:
+    assert "hermes-dashboard.service.d/10-logging.conf" in DASHBOARD_UNIT_TASKS
+    assert "src: hermes-dashboard-logging.conf.j2" in DASHBOARD_UNIT_TASKS
+    assert "StandardOutput=journal" in DASHBOARD_LOGGING
+    assert "StandardError=journal" in DASHBOARD_LOGGING
+    assert "SyslogIdentifier=hermes" in DASHBOARD_LOGGING
+    assert "$programname startswith 'hermes'" in RSYSLOG
 
 
 def test_verbose_payload_logging_is_not_forced_on() -> None:
