@@ -1,0 +1,225 @@
+---
+# PostgreSQL, uploaded-file, and Agent storage backups taken while services are live.
+- name: Take live PostgreSQL database backups before the Dify upgrade
+  ansible.builtin.shell:
+    cmd: >-
+      umask 077 && docker compose exec -T db pg_dump
+      --username {{ dify_docker_db_user | quote }}
+      --dbname {{ item.name | quote }}
+      > {{ item.path | quote }}
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  loop:
+    - name: "{{ dify_docker_db_name }}"
+      path: "{{ dify_docker_postgres_backup_path }}"
+    - name: "{{ dify_docker_plugin_db_name }}"
+      path: "{{ dify_docker_plugin_postgres_backup_path }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+
+- name: Back up PostgreSQL global roles before the Dify upgrade
+  ansible.builtin.shell:
+    cmd: >-
+      umask 077 && docker compose exec -T db pg_dumpall
+      --username {{ dify_docker_db_user | quote }}
+      --globals-only
+      > {{ dify_docker_postgres_globals_backup_path | quote }}
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  changed_when: true
+
+- name: Read the PostgreSQL pre-upgrade backup files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: dify_docker_postgres_backup_stats
+  loop: "{{ dify_docker_postgres_backup_paths }}"
+
+- name: Require non-empty PostgreSQL pre-upgrade backups
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.size > 0
+    fail_msg: PostgreSQL pre-upgrade backup is missing or empty.
+    quiet: true
+  loop: "{{ dify_docker_postgres_backup_stats.results }}"
+
+- name: Set restrictive permissions on the PostgreSQL backups
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ dify_docker_postgres_backup_paths }}"
+
+- name: Back up Dify uploaded-file storage while the stack is running
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --create
+      - --gzip
+      - --numeric-owner
+      - --file
+      - "{{ dify_docker_uploads_backup_path }}"
+      - --directory
+      - "{{ dify_docker_data_dir }}"
+      - storage
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  changed_when: true
+
+- name: Read the Dify uploaded-file pre-upgrade backup
+  ansible.builtin.stat:
+    path: "{{ dify_docker_uploads_backup_path }}"
+  register: dify_docker_uploads_backup_stat
+
+- name: Require a non-empty Dify uploaded-file pre-upgrade backup
+  ansible.builtin.assert:
+    that:
+      - dify_docker_uploads_backup_stat.stat.exists
+      - dify_docker_uploads_backup_stat.stat.size > 0
+    fail_msg: Dify uploaded-file pre-upgrade backup is missing or empty.
+    quiet: true
+
+- name: Set restrictive permissions on the Dify uploaded-file backup
+  ansible.builtin.file:
+    path: "{{ dify_docker_uploads_backup_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Verify the Dify uploaded-file archive integrity
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --list
+      - --gzip
+      - --file
+      - "{{ dify_docker_uploads_backup_path }}"
+  changed_when: false
+
+- name: Copy Dify Agent snapshot volume (/home/dify/.snapshots) from the live local sandbox
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - cp
+      - --archive
+      - local_sandbox:/home/dify
+      - "{{ dify_docker_agent_storage_staging_dir }}/agent-home"
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  changed_when: true
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Copy Dify Agent workspace storage from the live local sandbox
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - cp
+      - --archive
+      - local_sandbox:/workspace
+      - "{{ dify_docker_agent_storage_staging_dir }}/agent-workspace"
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  changed_when: true
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Back up Dify Agent home snapshot storage while the stack is running
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --create
+      - --gzip
+      - --numeric-owner
+      - --file
+      - "{{ dify_docker_agent_home_backup_path }}"
+      - --directory
+      - "{{ dify_docker_agent_storage_staging_dir }}"
+      - agent-home
+  changed_when: true
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Read the Dify Agent home pre-upgrade backup
+  ansible.builtin.stat:
+    path: "{{ dify_docker_agent_home_backup_path }}"
+  register: dify_docker_agent_home_backup_stat
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Require a non-empty Dify Agent home pre-upgrade backup
+  ansible.builtin.assert:
+    that:
+      - dify_docker_agent_home_backup_stat.stat.exists
+      - dify_docker_agent_home_backup_stat.stat.size > 0
+    fail_msg: Dify Agent home pre-upgrade backup is missing or empty.
+    quiet: true
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Set restrictive permissions on the Dify Agent home backup
+  ansible.builtin.file:
+    path: "{{ dify_docker_agent_home_backup_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Verify the Dify Agent home archive integrity
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --list
+      - --gzip
+      - --file
+      - "{{ dify_docker_agent_home_backup_path }}"
+  changed_when: false
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Back up Dify Agent workspace storage while the stack is running
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --create
+      - --gzip
+      - --numeric-owner
+      - --file
+      - "{{ dify_docker_agent_workspace_backup_path }}"
+      - --directory
+      - "{{ dify_docker_agent_storage_staging_dir }}"
+      - agent-workspace
+  changed_when: true
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Read the Dify Agent workspace pre-upgrade backup
+  ansible.builtin.stat:
+    path: "{{ dify_docker_agent_workspace_backup_path }}"
+  register: dify_docker_agent_workspace_backup_stat
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Require a non-empty Dify Agent workspace pre-upgrade backup
+  ansible.builtin.assert:
+    that:
+      - dify_docker_agent_workspace_backup_stat.stat.exists
+      - dify_docker_agent_workspace_backup_stat.stat.size > 0
+    fail_msg: Dify Agent workspace pre-upgrade backup is missing or empty.
+    quiet: true
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Set restrictive permissions on the Dify Agent workspace backup
+  ansible.builtin.file:
+    path: "{{ dify_docker_agent_workspace_backup_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Verify the Dify Agent workspace archive integrity
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --list
+      - --gzip
+      - --file
+      - "{{ dify_docker_agent_workspace_backup_path }}"
+  changed_when: false
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"

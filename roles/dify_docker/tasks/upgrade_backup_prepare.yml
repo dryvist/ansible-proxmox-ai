@@ -1,0 +1,230 @@
+---
+# Preflight, paths, and bounded free-space check before any backup or stop.
+- name: Set the Dify pre-upgrade backup timestamp
+  ansible.builtin.set_fact:
+    dify_docker_upgrade_backup_timestamp: "{{ now(utc=true, fmt='%Y%m%dT%H%M%S') }}"
+
+- name: Set timestamped Dify pre-upgrade backup paths
+  ansible.builtin.set_fact:
+    dify_docker_postgres_backup_path: >-
+      {{ dify_docker_upgrade_backup_dir ~ '/pre-upgrade-' ~
+         dify_docker_upgrade_backup_timestamp ~ '-postgres.sql' }}
+    dify_docker_plugin_postgres_backup_path: >-
+      {{ dify_docker_upgrade_backup_dir ~ '/pre-upgrade-' ~
+         dify_docker_upgrade_backup_timestamp ~ '-postgres-plugin.sql' }}
+    dify_docker_postgres_globals_backup_path: >-
+      {{ dify_docker_upgrade_backup_dir ~ '/pre-upgrade-' ~
+         dify_docker_upgrade_backup_timestamp ~ '-postgres-globals.sql' }}
+    dify_docker_uploads_backup_path: >-
+      {{ dify_docker_upgrade_backup_dir ~ '/pre-upgrade-' ~
+         dify_docker_upgrade_backup_timestamp ~ '-uploads.tar.gz' }}
+    dify_docker_agent_home_backup_path: >-
+      {{ dify_docker_upgrade_backup_dir ~ '/pre-upgrade-' ~
+         dify_docker_upgrade_backup_timestamp ~ '-agent-home.tar.gz' }}
+    dify_docker_agent_workspace_backup_path: >-
+      {{ dify_docker_upgrade_backup_dir ~ '/pre-upgrade-' ~
+         dify_docker_upgrade_backup_timestamp ~ '-agent-workspace.tar.gz' }}
+    dify_docker_agent_storage_staging_dir: >-
+      {{ dify_docker_upgrade_backup_dir ~ '/pre-upgrade-' ~
+         dify_docker_upgrade_backup_timestamp ~ '-agent-storage' }}
+    dify_docker_weaviate_backup_path: >-
+      {{ dify_docker_upgrade_backup_dir ~ '/pre-upgrade-' ~
+         dify_docker_upgrade_backup_timestamp ~ '-weaviate.tar.gz' }}
+    dify_docker_weaviate_backup_id: >-
+      pre-upgrade-{{ dify_docker_upgrade_backup_timestamp }}
+
+- name: Set the PostgreSQL pre-upgrade backup path list
+  ansible.builtin.set_fact:
+    dify_docker_postgres_backup_paths:
+      - "{{ dify_docker_postgres_backup_path }}"
+      - "{{ dify_docker_plugin_postgres_backup_path }}"
+      - "{{ dify_docker_postgres_globals_backup_path }}"
+
+- name: Ensure the Dify pre-upgrade backup directory exists
+  ansible.builtin.file:
+    path: "{{ dify_docker_upgrade_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Require a bounded positive Dify stop timeout
+  ansible.builtin.assert:
+    that:
+      - dify_docker_stop_timeout_seconds | int > 0
+      - dify_docker_stop_timeout_seconds | int <= 3600
+    fail_msg: Dify compose stop timeout must be between 1 and 3600 seconds.
+    quiet: true
+
+- name: Require a positive Dify backup retention count
+  ansible.builtin.assert:
+    that:
+      - dify_docker_upgrade_backup_retention_count | int > 0
+    fail_msg: Dify upgrade backup retention must be a positive number of sets.
+    quiet: true
+
+- name: Read the running Weaviate container ID for backup and size checks
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - ps
+      - --quiet
+      - weaviate
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_weaviate_container
+  changed_when: false
+
+- name: Require a running Weaviate container before estimating backup size
+  ansible.builtin.assert:
+    that:
+      - dify_docker_weaviate_container.stdout | trim | length > 0
+    fail_msg: Weaviate is not running; refusing an unguarded upgrade.
+    quiet: true
+
+- name: Read the Weaviate persistence mount path for size checks and cold backup
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - >-
+        {{ '{{' }}range .Mounts{{ '}}' }}
+        {{ '{{' }}if eq .Destination "/var/lib/weaviate"{{ '}}' }}
+        {{ '{{' }}.Source{{ '}}' }}
+        {{ '{{' }}end{{ '}}' }}
+        {{ '{{' }}end{{ '}}' }}
+      - "{{ dify_docker_weaviate_container.stdout | trim }}"
+  register: dify_docker_weaviate_persistence_path
+  changed_when: false
+
+- name: Require the Weaviate persistence mount used for the backup estimate
+  ansible.builtin.assert:
+    that:
+      - dify_docker_weaviate_persistence_path.stdout | trim | length > 0
+    fail_msg: Could not determine the Weaviate persistence mount for the backup estimate.
+    quiet: true
+
+- name: Read PostgreSQL database sizes for the Dify backup estimate
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - exec
+      - -T
+      - db
+      - psql
+      - --username
+      - "{{ dify_docker_db_user }}"
+      - --dbname
+      - "{{ item }}"
+      - --tuples-only
+      - --no-align
+      - --command
+      - SELECT pg_database_size(current_database())
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  loop:
+    - "{{ dify_docker_db_name }}"
+    - "{{ dify_docker_plugin_db_name }}"
+  register: dify_docker_postgres_size_probe
+  changed_when: false
+
+- name: Measure upload and Weaviate data
+  ansible.builtin.command:
+    argv:
+      - du
+      - --summarize
+      - --block-size=1
+      - --apparent-size
+      - --
+      - "{{ item.path }}"
+  register: dify_docker_backup_data_size_probe
+  loop:
+    - name: uploads
+      path: "{{ dify_docker_data_dir }}/storage"
+    - name: weaviate
+      path: "{{ dify_docker_weaviate_persistence_path.stdout | trim }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+
+- name: Measure Dify Agent home and workspace data when configured
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - exec
+      - -T
+      - local_sandbox
+      - du
+      - --summarize
+      - --block-size=1
+      - --apparent-size
+      - --
+      - /home/dify
+      - /workspace
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_agent_size_probe
+  changed_when: false
+  when: "'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Set the measured Dify backup source sizes
+  ansible.builtin.set_fact:
+    dify_docker_postgres_size_bytes: >-
+      {{ dify_docker_postgres_size_probe.results
+         | map(attribute='stdout') | map('trim') | map('int') | sum }}
+    dify_docker_upload_size_bytes: >-
+      {{ dify_docker_backup_data_size_probe.results[0].stdout
+         | trim | split | first | int }}
+    dify_docker_weaviate_size_bytes: >-
+      {{ dify_docker_backup_data_size_probe.results[1].stdout
+         | trim | split | first | int }}
+    dify_docker_agent_size_bytes: >-
+      {{ (dify_docker_agent_size_probe.stdout_lines | default([])
+         | map('split') | map('first') | map('int') | sum)
+         if 'local_sandbox' in (dify_docker_deployed_services.stdout_lines | default([]))
+         else 0 }}
+
+- name: Set the Dify backup size estimate
+  ansible.builtin.set_fact:
+    dify_docker_upgrade_estimated_backup_bytes: >-
+      {{ (dify_docker_postgres_size_bytes | int)
+         + (dify_docker_upload_size_bytes | int)
+         + ((dify_docker_agent_size_bytes | int) * 2)
+         + (dify_docker_weaviate_size_bytes | int) }}
+
+- name: Set the minimum free-space threshold to 1.5 times the estimate
+  ansible.builtin.set_fact:
+    dify_docker_upgrade_minimum_free_bytes: >-
+      {{ (((dify_docker_upgrade_estimated_backup_bytes | int) * 3) + 1) // 2 }}
+
+- name: Read available bytes on the Dify backup filesystem
+  ansible.builtin.command:
+    argv:
+      - df
+      - --output=avail
+      - --block-size=1
+      - --
+      - "{{ dify_docker_upgrade_backup_dir }}"
+  register: dify_docker_backup_filesystem_space
+  changed_when: false
+
+- name: Require 1.5 times the estimated Dify backup size to be free
+  ansible.builtin.assert:
+    that:
+      - dify_docker_backup_filesystem_space.stdout_lines[-1] | int >= dify_docker_upgrade_minimum_free_bytes | int
+    fail_msg: >-
+      Dify upgrade backup needs at least {{ dify_docker_upgrade_minimum_free_bytes }} bytes
+      free on its filesystem; refusing to stop or drain the stack.
+    quiet: true
+
+- name: Ensure the Dify Agent backup staging directory exists
+  ansible.builtin.file:
+    path: "{{ dify_docker_agent_storage_staging_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
