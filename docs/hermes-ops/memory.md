@@ -38,7 +38,8 @@
   Moving a recurring card's assignee between profiles does not reset its
   memory continuity. Memory is not a profile isolation boundary. A profile
   entry can opt out with `memory_bank_id`; see the operating-profiles doc for
-  the `splunk-admin` case.
+  the `splunk-admin` case. `memory_enabled: false` turns memory off for one
+  profile (`eval`).
 
 > If you see a runtime loop of a repeated memory status line (e.g.
 > `Opening memory…Opening memory…`), that is the **brain degenerating**, not a
