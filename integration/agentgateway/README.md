@@ -19,10 +19,10 @@ The acceptance gate covers the strict `/agents` facade and the existing
 optional API-key `/vikunja` route. It checks strict denial and positive
 initialize, list, call, continuation, SSE, and tool-error traffic on
 `/agents`, with denied callers producing no testbox traffic. The `/vikunja`
-test makes an actual task read without `X-Agent-Key`
-through the gateway, the role-rendered sidecar, and the pinned local Vikunja
-API. A separate render check compares the complete `/vikunja` route block
-byte-for-byte with the facade flag enabled and disabled.
+test first initializes and lists without `X-Agent-Key`, then makes a keyed
+known-task read through the gateway, the role-rendered sidecar, and the pinned
+local Vikunja API. A separate render check compares the complete `/vikunja`
+route block byte-for-byte with the facade flag enabled and disabled.
 
 The same Envoy observer has three listeners with separate clusters, counters,
 and trace directories: `8002` observes gateway-to-testbox MCP traffic, `8003`
