@@ -1,5 +1,5 @@
 ---
-- name: Verify the sandbox-only public cheap route reuses an OpenCode Go model
+- name: Verify the sandbox-only public cheap route groups OpenCode Go models
   hosts: localhost
   gather_facts: false
   vars:
@@ -38,28 +38,34 @@
     - name: Find sandbox-only aliases and their rendered targets
       ansible.builtin.set_fact:
         _sandbox_only_aliases: "{{ llm_router_sandbox_only_aliases }}"
-        _opencode_ids: "{{ llm_router_opencode_models | map(attribute='client_model_id') | list }}"
+        _go_entries: >-
+          {{ llm_router_opencode_models
+             | selectattr('client_model_id', 'in', ['go-deepseek-flash', 'go-mimo-flash'])
+             | list }}
 
-    - name: The public cheap alias resolves to an OpenCode Go deployment with public-data tags
+    - name: The public cheap alias resolves to the ordered OpenCode Go group with public-data tags
       ansible.builtin.assert:
         quiet: true
         that:
-          - _sandbox_only_aliases | length > 0
+          - _sandbox_only_aliases == ['public-cheap']
           - >-
             _render_config.router_settings.model_group_alias.keys() | list
             | intersect(_sandbox_only_aliases) | length
             == _sandbox_only_aliases | length
-          - _alias_targets | difference(_opencode_ids) | length == 0
-          - _alias_targets | difference(llm_router_all_servable_models) | length == 0
-          - _target_rows | length == _sandbox_only_aliases | length
+          - _alias_targets == ['opencode-public-cheap']
+          - _go_entries | length == 2
+          - _go_entries | selectattr('route_group', 'equalto', 'opencode-public-cheap') | list | length == 2
+          - _go_entries | selectattr('order', 'defined') | map(attribute='order') | list | sort == [1, 2]
+          - _go_entries | selectattr('tags', 'contains', 'sandbox-only') | list | length == 2
+          - _target_rows | length == 2
           - _public_tagged_targets | length == _target_rows | length
           - _alias_rows | length == 0
         fail_msg: >-
           sandbox aliases={{ _sandbox_only_aliases }}, targets={{ _alias_targets }},
-          OpenCode ids={{ _opencode_ids }}, rendered targets={{ _target_rows }}.
+          Go entries={{ _go_entries }}, rendered targets={{ _target_rows }}.
         success_msg: >-
-          The sandbox-only public route resolves to existing OpenCode Go deployment(s)
-          carrying the public-data sensitivity tag, with no duplicate model-list entries.
+          The sandbox-only public route resolves to both ordered OpenCode Go deployments
+          carrying the public-data sensitivity tag, with no alias-shaped model-list entry.
       vars:
         _alias_targets: >-
           {%- set ns = namespace(targets=[]) -%}

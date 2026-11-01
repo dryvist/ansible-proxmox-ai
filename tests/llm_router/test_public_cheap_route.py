@@ -1,4 +1,4 @@
-"""The public cheap alias renders from OpenCode Go and is sandbox-key-only."""
+"""The public cheap alias groups both OpenCode Go deployments for sandbox keys."""
 
 from __future__ import annotations
 
