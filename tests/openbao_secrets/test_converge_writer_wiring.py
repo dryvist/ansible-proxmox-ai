@@ -6,12 +6,11 @@ compare the literal `{{ openbao_secrets_converge_writer_token }}` reference.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import pytest
 import yaml
-
 
 ROOT = Path(__file__).resolve().parents[2]
 SEED_VARS = ROOT / "inventory/group_vars/all/openbao_secrets/00-seed-vars.yml"
@@ -20,6 +19,7 @@ SEED_CALLERS = [
     ROOT / "roles/langflow_docker/tasks/main.yml",
     ROOT / "roles/langfuse_docker/tasks/seed_secrets.yml",
     ROOT / "roles/phoenix_docker/tasks/main.yml",
+    ROOT / "roles/sim_docker/tasks/main.yml",
 ]
 CONVERGE_TOKEN = "{{ openbao_secrets_converge_writer_token }}"
 
