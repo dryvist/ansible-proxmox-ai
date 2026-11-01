@@ -14,7 +14,6 @@ from urllib.parse import urlencode
 
 import yaml
 from gateway_falsifier_contract import (
-    DIRECT_SUCCESS_URL,
     ERROR_URL,
     GATEWAY_URL,
     NONOWNER,
@@ -60,7 +59,11 @@ def body_messages(message: dict[str, Any]) -> list[dict[str, Any]]:
     if not text:
         return []
     if "text/event-stream" in next(
-        (item.get("value", "") for item in message.get("headers", []) if item.get("key", "").lower() == "content-type"),
+        (
+            item.get("value", "")
+            for item in message.get("headers", [])
+            if item.get("key", "").lower() == "content-type"
+        ),
         "",
     ):
         return [
@@ -82,14 +85,22 @@ def load_traces(trace_dir: Path) -> list[dict[str, Any]]:
     for path in trace_files(trace_dir):
         wrapper = json.loads(path.read_text())
         trace = wrapper.get("httpBufferedTrace", wrapper.get("http_buffered_trace"))
-        assert isinstance(trace, dict), "tap file does not contain an Envoy HttpBufferedTrace"
-        req, resp = trace.get("request"), trace.get("response")
-        assert isinstance(req, dict) and isinstance(resp, dict), "tap trace is incomplete"
-        assert isinstance(req.get("headers"), list) and isinstance(resp.get("headers"), list), (
-            "tap trace omitted request or response headers"
+        assert isinstance(trace, dict), (
+            "tap file does not contain an Envoy HttpBufferedTrace"
         )
-        assert not req.get("body", {}).get("truncated", False), "tap truncated an MCP request body"
-        assert not resp.get("body", {}).get("truncated", False), "tap truncated an MCP response body"
+        req, resp = trace.get("request"), trace.get("response")
+        assert isinstance(req, dict) and isinstance(resp, dict), (
+            "tap trace is incomplete"
+        )
+        assert isinstance(req.get("headers"), list) and isinstance(
+            resp.get("headers"), list
+        ), "tap trace omitted request or response headers"
+        assert not req.get("body", {}).get("truncated", False), (
+            "tap truncated an MCP request body"
+        )
+        assert not resp.get("body", {}).get("truncated", False), (
+            "tap truncated an MCP response body"
+        )
         traces.append(trace)
     return traces
 
@@ -114,9 +125,15 @@ def stat(socket_path: Path, name: str) -> int:
     return values[0]
 
 
-def wait_for_capture(socket_path: Path, trace_dir: Path, minimum: int = 0) -> int:
-    total_name = "http.mcp_observer.downstream_rq_total"
-    active_name = "http.mcp_observer.downstream_rq_active"
+def wait_for_capture(
+    socket_path: Path,
+    trace_dir: Path,
+    minimum: int = 0,
+    *,
+    stat_prefix: str = "mcp_observer",
+) -> int:
+    total_name = f"http.{stat_prefix}.downstream_rq_total"
+    active_name = f"http.{stat_prefix}.downstream_rq_active"
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         total = stat(socket_path, total_name)
@@ -124,10 +141,12 @@ def wait_for_capture(socket_path: Path, trace_dir: Path, minimum: int = 0) -> in
         if total >= minimum and active == 0 and len(trace_files(trace_dir)) == total:
             return total
         time.sleep(0.1)
-    raise AssertionError("Envoy tap files did not reconcile with completed upstream requests")
+    raise AssertionError(
+        "Envoy tap files did not reconcile with completed upstream requests"
+    )
 
 
-def gateway_config() -> str:
+def gateway_config(*, facade_enabled: bool = True, vikunja_port: int = 8003) -> str:
     roster = {
         OWNER: {"owns": ["vikunja"], "trust_tier": "trusted"},
         NONOWNER: {"owns": [], "trust_tier": "trusted"},
@@ -141,7 +160,7 @@ def gateway_config() -> str:
         {"vikunja": OWNER},
         keys,
         extra={
-            "agentgateway_docker_facade_enabled": True,
+            "agentgateway_docker_facade_enabled": facade_enabled,
             "agentgateway_docker_facade_path": "/agents",
             "agentgateway_docker_facade_callers": [OWNER],
             "agentgateway_docker_proxy_port": 15000,
@@ -149,7 +168,7 @@ def gateway_config() -> str:
             "agentgateway_docker_metrics_port": 15002,
             "agentgateway_docker_otlp_endpoint": "http://observer:4318",
             "agentgateway_docker_trace_sampling": "false",
-            "agentgateway_docker_vikunja_mcp_port": 8002,
+            "agentgateway_docker_vikunja_mcp_port": vikunja_port,
             "agentgateway_docker_vikunja_read_token": "fixture-sidecar-token-not-a-secret",
             "agentgateway_docker_mcp_targets": [],
             "agentgateway_docker_qdrant_mcp_enabled": False,
@@ -161,24 +180,63 @@ def gateway_config() -> str:
         },
     )
     config = yaml.safe_load(rendered)
-    for path in ("/agents", "/vikunja"):
-        policies = _route_for_path(_routes(rendered), path)["policies"]
-        assert policies["apiKey"]["mode"] == "strict", f"{path} must require a caller key"
-        assert policies["authorization"]["rules"] == [{"allow": f"apiKey.agent == '{OWNER}'"}], (
-            f"{path} must authorize only the configured caller"
+    routes = _routes(rendered)
+    required = {
+        name.lower()
+        for name in ROLE_DEFAULTS["agentgateway_docker_caller_credential_headers"]
+    }
+    if facade_enabled:
+        agents_policy = _route_for_path(routes, "/agents")["policies"]
+        assert agents_policy["apiKey"]["mode"] == "strict", (
+            "/agents must require a caller key"
         )
-        agents = {item["metadata"]["agent"] for item in policies["apiKey"]["keys"]}
-        assert {OWNER, NONOWNER} <= agents, f"{path} lacks owner or non-owner roster key"
-        removed = {name.lower() for name in policies["requestHeaderModifier"]["remove"]}
-        required = set(ROLE_DEFAULTS["agentgateway_docker_caller_credential_headers"])
-        assert required <= removed, f"{path} omits a configured caller credential header"
+        assert agents_policy["authorization"]["rules"] == [
+            {"allow": f"apiKey.agent == '{OWNER}'"}
+        ], "/agents must authorize only the configured caller"
+        agents = {item["metadata"]["agent"] for item in agents_policy["apiKey"]["keys"]}
+        assert {OWNER, NONOWNER} <= agents, (
+            "/agents lacks owner or non-owner roster key"
+        )
+        removed = {
+            name.lower() for name in agents_policy["requestHeaderModifier"]["remove"]
+        }
+        assert required <= removed, (
+            "/agents omits a configured caller credential header"
+        )
+
+    vikunja_policy = _route_for_path(routes, "/vikunja")["policies"]
+    assert vikunja_policy["apiKey"]["mode"] == "optional", (
+        "/vikunja must preserve its optional baseline API-key policy"
+    )
+    removed = {
+        name.lower() for name in vikunja_policy["requestHeaderModifier"]["remove"]
+    }
+    assert required <= removed, "/vikunja omits a configured caller credential header"
+    assert "authorization" not in vikunja_policy, (
+        "/vikunja baseline authorization policy changed"
+    )
     assert config["binds"][0]["listeners"][0]["routes"]
     return rendered
 
 
+def vikunja_route_bytes(rendered: str) -> bytes:
+    match = re.search(
+        r"(?ms)^    - matches:\n      - path:\n          exact: /vikunja\n.*?(?=^    - matches:\n|\Z)",
+        rendered,
+    )
+    assert match is not None, "rendered gateway config has no /vikunja route block"
+    return match.group(0).encode("utf-8")
+
+
 def image_identity(env: dict[str, str], image: str) -> dict[str, str]:
     result = subprocess.run(
-        ["docker", "image", "inspect", "--format={{.Id}}/{{.Os}}/{{.Architecture}}", image],
+        [
+            "docker",
+            "image",
+            "inspect",
+            "--format={{.Id}}/{{.Os}}/{{.Architecture}}",
+            image,
+        ],
         env=env,
         capture_output=True,
         text=True,
@@ -214,7 +272,9 @@ def observer_positive_control(runtime: dict[str, Any]) -> None:
             last_error = str(error)
         time.sleep(0.25)
     else:
-        raise AssertionError(f"observer MCP listener did not become ready: {last_error}")
+        raise AssertionError(
+            f"observer MCP listener did not become ready: {last_error}"
+        )
     initialized = request(
         OBSERVER_URL,
         "/mcp",
@@ -224,11 +284,15 @@ def observer_positive_control(runtime: dict[str, Any]) -> None:
             "MCP-Protocol-Version": PROTOCOL_VERSION,
         },
     )
-    assert initialized[0] in (200, 202, 204), "direct observer session initialization failed"
+    assert initialized[0] in (200, 202, 204), (
+        "direct observer session initialization failed"
+    )
     call = request(
         OBSERVER_URL,
         "/mcp",
-        body=rpc("tools/call", 101, {"name": "fetch", "arguments": {"url": SUCCESS_URL}}),
+        body=rpc(
+            "tools/call", 101, {"name": "fetch", "arguments": {"url": SUCCESS_URL}}
+        ),
         headers={
             "Mcp-Session-Id": init[1]["mcp-session-id"],
             "MCP-Protocol-Version": PROTOCOL_VERSION,
@@ -252,14 +316,17 @@ def observer_positive_control(runtime: dict[str, Any]) -> None:
         trace_headers(trace).get("authorization") == [f"Bearer {TOY_BACKEND_AUTH}"]
         for trace in positive
     ), "tap positive control missed the synthetic backend authorization header"
-    assert len(traces) == total, "positive-control traces did not match Envoy's upstream counter"
+    assert len(traces) == total, (
+        "positive-control traces did not match Envoy's upstream counter"
+    )
 
     for path in trace_files(trace_dir):
         path.unlink()
     status, _ = admin(socket_path, "POST", "/reset_counters")
-    assert status == 200 and stat(socket_path, "http.mcp_observer.downstream_rq_total") == 0, (
-        "positive-control upstream counters were not reset"
-    )
+    assert (
+        status == 200
+        and stat(socket_path, "http.mcp_observer.downstream_rq_total") == 0
+    ), "positive-control upstream counters were not reset"
 
 
 def wait_for_admin(socket_path: Path) -> None:
@@ -300,7 +367,7 @@ def wait_for_gateway() -> None:
 
 
 def assert_backend_calls(traces: list[dict[str, Any]]) -> None:
-    calls: dict[str, list[dict[str, Any]]] = {SUCCESS_URL: [], DIRECT_SUCCESS_URL: [], ERROR_URL: []}
+    calls: dict[str, list[dict[str, Any]]] = {SUCCESS_URL: [], ERROR_URL: []}
     for trace in traces:
         message = body_json(trace["request"])
         if not message or message.get("method") != "tools/call":
@@ -308,22 +375,19 @@ def assert_backend_calls(traces: list[dict[str, Any]]) -> None:
         url = message.get("params", {}).get("arguments", {}).get("url")
         if url in calls:
             calls[url].append(trace)
-    assert all(calls.values()), "one or more frontend tool calls were not observed at the backend"
+    assert all(calls.values()), (
+        "one or more frontend tool calls were not observed at the backend"
+    )
 
     assert any(
         any(
             content.get("text") == f"fetched: {SUCCESS_URL}"
-            for content in (body_json(trace["response"]) or {}).get("result", {}).get("content", [])
+            for content in (body_json(trace["response"]) or {})
+            .get("result", {})
+            .get("content", [])
         )
         for trace in calls[SUCCESS_URL]
     ), "backend trace did not contain the successful fixture fetch result"
-    assert any(
-        any(
-            content.get("text") == f"fetched: {DIRECT_SUCCESS_URL}"
-            for content in (body_json(trace["response"]) or {}).get("result", {}).get("content", [])
-        )
-        for trace in calls[DIRECT_SUCCESS_URL]
-    ), "backend trace did not contain the successful direct-route fetch result"
     assert any(
         (body_json(trace["response"]) or {}).get("result", {}).get("isError") is True
         for trace in calls[ERROR_URL]

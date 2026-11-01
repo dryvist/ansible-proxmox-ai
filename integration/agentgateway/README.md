@@ -7,31 +7,38 @@ timestamp: 2026-10-31T21:49:00Z
 
 ## Scope
 
-The suite renders the role's configuration and runs it with the gateway image
-selected by the role, a local MCP service, and a request observer. It uses
-fixture caller keys and backend values only. The workflow checks out
-Agentgateway at the pinned commit and builds its maintained testbox with the
-upstream `testbox-docker` Make target. The image is tagged locally as
-`gateway-falsifier/testbox:0.0.1`; it is not published.
+The suite renders the role's configuration and runs the pinned gateway with
+the role-rendered Vikunja MCP sidecar, a local Vikunja API, the maintained
+Agentgateway testbox, and one Envoy observer. It uses synthetic caller keys
+and backend tokens only. The workflow checks out Agentgateway at the pinned
+commit and builds its maintained testbox with the upstream `testbox-docker`
+Make target. The image is tagged locally as `gateway-falsifier/testbox:0.0.1`;
+it is not published.
 
-The acceptance gate covers one Vikunja target and one allowed caller trust
-class. It checks unauthorized requests and positive initialize, list, call,
-and continuation traffic against the selected gateway image. The gateway
-terminates MCP sessions, so frontend and backend request counts and session
-identifiers need not match. A successful tool result, positive backend traffic,
-and complete observer traces establish the connected path. Missing, invalid,
-and non-allowlisted caller keys must cause no upstream request-count increase
-on either `/agents` or `/vikunja`. These are route checks, not a general health
-check.
+The acceptance gate covers the strict `/agents` facade and the existing
+optional API-key `/vikunja` route. It checks strict denial and positive
+initialize, list, call, continuation, SSE, and tool-error traffic on
+`/agents`, with denied callers producing no testbox traffic. The `/vikunja`
+test makes an actual task read without `X-Agent-Key`
+through the gateway, the role-rendered sidecar, and the pinned local Vikunja
+API. A separate render check compares the complete `/vikunja` route block
+byte-for-byte with the facade flag enabled and disabled.
 
-Header assertions use explicit fixture markers on `X-Agent-Key`,
-`Authorization`, `Proxy-Authorization`, and `Cookie`. They prove only that
-these marker values are absent from observed requests across the gateway to
-MCP backend hop; they are not a general secret scanner. The observer is the
-experimental Envoy HTTP tap filter, pinned by the Compose fixture. Missing or
-incomplete traces fail the suite. The tap does not observe a sidecar's separate
-request to the Vikunja API, so this suite makes no claim about that hop's
-credential handling.
+The same Envoy observer has three listeners with separate clusters, counters,
+and trace directories: `8002` observes gateway-to-testbox MCP traffic, `8003`
+observes gateway-to-sidecar MCP traffic, and `3456` observes the sidecar's
+Vikunja API requests. The sidecar's API URL points through the `3456` observer
+listener to the Vikunja fixture; the observer forwards to the API service on a
+separate network. Listener controls prove both new taps see their intended
+positive traffic, then clear their traces and counters before the acceptance
+requests.
+
+The `8003` traces must contain no caller credential headers. The `3456` traces
+must carry exactly the sidecar's generated backend `Authorization` value and
+must contain no caller credential headers or caller marker values. The suite
+checks completed-request counts against complete tap files and waits for active
+requests to drain. These marker checks cover the fixture values and headers;
+they are not a general secret scanner.
 
 The rendered role config currently has no native MCP tool-filter policy, so
 the suite does not claim forbidden-tool hiding or direct-call denial. A passing
@@ -40,8 +47,9 @@ and gateway image digest used in that run. It does not prove a deployed
 environment, real credentials, live cutover, or behavior for other targets and
 trust classes.
 
-The real Vikunja read-token write-denial receipt is a separate client-cutover
-prerequisite. An error returned by the transport testbox is not that receipt.
+The direct Vikunja RO-denial and RW-positive-control test remains a separate
+client-cutover prerequisite. An error returned by the transport testbox is not
+that receipt.
 
 The testbox does not provide a `Last-Event-ID` event store. Stream assertions
 cover the response and continuation behavior exercised by the fixture; they
@@ -52,9 +60,9 @@ session translation behavior.
 
 ## Run locally
 
-Prerequisites are Docker with Compose, Python dependencies from
-`.github/requirements-ci.txt`, and the Agentgateway source checked out at the
-commit in `.github/workflows/gateway-falsifier.yml`. Set
+Prerequisites are a local Unix-socket Docker engine with Compose, Python
+dependencies from `.github/requirements-ci.txt`, and the Agentgateway source
+checked out at the commit in `.github/workflows/gateway-falsifier.yml`. Set
 `AGENTGATEWAY_SOURCE_DIR` to that source checkout and `FALSIFIER_RUNTIME_DIR`
 to an empty temporary directory.
 

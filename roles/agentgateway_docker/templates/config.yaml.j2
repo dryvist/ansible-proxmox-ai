@@ -132,9 +132,9 @@ binds:
    dead-ends on a 307 (as FastMCP does above), add the trailing slash. #}
 {% set vikunja_mcp_host = 'http://mcp-vikunja:' ~ agentgateway_docker_vikunja_mcp_port ~ '/mcp' %}
 {% set facade = agentgateway_docker_facade_enabled | bool %}
-{# Caller allowlist shared by the facade and the strict /vikunja route. The role
-   asserts a non-empty, roster-backed callers list before this renders: an empty
-   rules list allows everyone (crates/agentgateway/src/http/authorization.rs,
+{# The facade alone uses the caller allowlist. The role asserts that an enabled
+   facade has a non-empty, roster-backed callers list before this renders: an
+   empty rules list allows everyone (crates/agentgateway/src/http/authorization.rs,
    validate: "no rule sets, everyone has access" at v1.6.0). #}
 {% set facade_rules = [] %}
 {% for caller in agentgateway_docker_facade_callers %}
@@ -145,17 +145,13 @@ binds:
           exact: /vikunja
       policies:
         apiKey:
-          mode: {{ 'strict' if facade else agentgateway_docker_mcp_route_auth_mode }}
+          mode: {{ agentgateway_docker_mcp_route_auth_mode }}
           location:
             header:
               name: X-Agent-Key
 {{ agentgateway_docker_api_key_block }}
-{% if facade %}
-        authorization:
-          rules: {{ facade_rules | to_json }}
         requestHeaderModifier:
           remove: {{ agentgateway_docker_caller_credential_headers | to_json }}
-{% endif %}
       backends:
       - mcp:
           targets:
