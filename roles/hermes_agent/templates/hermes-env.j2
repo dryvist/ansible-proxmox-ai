@@ -66,11 +66,18 @@ WIKI_PATH={{ hermes_agent_wiki_path }}
 SPLUNK_MCP_URL={{ hermes_agent_splunk_mcp_url }}
 SPLUNK_MCP_TOKEN={{ hermes_agent_splunk_mcp_token }}
 {% endif %}
-{# One inline expression: a non-owner renders this line empty under any trim_blocks setting. -#}
-{{ ('HERMES_AGENT_GATEWAY_KEY=' ~ (openbao_secrets_by_domain[hermes_agent_id][hermes_agent_gateway_key_field]
-   | mandatory(hermes_agent_gateway_key_field ~ ' missing from the ' ~ hermes_agent_id ~ ' OpenBao domain')))
-   if (hermes_agent_facade_canary_enabled | default(false) | bool)
-      or hermes_agent_owned_mcp_slugs | default([]) | length > 0 else '' }}
+{# The facade selector cuts over the default MCP set; only an active Vikunja
+   grant needs the caller key while it is selected. -#}
+{% set _facade_canary = hermes_agent_facade_canary_enabled | default(false) | bool -%}
+{% set _facade_selected = _facade_canary and (hermes_agent_vikunja_mcp_enabled | bool) -%}
+{% set _legacy_gateway_key = not _facade_canary and
+   (hermes_agent_owned_mcp_slugs | default([]) | length > 0) -%}
+{% set _gateway_key_visible = _facade_canary or _legacy_gateway_key -%}
+{% set _gateway_key_required = _facade_selected or _legacy_gateway_key -%}
+{{ ('HERMES_AGENT_GATEWAY_KEY=' ~
+   ((openbao_secrets_by_domain[hermes_agent_id][hermes_agent_gateway_key_field]
+     | mandatory(hermes_agent_gateway_key_field ~ ' missing from the ' ~ hermes_agent_id ~ ' OpenBao domain'))
+    if _gateway_key_required else '')) if _gateway_key_visible else '' }}
 # Context7 MCP client — config.yaml's mcp_servers.context7 resolves this ${VAR}.
 CONTEXT7_API_KEY={{ hermes_agent_context7_api_key }}
 

@@ -2,7 +2,20 @@
 - name: Require the existing caller binding before selecting the facade
   ansible.builtin.assert:
     that:
-      - hermes_agent_vikunja_mcp_enabled | bool
+      - >-
+        hermes_agent_facade_base_url is string and
+        hermes_agent_facade_base_url is match('^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?$')
+      - _facade_url_parts.scheme == 'https'
+      - _facade_url_parts.hostname is string and _facade_url_parts.hostname | length > 0
+      - _facade_url_parts.path == ''
+      - _facade_url_parts.query == ''
+      - _facade_url_parts.fragment == ''
+      - _facade_url_parts.username is none
+      - _facade_url_parts.password is none
+      - >-
+        _facade_url_parts.port is none or
+        (_facade_url_parts.port is number and
+         _facade_url_parts.port >= 1 and _facade_url_parts.port <= 65535)
       - >-
         hermes_agent_gateway_key_field is string and
         hermes_agent_gateway_key_field | trim | length > 0
@@ -19,10 +32,11 @@
         (openbao_secrets_by_domain | default({}, true))
         .get(hermes_agent_id, {})
         .get(hermes_agent_gateway_key_field, '') | trim | length > 0
-      - >-
-        hermes_agent_facade_base_url is string and
-        hermes_agent_facade_base_url is match('^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?$')
     fail_msg: >-
-      The Vikunja facade canary requires an enabled client, a valid base URL,
-      and the existing identity-bound gateway key.
-  when: hermes_agent_facade_canary_enabled | bool
+      The Vikunja facade canary requires a valid base URL and the existing
+      identity-bound gateway key.
+  vars:
+    _facade_url_parts: "{{ hermes_agent_facade_base_url | urlsplit }}"
+  when:
+    - hermes_agent_facade_canary_enabled | bool
+    - hermes_agent_vikunja_mcp_enabled | bool
