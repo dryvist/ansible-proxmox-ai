@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -47,6 +48,10 @@ def test_finetune_defaults_are_disabled_and_configuration_is_opt_in() -> None:
     assert DEFAULTS["laya_systemone_finetune_bucket"] == "system1"
     assert DEFAULTS["laya_systemone_finetune_bao_kv_path"] == "rustfs/system1/ro"
     assert DEFAULTS["laya_systemone_finetune_base"] == "convaiinnovations/laya"
+    assert DEFAULTS["laya_systemone_finetune_base_revision"] == "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
+    assert DEFAULTS["laya_systemone_finetune_base_path"].endswith(
+        "/base/{{ laya_systemone_finetune_base_revision }}"
+    )
     assert DEFAULTS["laya_systemone_finetune_staging_dir"].endswith(
         "/models/.staging-{{ laya_systemone_finetune_name }}"
     )
@@ -81,6 +86,7 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
         "target_error",
         "seed",
         "base",
+        "base_revision",
         "laya_version",
     ):
         assert field in skip_condition
@@ -94,6 +100,7 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
         "target_error",
         "seed",
         "base",
+        "base_revision",
         "laya_version",
     ):
         assert f"'{field}':" in manifest_content
@@ -130,8 +137,40 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     out_index = train_argv.index("--out")
     assert train_argv[out_index + 1] == "{{ laya_systemone_finetune_staging_dir }}"
     base_index = train_argv.index("--base")
-    assert train_argv[base_index + 1] == "{{ laya_systemone_finetune_base }}"
+    assert train_argv[base_index + 1] == "{{ laya_systemone_finetune_base_path }}"
     assert "creates" not in train_task["ansible.builtin.command"]
+    assert train_task["environment"] == {
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+    }
+
+    assert set(DEFAULTS["laya_systemone_finetune_base_sha256"]) == {
+        "model.safetensors",
+        "rl_agent_config.json",
+        "encoder/config.json",
+        "tokenizer/tokenizer.json",
+        "tokenizer/tokenizer_config.json",
+    }
+    assert all(re.fullmatch(r"[0-9a-f]{64}", v) for v in DEFAULTS["laya_systemone_finetune_base_sha256"].values())
+
+    base_download = _find_task([training], "Download the pinned Laya base checkpoint when missing or unverified")
+    download_code = base_download["ansible.builtin.command"]["argv"][-1]
+    assert "when" not in base_download
+    assert (
+        download_code.index("verify_digests(base_dir")
+        < download_code.index("shutil.rmtree(")
+        < download_code.index("snapshot_download(repo_id")
+    )
+    assert "allow_patterns=sorted(expected)" in download_code
+    base_verify = _find_task([training], "Verify the pinned Laya base checkpoint before training")
+    verify_code = base_verify["ansible.builtin.command"]["argv"][-1]
+    assert "resolve_revision" in verify_code
+    assert "verify_digests" in verify_code
+    assert "HfApi" not in verify_code
+    assert base_verify["environment"]["HF_HUB_OFFLINE"] == "1"
+    assert base_verify["no_log"] is True
+    ordered_names = [task.get("name") for task in _walk_tasks([training])]
+    assert ordered_names.index(base_verify["name"]) < ordered_names.index(train_task["name"])
 
     model_stat = _find_task([training], "Check the staged model.safetensors file")
     config_stat = _find_task([training], "Check the staged rl_agent_config.json file")
@@ -225,5 +264,4 @@ def test_finetune_tasks_never_upload_training_data_or_models() -> None:
     task_text = (ROLE / "tasks/finetune.yml").read_text().lower()
 
     assert "push_to_hub" not in task_text
-    assert "huggingface" not in task_text
     assert "upload" not in task_text

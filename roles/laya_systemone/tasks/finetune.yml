@@ -16,6 +16,7 @@
       - laya_systemone_finetune_eval_sha256 is match('^[A-Fa-f0-9]{64}$')
       - laya_systemone_finetune_base is string
       - laya_systemone_finetune_base | length > 0
+      - laya_systemone_finetune_base_revision is match('^[a-f0-9]{40}$')
       - laya_systemone_finetune_root is match('^/')
       - laya_systemone_finetune_root | regex_search("'") is none
       - laya_systemone_finetune_root | regex_search("[\r\n]") is none
@@ -31,6 +32,7 @@
     mode: "0700"
   loop:
     - "{{ laya_systemone_finetune_root }}"
+    - "{{ laya_systemone_finetune_root }}/base"
     - "{{ laya_systemone_finetune_root }}/datasets"
     - "{{ laya_systemone_finetune_root }}/models"
   become: true
@@ -130,6 +132,8 @@
       != laya_systemone_finetune_seed | int)
       or (laya_systemone_finetune_manifest.base | default('')
       != laya_systemone_finetune_base)
+      or (laya_systemone_finetune_manifest.base_revision | default('')
+      != laya_systemone_finetune_base_revision)
       or (laya_systemone_finetune_manifest.laya_version | default('')
       != laya_systemone_finetune_laya_version.stdout | trim)
   block:
@@ -400,6 +404,70 @@
         quiet: true
       no_log: true
 
+    - name: Download the pinned Laya base checkpoint when missing or unverified
+      ansible.builtin.command:
+        argv:
+          - "{{ laya_systemone_venv }}/bin/python"
+          - -c
+          - |
+            import json
+            import os
+            import shutil
+            from huggingface_hub import snapshot_download
+            from laya.revisions import resolve_revision, verify_digests
+
+            repo_id = os.environ["LAYA_BASE_REPOSITORY"]
+            revision = os.environ["LAYA_BASE_REVISION"]
+            base_dir = os.environ["LAYA_BASE_DIRECTORY"]
+            expected = json.loads(os.environ["LAYA_BASE_SHA256"])
+            if resolve_revision(repo_id, "reviewed") != revision:
+                raise SystemExit("Laya base revision does not match the reviewed pin.")
+            try:
+                verify_digests(base_dir, expected)
+                print("verified")
+            except (OSError, ValueError):
+                shutil.rmtree(base_dir, ignore_errors=True)
+                snapshot_download(repo_id=repo_id, revision=revision, local_dir=base_dir,
+                                  allow_patterns=sorted(expected))
+                print("downloaded")
+      environment:
+        LAYA_BASE_REPOSITORY: "{{ laya_systemone_finetune_base }}"
+        LAYA_BASE_REVISION: "{{ laya_systemone_finetune_base_revision }}"
+        LAYA_BASE_DIRECTORY: "{{ laya_systemone_finetune_base_path }}"
+        LAYA_BASE_SHA256: "{{ laya_systemone_finetune_base_sha256 | to_json }}"
+      register: laya_systemone_finetune_base_fetch
+      become: true
+      become_user: "{{ laya_systemone_user }}"
+      changed_when: "'downloaded' in laya_systemone_finetune_base_fetch.stdout"
+      no_log: true
+
+    - name: Verify the pinned Laya base checkpoint before training
+      ansible.builtin.command:
+        argv:
+          - "{{ laya_systemone_venv }}/bin/python"
+          - -c
+          - |
+            import json
+            import os
+            from laya.revisions import resolve_revision, verify_digests
+
+            try:
+                if resolve_revision(os.environ["LAYA_BASE_REPOSITORY"], "reviewed") != os.environ["LAYA_BASE_REVISION"]:
+                    raise ValueError
+                verify_digests(os.environ["LAYA_BASE_DIRECTORY"], json.loads(os.environ["LAYA_BASE_SHA256"]))
+            except Exception:
+                raise SystemExit("Pinned Laya base checkpoint verification failed.") from None
+      environment:
+        LAYA_BASE_REPOSITORY: "{{ laya_systemone_finetune_base }}"
+        LAYA_BASE_REVISION: "{{ laya_systemone_finetune_base_revision }}"
+        LAYA_BASE_DIRECTORY: "{{ laya_systemone_finetune_base_path }}"
+        LAYA_BASE_SHA256: "{{ laya_systemone_finetune_base_sha256 | to_json }}"
+        HF_HUB_OFFLINE: "1"
+      become: true
+      become_user: "{{ laya_systemone_user }}"
+      changed_when: false
+      no_log: true
+
     - name: Remove any stale fine-tune staging directory
       ansible.builtin.file:
         path: "{{ laya_systemone_finetune_staging_dir }}"
@@ -429,7 +497,7 @@
           - --data
           - "{{ laya_systemone_finetune_train_path }}"
           - --base
-          - "{{ laya_systemone_finetune_base }}"
+          - "{{ laya_systemone_finetune_base_path }}"
           - --eval-data
           - "{{ laya_systemone_finetune_eval_path }}"
           - --out
@@ -449,6 +517,9 @@
       become: true
       become_user: "{{ laya_systemone_user }}"
       changed_when: true
+      environment:
+        HF_HUB_OFFLINE: "1"
+        TRANSFORMERS_OFFLINE: "1"
       no_log: true
 
     - name: Check the staged model.safetensors file
@@ -484,6 +555,7 @@
               'target_error': laya_systemone_finetune_target_error | float,
               'seed': laya_systemone_finetune_seed | int,
               'base': laya_systemone_finetune_base,
+              'base_revision': laya_systemone_finetune_base_revision,
               'laya_version': laya_systemone_finetune_laya_version.stdout | trim} | to_json }}
         dest: "{{ laya_systemone_finetune_staging_dir }}/finetune-manifest.json"
         owner: "{{ laya_systemone_user }}"
