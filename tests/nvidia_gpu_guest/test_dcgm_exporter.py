@@ -112,6 +112,10 @@ def test_exporter_collectors_keep_upstream_defaults_and_add_fan_speed():
         "DCGM_FI_PROF_PCIE_TX_BYTES",
         "DCGM_FI_PROF_PCIE_RX_BYTES",
         "DCGM_FI_DEV_FB_USED",
+        "DCGM_FI_DEV_POWER_MGMT_LIMIT",
+        "DCGM_FI_DEV_ENFORCED_POWER_LIMIT",
+        "DCGM_FI_DEV_POWER_VIOLATION",
+        "DCGM_FI_DEV_THERMAL_VIOLATION",
     }.issubset(fields)
 
 
