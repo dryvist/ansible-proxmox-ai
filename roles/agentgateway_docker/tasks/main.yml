@@ -39,6 +39,56 @@
   loop_control:
     label: "{{ item.key }}"
 
+# The caller facade is the one deliberate exception to per-target routes, so its
+# inputs fail closed: an empty callers list renders an allow-everyone rule set, and
+# a caller without a gateway key can never pass the strict apiKey check.
+- name: Validate the caller facade inputs
+  ansible.builtin.assert:
+    that:
+      - agentgateway_docker_facade_callers | length > 0
+      - _facade_unknown_callers | length == 0
+      - agentgateway_docker_vikunja_mcp_enabled | bool
+        and agentgateway_docker_vikunja_read_token | length > 0
+    fail_msg: >-
+      The caller facade is enabled but cannot render safely. Callers must be non-empty,
+      every caller must be a key of agentgateway_docker_roster_keys
+      (unknown: {{ _facade_unknown_callers | join(', ') }}), and the Vikunja sidecar must be enabled
+      with a read token, since the facade routes only to it.
+  vars:
+    _facade_unknown_callers: >-
+      {{ agentgateway_docker_facade_callers
+         | reject('in', (agentgateway_docker_roster_keys | default({}, true)).keys() | list) | list }}
+  when: agentgateway_docker_facade_enabled | bool
+
+# A target with no owner renders with no caller auth, so each one must be recorded
+# with the reason it stays keyless and the task that removes that exception.
+- name: Validate the MCP owner exceptions
+  ansible.builtin.assert:
+    that:
+      - item.name | default('', true) | trim | length > 0
+      - item.reason | default('', true) | trim | length > 0
+      - item.cutover_task | default('', true) | trim | length > 0
+    fail_msg: >-
+      agentgateway_docker_owner_exceptions entry
+      '{{ item.name | default('(unnamed)', true) }}' needs a non-empty name, reason and cutover_task.
+  loop: "{{ agentgateway_docker_owner_exceptions }}"
+  loop_control:
+    label: "{{ item.name | default('(unnamed)', true) }}"
+
+- name: Validate that every MCP target has an owner or a recorded exception
+  ansible.builtin.assert:
+    that:
+      - _ownerless_targets | length == 0
+    fail_msg: >-
+      MCP targets with no owner in ai_agent_owner and no entry in agentgateway_docker_owner_exceptions:
+      {{ _ownerless_targets | join(', ') }}. An ownerless target renders with no caller auth:
+      assign an owner in the roster, or record it with a reason and cutover_task.
+  vars:
+    _ownerless_targets: >-
+      {{ agentgateway_docker_mcp_targets | map(attribute='name')
+         | reject('in', ai_agent_owner | default({}, true))
+         | reject('in', agentgateway_docker_owner_exceptions | map(attribute='name') | list) | list }}
+
 - name: Validate the Hindsight bank ACL inputs
   ansible.builtin.assert:
     that:

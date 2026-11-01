@@ -1,0 +1,49 @@
+---
+# Pins the dify_docker web API URL contract: SSR uses the Compose API service,
+# while browser-facing console and app requests keep the public Traefik URL.
+#
+# Run from the repository root with PROXMOX_SUBDOMAIN set:
+#   ansible-playbook tests/dify_docker/test_compose_ssr_api_url.yml -i localhost, -c local
+- name: Verify the dify_docker server-side and browser API URLs
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_become: false
+    _template: "{{ playbook_dir }}/../../roles/dify_docker/templates/docker-compose.yml.j2"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/dify_docker/defaults/main.yml"
+
+    - name: Set fixture values for secrets and external configuration
+      ansible.builtin.set_fact:
+        ai_agent_default_concurrency: 2
+        ai_orchestration_otel_endpoint: "http://otel.example.invalid:4318"
+        dify_docker_data_dir: /tmp/dify-ssr-api-render
+        dify_docker_web_port: "38080"
+        dify_docker_postgres_port: "35432"
+        dify_docker_redis_port: "36379"
+        dify_docker_secret_key: fixture-secret-key
+        dify_docker_db_password: fixture-db-password
+        dify_docker_redis_password: fixture-redis-password
+        dify_docker_sandbox_api_key: fixture-sandbox-key
+        dify_docker_weaviate_api_key: fixture-weaviate-key
+        dify_docker_plugin_daemon_key: fixture-plugin-daemon-key
+        dify_docker_inner_api_key: fixture-inner-api-key
+        dify_docker_model_endpoint_url: "http://llm.example.invalid/v1"
+        dify_docker_model_api_key: fixture-model-api-key
+
+    - name: Render the Compose document
+      ansible.builtin.set_fact:
+        _rendered: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+
+    - name: SSR uses the internal API while browser URLs remain public
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services['web'].environment.SERVER_CONSOLE_API_URL == 'http://api:5001'
+          - _rendered.services['web'].environment.CONSOLE_API_URL == 'https://dify.pve.example.test'
+          - _rendered.services['web'].environment.APP_API_URL == 'https://dify.pve.example.test'
+        fail_msg: >-
+          The web service must route server-side console API requests to the
+          internal Compose API and retain public browser API URLs.

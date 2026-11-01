@@ -158,6 +158,8 @@ def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
                 allowed = {ROLE_SELF_CHECKS_TIMEOUT}
             elif (path.name, name) == ("ci-gate.yml", "gate"):
                 allowed = {GATE_TIMEOUT}
+            elif path.name == "gateway-falsifier.yml":
+                allowed = {GATE_TIMEOUT}
             assert value in allowed, f"{path.name}:{name}"
 
 

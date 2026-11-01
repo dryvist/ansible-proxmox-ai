@@ -121,6 +121,7 @@
     langfuse_project_keys_agents:
       - hermes
       - donna
+      - hermes-private
   tasks:
     - name: Converge langfuse_docker (isolated — failure does not abort downstream plays)
       # langfuse_project_keys also converges here so the key task sees the role's public vars.
@@ -151,17 +152,25 @@
             - never
             - langfuse_project_keys
       vars:
-        langfuse_project_keys_base_url: "{{ langfuse_docker_nextauth_url }}"
+        # The guest's web port: NextAuth sign-in on the public URL sits behind Authelia.
+        langfuse_project_keys_base_url: >-
+          http://{{ hostvars[inventory_hostname].container_ip }}:{{ langfuse_docker_web_port }}
         langfuse_project_keys_admin_email: "{{ langfuse_docker_init_user_email }}"
         langfuse_project_keys_admin_password: "{{ langfuse_docker_init_user_password }}"
         langfuse_project_keys_org_name: "{{ langfuse_docker_init_org }}"
         langfuse_project_keys_project_name: "hermes-{{ langfuse_project_keys_agent }}"
         langfuse_project_keys_openbao_addr: "{{ hostvars['localhost'].openbao_secrets_active_addr }}"
-        langfuse_project_keys_openbao_token: "{{ lookup('env', 'BAO_TOKEN') }}"
+        langfuse_project_keys_openbao_token: "{{ openbao_secrets_converge_writer_token }}"
         langfuse_project_keys_openbao_mount: "{{ openbao_secrets_kv_mount }}"
         langfuse_project_keys_openbao_path: "ai/{{ langfuse_project_keys_agent }}"
         langfuse_project_keys_public_key_field: LANGFUSE_PUBLIC_KEY
         langfuse_project_keys_secret_key_field: LANGFUSE_SECRET_KEY
+        # Seed-writer contract of the app seed calls. The role's nested openbao_secrets
+        # seed_generated call inherits these. Revoke stays false: the loop writes every
+        # agent with this one token.
+        openbao_secrets_seed_expected_writer_policy: ansible-converge
+        openbao_secrets_seed_check_capabilities: "{{ not ansible_check_mode }}"
+        openbao_secrets_seed_revoke_token: false
         # This include is delegated to localhost from a play that inherits become: true.
         # The task keyword alone does not override an inherited ansible_become connection var.
         ansible_become: false

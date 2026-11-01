@@ -89,7 +89,10 @@ def test_retain_limits_cover_real_target_observations() -> None:
     keys = yaml.safe_load(key_file.read_text())["_llm_router_static_virtual_keys"]
     hindsight_key = next(key for key in keys if key["alias"] == "hindsight")
     observed_peak = sum(replica["peak_model_calls_per_minute"] for replica in replicas)
-    assert hindsight_key["rpm_limit"] == 60
+    defaults = yaml.safe_load((REPO_ROOT / "roles/hindsight_docker/defaults/main.yml").read_text())
+    per_replica_parallelism = int(defaults["hindsight_docker_retain_llm_max_concurrent"])
+    assert all(int(replica["retain_max_concurrent"]) == per_replica_parallelism for replica in replicas)
+    assert hindsight_key["rpm_limit"] == per_replica_parallelism * len(replicas) * 60
     assert hindsight_key["rpm_limit"] >= observed_peak * 5
 
 

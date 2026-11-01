@@ -3,6 +3,7 @@
 # the account exists but no longer matches dify_docker_admin_password (setup
 # runs once, so a stack recreated against an already-provisioned database can
 # carry a password from whenever it was first created).
+# The login API Base64-decodes its password field (decrypt_password_field).
 - name: Log in to Dify console for model-provider provisioning
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ dify_docker_web_port }}/console/api/login"
@@ -10,9 +11,11 @@
     body_format: json
     body:
       email: "{{ dify_docker_admin_email }}"
-      password: "{{ dify_docker_admin_password }}"
+      password: "{{ dify_docker_admin_password | b64encode }}"
     status_code: [200, 401]
   register: dify_docker_console_login
+  # A login only opens a session; a check run needs it for the read-only previews.
+  check_mode: false
   changed_when: false
   no_log: true
 
@@ -36,7 +39,7 @@
     body_format: json
     body:
       email: "{{ dify_docker_admin_email }}"
-      password: "{{ dify_docker_admin_password }}"
+      password: "{{ dify_docker_admin_password | b64encode }}"
     status_code: 200
   register: dify_docker_console_login_retry
   when: dify_docker_console_login.status | default(200) == 401

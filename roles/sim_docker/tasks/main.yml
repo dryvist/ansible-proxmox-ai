@@ -1,0 +1,203 @@
+---
+# Sim Docker deployment.
+#
+# Installs Docker + Compose on the target LXC, seeds the Sim secrets in the secret store
+# (sim_docker_openbao_path), fetches Sim's vendor compose file by checksum, writes .env and the local
+# override, then deploys the stack with both compose files named explicitly.
+#
+# Docker itself (docker-ce + compose plugin, fuse-overlayfs, the daemon.json) is installed by the
+# docker_engine meta dependency (meta/main.yml). No venv: Sim deploys via docker_compose_v2, which
+# uses the docker compose CLI (not the docker SDK), so compose runs under the system interpreter.
+
+# =============================================================================
+# Data Directories
+# The app image runs as uid 1001 and writes uploads to /app/uploads, so the uploads directory is
+# owned by that uid on the guest. Postgres chowns its own data directory inside the container.
+# =============================================================================
+
+- name: Create Sim data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ sim_docker_data_dir }}"
+    - "{{ sim_docker_postgres_data_dir }}"
+
+- name: Create the Sim uploads directory owned by the app user
+  ansible.builtin.file:
+    path: "{{ sim_docker_uploads_data_dir }}"
+    state: directory
+    owner: "{{ sim_docker_app_uid }}"
+    group: "{{ sim_docker_app_uid }}"
+    mode: "0755"
+
+# =============================================================================
+# Secrets (stored in the secret store, written to .env)
+# =============================================================================
+# The store is the authority: a stored value is never replaced. A missing field is generated only
+# while PostgreSQL has not initialized its data directory. After that, a missing field fails the run,
+# because a new ENCRYPTION_KEY or database password cannot open what the existing data was written with.
+
+- name: Check whether PostgreSQL has initialized the Sim data directory
+  ansible.builtin.stat:
+    path: "{{ sim_docker_postgres_data_dir }}/PG_VERSION"
+  register: sim_docker_postgres_initialized
+  changed_when: false
+
+- name: Seed the Sim secrets through the shared seed_generated task
+  delegate_to: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  no_log: true
+  block:
+    - name: Store the Sim secrets in the secret store, keeping any stored value
+      ansible.builtin.include_role:
+        name: dryvist.homelab.openbao_secrets
+        tasks_from: seed_generated
+      vars:
+        openbao_secrets_seed_addr: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+        openbao_secrets_seed_mount: "{{ openbao_secrets_kv_mount }}"
+        openbao_secrets_seed_path: "{{ sim_docker_openbao_path }}"
+        openbao_secrets_seed_fields:
+          - name: POSTGRES_PASSWORD
+            length: 48
+            charset: hex
+            generate: "{{ not sim_docker_postgres_initialized.stat.exists }}"
+          - name: BETTER_AUTH_SECRET
+            length: 64
+            charset: hex
+            generate: "{{ not sim_docker_postgres_initialized.stat.exists }}"
+          - name: ENCRYPTION_KEY
+            length: 64
+            charset: hex
+            generate: "{{ not sim_docker_postgres_initialized.stat.exists }}"
+          - name: INTERNAL_API_SECRET
+            length: 64
+            charset: hex
+            generate: "{{ not sim_docker_postgres_initialized.stat.exists }}"
+          - name: API_ENCRYPTION_KEY
+            length: 64
+            charset: hex
+            generate: "{{ not sim_docker_postgres_initialized.stat.exists }}"
+          - name: CRON_SECRET
+            length: 64
+            charset: hex
+            generate: "{{ not sim_docker_postgres_initialized.stat.exists }}"
+        openbao_secrets_seed_token: "{{ openbao_secrets_converge_writer_token }}"
+        openbao_secrets_seed_expected_writer_policy: ansible-converge
+        openbao_secrets_seed_check_capabilities: "{{ not ansible_check_mode }}"
+        openbao_secrets_seed_revoke_token: false
+        openbao_secrets_seed_register: sim_docker_seed_result
+
+- name: Resolve the effective Sim secrets from the secret store
+  ansible.builtin.set_fact:
+    sim_docker_db_password: "{{ sim_docker_seed_result.POSTGRES_PASSWORD }}"
+    sim_docker_better_auth_secret: "{{ sim_docker_seed_result.BETTER_AUTH_SECRET }}"
+    sim_docker_encryption_key: "{{ sim_docker_seed_result.ENCRYPTION_KEY }}"
+    sim_docker_internal_api_secret: "{{ sim_docker_seed_result.INTERNAL_API_SECRET }}"
+    sim_docker_api_encryption_key: "{{ sim_docker_seed_result.API_ENCRYPTION_KEY }}"
+    sim_docker_cron_secret: "{{ sim_docker_seed_result.CRON_SECRET }}"
+  no_log: true
+
+- name: Assert every secret written to the Sim .env is present
+  ansible.builtin.include_role:
+    name: dryvist.homelab.openbao_secrets
+    tasks_from: assert_nonempty.yml
+  vars:
+    openbao_secrets_required_vars:
+      - sim_docker_db_password
+      - sim_docker_better_auth_secret
+      - sim_docker_encryption_key
+      - sim_docker_internal_api_secret
+      - sim_docker_api_encryption_key
+      - sim_docker_cron_secret
+
+# =============================================================================
+# Compose Files
+# =============================================================================
+
+- name: Fetch Sim's vendor production compose file at the pinned release commit
+  ansible.builtin.get_url:
+    url: "{{ sim_docker_compose_url }}"
+    dest: "{{ sim_docker_data_dir }}/{{ sim_docker_compose_file }}"
+    checksum: "sha256:{{ sim_docker_compose_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Render the Sim .env
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ sim_docker_data_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"  # contains the database password and the Sim secrets
+  no_log: true
+  notify: Restart sim
+
+- name: Render the Sim local compose override
+  ansible.builtin.template:
+    src: docker-compose.override.yml.j2
+    dest: "{{ sim_docker_data_dir }}/{{ sim_docker_override_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart sim
+
+# =============================================================================
+# Deploy via Docker Compose
+# Both files are named explicitly: the vendor filename is not the default, so compose does not
+# discover the override on its own.
+# =============================================================================
+
+- name: Deploy Sim via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ sim_docker_data_dir }}"
+    files:
+      - "{{ sim_docker_compose_file }}"
+      - "{{ sim_docker_override_file }}"
+    state: present
+  register: sim_docker_compose_result
+  changed_when: >-
+    (sim_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+  no_log: true
+
+# =============================================================================
+# Health Check
+# First boot can take several minutes: postgres initdb, the migrations container, then the Next.js
+# server starting. The health endpoint answers only once the app is serving requests.
+# =============================================================================
+
+- name: Wait for the Sim web port to accept TCP connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ sim_docker_web_port }}"
+    timeout: 600
+  when: not ansible_check_mode
+
+- name: Wait for the Sim realtime port to accept TCP connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ sim_docker_realtime_port }}"
+    timeout: 300
+  when: not ansible_check_mode
+
+- name: Verify the Sim health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ sim_docker_web_port }}/api/health"
+    method: GET
+    status_code: 200
+    return_content: false
+  register: sim_docker_health
+  retries: 30
+  delay: 10
+  until: sim_docker_health.status == 200
+  changed_when: false
+  when: not ansible_check_mode

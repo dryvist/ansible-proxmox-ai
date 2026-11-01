@@ -7,6 +7,10 @@
 # caller's Authorization header to EVERY backend a tool resolves to — leaking
 # the Splunk token to external targets. Path isolation keeps each credential
 # on its own backend; clients configure one MCP server entry per path.
+# The caller facade (agentgateway_docker_facade_path) is the single exception:
+# one route for AI harnesses. It is safe only because it removes every caller
+# credential header before the backend, and each backend holds its own
+# credential.
 #
 # Route naming: the vhost is already mcp.<sub>, so the path is just the
 # capability name (/splunk, /context7, /memory, /docs) — the
@@ -126,22 +130,66 @@ binds:
    sidecar on the compose network. supergateway serves Streamable HTTP at
    /mcp (its default streamableHttpPath). If a converge finds the route
    dead-ends on a 307 (as FastMCP does above), add the trailing slash. #}
+{% set vikunja_mcp_host = 'http://mcp-vikunja:' ~ agentgateway_docker_vikunja_mcp_port ~ '/mcp' %}
+{% set facade = agentgateway_docker_facade_enabled | bool %}
+{# Caller allowlist shared by the facade and the strict /vikunja route. The role
+   asserts a non-empty, roster-backed callers list before this renders: an empty
+   rules list allows everyone (crates/agentgateway/src/http/authorization.rs,
+   validate: "no rule sets, everyone has access" at v1.6.0). #}
+{% set facade_rules = [] %}
+{% for caller in agentgateway_docker_facade_callers %}
+{% set _ = facade_rules.append({'allow': "apiKey.agent == '" ~ caller ~ "'"}) %}
+{% endfor %}
     - matches:
       - path:
           exact: /vikunja
       policies:
         apiKey:
-          mode: {{ agentgateway_docker_mcp_route_auth_mode }}
+          mode: {{ 'strict' if facade else agentgateway_docker_mcp_route_auth_mode }}
           location:
             header:
               name: X-Agent-Key
 {{ agentgateway_docker_api_key_block }}
+{% if facade %}
+        authorization:
+          rules: {{ facade_rules | to_json }}
+        requestHeaderModifier:
+          remove: {{ agentgateway_docker_caller_credential_headers | to_json }}
+{% endif %}
       backends:
       - mcp:
           targets:
           - name: vikunja
             mcp:
-              host: http://mcp-vikunja:{{ agentgateway_docker_vikunja_mcp_port }}/mcp
+              host: {{ vikunja_mcp_host }}
+{% if facade %}
+{# Caller facade (agentgateway_docker_facade_path): the one route that admits the
+   allowlisted callers and strips their credential headers before the backend.
+   At v1.6.0, route apiKey (crates/agentgateway/src/proxy/httpproxy.rs:242) and
+   authorization (:256) run before the request header modifier (:331), so the
+   removal happens only after the caller is authenticated. Schema key:
+   policies.requestHeaderModifier.remove (schema/config.md:159-162). #}
+    - matches:
+      - path:
+          exact: {{ agentgateway_docker_facade_path }}
+      policies:
+        apiKey:
+          mode: strict
+          location:
+            header:
+              name: X-Agent-Key
+{{ agentgateway_docker_api_key_block }}
+        authorization:
+          rules: {{ facade_rules | to_json }}
+        requestHeaderModifier:
+          remove: {{ agentgateway_docker_caller_credential_headers | to_json }}
+      backends:
+      - mcp:
+          targets:
+          - name: vikunja
+            mcp:
+              host: {{ vikunja_mcp_host }}
+{% endif %}
 {% endif %}
 {% if agentgateway_docker_nautobot_openapi_enabled | bool
       and agentgateway_docker_nautobot_read_token | length > 0 %}
