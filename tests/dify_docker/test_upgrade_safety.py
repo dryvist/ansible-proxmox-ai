@@ -63,7 +63,23 @@ def test_upgrade_safety_is_version_gated_and_precedes_compose_deploy():
         and "drain" not in task.get("name", "").lower()
     ]
     assert backup_tasks
-    assert max(backup_tasks) < first_stop
+    weaviate_stop = next(
+        index
+        for index, task in enumerate(block_tasks)
+        if task.get("name") == "Stop Weaviate after all pre-upgrade backups are verified"
+    )
+    cold_backup_tasks = [
+        index
+        for index, task in enumerate(block_tasks)
+        if task.get("when") == "not dify_docker_weaviate_backup_module_available | bool"
+        and index in backup_tasks
+    ]
+    assert cold_backup_tasks
+    assert min(cold_backup_tasks) > weaviate_stop
+    assert all(index < first_stop for index in set(backup_tasks) - set(cold_backup_tasks))
+    assert {
+        index for index in backup_tasks if index >= first_stop
+    } == set(cold_backup_tasks)
 
     defaults = yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))
     timeout = defaults["dify_docker_stop_timeout_seconds"]
@@ -99,3 +115,50 @@ def test_upgrade_safety_is_version_gated_and_precedes_compose_deploy():
     assert "/home/dify/.snapshots" in block_text
     assert "local_sandbox:/workspace" in block_text
     assert "/v1/backups/filesystem" in block_text
+
+    meta_task = next(task for task in block_tasks if task.get("name") == "Read the running Weaviate modules")
+    meta_request = meta_task["ansible.builtin.uri"]
+    assert meta_request["url"] == "{{ dify_docker_weaviate_meta_api_url }}"
+    assert meta_request["method"] == "GET"
+    assert meta_request["headers"]["Authorization"] == "Bearer {{ dify_docker_weaviate_api_key }}"
+    assert meta_request["timeout"] == 30
+    assert meta_task["no_log"] is True
+
+    module_check = next(
+        task
+        for task in block_tasks
+        if task.get("name") == "Detect whether Weaviate supports filesystem backups"
+    )
+    module_expression = module_check["ansible.builtin.set_fact"][
+        "dify_docker_weaviate_backup_module_available"
+    ]
+    assert "backup-filesystem" in module_expression
+    assert "dify_docker_weaviate_meta.json.modules" in module_expression
+
+    live_backup_tasks = [
+        task
+        for task in block_tasks
+        if task.get("name", "").startswith((
+            "Start a live Weaviate filesystem backup",
+            "Wait for the Weaviate filesystem backup",
+            "Require a successful Weaviate filesystem backup",
+            "Archive the completed Weaviate filesystem backup",
+            "Read the Weaviate pre-upgrade backup file",
+            "Require a non-empty Weaviate pre-upgrade backup",
+            "Set restrictive permissions on the Weaviate backup",
+            "Verify the Weaviate pre-upgrade archive integrity",
+        ))
+    ]
+    assert live_backup_tasks
+    assert all(
+        task["when"] == "dify_docker_weaviate_backup_module_available | bool"
+        for task in live_backup_tasks
+    )
+
+    cold_archive = next(
+        task
+        for task in block_tasks
+        if task.get("name") == "Create a cold Weaviate persistence backup after stopping Weaviate"
+    )
+    assert block_tasks.index(cold_archive) > weaviate_stop
+    assert cold_archive["when"] == "not dify_docker_weaviate_backup_module_available | bool"

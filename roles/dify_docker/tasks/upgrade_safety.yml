@@ -398,6 +398,28 @@
         dify_docker_weaviate_backup_api_url: >-
           {{ 'http://' ~ (dify_docker_weaviate_container_address.stdout | trim) ~
              ':' ~ (dify_docker_weaviate_port | string) ~ '/v1/backups/filesystem' }}
+        dify_docker_weaviate_meta_api_url: >-
+          {{ 'http://' ~ (dify_docker_weaviate_container_address.stdout | trim) ~
+             ':' ~ (dify_docker_weaviate_port | string) ~ '/v1/meta' }}
+
+    - name: Read the running Weaviate modules
+      ansible.builtin.uri:
+        url: "{{ dify_docker_weaviate_meta_api_url }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ dify_docker_weaviate_api_key }}"
+        status_code: 200
+        timeout: 30
+        use_proxy: false
+      register: dify_docker_weaviate_meta
+      changed_when: false
+      no_log: true
+
+    - name: Detect whether Weaviate supports filesystem backups
+      ansible.builtin.set_fact:
+        dify_docker_weaviate_backup_module_available: >-
+          {{ 'backup-filesystem' in
+             (dify_docker_weaviate_meta.json.modules | default({})) }}
 
     - name: Start a live Weaviate filesystem backup
       ansible.builtin.uri:
@@ -417,6 +439,7 @@
       register: dify_docker_weaviate_backup_start
       changed_when: true
       no_log: true
+      when: dify_docker_weaviate_backup_module_available | bool
 
     - name: Wait for the Weaviate filesystem backup to finish
       ansible.builtin.uri:
@@ -435,6 +458,7 @@
       delay: 2
       changed_when: false
       no_log: true
+      when: dify_docker_weaviate_backup_module_available | bool
 
     - name: Require a successful Weaviate filesystem backup
       ansible.builtin.assert:
@@ -442,6 +466,7 @@
           - dify_docker_weaviate_backup_status.json.status == 'SUCCESS'
         fail_msg: Weaviate filesystem backup did not reach SUCCESS.
         quiet: true
+      when: dify_docker_weaviate_backup_module_available | bool
 
     - name: Archive the completed Weaviate filesystem backup
       ansible.builtin.command:
@@ -456,11 +481,13 @@
           - "{{ dify_docker_data_dir }}/weaviate/backups"
           - "{{ dify_docker_weaviate_backup_id }}"
       changed_when: true
+      when: dify_docker_weaviate_backup_module_available | bool
 
     - name: Read the Weaviate pre-upgrade backup file
       ansible.builtin.stat:
         path: "{{ dify_docker_weaviate_backup_path }}"
       register: dify_docker_weaviate_backup_stat
+      when: dify_docker_weaviate_backup_module_available | bool
 
     - name: Require a non-empty Weaviate pre-upgrade backup
       ansible.builtin.assert:
@@ -469,6 +496,7 @@
           - dify_docker_weaviate_backup_stat.stat.size > 0
         fail_msg: Weaviate pre-upgrade backup is missing or empty.
         quiet: true
+      when: dify_docker_weaviate_backup_module_available | bool
 
     - name: Set restrictive permissions on the Weaviate backup
       ansible.builtin.file:
@@ -476,6 +504,7 @@
         owner: root
         group: root
         mode: "0600"
+      when: dify_docker_weaviate_backup_module_available | bool
 
     - name: Verify the Weaviate pre-upgrade archive integrity
       ansible.builtin.command:
@@ -486,6 +515,7 @@
           - --file
           - "{{ dify_docker_weaviate_backup_path }}"
       changed_when: false
+      when: dify_docker_weaviate_backup_module_available | bool
 
     - name: Stop Dify ingress and scheduler before draining Celery workers
       ansible.builtin.command:
@@ -557,6 +587,80 @@
       args:
         chdir: "{{ dify_docker_data_dir }}"
       changed_when: true
+
+    - name: Read the Weaviate persistence mount path for a cold backup
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - >-
+            {{ '{{' }}range .Mounts{{ '}}' }}
+            {{ '{{' }}if eq .Destination "/var/lib/weaviate"{{ '}}' }}
+            {{ '{{' }}.Source{{ '}}' }}
+            {{ '{{' }}end{{ '}}' }}
+            {{ '{{' }}end{{ '}}' }}
+          - "{{ dify_docker_weaviate_container.stdout | trim }}"
+      register: dify_docker_weaviate_persistence_path
+      changed_when: false
+      when: not dify_docker_weaviate_backup_module_available | bool
+
+    - name: Require a Weaviate persistence mount for the cold backup
+      ansible.builtin.assert:
+        that:
+          - dify_docker_weaviate_persistence_path.stdout | trim | length > 0
+        fail_msg: Could not determine the Weaviate persistence mount for a cold backup.
+        quiet: true
+      when: not dify_docker_weaviate_backup_module_available | bool
+
+    - name: Create a cold Weaviate persistence backup after stopping Weaviate
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --create
+          - --gzip
+          - --numeric-owner
+          - --file
+          - "{{ dify_docker_weaviate_backup_path }}"
+          - --directory
+          - "{{ dify_docker_weaviate_persistence_path.stdout | trim }}"
+          - .
+      changed_when: true
+      when: not dify_docker_weaviate_backup_module_available | bool
+
+    - name: Read the cold Weaviate pre-upgrade backup file
+      ansible.builtin.stat:
+        path: "{{ dify_docker_weaviate_backup_path }}"
+      register: dify_docker_cold_weaviate_backup_stat
+      when: not dify_docker_weaviate_backup_module_available | bool
+
+    - name: Require a non-empty cold Weaviate pre-upgrade backup
+      ansible.builtin.assert:
+        that:
+          - dify_docker_cold_weaviate_backup_stat.stat.exists
+          - dify_docker_cold_weaviate_backup_stat.stat.size > 0
+        fail_msg: Cold Weaviate pre-upgrade backup is missing or empty.
+        quiet: true
+      when: not dify_docker_weaviate_backup_module_available | bool
+
+    - name: Set restrictive permissions on the cold Weaviate backup
+      ansible.builtin.file:
+        path: "{{ dify_docker_weaviate_backup_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: not dify_docker_weaviate_backup_module_available | bool
+
+    - name: Verify the cold Weaviate pre-upgrade archive integrity
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --list
+          - --gzip
+          - --file
+          - "{{ dify_docker_weaviate_backup_path }}"
+      changed_when: false
+      when: not dify_docker_weaviate_backup_module_available | bool
 
   rescue:
     - name: Restart the deployed Dify stack after an unsuccessful backup
