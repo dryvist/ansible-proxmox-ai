@@ -1,0 +1,20 @@
+---
+- name: Require the existing caller key for each selected facade canary profile
+  ansible.builtin.assert:
+    that:
+      - hermes_agent_vikunja_mcp_enabled | bool
+      - "'vikunja' in (item.mcp | default([]))"
+      - >-
+        hermes_agent_gateway_key_field ==
+        (ai_agent_gateway_key_fields | default({})).get(hermes_agent_id, '')
+      - hermes_agent_gateway_key_field | string | length > 0
+      - >-
+        (openbao_secrets_by_domain | default({})).get(hermes_agent_id, {}).get(
+          hermes_agent_gateway_key_field | string, '') | string | trim | length > 0
+    fail_msg: >-
+      Profile {{ item.name }} can use the Vikunja facade canary only when its
+      existing identity-bound gateway key is available.
+  loop: "{{ hermes_agent_profiles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.facade_canary | default(false) | bool
