@@ -123,7 +123,20 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
         assert download["ansible.builtin.command"]["argv"][-1] == (
             f"{{{{ laya_systemone_finetune_{prefix}_path }}}}.download"
         )
+        temp_path = f"{{{{ laya_systemone_finetune_{prefix}_path }}}}.download"
+        final_path = f"{{{{ laya_systemone_finetune_{prefix}_path }}}}"
+        downloaded = _find_task([training], f"Check the downloaded {name} CSV checksum")
+        verify = _find_task([training], f"Verify the downloaded {name} CSV checksum")
+        move = _find_task([training], f"Move the verified {name} CSV into place")
+        assert downloaded["ansible.builtin.stat"]["path"] == temp_path
+        assert f"{prefix}_sha256" in " ".join(verify["ansible.builtin.assert"]["that"])
+        assert move["ansible.builtin.command"]["argv"][-2:] == [temp_path, final_path]
+        order = [task.get("name") for task in _walk_tasks([training])]
+        assert order.index(download["name"]) < order.index(verify["name"]) < order.index(move["name"])
 
+    version = _find_task(tasks, "Read the installed Laya version for fine-tune reuse")
+    assert version["check_mode"] is False
+    assert "not ansible_check_mode" in version["failed_when"]
     manifest_read = _find_task(tasks, "Read the fine-tune completion manifest")
     assert manifest_read["failed_when"] is False
     manifest_parse = _find_task(tasks, "Parse the existing fine-tune completion manifest")
