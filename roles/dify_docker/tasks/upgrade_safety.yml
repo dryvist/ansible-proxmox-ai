@@ -1,0 +1,245 @@
+---
+# Adapt roles/hindsight_docker's drain -> backup -> verify migration sequence:
+# stop old consumers, protect durable state, then let config_and_deploy start the target.
+- name: Check for an existing Dify Compose project
+  ansible.builtin.stat:
+    path: "{{ dify_docker_data_dir }}/docker-compose.yml"
+  register: dify_docker_compose_file_stat
+
+- name: Read the deployed Dify Compose services
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - config
+      - --services
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_deployed_services
+  changed_when: false
+  when: dify_docker_compose_file_stat.stat.exists
+
+- name: Read the deployed Dify API container ID
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - ps
+      - --all
+      - --quiet
+      - api
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_existing_api_container
+  changed_when: false
+  when: dify_docker_compose_file_stat.stat.exists
+
+- name: Read the image of the deployed Dify API container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }}.Config.Image{{ '}}' }}"
+      - "{{ dify_docker_existing_api_container.stdout | trim }}"
+  register: dify_docker_deployed_api_image_probe
+  changed_when: false
+  when:
+    - dify_docker_existing_api_container.stdout | default('') | trim | length > 0
+
+- name: Require a readable image for the deployed Dify API container
+  ansible.builtin.assert:
+    that:
+      - dify_docker_deployed_api_image_probe.rc == 0
+      - dify_docker_deployed_api_image_probe.stdout | trim | length > 0
+    fail_msg: Could not identify the deployed Dify API image; refusing an unguarded upgrade.
+    quiet: true
+  when:
+    - dify_docker_existing_api_container.stdout | default('') | trim | length > 0
+
+- name: Detect whether the deployed Dify image differs from the target
+  ansible.builtin.set_fact:
+    dify_docker_upgrade_required: >-
+      {{ (dify_docker_existing_api_container.stdout | default('') | trim | length > 0)
+         and (dify_docker_deployed_api_image_probe.stdout | default('') | trim
+              != dify_docker_api_image) }}
+
+- name: Drain and back up Dify before changing its release
+  when: dify_docker_upgrade_required | bool
+  block:
+    - name: Set the Dify pre-upgrade backup timestamp
+      ansible.builtin.set_fact:
+        dify_docker_upgrade_backup_timestamp: "{{ now(utc=true, fmt='%Y%m%dT%H%M%S') }}"
+
+    - name: Set timestamped Dify pre-upgrade backup paths
+      ansible.builtin.set_fact:
+        dify_docker_postgres_backup_path: >-
+          {{ dify_docker_upgrade_backup_dir }}/pre-upgrade-{{ dify_docker_upgrade_backup_timestamp }}-postgres.sql
+        dify_docker_weaviate_backup_path: >-
+          {{ dify_docker_upgrade_backup_dir }}/pre-upgrade-{{ dify_docker_upgrade_backup_timestamp }}-weaviate.tar.gz
+
+    - name: Ensure the Dify pre-upgrade backup directory exists
+      ansible.builtin.file:
+        path: "{{ dify_docker_upgrade_backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Stop Dify ingress and scheduler before draining Celery workers
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - stop
+          - -t
+          - "-1"
+          - "{{ item }}"
+      args:
+        chdir: "{{ dify_docker_data_dir }}"
+      loop:
+        - worker_beat
+        - nginx
+        - web
+        - api
+      loop_control:
+        label: "{{ item }}"
+      changed_when: true
+      when: item in (dify_docker_deployed_services.stdout_lines | default([]))
+
+    - name: Drain Dify workers gracefully before deploying the target version
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - stop
+          - -t
+          - "-1"
+          - worker
+      args:
+        chdir: "{{ dify_docker_data_dir }}"
+      changed_when: true
+      when: "'worker' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+    - name: Stop old Dify worker dependencies after the drain
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - stop
+          - -t
+          - "-1"
+          - "{{ item }}"
+      args:
+        chdir: "{{ dify_docker_data_dir }}"
+      loop:
+        - agent_backend
+        - local_sandbox
+        - plugin_daemon
+        - sandbox
+        - ssrf_proxy
+        - agent_ssrf_proxy
+      loop_control:
+        label: "{{ item }}"
+      changed_when: true
+      when: item in (dify_docker_deployed_services.stdout_lines | default([]))
+
+    - name: Take a complete PostgreSQL backup before the Dify upgrade
+      ansible.builtin.shell:
+        cmd: >-
+          umask 077 && docker compose exec -T db pg_dumpall
+          --username {{ dify_docker_db_user | quote }}
+          > {{ dify_docker_postgres_backup_path | quote }}
+      args:
+        chdir: "{{ dify_docker_data_dir }}"
+      changed_when: true
+
+    - name: Read the PostgreSQL pre-upgrade backup file
+      ansible.builtin.stat:
+        path: "{{ dify_docker_postgres_backup_path }}"
+      register: dify_docker_postgres_backup_stat
+
+    - name: Require a non-empty PostgreSQL pre-upgrade backup
+      ansible.builtin.assert:
+        that:
+          - dify_docker_postgres_backup_stat.stat.exists
+          - dify_docker_postgres_backup_stat.stat.size > 0
+        fail_msg: PostgreSQL pre-upgrade backup is missing or empty.
+        quiet: true
+
+    - name: Set restrictive permissions on the PostgreSQL backup
+      ansible.builtin.file:
+        path: "{{ dify_docker_postgres_backup_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Stop Weaviate before taking a consistent data backup
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - stop
+          - -t
+          - "-1"
+          - weaviate
+      args:
+        chdir: "{{ dify_docker_data_dir }}"
+      changed_when: true
+
+    - name: Back up the stopped Weaviate data directory
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --create
+          - --gzip
+          - --numeric-owner
+          - --file
+          - "{{ dify_docker_weaviate_backup_path }}"
+          - --directory
+          - "{{ dify_docker_data_dir }}"
+          - weaviate
+      changed_when: true
+
+    - name: Read the Weaviate pre-upgrade backup file
+      ansible.builtin.stat:
+        path: "{{ dify_docker_weaviate_backup_path }}"
+      register: dify_docker_weaviate_backup_stat
+
+    - name: Require a non-empty Weaviate pre-upgrade backup
+      ansible.builtin.assert:
+        that:
+          - dify_docker_weaviate_backup_stat.stat.exists
+          - dify_docker_weaviate_backup_stat.stat.size > 0
+        fail_msg: Weaviate pre-upgrade backup is missing or empty.
+        quiet: true
+
+    - name: Set restrictive permissions on the Weaviate backup
+      ansible.builtin.file:
+        path: "{{ dify_docker_weaviate_backup_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Verify the Weaviate pre-upgrade archive integrity
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --list
+          - --gzip
+          - --file
+          - "{{ dify_docker_weaviate_backup_path }}"
+      changed_when: false
+
+  rescue:
+    - name: Restart the deployed Dify stack after an unsuccessful backup
+      community.docker.docker_compose_v2:
+        project_src: "{{ dify_docker_data_dir }}"
+        state: present
+      no_log: true
+
+    - name: Stop the upgrade after an unsuccessful pre-upgrade backup
+      ansible.builtin.fail:
+        msg: >-
+          Dify upgrade safety failed. The deployed Compose stack was restarted;
+          complete PostgreSQL and Weaviate backups are required before continuing.
