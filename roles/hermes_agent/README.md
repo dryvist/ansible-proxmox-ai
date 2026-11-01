@@ -47,7 +47,7 @@ not yet live-validated:
   five-job eval, the per-platform runner-enforced tool policy, and the
   brain-health watchdog.
 - [Brain and MCP](docs/brain-and-mcp.md) — brain model selection, Context7
-  live docs, docs RAG search, and Codex escalation via MCP.
+  live docs, and docs RAG search.
 
 Browser Use is installed as its official CLI in the Hermes virtual environment.
 It attaches to a loopback-only Chromium CDP service and is available through
