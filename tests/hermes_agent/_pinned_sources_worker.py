@@ -2,7 +2,7 @@
 
 Split from _pinned_sources.py (over the repo's per-file token budget) — the
 task/goal/cron-delivery snippets stay there, and the memory-sync, goal-judge,
-Slack connect and dispatch-tick snippets live in _pinned_sources_hooks.py.
+dispatch-tick snippets live in _pinned_sources_hooks.py.
 Same contract: every constant is upstream source EXACTLY as shipped, never the
 expected post-patch form.
 """
