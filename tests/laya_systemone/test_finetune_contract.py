@@ -175,6 +175,9 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
         < download_code.index("snapshot_download(repo_id")
     )
     assert "allow_patterns=sorted(expected)" in download_code
+    assert "revision=revision" in download_code
+    assert 'revision = os.environ["LAYA_BASE_REVISION"]' in download_code
+    assert base_download["environment"]["LAYA_BASE_REVISION"] == "{{ laya_systemone_finetune_base_revision }}"
     base_verify = _find_task([training], "Verify the pinned Laya base checkpoint before training")
     verify_code = base_verify["ansible.builtin.command"]["argv"][-1]
     assert "resolve_revision" in verify_code
