@@ -3,6 +3,43 @@
 # Config + Compose Files
 # =============================================================================
 
+- name: Check for the existing Dify Compose configuration
+  ansible.builtin.stat:
+    path: "{{ dify_docker_data_dir }}/docker-compose.yml"
+  register: dify_docker_previous_compose_stat
+
+- name: Read the existing rendered Dify environment before replacing Compose
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - config
+      - --format
+      - json
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_previous_compose_config
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: dify_docker_previous_compose_stat.stat.exists
+
+- name: Keep the existing Dify PASSWORD_PEPPER value
+  ansible.builtin.set_fact:
+    dify_docker_password_pepper: >-
+      {{ (dify_docker_previous_compose_config.stdout | from_json)
+         .services.api.environment.PASSWORD_PEPPER }}
+  no_log: true
+  when:
+    - dify_docker_previous_compose_stat.stat.exists
+    - dify_docker_password_pepper is not defined
+    - >-
+      (dify_docker_previous_compose_config.stdout | from_json)
+      .services.api.environment.PASSWORD_PEPPER is defined
+    - >-
+      (dify_docker_previous_compose_config.stdout | from_json)
+      .services.api.environment.PASSWORD_PEPPER | string | length > 0
+
 - name: Render Dify squid (ssrf_proxy) configuration
   ansible.builtin.template:
     src: squid.conf.j2

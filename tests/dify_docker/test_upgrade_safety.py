@@ -181,7 +181,7 @@ def test_password_pepper_is_preserved_from_existing_compose_and_rendered_only_wh
 
     template = COMPOSE_TEMPLATE.read_text(encoding="utf-8")
     assert "{% if dify_docker_password_pepper is defined %}" in template
-    assert "PASSWORD_PEPPER: {{ dify_docker_password_pepper | to_json }}" in template
+    assert "PASSWORD_PEPPER: {{ dify_docker_password_pepper | tojson }}" in template
     test_play = COMPOSE_TEST.read_text(encoding="utf-8")
     assert "environment.get('PASSWORD_PEPPER') is none" in test_play
     assert "fixture-password-pepper" in test_play
