@@ -1,0 +1,95 @@
+---
+- name: Remove any stale fine-tune staging directory
+  ansible.builtin.file:
+    path: "{{ laya_systemone_finetune_staging_dir }}"
+    state: absent
+  become: true
+
+- name: Create the private fine-tune staging directory
+  ansible.builtin.file:
+    path: "{{ laya_systemone_finetune_staging_dir }}"
+    state: directory
+    owner: "{{ laya_systemone_user }}"
+    group: "{{ laya_systemone_group }}"
+    mode: "0700"
+  become: true
+
+- name: Stop Laya to free the guest GPU for fine-tuning
+  ansible.builtin.systemd:
+    name: laya-systemone.service
+    state: stopped
+  when: laya_systemone_finetune_unit_stat.stat.exists
+  no_log: true
+
+- name: Train the Laya model from the verified CSV files
+  ansible.builtin.command:
+    argv:
+      - "{{ laya_systemone_venv }}/bin/laya-train"
+      - --data
+      - "{{ laya_systemone_finetune_train_path }}"
+      - --base
+      - "{{ laya_systemone_finetune_base_path }}"
+      - --eval-data
+      - "{{ laya_systemone_finetune_eval_path }}"
+      - --out
+      - "{{ laya_systemone_finetune_staging_dir }}"
+      - --text-column
+      - "{{ laya_systemone_finetune_text_column }}"
+      - --label-column
+      - "{{ laya_systemone_finetune_label_column }}"
+      - --epochs
+      - "{{ laya_systemone_finetune_epochs | string }}"
+      - --target-error
+      - "{{ laya_systemone_finetune_target_error | string }}"
+      - --seed
+      - "{{ laya_systemone_finetune_seed | string }}"
+      - --device
+      - cuda
+  become: true
+  become_user: "{{ laya_systemone_user }}"
+  changed_when: true
+  environment:
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+  no_log: true
+
+- name: Check the staged model.safetensors file
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_staging_dir }}/model.safetensors"
+  register: laya_systemone_finetune_staging_model_stat
+
+- name: Check the staged rl_agent_config.json file
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_staging_dir }}/rl_agent_config.json"
+  register: laya_systemone_finetune_staging_config_stat
+
+- name: Validate staged checkpoint files before promotion
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_staging_model_stat.stat.exists
+      - laya_systemone_finetune_staging_model_stat.stat.isreg
+      - laya_systemone_finetune_staging_model_stat.stat.size | int > 0
+      - laya_systemone_finetune_staging_config_stat.stat.exists
+      - laya_systemone_finetune_staging_config_stat.stat.isreg
+    fail_msg: Laya fine-tuning did not produce a complete checkpoint.
+    quiet: true
+
+- name: Write the fine-tune completion manifest into staging
+  ansible.builtin.copy:
+    content: >-
+      {{ {'name': laya_systemone_finetune_name,
+          'train_sha256': laya_systemone_finetune_train_sha256 | lower,
+          'eval_sha256': laya_systemone_finetune_eval_sha256 | lower,
+          'epochs': laya_systemone_finetune_epochs | int,
+          'text_column': laya_systemone_finetune_text_column,
+          'label_column': laya_systemone_finetune_label_column,
+          'target_error': laya_systemone_finetune_target_error | float,
+          'seed': laya_systemone_finetune_seed | int,
+          'base': laya_systemone_finetune_base,
+          'base_revision': laya_systemone_finetune_base_revision,
+          'laya_version': laya_systemone_finetune_laya_version.stdout | trim} | to_json }}
+    dest: "{{ laya_systemone_finetune_staging_dir }}/finetune-manifest.json"
+    owner: "{{ laya_systemone_user }}"
+    group: "{{ laya_systemone_group }}"
+    mode: "0600"
+  become: true

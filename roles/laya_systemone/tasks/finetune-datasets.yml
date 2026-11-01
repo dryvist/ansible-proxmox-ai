@@ -1,0 +1,267 @@
+---
+- name: Require the shared OpenBao AppRole configuration
+  ansible.builtin.fail:
+    msg: BAO_ADDR and the shared CONVERGE_ROLE_ID / CONVERGE_SECRET_ID identity must be configured.
+  when: >-
+    laya_systemone_finetune_bao_addr | length == 0
+    or laya_systemone_finetune_bao_role_id | length == 0
+    or laya_systemone_finetune_bao_secret_id | length == 0
+  no_log: true
+
+- name: Install the AWS CLI used for RustFS object reads
+  ansible.builtin.apt:
+    name: awscli
+    state: present
+    update_cache: true
+
+- name: Read the scoped RustFS credential from OpenBao
+  no_log: true
+  block:
+    - name: Log in with the shared converge AppRole
+      community.hashi_vault.vault_login:
+        url: "{{ laya_systemone_finetune_bao_addr }}"
+        auth_method: approle
+        role_id: "{{ laya_systemone_finetune_bao_role_id }}"
+        secret_id: "{{ laya_systemone_finetune_bao_secret_id }}"
+        validate_certs: "{{ laya_systemone_finetune_bao_validate_certs }}"
+      register: laya_systemone_finetune_bao_login
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_become: false
+      check_mode: false
+      no_log: true
+
+    - name: Read the scoped RustFS credential
+      community.hashi_vault.vault_kv2_get:
+        url: "{{ laya_systemone_finetune_bao_addr }}"
+        auth_method: token
+        token: "{{ laya_systemone_finetune_bao_login.login.auth.client_token }}"
+        engine_mount_point: "{{ laya_systemone_finetune_bao_kv_mount }}"
+        path: "{{ laya_systemone_finetune_bao_kv_path }}"
+        validate_certs: "{{ laya_systemone_finetune_bao_validate_certs }}"
+      register: laya_systemone_finetune_bao_secret
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_become: false
+      check_mode: false
+      no_log: true
+
+    - name: Map the scoped RustFS credential fields
+      ansible.builtin.set_fact:
+        laya_systemone_finetune_s3_access_key_id: >-
+          {{ laya_systemone_finetune_bao_secret.secret.AWS_ACCESS_KEY_ID | default('', true) }}
+        laya_systemone_finetune_s3_secret_access_key: >-
+          {{ laya_systemone_finetune_bao_secret.secret.AWS_SECRET_ACCESS_KEY | default('', true) }}
+        laya_systemone_finetune_s3_region: >-
+          {{ laya_systemone_finetune_bao_secret.secret.AWS_REGION | default('', true) }}
+        laya_systemone_finetune_s3_endpoint: >-
+          {{ laya_systemone_finetune_bao_secret.secret.AWS_ENDPOINT_URL | default('', true) }}
+      no_log: true
+  always:
+    - name: Revoke the OpenBao token used to read the RustFS credential
+      community.hashi_vault.vault_write:
+        url: "{{ laya_systemone_finetune_bao_addr }}"
+        auth_method: token
+        token: "{{ laya_systemone_finetune_bao_login.login.auth.client_token }}"
+        path: auth/token/revoke-self
+        data: {}
+        validate_certs: "{{ laya_systemone_finetune_bao_validate_certs }}"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_become: false
+      when:
+        - laya_systemone_finetune_bao_login is defined
+        - laya_systemone_finetune_bao_login.login is defined
+      check_mode: false
+      register: laya_systemone_finetune_bao_revoke
+      ignore_errors: true
+      no_log: true
+
+- name: Warn when the temporary OpenBao token was not revoked
+  ansible.builtin.debug:
+    msg: The temporary OpenBao token was not revoked and remains valid until its TTL expires.
+  when: laya_systemone_finetune_bao_revoke is failed
+
+- name: Require all scoped RustFS credential fields
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_s3_access_key_id | length > 0
+      - laya_systemone_finetune_s3_secret_access_key | length > 0
+      - laya_systemone_finetune_s3_region | length > 0
+      - laya_systemone_finetune_s3_endpoint | length > 0
+    fail_msg: The scoped RustFS credential is missing a required S3 field.
+    quiet: true
+  no_log: true
+
+- name: Check the existing training CSV checksum before download
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_train_path }}"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_train_existing_stat
+  become: true
+
+- name: Download the training CSV when missing or corrupt
+  ansible.builtin.command:
+    argv:
+      - aws
+      - --endpoint-url
+      - "{{ laya_systemone_finetune_s3_endpoint }}"
+      - s3
+      - cp
+      - "s3://{{ laya_systemone_finetune_bucket }}/{{ laya_systemone_finetune_train_key }}"
+      - "{{ laya_systemone_finetune_train_path }}.download"
+  when: >-
+    not laya_systemone_finetune_train_existing_stat.stat.exists
+    or laya_systemone_finetune_train_existing_stat.stat.checksum | default('')
+    != laya_systemone_finetune_train_sha256 | lower
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ laya_systemone_finetune_s3_access_key_id }}"
+    AWS_SECRET_ACCESS_KEY: "{{ laya_systemone_finetune_s3_secret_access_key }}"
+    AWS_DEFAULT_REGION: "{{ laya_systemone_finetune_s3_region }}"
+  become: true
+  become_user: "{{ laya_systemone_user }}"
+  changed_when: true
+  no_log: true
+
+- name: Check the downloaded training CSV checksum
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_train_path }}.download"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_train_download_stat
+  when: >-
+    not laya_systemone_finetune_train_existing_stat.stat.exists
+    or laya_systemone_finetune_train_existing_stat.stat.checksum | default('')
+    != laya_systemone_finetune_train_sha256 | lower
+  become: true
+
+- name: Verify the downloaded training CSV checksum
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_train_download_stat.stat.exists
+      - laya_systemone_finetune_train_download_stat.stat.checksum == laya_systemone_finetune_train_sha256 | lower
+    fail_msg: The downloaded training CSV does not match its configured SHA-256 checksum.
+    quiet: true
+  when: laya_systemone_finetune_train_download_stat is not skipped
+  no_log: true
+
+- name: Move the verified training CSV into place
+  ansible.builtin.command:
+    argv:
+      - mv
+      - -fT
+      - --
+      - "{{ laya_systemone_finetune_train_path }}.download"
+      - "{{ laya_systemone_finetune_train_path }}"
+  when: laya_systemone_finetune_train_download_stat is not skipped
+  become: true
+  changed_when: true
+  no_log: true
+
+- name: Check the existing validation CSV checksum before download
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_eval_path }}"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_eval_existing_stat
+  become: true
+
+- name: Download the validation CSV when missing or corrupt
+  ansible.builtin.command:
+    argv:
+      - aws
+      - --endpoint-url
+      - "{{ laya_systemone_finetune_s3_endpoint }}"
+      - s3
+      - cp
+      - "s3://{{ laya_systemone_finetune_bucket }}/{{ laya_systemone_finetune_eval_key }}"
+      - "{{ laya_systemone_finetune_eval_path }}.download"
+  when: >-
+    not laya_systemone_finetune_eval_existing_stat.stat.exists
+    or laya_systemone_finetune_eval_existing_stat.stat.checksum | default('')
+    != laya_systemone_finetune_eval_sha256 | lower
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ laya_systemone_finetune_s3_access_key_id }}"
+    AWS_SECRET_ACCESS_KEY: "{{ laya_systemone_finetune_s3_secret_access_key }}"
+    AWS_DEFAULT_REGION: "{{ laya_systemone_finetune_s3_region }}"
+  become: true
+  become_user: "{{ laya_systemone_user }}"
+  changed_when: true
+  no_log: true
+
+- name: Check the downloaded validation CSV checksum
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_eval_path }}.download"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_eval_download_stat
+  when: >-
+    not laya_systemone_finetune_eval_existing_stat.stat.exists
+    or laya_systemone_finetune_eval_existing_stat.stat.checksum | default('')
+    != laya_systemone_finetune_eval_sha256 | lower
+  become: true
+
+- name: Verify the downloaded validation CSV checksum
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_eval_download_stat.stat.exists
+      - laya_systemone_finetune_eval_download_stat.stat.checksum == laya_systemone_finetune_eval_sha256 | lower
+    fail_msg: The downloaded validation CSV does not match its configured SHA-256 checksum.
+    quiet: true
+  when: laya_systemone_finetune_eval_download_stat is not skipped
+  no_log: true
+
+- name: Move the verified validation CSV into place
+  ansible.builtin.command:
+    argv:
+      - mv
+      - -fT
+      - --
+      - "{{ laya_systemone_finetune_eval_path }}.download"
+      - "{{ laya_systemone_finetune_eval_path }}"
+  when: laya_systemone_finetune_eval_download_stat is not skipped
+  become: true
+  changed_when: true
+  no_log: true
+
+- name: Set private ownership and permissions on the CSV files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: file
+    owner: "{{ laya_systemone_user }}"
+    group: "{{ laya_systemone_group }}"
+    mode: "0600"
+  loop:
+    - "{{ laya_systemone_finetune_train_path }}"
+    - "{{ laya_systemone_finetune_eval_path }}"
+  become: true
+
+- name: Read the training CSV checksum
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_train_path }}"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_train_stat
+
+- name: Verify the training CSV checksum
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_train_stat.stat.exists
+      - laya_systemone_finetune_train_stat.stat.checksum == laya_systemone_finetune_train_sha256 | lower
+    fail_msg: The training CSV does not match its configured SHA-256 checksum.
+    quiet: true
+  no_log: true
+
+- name: Read the validation CSV checksum
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_eval_path }}"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_eval_stat
+
+- name: Verify the validation CSV checksum
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_eval_stat.stat.exists
+      - laya_systemone_finetune_eval_stat.stat.checksum == laya_systemone_finetune_eval_sha256 | lower
+    fail_msg: The validation CSV does not match its configured SHA-256 checksum.
+    quiet: true
+  no_log: true
