@@ -246,11 +246,8 @@ platforms:
 {% endif %}{% endif %}
 {% include 'config-webhook.yaml.j2' %}
 {% endif %}
-{% set _mcp_splunk = (hermes_agent_splunk_access | bool) and (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
-{# Context7's hosted MCP serves unauthenticated requests (verified: keyless
-   `initialize` returns 200); a key only raises the shared rate limit. So this
-   entry renders whenever enabled — the API-key header is added only when a key
-   is actually set, below. #}
+{% set _timeout = hermes_agent_mcp_tool_timeout_seconds %}{% set _mcp_splunk = (hermes_agent_splunk_access | bool) and (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
+{# Context7 accepts keyless requests; a key raises the rate limit. #}
 {% set _mcp_context7 = (hermes_agent_context7_mcp_enabled | bool) %}
 {% set _mcp_docs = (hermes_agent_docs_mcp_enabled | bool) %}
 {% set _mcp_grep = (hermes_agent_grep_mcp_enabled | bool) %}
@@ -261,7 +258,7 @@ platforms:
 # Bounded facade canary: this config exposes only Vikunja through /agents.
 mcp_servers:
   agent-facade:
-    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    timeout: {{ _timeout }}
     url: "{{ hermes_agent_facade_base_url }}/agents"
     headers:
       X-Agent-Key: "${HERMES_AGENT_GATEWAY_KEY}"
@@ -273,7 +270,7 @@ mcp_servers:
 {% if _mcp_splunk %}
   # Splunk MCP Server — read/search the SIEM (run_splunk_query, get_indexes, ...).
   splunk:
-    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    timeout: {{ _timeout }}
     url: "${SPLUNK_MCP_URL}"
     headers:
       Authorization: "Bearer ${SPLUNK_MCP_TOKEN}"
@@ -285,7 +282,7 @@ mcp_servers:
   # Context7 — current, version-specific library/framework docs on demand,
   # via the shared agentgateway MCP plane (see defaults).
   context7:
-    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    timeout: {{ _timeout }}
     url: "{{ hermes_agent_context7_mcp_url }}"
 {% if hermes_agent_context7_api_key | length > 0 %}
     headers:
@@ -298,7 +295,7 @@ mcp_servers:
   # caller; the gateway's mcp-docs sidecar holds the router credential — see
   # defaults).
   docs:
-    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    timeout: {{ _timeout }}
     url: "{{ hermes_agent_docs_mcp_url }}"
 {% endif %}
 {% if _mcp_grep %}
@@ -306,7 +303,7 @@ mcp_servers:
   # and dialed upstream directly rather than through the gateway MCP plane; see
   # defaults for why.
   grep:
-    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    timeout: {{ _timeout }}
     url: "{{ hermes_agent_grep_mcp_url }}"
 {% endif %}
 {% if _mcp_vikunja %}
@@ -314,14 +311,14 @@ mcp_servers:
   # agentgateway /vikunja route (keyless; the gateway sidecar holds the read
   # token — see agentgateway_docker defaults).
   vikunja:
-    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    timeout: {{ _timeout }}
     url: "{{ hermes_agent_vikunja_mcp_url }}"
 {% endif %}
 {% if _mcp_nautobot %}
   # Nautobot SoT — read-only, via the gateway /nautobot route. Disabled by
   # default (no route/token yet); renders only once enabled.
   nautobot:
-    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    timeout: {{ _timeout }}
     url: "{{ hermes_agent_nautobot_mcp_url }}"
 {% endif %}
 {% if _mcp_escalation %}
