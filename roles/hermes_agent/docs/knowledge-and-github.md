@@ -45,7 +45,7 @@ stored on the guest.
 | --- | --- | --- |
 | `hermes_agent_github_identity_enabled` | `false` | Deploy helper, wrapper and timer |
 | `hermes_agent_github_identity_approles` | env `HERMES_GITHUB_{PUBLIC,PRIVATE}_VAULT_{ROLE,SECRET}_ID` | Per-boundary AppRole credentials (root-only file) |
-| `hermes_agent_github_identity_sets` | `review`/`author` x `public`/`private` | Permission set names |
+| `hermes_agent_github_identity_sets` | `review` for public and private; `author` for public | Permission set names |
 | `hermes_agent_github_trust_boundary_default` | `private` | Exported to the gateway as `HERMES_TRUST_BOUNDARY` |
 | `hermes_agent_github_guard_internal_suffixes` | env `PROXMOX_SUBDOMAIN` + `HERMES_GH_GUARD_INTERNAL_SUFFIXES` | Outbound gate domain list |
 | `hermes_agent_github_guard_private_repos` | env `HERMES_GH_GUARD_PRIVATE_REPOS` | Outbound gate repository list |
