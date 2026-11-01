@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from gateway_falsifier_contract import (
     BAD_KEY,
     ERROR_URL,
@@ -19,6 +20,7 @@ from gateway_observer_helpers import gateway_config, stat, vikunja_route_bytes
 from gateway_protocol_helpers import caller_headers, request, rpc, rpc_response
 
 
+@pytest.mark.parametrize("runtime", ["testbox"], indirect=True)
 def test_gateway_fixture_auth_and_mcp_lifecycle(runtime: dict[str, Any]) -> None:
     socket_path = runtime["socket_path"]
     for key in (None, BAD_KEY, NONOWNER_KEY):
@@ -148,6 +150,7 @@ def test_vikunja_route_render_is_byte_identical_with_facade_enabled_and_disabled
     )
 
 
+@pytest.mark.parametrize("runtime", ["vikunja"], indirect=True)
 def test_vikunja_optional_route_uses_the_real_sidecar_and_api(
     runtime: dict[str, Any],
 ) -> None:
