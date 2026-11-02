@@ -1,0 +1,98 @@
+---
+# Each app owns its process shape once; tier rows select the token field and
+# tools. The Vikunja entity tools multiplex read and write subcommands, so the
+# read tier relies on its app-scoped token to deny writes.
+llm_router_app_agent_apps:
+  vikunja:
+    command: /usr/bin/npx
+    args:
+      - --yes
+      - "@democratize-technology/vikunja-mcp@{{ llm_router_app_agent_vikunja_mcp_version }}"
+    url_env: VIKUNJA_URL
+    url_field: VIKUNJA_MCP_URL
+    token_env: VIKUNJA_API_TOKEN
+  zammad:
+    command: "{{ llm_router_mcp_zammad_command }}"
+    args: "{{ llm_router_mcp_zammad_args }}"
+    url_env: ZAMMAD_URL
+    url_field: ZAMMAD_MCP_URL
+    token_env: ZAMMAD_HTTP_TOKEN
+
+llm_router_app_agent_tiers:
+  - id: vikunja-read
+    app: vikunja
+    tier: read
+    token_field: VIKUNJA_AGENT_READ_TOKEN
+    allowed_tools:
+      - vikunja_tasks
+      - vikunja_projects
+      - vikunja_labels
+      - vikunja_filters
+  - id: vikunja-write
+    app: vikunja
+    tier: write
+    token_field: VIKUNJA_MCP_TOKEN_RW
+    allowed_tools:
+      - vikunja_tasks
+      - vikunja_projects
+      - vikunja_labels
+      - vikunja_filters
+  - id: zammad-write
+    app: zammad
+    tier: write
+    token_field: ZAMMAD_AGENT_WRITE_TOKEN
+    allowed_tools:
+      - zammad_get_current_user
+      - zammad_search_tickets
+      - zammad_get_ticket
+      - zammad_create_ticket
+      - zammad_update_ticket
+      - zammad_add_article
+      - zammad_add_ticket_tag
+
+# A configured project outside the read user's allowlist makes the app-side
+# authorization probes meaningful. Empty keeps project-specific checks inert.
+llm_router_app_agent_probe_vikunja_forbidden_project_id: ""
+
+# Private resolved credentials are only consumed by the process env template
+# and key permission projection. Public docs derive names and fields only.
+_llm_router_app_agent_matrix: >-
+  {%- set ns = namespace(rows=[]) -%}
+  {%- for tier in llm_router_app_agent_tiers -%}
+  {%- set app = llm_router_app_agent_apps[tier.app] -%}
+  {%- set token = (bao_local_llm_secrets | default({}, true)).get(tier.token_field, '')
+       | default('', true) | string | trim -%}
+  {%- set token_env_key = 'LLM_ROUTER_APP_' ~ (tier.id | upper | regex_replace('[^A-Z0-9]', '_')) ~ '_TOKEN' -%}
+  {%- set url_env_key = 'LLM_ROUTER_APP_' ~ (tier.id | upper | regex_replace('[^A-Z0-9]', '_')) ~ '_URL' -%}
+  {%- set row = tier | combine(app, recursive=true) | combine({
+        'server_id': tier.id | replace('-', '_'),
+        'token_value': token,
+        'token_env_key': token_env_key,
+        'url_env_key': url_env_key,
+        'url_value': (bao_local_llm_secrets | default({}, true)).get(app.url_field, '')
+          | default('', true) | string | trim,
+        'enabled': token | length > 0,
+      }, recursive=true) -%}
+  {%- set ns.rows = ns.rows + [row] -%}
+  {%- endfor -%}
+  {{ ns.rows }}
+
+# The committed Markdown table is a projection of the same tier rows used by
+# the templates and keys. It deliberately contains no resolved credentials.
+llm_router_app_agent_matrix_markdown: |-
+  # App-agent matrix
+
+  Generated from `llm_router_app_agent_tiers`; a test fails when this file drifts.
+  {% for row in llm_router_app_agent_tiers %}
+
+  ## {{ row.id }}
+
+  - App: {{ row.app }}
+  - Tier: {{ row.tier }}
+  - MCP server: {{ row.id | replace('-', '_') }}
+  - OpenBao token field: {{ row.token_field }}
+  - Allowed tools:
+  {% for tool in row.allowed_tools %}
+    - {{ tool }}
+  {% endfor %}
+  {% endfor %}

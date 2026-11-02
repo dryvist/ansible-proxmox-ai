@@ -1,0 +1,411 @@
+---
+# These checks are intentionally failure-only: the established router/systemd
+# verification path has no app-agent alert route. A scheduled caller can include
+# this task file after convergence and use its dedicated tag.
+- name: Materialize app-agent probe keys and enabled servers
+  ansible.builtin.set_fact:
+    _llm_router_app_agent_probe_keys: >-
+      {{ dict(_llm_router_agent_keys | map(attribute='alias')
+         | zip(_llm_router_agent_keys | map(attribute='value'))) }}
+    _llm_router_app_agent_probe_servers: >-
+      {{ _llm_router_app_agent_matrix | selectattr('enabled')
+         | map(attribute='id') | list }}
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Log why the Vikunja read-tier positive control is skipped
+  ansible.builtin.debug:
+    msg: "Skipping the Vikunja read-tier positive control because its server or roster key is absent."
+  when:
+    - "'vikunja-read' not in _llm_router_app_agent_probe_servers
+       or (_llm_router_app_agent_probe_keys.get('vikunja-read', '') | length == 0)"
+  tags: [llm_router_app_agent_probe]
+
+- name: Check the Vikunja read-tier key can list projects
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/call"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _llm_router_app_agent_probe_keys['vikunja-read'] }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      server_id: vikunja_read
+      name: vikunja_projects
+      arguments:
+        subcommand: list
+    status_code: [200, 400, 401, 403, 404, 422, 500]
+    return_content: true
+    timeout: 20
+  register: _llm_router_app_agent_vikunja_read_result
+  failed_when: false
+  check_mode: false
+  when:
+    - "'vikunja-read' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-read', '') | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Require the Vikunja read-tier positive control to succeed
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_app_agent_vikunja_read_result.status | default(0) == 200
+      - not (_llm_router_app_agent_vikunja_read_result.json.isError | default(false) | bool)
+    fail_msg: "The Vikunja read-tier MCP probe did not return a project list."
+  when:
+    - "'vikunja-read' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-read', '') | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Log why the Vikunja write-tier positive control is skipped
+  ansible.builtin.debug:
+    msg: "Skipping Vikunja write-tier positive control because its server or roster key is absent."
+  when:
+    - "'vikunja-write' not in _llm_router_app_agent_probe_servers
+       or (_llm_router_app_agent_probe_keys.get('vikunja-write', '') | length == 0)"
+  tags: [llm_router_app_agent_probe]
+
+- name: Check the Vikunja write-tier key can list projects
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/call"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _llm_router_app_agent_probe_keys['vikunja-write'] }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      server_id: vikunja_write
+      name: vikunja_projects
+      arguments:
+        subcommand: list
+    status_code: [200, 400, 401, 403, 404, 422, 500]
+    return_content: true
+    timeout: 20
+  register: _llm_router_app_agent_vikunja_write_result
+  failed_when: false
+  check_mode: false
+  when:
+    - "'vikunja-write' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-write', '') | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Require the Vikunja write-tier positive control to succeed
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_app_agent_vikunja_write_result.status | default(0) == 200
+      - not (_llm_router_app_agent_vikunja_write_result.json.isError | default(false) | bool)
+    fail_msg: "The Vikunja write-tier MCP probe did not return a successful project list."
+  when:
+    - "'vikunja-write' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-write', '') | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Require a valid positive project ID when the Vikunja probe is configured
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_app_agent_probe_vikunja_forbidden_project_id | int > 0
+    fail_msg: "The Vikunja probe project ID must be a positive integer."
+  when: llm_router_app_agent_probe_vikunja_forbidden_project_id | string | length > 0
+  tags: [llm_router_app_agent_probe]
+
+- name: Confirm the configured outside-allowlist project exists through the write-tier key
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/call"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _llm_router_app_agent_probe_keys['vikunja-write'] }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      server_id: vikunja_write
+      name: vikunja_projects
+      arguments:
+        subcommand: get
+        id: "{{ llm_router_app_agent_probe_vikunja_forbidden_project_id | int }}"
+    status_code: [200, 400, 401, 403, 404, 422, 500]
+    return_content: true
+    timeout: 20
+  register: _llm_router_app_agent_probe_project_result
+  failed_when: false
+  check_mode: false
+  when:
+    - llm_router_app_agent_probe_vikunja_forbidden_project_id | string | length > 0
+    - "'vikunja-write' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-write', '') | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Require the configured Vikunja probe project to exist
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_app_agent_probe_project_result.status | default(0) == 200
+      - not (_llm_router_app_agent_probe_project_result.json.isError | default(false) | bool)
+    fail_msg: "The configured Vikunja authorization probe project could not be read by the write tier."
+  when:
+    - llm_router_app_agent_probe_vikunja_forbidden_project_id | string | length > 0
+    - "'vikunja-write' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-write', '') | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Log why the Zammad write-tier positive control is skipped
+  ansible.builtin.debug:
+    msg: "Skipping Zammad write-tier positive control because its server or roster key is absent."
+  when:
+    - "'zammad-write' not in _llm_router_app_agent_probe_servers
+       or (_llm_router_app_agent_probe_keys.get('zammad-write', '') | length == 0)"
+  tags: [llm_router_app_agent_probe]
+
+- name: Check the Zammad write-tier key can resolve its current user
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/call"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _llm_router_app_agent_probe_keys['zammad-write'] }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      server_id: zammad_write
+      name: zammad_get_current_user
+      arguments: {}
+    status_code: [200, 400, 401, 403, 404, 422, 500]
+    return_content: true
+    timeout: 20
+  register: _llm_router_app_agent_zammad_write_result
+  failed_when: false
+  check_mode: false
+  when:
+    - "'zammad-write' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('zammad-write', '') | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Require the Zammad write-tier positive control to succeed
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_app_agent_zammad_write_result.status | default(0) == 200
+      - not (_llm_router_app_agent_zammad_write_result.json.isError | default(false) | bool)
+    fail_msg: "The Zammad write-tier MCP probe did not return the current user."
+  when:
+    - "'zammad-write' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('zammad-write', '') | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Log why the Vikunja read-tier create denial probe is skipped
+  ansible.builtin.debug:
+    msg: >-
+      Skipping Vikunja read-tier create denial: a server/key, outside-allowlist
+      project ID, or write-tier cleanup key is absent.
+  when:
+    - "'vikunja-read' not in _llm_router_app_agent_probe_servers
+       or (_llm_router_app_agent_probe_keys.get('vikunja-read', '') | length == 0)
+       or ('vikunja-write' not in _llm_router_app_agent_probe_servers)
+       or (_llm_router_app_agent_probe_keys.get('vikunja-write', '') | length == 0)
+       or (llm_router_app_agent_probe_vikunja_forbidden_project_id | string | length == 0)"
+  tags: [llm_router_app_agent_probe]
+
+- name: Ask the Vikunja read-tier key to create a task in the probe project
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/call"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _llm_router_app_agent_probe_keys['vikunja-read'] }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      server_id: vikunja_read
+      name: vikunja_tasks
+      arguments:
+        subcommand: create
+        projectId: "{{ llm_router_app_agent_probe_vikunja_forbidden_project_id | int }}"
+        title: "Router authorization probe task"
+        description: "Remove immediately if the read-tier boundary fails."
+    status_code: [200, 400, 401, 403, 404, 422, 500]
+    return_content: true
+    timeout: 20
+  register: _llm_router_app_agent_vikunja_create_result
+  failed_when: false
+  check_mode: false
+  when:
+    - "'vikunja-read' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-read', '') | length > 0
+    - "'vikunja-write' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-write', '') | length > 0
+    - llm_router_app_agent_probe_vikunja_forbidden_project_id | string | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Record a task ID only if the read-tier create unexpectedly succeeded
+  ansible.builtin.set_fact:
+    _llm_router_app_agent_vikunja_created_task_id: >-
+      {{ ((_llm_router_app_agent_vikunja_create_result.json.result
+          | default(_llm_router_app_agent_vikunja_create_result.json, true))
+          .content[0].text | from_json).task.id }}
+  when:
+    - _llm_router_app_agent_vikunja_create_result is defined
+    - _llm_router_app_agent_vikunja_create_result.status | default(0) == 200
+    - not (_llm_router_app_agent_vikunja_create_result.json.isError | default(false) | bool)
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Remove the task if the read-tier create unexpectedly succeeded
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/call"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _llm_router_app_agent_probe_keys['vikunja-write'] }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      server_id: vikunja_write
+      name: vikunja_tasks
+      arguments:
+        subcommand: delete
+        id: "{{ _llm_router_app_agent_vikunja_created_task_id | int }}"
+    status_code: [200, 400, 401, 403, 404, 422, 500]
+    return_content: true
+    timeout: 20
+  register: _llm_router_app_agent_vikunja_cleanup_result
+  failed_when: false
+  check_mode: false
+  when: _llm_router_app_agent_vikunja_created_task_id is defined
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Require Vikunja to clean up any task created by the denied-write probe
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_app_agent_vikunja_cleanup_result.status | default(0) == 200
+      - not (_llm_router_app_agent_vikunja_cleanup_result.json.isError | default(false) | bool)
+    fail_msg: "The Vikunja read-tier probe created a task that could not be removed."
+  when: _llm_router_app_agent_vikunja_created_task_id is defined
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Require the Vikunja read-tier create attempt to be denied
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (_llm_router_app_agent_vikunja_create_result.status | default(0) == 403)
+        or (_llm_router_app_agent_vikunja_create_result.status | default(0) == 200
+            and (_llm_router_app_agent_vikunja_create_result.json.isError | default(false) | bool))
+    fail_msg: "The Vikunja read-tier key was not denied task creation."
+  when:
+    - "'vikunja-read' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-read', '') | length > 0
+    - "'vikunja-write' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-write', '') | length > 0
+    - llm_router_app_agent_probe_vikunja_forbidden_project_id | string | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Log why the Vikunja outside-allowlist read probe is skipped
+  ansible.builtin.debug:
+    msg: "Skipping the Vikunja outside-allowlist read check because its server/key or project ID is absent."
+  when:
+    - "'vikunja-read' not in _llm_router_app_agent_probe_servers
+       or (_llm_router_app_agent_probe_keys.get('vikunja-read', '') | length == 0)
+       or (llm_router_app_agent_probe_vikunja_forbidden_project_id | string | length == 0)"
+  tags: [llm_router_app_agent_probe]
+
+- name: Ask the Vikunja read-tier key to read a project outside its allowlist
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/call"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _llm_router_app_agent_probe_keys['vikunja-read'] }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      server_id: vikunja_read
+      name: vikunja_projects
+      arguments:
+        subcommand: get
+        id: "{{ llm_router_app_agent_probe_vikunja_forbidden_project_id | int }}"
+    status_code: [200, 400, 401, 403, 404, 422, 500]
+    return_content: true
+    timeout: 20
+  register: _llm_router_app_agent_vikunja_forbidden_read_result
+  failed_when: false
+  check_mode: false
+  when:
+    - "'vikunja-read' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-read', '') | length > 0
+    - llm_router_app_agent_probe_vikunja_forbidden_project_id | string | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Require the outside-allowlist project read to be denied
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (_llm_router_app_agent_vikunja_forbidden_read_result.status | default(0) == 403)
+        or (_llm_router_app_agent_vikunja_forbidden_read_result.status | default(0) == 200
+            and (_llm_router_app_agent_vikunja_forbidden_read_result.json.isError | default(false) | bool))
+    fail_msg: "The Vikunja read-tier key could read a project outside its allowlist."
+  when:
+    - "'vikunja-read' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-read', '') | length > 0
+    - llm_router_app_agent_probe_vikunja_forbidden_project_id | string | length > 0
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Log why the cross-app server denial probe is skipped
+  ansible.builtin.debug:
+    msg: "Skipping the Vikunja-to-Zammad server-scope check because a server or roster key is absent."
+  when:
+    - "'vikunja-read' not in _llm_router_app_agent_probe_servers
+       or (_llm_router_app_agent_probe_keys.get('vikunja-read', '') | length == 0)
+       or 'zammad-write' not in _llm_router_app_agent_probe_servers"
+  tags: [llm_router_app_agent_probe]
+
+- name: Ask the Vikunja read-tier key to call a Zammad write-tier tool
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/call"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _llm_router_app_agent_probe_keys['vikunja-read'] }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      server_id: zammad_write
+      name: zammad_get_current_user
+      arguments: {}
+    status_code: [200, 400, 401, 403, 404, 422, 500]
+    return_content: true
+    timeout: 20
+  register: _llm_router_app_agent_cross_server_result
+  failed_when: false
+  check_mode: false
+  when:
+    - "'vikunja-read' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-read', '') | length > 0
+    - "'zammad-write' in _llm_router_app_agent_probe_servers"
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Require LiteLLM to refuse the cross-app tool call
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_app_agent_cross_server_result.status | default(0) == 403
+      - _llm_router_app_agent_cross_server_result.json.detail.error | default('') == 'access_denied'
+    fail_msg: "LiteLLM allowed a Vikunja read-tier key to call a Zammad server."
+  when:
+    - "'vikunja-read' in _llm_router_app_agent_probe_servers"
+    - _llm_router_app_agent_probe_keys.get('vikunja-read', '') | length > 0
+    - "'zammad-write' in _llm_router_app_agent_probe_servers"
+  no_log: true
+  tags: [llm_router_app_agent_probe]
