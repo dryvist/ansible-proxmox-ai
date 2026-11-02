@@ -30,9 +30,18 @@
   ansible.builtin.set_fact:
     hermes_agent_direct_wanted: "{{ hermes_agent_direct_job_wanted }}"
 
+# A named profile's single Slack target moves to that profile's routed report
+# channel when one is configured (152-profile-slack-routes.yml).
 - name: "Direct cron | Resolve deliver target for {{ item.name }}"
+  vars:
+    _deliver: "{{ item.deliver | default('slack:' ~ hermes_agent_digest_slack_channel) | trim }}"
+    _home: "{{ item.hermes_home | default('') }}"
+    _profile: "{{ _home.split('/profiles/')[-1] if '/profiles/' in _home else '' }}"
   ansible.builtin.set_fact:
-    hermes_agent_direct_deliver: "{{ item.deliver | default('slack:' ~ hermes_agent_digest_slack_channel) }}"
+    hermes_agent_direct_deliver: >-
+      {{ ('slack:' ~ hermes_agent_slack_profile_channels[_profile])
+         if (_profile in hermes_agent_slack_profile_channels and _deliver is match('slack:[^,]+$'))
+         else _deliver }}
     hermes_agent_direct_model: "{{ item.model | default(hermes_agent_cron_model) }}"
     hermes_agent_direct_model_provider: "{{ item.model_provider | default(hermes_agent_cron_model_provider) }}"
 
