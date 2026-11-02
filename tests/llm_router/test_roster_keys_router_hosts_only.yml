@@ -1,0 +1,64 @@
+---
+# A Hermes-only play loads the registry too; it must resolve before any roster
+# key exists. test_agent_router_keys.yml keeps the router fail-closed case.
+- name: Resolve no roster keys on a host that does not serve them
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Prepare role-backed rendered contract
+      ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+
+    - name: Materialize keys with a missing roster key on a non-router host
+      vars:
+        ai_agents:
+          example-missing:
+            router_key_class: standard
+        ai_agent_owner: {}
+        openbao_secrets_by_domain: {}
+      block:
+        - name: Model a non-router host
+          ansible.builtin.set_fact:
+            llm_router_serve_roster_keys: false
+
+        - name: Refresh the router projections without the roster key
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: assertion-inputs.yml
+
+        - name: Require an empty roster projection
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - _llm_router_agent_keys == []
+
+- name: Add a router host and a Hermes host
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Add the fixture hosts
+      ansible.builtin.add_host:
+        name: "{{ item.name }}"
+        groups: "{{ item.group }}"
+        ansible_connection: local
+      loop:
+        - {name: router-fixture, group: llm_router_group}
+        - {name: hermes-fixture, group: hermes_agent_group}
+
+- name: Serve roster keys only on router hosts by default
+  hosts: router-fixture:hermes-fixture
+  gather_facts: false
+  tasks:
+    - name: Load the role default
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/llm_router/defaults/main/56a-consumer-key-support.yml"
+        name: _key_defaults
+
+    - name: Require roster keys on the router host only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (_key_defaults.llm_router_serve_roster_keys | bool) == (inventory_hostname == 'router-fixture')
