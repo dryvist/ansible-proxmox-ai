@@ -1,45 +1,98 @@
 ---
+# Every action needs it: this role's defaults read nvidia_gpu_guest_* values.
 - name: Install shared NVIDIA guest prerequisites
   ansible.builtin.include_role:
     name: nvidia_gpu_guest
     # public: this role's defaults read nvidia_gpu_guest_* values after the include.
     public: true
 
-- name: Create the Laya virtual environment
-  ansible.builtin.command:
-    argv:
-      - "{{ nvidia_gpu_guest_uv_bin }}"
-      - venv
-      - --python
-      - "{{ laya_systemone_python }}"
-      - "{{ laya_systemone_venv }}"
-    creates: "{{ laya_systemone_venv }}/bin/python"
-  become: true
-  become_user: "{{ laya_systemone_user }}"
-  environment: "{{ nvidia_gpu_guest_uv_environment }}"
+- name: Converge the Laya serving runtime when fine-tuning is not selected
+  when: not laya_systemone_finetune_enabled | bool
+  block:
+    - name: Create the Laya virtual environment
+      ansible.builtin.command:
+        argv:
+          - "{{ nvidia_gpu_guest_uv_bin }}"
+          - venv
+          - --python
+          - "{{ laya_systemone_python }}"
+          - "{{ laya_systemone_venv }}"
+        creates: "{{ laya_systemone_venv }}/bin/python"
+      become: true
+      become_user: "{{ laya_systemone_user }}"
+      environment: "{{ nvidia_gpu_guest_uv_environment }}"
 
-- name: Install the pinned Laya HTTP server with a driver-compatible CUDA torch wheel
-  ansible.builtin.command:
-    argv:
-      - "{{ nvidia_gpu_guest_uv_bin }}"
-      - pip
-      - install
-      - --python
-      - "{{ laya_systemone_venv }}/bin/python"
-      - --torch-backend=auto
-      - "laya[serve]=={{ laya_systemone_version }}"
-  become: true
-  become_user: "{{ laya_systemone_user }}"
-  environment: "{{ nvidia_gpu_guest_uv_environment }}"
-  register: laya_systemone_install
-  when: not ansible_check_mode
-  changed_when: >-
-    'Installed' in laya_systemone_install.stderr or
-    'Prepared' in laya_systemone_install.stderr or
-    'Uninstalled' in laya_systemone_install.stderr
-  notify: Restart Laya systemd service
+    - name: Install the pinned Laya HTTP server with a driver-compatible CUDA torch wheel
+      ansible.builtin.command:
+        argv:
+          - "{{ nvidia_gpu_guest_uv_bin }}"
+          - pip
+          - install
+          - --python
+          - "{{ laya_systemone_venv }}/bin/python"
+          - --torch-backend=auto
+          - "laya[serve]=={{ laya_systemone_version }}"
+      become: true
+      become_user: "{{ laya_systemone_user }}"
+      environment: "{{ nvidia_gpu_guest_uv_environment }}"
+      register: laya_systemone_install
+      when: not ansible_check_mode
+      changed_when: >-
+        'Installed' in laya_systemone_install.stderr or
+        'Prepared' in laya_systemone_install.stderr or
+        'Uninstalled' in laya_systemone_install.stderr
+      notify: Restart Laya systemd service
 
-- name: Optionally fine-tune a Laya model from labeled data
+    - name: Render the Laya service environment and systemd unit
+      ansible.builtin.include_tasks: render-unit.yml
+
+    - name: Apply pending Laya service changes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Ensure the Laya service is enabled and running
+      ansible.builtin.systemd:
+        name: laya-systemone.service
+        state: started
+        enabled: true
+        daemon_reload: true
+      no_log: true
+
+    - name: Wait for Laya health to return successfully
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ laya_systemone_port }}/health"
+        status_code: 200
+      register: laya_systemone_health
+      retries: "{{ laya_systemone_health_retries }}"
+      delay: "{{ laya_systemone_health_delay }}"
+      until: laya_systemone_health.status | default(0) == 200
+
+    - name: Optionally score Laya models on held-out data
+      ansible.builtin.include_tasks:
+        file: heldout-eval.yml
+        apply:
+          tags:
+            - laya_systemone
+            - laya_systemone_heldout
+            - llm
+            - ai
+      when:
+        - laya_systemone_heldout_enabled | bool
+        - not ansible_check_mode
+      tags:
+        - laya_systemone
+        - laya_systemone_heldout
+        - llm
+        - ai
+
+- name: Validate the fine-tune action
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_action in ['dispatch', 'collect']
+    fail_msg: laya_systemone_finetune_action must be dispatch or collect.
+    quiet: true
+  when: laya_systemone_finetune_enabled | bool
+
+- name: Dispatch the detached Laya fine-tune job
   ansible.builtin.include_tasks:
     file: finetune.yml
     apply:
@@ -48,50 +101,29 @@
         - laya_systemone_finetune
         - llm
         - ai
-  when: laya_systemone_finetune_enabled | bool
+  when:
+    - laya_systemone_finetune_enabled | bool
+    - laya_systemone_finetune_action == 'dispatch'
   tags:
     - laya_systemone
     - laya_systemone_finetune
     - llm
     - ai
 
-- name: Render the Laya service environment and systemd unit
-  ansible.builtin.include_tasks: render-unit.yml
-
-- name: Apply pending Laya service changes
-  ansible.builtin.meta: flush_handlers
-
-- name: Ensure the Laya service is enabled and running
-  ansible.builtin.systemd:
-    name: laya-systemone.service
-    state: started
-    enabled: true
-    daemon_reload: true
-  no_log: true
-
-- name: Wait for Laya health to return successfully
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ laya_systemone_port }}/health"
-    status_code: 200
-  register: laya_systemone_health
-  retries: "{{ laya_systemone_health_retries }}"
-  delay: "{{ laya_systemone_health_delay }}"
-  until: laya_systemone_health.status | default(0) == 200
-
-- name: Optionally score Laya models on held-out data
+- name: Collect a detached Laya fine-tune job
   ansible.builtin.include_tasks:
-    file: heldout-eval.yml
+    file: finetune-collect.yml
     apply:
       tags:
         - laya_systemone
-        - laya_systemone_heldout
+        - laya_systemone_finetune
         - llm
         - ai
   when:
-    - laya_systemone_heldout_enabled | bool
-    - not ansible_check_mode
+    - laya_systemone_finetune_enabled | bool
+    - laya_systemone_finetune_action == 'collect'
   tags:
     - laya_systemone
-    - laya_systemone_heldout
+    - laya_systemone_finetune
     - llm
     - ai

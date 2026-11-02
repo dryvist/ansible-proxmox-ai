@@ -53,7 +53,7 @@ def test_heldout_defaults_are_opt_in_and_use_separate_read_and_write_paths() -> 
 
 
 def test_heldout_include_follows_health_and_is_opt_in() -> None:
-    main = _load_yaml(TASKS / "main.yml")
+    main = list(_walk(_load_yaml(TASKS / "main.yml")))
     health_index = next(
         index for index, task in enumerate(main) if task.get("name") == "Wait for Laya health to return successfully"
     )
