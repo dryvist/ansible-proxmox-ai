@@ -175,8 +175,8 @@ def test_first_sufficient_window_and_ratio_classification():
     assert _scalar_reason("baseline", count=0, value=None) == "no data: baseline result is empty"
 
 
-def _well_formed(timestamp: Any) -> tuple[str, str]:
-    result = [{"metric": {}, "value": [timestamp, "50"]}]
+def _well_formed(timestamp: Any, sample: str = "50") -> tuple[str, str]:
+    result = [{"metric": {}, "value": [timestamp, sample]}]
     data = {"resultType": "vector", "result": result}
     counts = _named(COUNTS, "Capture interactive request counts for each latency window")["vars"][
         "_llm_campaign_latency_count_well_formed"
@@ -202,6 +202,12 @@ def test_sample_timestamps_must_be_finite_and_positive():
     assert _well_formed(1793660000.123) == ("True", "True")
     for bad in (float("nan"), float("inf"), float("-inf"), 0, -5, True):
         assert _well_formed(bad) == ("False", "False"), bad
+
+
+def test_count_samples_must_be_finite():
+    assert _well_formed(1793660000.0, "1234")[0] == "True"
+    for bad in ("1e9999", "9e15"):
+        assert _well_formed(1793660000.0, bad)[0] == "False", bad
 
 
 def test_count_stage_failure_headline_points_at_window_counts():
