@@ -231,8 +231,9 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     assert train_argv[base_index + 1] == "{{ laya_systemone_finetune_base_path }}"
     assert "creates" not in train_task["ansible.builtin.command"]
     assert "--no-block" in train_argv
-    assert "--remain-after-exit" in train_argv
+    assert "--remain-after-exit" not in train_argv
     assert "--property=RuntimeMaxSec={{ laya_systemone_finetune_train_timeout_seconds }}" in train_argv
+    assert "--property=ExecStopPost=+/usr/bin/systemctl start laya-systemone.service" in train_argv
     assert "--property=StandardOutput=journal" in train_argv
     assert "--property=StandardError=journal" in train_argv
     assert "--setenv=HF_HUB_OFFLINE=1" in train_argv
@@ -300,6 +301,9 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     assert ordered_names.index(validation["name"]) < ordered_names.index(promotion["name"])
     assert promotion_names.index("Rename the current model directory to .prev") < promotion_names.index(
         "Move the validated staging directory into place"
+    )
+    assert promotion_names.index("Move the validated staging directory into place") < promotion_names.index(
+        "Restart Laya to load the promoted fine-tuned model"
     )
     restore = _find_task(promotion["rescue"], "Restore the previous model after a failed promotion")
     restore_argv = restore["ansible.builtin.command"]["argv"]

@@ -33,6 +33,7 @@
         laya_systemone_finetune_failed: false
         laya_systemone_finetune_dispatch_state_valid: false
         laya_systemone_finetune_gpu_peer_was_active: false
+        laya_systemone_finetune_gpu_peer_restore_required: false
 
     - name: Read and validate persisted fine-tune dispatch state
       when: laya_systemone_finetune_dispatch_state_stat.stat.exists | default(false)
@@ -66,23 +67,56 @@
           ansible.builtin.set_fact:
             laya_systemone_finetune_dispatch_state_valid: false
 
+    - name: Read the GPU peer state when dispatch state is invalid
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - --quiet
+          - "{{ laya_systemone_finetune_gpu_peer_unit }}"
+      delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
+      register: laya_systemone_finetune_gpu_peer_recovery_probe
+      changed_when: false
+      failed_when: false
+      ignore_unreachable: true
+      no_log: true
+      when:
+        - not laya_systemone_finetune_dispatch_state_valid | bool
+        - laya_systemone_finetune_device == 'cuda'
+        - laya_systemone_finetune_gpu_peer_host | length > 0
+
+    - name: Use the delegated GPU peer state for service recovery
+      ansible.builtin.set_fact:
+        laya_systemone_finetune_gpu_peer_was_active: >-
+          {{ laya_systemone_finetune_gpu_peer_recovery_probe.rc | default(-1) == 0 }}
+        laya_systemone_finetune_gpu_peer_restore_required: >-
+          {{ laya_systemone_finetune_gpu_peer_recovery_probe.rc | default(-1) == 3 }}
+      when:
+        - not laya_systemone_finetune_dispatch_state_valid | bool
+        - laya_systemone_finetune_device == 'cuda'
+        - laya_systemone_finetune_gpu_peer_host | length > 0
+
     - name: Classify the detached fine-tune result without process output
       ansible.builtin.set_fact:
         laya_systemone_finetune_job_succeeded: >-
           {{ laya_systemone_finetune_dispatch_state_valid | bool
-             and laya_systemone_finetune_job_load_state == 'loaded'
-             and laya_systemone_finetune_job_sub_state == 'exited'
-             and laya_systemone_finetune_job_result == 'success'
-             and laya_systemone_finetune_job_exit_status == '0' }}
+             and (laya_systemone_finetune_job_load_state == 'not-found'
+                  or (laya_systemone_finetune_job_load_state == 'loaded'
+                      and laya_systemone_finetune_job_sub_state == 'exited'
+                      and laya_systemone_finetune_job_result == 'success'
+                      and laya_systemone_finetune_job_exit_status == '0')) }}
         laya_systemone_finetune_failed: >-
           {{ not (laya_systemone_finetune_dispatch_state_valid | bool
-             and laya_systemone_finetune_job_load_state == 'loaded'
-             and laya_systemone_finetune_job_sub_state == 'exited'
-             and laya_systemone_finetune_job_result == 'success'
-             and laya_systemone_finetune_job_exit_status == '0') }}
+             and (laya_systemone_finetune_job_load_state == 'not-found'
+                  or (laya_systemone_finetune_job_load_state == 'loaded'
+                      and laya_systemone_finetune_job_sub_state == 'exited'
+                      and laya_systemone_finetune_job_result == 'success'
+                      and laya_systemone_finetune_job_exit_status == '0'))) }}
         laya_systemone_finetune_failure_class: >-
           {%- if not laya_systemone_finetune_dispatch_state_valid | bool -%}
           dispatch-state
+          {%- elif laya_systemone_finetune_job_load_state == 'not-found' -%}
+          lost-unit
           {%- elif laya_systemone_finetune_job_result == 'timeout' -%}
           timeout
           {%- elif laya_systemone_finetune_job_result == 'exit-code' -%}
@@ -97,6 +131,9 @@
     - name: Validate and promote a successful fine-tune checkpoint
       when: laya_systemone_finetune_job_succeeded | bool
       block:
+        - name: Recover interrupted promotion and read the installed Laya version
+          ansible.builtin.include_tasks: finetune-recover.yml
+
         - name: Validate the fine-tuned staging checkpoint
           ansible.builtin.include_tasks: finetune-validate-staged.yml
 
@@ -109,7 +146,10 @@
         - name: Classify checkpoint validation or promotion failure
           ansible.builtin.set_fact:
             laya_systemone_finetune_failed: true
-            laya_systemone_finetune_failure_class: checkpoint
+            laya_systemone_finetune_failure_class: >-
+              {{ 'lost-unit'
+                 if laya_systemone_finetune_failure_class == 'lost-unit'
+                 else 'checkpoint' }}
 
     - name: Restore Laya and the previously active GPU peer
       ansible.builtin.include_tasks: finetune-restore-services.yml
