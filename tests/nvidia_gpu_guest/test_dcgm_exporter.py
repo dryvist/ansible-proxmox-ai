@@ -265,5 +265,5 @@ def test_site_installs_dcgm_on_every_nvidia_guest():
     assert not any("cuda-toolkit" in str(task) or "cache-sync.yml" in str(task) for task in tasks)
 
     host_projection = _load(ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
-    add_host = next(task["ansible.builtin.add_host"] for task in host_projection)
+    add_host = next(task["ansible.builtin.add_host"] for task in host_projection if "ansible.builtin.add_host" in task)
     assert "['nvidia_gpu_group'] if 'nvidia-gpu' in" in add_host["groups"]
