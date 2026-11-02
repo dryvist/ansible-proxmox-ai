@@ -82,6 +82,42 @@ def test_lm_eval_preflight_checks_the_selected_execution_node():
     assert any("--confirm_run_unsafe_code" in condition for condition in code_guard["ansible.builtin.assert"]["that"])
 
 
+def test_lm_eval_is_installed_for_selected_vllm_campaign_targets():
+    target = yaml.safe_load(TARGET_PLAYBOOK.read_text(encoding="utf-8"))[0]
+    pre_tasks = target["pre_tasks"]
+    install = _named(pre_tasks, "Install lm-eval for selected vLLM benchmark-target recipes")
+    preflight = _named(pre_tasks, "Check every configured executable before cache changes or benchmarks")
+    role_tasks = _load_tasks(REPO_ROOT / "roles/nvidia_gpu_guest/tasks/install-lm-eval.yml")
+    defaults_path = REPO_ROOT / "roles/nvidia_gpu_guest/defaults/main/00-core.yml"
+    defaults_text = defaults_path.read_text(encoding="utf-8")
+    defaults = yaml.safe_load(defaults_text)
+    probe_tasks = _load_tasks(TASKS / "llm-model-campaign-preflight-tool.yml")
+    probe = _named(probe_tasks, "Inspect the installed lm-eval command surface")
+    site = yaml.safe_load((PLAYBOOKS / "site.yml").read_text(encoding="utf-8"))
+    campaign = _named(site, "Run a named model benchmark campaign")
+
+    assert install["ansible.builtin.include_role"] == {
+        "name": "nvidia_gpu_guest",
+        "tasks_from": "install-lm-eval.yml",
+    }
+    assert install["when"][0] == "engine == 'vllm'"
+    assert "selectattr('executable', 'equalto', 'lm_eval')" in install["when"][1]
+    assert "selectattr('run_on', 'equalto', 'benchmark_target')" in install["when"][1]
+    assert pre_tasks.index(install) < pre_tasks.index(preflight)
+    assert role_tasks[1]["ansible.builtin.command"]["argv"][-1] == (
+        "lm-eval[api]=={{ nvidia_gpu_guest_lm_eval_version }}"
+    )
+    assert role_tasks[1]["environment"] == "{{ nvidia_gpu_guest_uv_environment }}"
+    assert role_tasks[2]["ansible.builtin.file"]["src"] == (
+        "{{ nvidia_gpu_guest_uv_tool_bin_dir }}/lm_eval"
+    )
+    assert role_tasks[2]["ansible.builtin.file"]["dest"] == "/usr/local/bin/lm_eval"
+    assert probe["ansible.builtin.command"]["argv"] == ["lm_eval", "--help"]
+    assert defaults["nvidia_gpu_guest_lm_eval_version"] == "0.4.13"
+    assert "# renovate: datasource=pypi depName=lm-eval" in defaults_text
+    assert "model_campaign" in campaign["tags"]
+
+
 def test_evalscope_preflight_checks_each_recipe_option_and_the_sandbox_engine():
     tasks = _load_tasks(TASKS / "llm-model-campaign-preflight-tool.yml")
     surface = _named(tasks, "Inspect the installed EvalScope command surface")
