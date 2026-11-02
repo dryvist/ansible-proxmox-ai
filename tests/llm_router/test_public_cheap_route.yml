@@ -38,44 +38,102 @@
     - name: Find sandbox-only aliases and their rendered targets
       ansible.builtin.set_fact:
         _sandbox_only_aliases: "{{ llm_router_sandbox_only_aliases }}"
+        _alias_targets: >-
+          {%- set ns = namespace(targets=[]) -%}
+          {%- for m in llm_router_model_registry
+                if m.enabled and m.stable_aliases is defined
+                   and (m.stable_aliases | intersect(llm_router_sandbox_only_aliases) | length > 0) -%}
+          {%- set _group = m.route_group | default(m.client_model_id) -%}
+          {%- if _group not in ns.targets -%}
+          {%- set ns.targets = ns.targets + [_group] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.targets }}
+
+    - name: Find enabled OpenCode deployments in each public group
+      ansible.builtin.set_fact:
         _go_entries: >-
           {{ llm_router_opencode_models
              | selectattr('route_group', 'defined')
-             | selectattr('route_group', 'equalto',
-                 _render_config.router_settings.model_group_alias.get(llm_router_sandbox_only_aliases | first))
+             | selectattr('route_group', 'in', _alias_targets)
              | list }}
 
     - name: The public cheap alias resolves to the ordered OpenCode Go group with public-data tags
       ansible.builtin.assert:
         quiet: true
         that:
-          - _sandbox_only_aliases == ['public-cheap']
+          - _sandbox_only_aliases | length > 0
+          - _expected_sandbox_aliases == _sandbox_only_aliases
           - >-
             _render_config.router_settings.model_group_alias.keys() | list
             | intersect(_sandbox_only_aliases) | length
             == _sandbox_only_aliases | length
-          - _alias_targets == ['opencode-public-cheap']
-          - _go_entries | length == 2
-          - _go_entries | selectattr('route_group', 'equalto', 'opencode-public-cheap') | list | length == 2
-          - _go_entries | selectattr('order', 'defined') | map(attribute='order') | list | sort == [1, 2]
-          - _go_entries | selectattr('tags', 'contains', 'sandbox-only') | list | length == 2
-          - _target_rows | length == 2
+          - _alias_targets == _expected_alias_targets
+          - _go_entries | length == _expected_go_entries | length
+          - >-
+            _go_entries | map(attribute='client_model_id') | sort | list
+            == _expected_go_entries | map(attribute='client_model_id') | sort | list
+          - _go_entries | selectattr('order', 'defined') | map(attribute='order') | list | sort == _expected_orders
+          - _go_entries | selectattr('tags', 'contains', 'sandbox-only') | list | length == _go_entries | length
+          - _target_rows | length == _expected_go_entries | length
+          - _rendered_order_rows == _registry_order_rows
           - _public_tagged_targets | length == _target_rows | length
           - _alias_rows | length == 0
+          - _disabled_opencode_models | length > 0
+          - >-
+            _disabled_opencode_models | map(attribute='client_model_id') | list
+            | intersect(_go_entries | map(attribute='client_model_id') | list) | length == 0
+          - >-
+            _disabled_opencode_model_names | intersect(_render_config.model_list
+              | map(attribute='model_name') | list) | length == 0
+          - >-
+            _disabled_opencode_upstream_names | intersect(_render_config.model_list
+              | map(attribute='litellm_params.model') | list) | length == 0
+          - _retry_policy.RateLimitErrorRetries | int >= 1
         fail_msg: >-
           sandbox aliases={{ _sandbox_only_aliases }}, targets={{ _alias_targets }},
           Go entries={{ _go_entries }}, rendered targets={{ _target_rows }}.
         success_msg: >-
-          The sandbox-only public route resolves to both ordered OpenCode Go deployments
-          carrying the public-data sensitivity tag, with no alias-shaped model-list entry.
+          The sandbox-only route resolves each ordered OpenCode Go registry deployment,
+          uses the rendered 429 retry policy, and excludes disabled upstreams.
       vars:
-        _alias_targets: >-
-          {%- set ns = namespace(targets=[]) -%}
-          {%- for alias in _sandbox_only_aliases -%}
-          {%- set ns.targets = ns.targets
-                + [_render_config.router_settings.model_group_alias.get(alias)] -%}
+        _expected_sandbox_aliases: >-
+          {%- set ns = namespace(aliases=[]) -%}
+          {%- for m in llm_router_model_registry
+                if m.enabled and m.in_free_route | default(false) | bool
+                   and 'sandbox-only' in m.tags | default([])
+                   and m.stable_aliases is defined -%}
+          {%- set ns.aliases = ns.aliases + m.stable_aliases -%}
           {%- endfor -%}
-          {{ ns.targets }}
+          {{ ns.aliases | unique | list }}
+        _expected_alias_targets: >-
+          {%- set ns = namespace(targets=[]) -%}
+          {%- for m in llm_router_model_registry
+                if m.enabled and m.stable_aliases is defined
+                   and (m.stable_aliases | intersect(_sandbox_only_aliases) | length > 0) -%}
+          {%- set ns.targets = ns.targets + [m.route_group | default(m.client_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.targets | unique | list }}
+        _expected_go_entries: >-
+          {{ llm_router_opencode_models
+             | selectattr('route_group', 'defined')
+             | selectattr('route_group', 'in', _expected_alias_targets) | list }}
+        _expected_orders: >-
+          {{ _expected_go_entries | map(attribute='order') | map('int') | sort | list }}
+        _registry_order_rows: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for m in _expected_go_entries -%}
+          {%- set ns.rows = ns.rows + [[m.order | int,
+                m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id)]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
+        _rendered_order_rows: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _target_rows -%}
+          {%- set ns.rows = ns.rows + [[d.litellm_params.order | int,
+                d.litellm_params.model]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
         _target_rows: >-
           {{ _render_config.model_list
              | selectattr('model_name', 'in', _alias_targets) | list }}
@@ -86,6 +144,20 @@
         _alias_rows: >-
           {{ _render_config.model_list
              | selectattr('model_name', 'in', _sandbox_only_aliases) | list }}
+        _disabled_opencode_models: >-
+          {{ llm_router_model_registry | selectattr('tier', 'equalto', 'opencode')
+             | rejectattr('enabled') | list }}
+        _disabled_opencode_model_names: >-
+          {{ _disabled_opencode_models | map(attribute='client_model_id') | list }}
+        _disabled_opencode_upstream_names: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for m in _disabled_opencode_models -%}
+          {%- set ns.names = ns.names + [m.litellm_model_name
+                | default(m.provider ~ '/' ~ m.upstream_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names }}
+        _retry_policy: >-
+          {{ _render_config.router_settings.model_group_retry_policy[_alias_targets | first] }}
 
     - name: The sandbox virtual key is the only key granted the public route alias
       ansible.builtin.assert:

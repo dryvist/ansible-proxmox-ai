@@ -77,6 +77,16 @@
     _llm_router_catalog_projection: >-
       {%- set ns = namespace(entries=[], errors=[]) -%}
       {%- for model in llm_router_model_registry -%}
+      {%- set overrides = model.catalog_limit_overrides | default([]) -%}
+      {%- set allowed_overrides = ['context_window', 'max_output_tokens'] -%}
+      {%- set invalid_overrides = overrides | difference(allowed_overrides) -%}
+      {%- set missing_overrides = overrides | reject('in', model.keys() | list) | list -%}
+      {%- if invalid_overrides | length > 0 or missing_overrides | length > 0 -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ': invalid catalog limit overrides '
+        ~ ((invalid_overrides + missing_overrides) | unique | list | string)
+      ] -%}
+      {%- endif -%}
       {%- set matches = namespace(entries=[]) -%}
       {%- for candidate in llm_model_catalog_models -%}
       {%- if candidate.name == model.client_model_id
@@ -135,7 +145,9 @@
             'request_timeout', 'stream_timeout', 'max_queue_size', 'queue_size',
             'num_retries', 'allowed_fails', 'cooldown_time'
           ] -%}
-      {%- if profile[field] is defined -%}
+      {%- if field in overrides and model[field] is defined -%}
+      {%- set _ = limits.values.update({field: model[field]}) -%}
+      {%- elif profile[field] is defined -%}
       {%- set _ = limits.values.update({field: profile[field]}) -%}
       {%- elif target[field] is defined -%}
       {%- set _ = limits.values.update({field: target[field]}) -%}

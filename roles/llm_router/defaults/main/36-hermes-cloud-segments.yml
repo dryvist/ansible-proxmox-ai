@@ -66,11 +66,21 @@ llm_router_opencode_zdr_fallback_groups: >-
   {%- set ns = namespace(models=[]) -%}
   {%- for m in llm_router_opencode_models -%}
   {%- set key = _llm_router_m_resolved_credentials.get(m.credential_env, '') -%}
-  {%- if key | length > 0 and _llm_router_m_registry_zdr_by_model[m.client_model_id] -%}
   {%- set group = m.route_group | default(m.client_model_id) -%}
-  {%- if group not in ns.models -%}
-  {%- set ns.models = ns.models + [group] -%}
+  {%- set members = llm_router_opencode_models
+        | selectattr('route_group', 'defined')
+        | selectattr('route_group', 'equalto', group) | list -%}
+  {%- if m.route_group is not defined -%}
+  {%- set members = [m] -%}
   {%- endif -%}
+  {%- set all_zdr = namespace(value=true) -%}
+  {%- for member in members -%}
+  {%- if not _llm_router_m_registry_zdr_by_model[member.client_model_id] -%}
+  {%- set all_zdr.value = false -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- if key | length > 0 and all_zdr.value and group not in ns.models -%}
+  {%- set ns.models = ns.models + [group] -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.models }}
@@ -78,11 +88,21 @@ llm_router_opencode_retaining_fallback_groups: >-
   {%- set ns = namespace(models=[]) -%}
   {%- for m in llm_router_opencode_models -%}
   {%- set key = _llm_router_m_resolved_credentials.get(m.credential_env, '') -%}
-  {%- if key | length > 0 and not _llm_router_m_registry_zdr_by_model[m.client_model_id] -%}
   {%- set group = m.route_group | default(m.client_model_id) -%}
-  {%- if group not in ns.models -%}
-  {%- set ns.models = ns.models + [group] -%}
+  {%- set members = llm_router_opencode_models
+        | selectattr('route_group', 'defined')
+        | selectattr('route_group', 'equalto', group) | list -%}
+  {%- if m.route_group is not defined -%}
+  {%- set members = [m] -%}
   {%- endif -%}
+  {%- set all_retaining = namespace(value=true) -%}
+  {%- for member in members -%}
+  {%- if _llm_router_m_registry_zdr_by_model[member.client_model_id] -%}
+  {%- set all_retaining.value = false -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- if key | length > 0 and all_retaining.value and group not in ns.models -%}
+  {%- set ns.models = ns.models + [group] -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.models }}
