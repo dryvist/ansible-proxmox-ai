@@ -1,0 +1,281 @@
+---
+- name: Validate the held-out evaluation configuration
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_heldout_key is string
+      - laya_systemone_heldout_key | length > 0
+      - laya_systemone_heldout_sha256 is match('^[A-Fa-f0-9]{64}$')
+      - laya_systemone_heldout_models is sequence
+      - laya_systemone_heldout_models is not string
+      - laya_systemone_heldout_models | length > 0
+      - >-
+        laya_systemone_heldout_models | select('match', '^[a-z0-9][a-z0-9._-]*$') | list | length
+        == laya_systemone_heldout_models | length
+      - laya_systemone_heldout_batch_size | int >= 1
+      - laya_systemone_heldout_batch_size | int <= 64
+    fail_msg: Held-out evaluation requires a key, SHA-256, safe model names, and batch size from 1 to 64.
+    quiet: true
+
+- name: Read the scoped RustFS credential for the held-out CSV
+  ansible.builtin.include_tasks: rustfs-credential.yml
+  vars:
+    laya_systemone_rustfs_kv_path: "{{ laya_systemone_finetune_bao_kv_path }}"
+
+- name: Create private held-out evaluation directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ laya_systemone_user }}"
+    group: "{{ laya_systemone_group }}"
+    mode: "0700"
+  loop:
+    - "{{ laya_systemone_finetune_root }}"
+    - "{{ laya_systemone_finetune_dataset_dir }}"
+    - "{{ laya_systemone_heldout_results_dir }}"
+  become: true
+
+- name: Check the existing held-out CSV checksum before download
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_heldout_path }}"
+    checksum_algorithm: sha256
+  register: laya_systemone_heldout_existing_stat
+  become: true
+  no_log: true
+
+- name: Download the held-out CSV when missing or corrupt
+  ansible.builtin.command:
+    argv:
+      - aws
+      - --endpoint-url
+      - "{{ laya_systemone_finetune_s3_endpoint }}"
+      - s3
+      - cp
+      - "s3://{{ laya_systemone_finetune_bucket }}/{{ laya_systemone_heldout_key }}"
+      - "{{ laya_systemone_heldout_path }}.download"
+  when: >-
+    not laya_systemone_heldout_existing_stat.stat.exists
+    or laya_systemone_heldout_existing_stat.stat.checksum | default('')
+    != laya_systemone_heldout_sha256 | lower
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ laya_systemone_finetune_s3_access_key_id }}"
+    AWS_SECRET_ACCESS_KEY: "{{ laya_systemone_finetune_s3_secret_access_key }}"
+    AWS_DEFAULT_REGION: "{{ laya_systemone_finetune_s3_region }}"
+  become: true
+  become_user: "{{ laya_systemone_user }}"
+  changed_when: true
+  no_log: true
+
+- name: Check the downloaded held-out CSV checksum
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_heldout_path }}.download"
+    checksum_algorithm: sha256
+  register: laya_systemone_heldout_download_stat
+  when: >-
+    not laya_systemone_heldout_existing_stat.stat.exists
+    or laya_systemone_heldout_existing_stat.stat.checksum | default('')
+    != laya_systemone_heldout_sha256 | lower
+  become: true
+  no_log: true
+
+- name: Verify the downloaded held-out CSV checksum
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_heldout_download_stat.stat.exists
+      - laya_systemone_heldout_download_stat.stat.checksum == laya_systemone_heldout_sha256 | lower
+    fail_msg: The downloaded held-out CSV does not match its configured SHA-256 checksum.
+    quiet: true
+  when: laya_systemone_heldout_download_stat is not skipped
+  no_log: true
+
+- name: Move the verified held-out CSV into place
+  ansible.builtin.command:
+    argv:
+      - mv
+      - -fT
+      - --
+      - "{{ laya_systemone_heldout_path }}.download"
+      - "{{ laya_systemone_heldout_path }}"
+  when: laya_systemone_heldout_download_stat is not skipped
+  become: true
+  changed_when: true
+  no_log: true
+
+- name: Set private ownership and permissions on the held-out CSV
+  ansible.builtin.file:
+    path: "{{ laya_systemone_heldout_path }}"
+    state: file
+    owner: "{{ laya_systemone_user }}"
+    group: "{{ laya_systemone_group }}"
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Read the held-out CSV checksum
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_heldout_path }}"
+    checksum_algorithm: sha256
+  register: laya_systemone_heldout_stat
+  become: true
+  no_log: true
+
+- name: Verify the held-out CSV checksum
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_heldout_stat.stat.exists
+      - laya_systemone_heldout_stat.stat.checksum == laya_systemone_heldout_sha256 | lower
+    fail_msg: The held-out CSV does not match its configured SHA-256 checksum.
+    quiet: true
+  no_log: true
+
+- name: Create the root-owned held-out evaluation script directory
+  ansible.builtin.file:
+    path: "{{ laya_systemone_heldout_script_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Install the held-out evaluation script
+  ansible.builtin.copy:
+    src: heldout_eval.py
+    dest: "{{ laya_systemone_heldout_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Read the installed Laya version for held-out evaluation
+  ansible.builtin.command:
+    argv:
+      - "{{ laya_systemone_venv }}/bin/python"
+      - -c
+      - import laya; print(laya.__version__)
+  register: laya_systemone_heldout_laya_version
+  changed_when: false
+  check_mode: false
+
+- name: Read the fine-tune manifest for held-out identity
+  ansible.builtin.slurp:
+    src: "{{ laya_systemone_finetune_model_dir }}/finetune-manifest.json"
+  register: laya_systemone_heldout_manifest_file
+  when: laya_systemone_finetune_enabled | bool
+  become: true
+  no_log: true
+
+- name: Initialize the held-out manifest when fine-tuning is disabled
+  ansible.builtin.set_fact:
+    laya_systemone_heldout_manifest: {}
+  when: not laya_systemone_finetune_enabled | bool
+
+- name: Parse the fresh fine-tune manifest for held-out identity
+  ansible.builtin.set_fact:
+    laya_systemone_heldout_manifest: >-
+      {{ laya_systemone_heldout_manifest_file.content | b64decode | from_json }}
+  when: laya_systemone_finetune_enabled | bool
+  no_log: true
+
+- name: Hash the held-out evaluation inputs
+  ansible.builtin.set_fact:
+    laya_systemone_heldout_run_hash: >-
+      {{ {'models': laya_systemone_heldout_models,
+          'manifest': laya_systemone_heldout_manifest,
+          'laya_version': laya_systemone_heldout_laya_version.stdout | trim} | to_json | hash('sha256') }}
+
+- name: Set the held-out result file identity
+  ansible.builtin.set_fact:
+    laya_systemone_heldout_result_filename: >-
+      {{ (laya_systemone_heldout_sha256 | lower)[:16] }}-{{ laya_systemone_heldout_run_hash[:16] }}.json
+
+- name: Set the held-out result file path
+  ansible.builtin.set_fact:
+    laya_systemone_heldout_result_path: >-
+      {{ laya_systemone_heldout_results_dir }}/{{ laya_systemone_heldout_result_filename }}
+
+- name: Check whether the held-out result already exists
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_heldout_result_path }}"
+  register: laya_systemone_heldout_result_stat
+  become: true
+
+- name: Report that an existing held-out result was reused
+  ansible.builtin.debug:
+    msg: "Skipping held-out scoring and upload because {{ laya_systemone_heldout_result_filename }} already exists."
+  when: laya_systemone_heldout_result_stat.stat.exists
+
+- name: Run the held-out evaluation on the guest
+  ansible.builtin.command:
+    cmd: >-
+      python3 {{ laya_systemone_heldout_script_path | quote }}
+      --csv {{ laya_systemone_heldout_path | quote }}
+      {% if laya_systemone_finetune_enabled | bool %}
+      --train-csv {{ laya_systemone_finetune_train_path | quote }}
+      {% endif %}
+      --url {{ ('http://127.0.0.1:' ~ laya_systemone_port ~ '/v1/systemone/batch') | quote }}
+      {% for model in laya_systemone_heldout_models %}--model {{ model | quote }} {% endfor %}
+      --batch-size {{ laya_systemone_heldout_batch_size | quote }}
+      --out {{ laya_systemone_heldout_result_path | quote }}
+  environment:
+    LAYA_API_KEY: "{{ laya_systemone_api_key }}"
+  become: true
+  become_user: "{{ laya_systemone_user }}"
+  when: not laya_systemone_heldout_result_stat.stat.exists
+  changed_when: true
+  no_log: true
+
+- name: Read the held-out evaluation aggregates
+  ansible.builtin.slurp:
+    src: "{{ laya_systemone_heldout_result_path }}"
+  register: laya_systemone_heldout_result
+  when: not laya_systemone_heldout_result_stat.stat.exists
+  become: true
+  no_log: true
+
+- name: Report held-out evaluation accuracy aggregates
+  ansible.builtin.debug:
+    msg: >-
+      {%- set evaluation = laya_systemone_heldout_result.content | b64decode | from_json -%}
+      {%- for model, metrics in evaluation.models.items() -%}
+      {{ model }} accuracy={{ metrics.accuracy }} n={{ evaluation.n }}{%- if not loop.last %}; {% endif -%}
+      {%- endfor -%}
+  when: not laya_systemone_heldout_result_stat.stat.exists
+
+# The local result file is the skip marker, so a failed upload removes it: the next converge re-scores and uploads.
+- name: Upload the held-out evaluation result
+  when: not laya_systemone_heldout_result_stat.stat.exists
+  block:
+    - name: Read the writable RustFS credential for held-out result upload
+      ansible.builtin.include_tasks: rustfs-credential.yml
+      vars:
+        laya_systemone_rustfs_kv_path: "{{ laya_systemone_heldout_results_bao_kv_path }}"
+
+    - name: Copy the held-out evaluation result to the bucket
+      ansible.builtin.command:
+        argv:
+          - aws
+          - --endpoint-url
+          - "{{ laya_systemone_finetune_s3_endpoint }}"
+          - s3
+          - cp
+          - "{{ laya_systemone_heldout_result_path }}"
+          - >-
+            {{ 's3://' ~ laya_systemone_finetune_bucket ~ '/' ~ laya_systemone_heldout_results_prefix ~ '/'
+               ~ laya_systemone_heldout_result_filename }}
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ laya_systemone_finetune_s3_access_key_id }}"
+        AWS_SECRET_ACCESS_KEY: "{{ laya_systemone_finetune_s3_secret_access_key }}"
+        AWS_DEFAULT_REGION: "{{ laya_systemone_finetune_s3_region }}"
+      become: true
+      become_user: "{{ laya_systemone_user }}"
+      changed_when: true
+      no_log: true
+  rescue:
+    - name: Remove the local held-out result so the next converge retries the upload
+      ansible.builtin.file:
+        path: "{{ laya_systemone_heldout_result_path }}"
+        state: absent
+      become: true
+
+    - name: Fail the converge after a held-out result upload failure
+      ansible.builtin.fail:
+        msg: The held-out evaluation result could not be uploaded; the local result was removed so the next run retries.

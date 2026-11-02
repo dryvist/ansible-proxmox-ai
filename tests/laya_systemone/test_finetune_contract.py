@@ -103,6 +103,7 @@ def test_finetune_included_files_exist_and_are_referenced_once() -> None:
     finetune_files = {path.resolve() for path in TASKS_DIR.glob("finetune*.yml")} - {
         FINETUNE_TASKS.resolve()
     }
+    finetune_files.add((TASKS_DIR / "rustfs-credential.yml").resolve())
     assert all(path.is_file() for path in included_files)
     assert included_files == finetune_files
     assert all(references.count(path) == 1 for path in finetune_files)
