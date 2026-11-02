@@ -1,4 +1,91 @@
 ---
+- name: Validate stopped-container snapshot policy
+  ansible.builtin.assert:
+    that:
+      - qdrant_docker_preupgrade_snapshot_when_stopped in ['skip', 'fail']
+    fail_msg: "qdrant_docker_preupgrade_snapshot_when_stopped must be 'skip' or 'fail'"
+
+- name: Fail when qdrant is stopped and its image would change
+  ansible.builtin.fail:
+    msg: >-
+      Qdrant is stopped and its image would change, so a pre-upgrade snapshot
+      cannot be created through the API; refusing deployment because
+      qdrant_docker_preupgrade_snapshot_when_stopped is 'fail'.
+  when:
+    - not ansible_check_mode
+    - qdrant_docker_preupgrade_snapshot_enabled | bool
+    - qdrant_docker_running_check.stdout == ''
+    - qdrant_docker_running_image.stdout | length > 0
+    - qdrant_docker_running_image.stdout != qdrant_docker_image
+    - qdrant_docker_preupgrade_snapshot_when_stopped == 'fail'
+
+- name: Explain skipped qdrant snapshot because the container is stopped
+  ansible.builtin.debug:
+    msg: >-
+      Skipping the Qdrant pre-upgrade snapshot because the container is stopped
+      and has no API to snapshot through; proceeding with deployment as
+      qdrant_docker_preupgrade_snapshot_when_stopped is 'skip'.
+  when:
+    - not ansible_check_mode
+    - qdrant_docker_preupgrade_snapshot_enabled | bool
+    - qdrant_docker_running_check.stdout == ''
+    - qdrant_docker_running_image.stdout | length > 0
+    - qdrant_docker_running_image.stdout != qdrant_docker_image
+    - qdrant_docker_preupgrade_snapshot_when_stopped == 'skip'
+
+- name: Check available bytes on the Qdrant snapshots filesystem
+  ansible.builtin.command:
+    argv:
+      - df
+      - --output=avail
+      - -B1
+      - "{{ qdrant_docker_snapshots_dir }}"
+  register: qdrant_docker_preupgrade_snapshot_available_bytes
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - qdrant_docker_preupgrade_snapshot_enabled | bool
+    - qdrant_docker_running_check.stdout != ''
+    - qdrant_docker_running_image.stdout != qdrant_docker_image
+
+- name: Measure current Qdrant storage size
+  ansible.builtin.command:
+    argv:
+      - du
+      - -sb
+      - "{{ qdrant_docker_storage_dir }}"
+  register: qdrant_docker_preupgrade_snapshot_storage_bytes
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - qdrant_docker_preupgrade_snapshot_enabled | bool
+    - qdrant_docker_running_check.stdout != ''
+    - qdrant_docker_running_image.stdout != qdrant_docker_image
+
+- name: Check Qdrant pre-upgrade snapshot free space
+  ansible.builtin.assert:
+    that:
+      - qdrant_docker_preupgrade_snapshot_free_space_factor | float > 0
+      - >-
+        (qdrant_docker_preupgrade_snapshot_available_bytes.stdout_lines[-1] | int)
+        >=
+        ((qdrant_docker_preupgrade_snapshot_storage_bytes.stdout.split()[0] | int)
+        * (qdrant_docker_preupgrade_snapshot_free_space_factor | float))
+    fail_msg: >-
+      Insufficient free space for a Qdrant pre-upgrade snapshot (available
+      {{ qdrant_docker_preupgrade_snapshot_available_bytes.stdout_lines[-1] | default('unknown') }}
+      bytes; storage size
+      {{ qdrant_docker_preupgrade_snapshot_storage_bytes.stdout.split()[0] | default('unknown') }}
+      bytes; required factor
+      {{ qdrant_docker_preupgrade_snapshot_free_space_factor }}); refusing
+      the image upgrade.
+    quiet: true
+  when:
+    - not ansible_check_mode
+    - qdrant_docker_preupgrade_snapshot_enabled | bool
+    - qdrant_docker_running_check.stdout != ''
+    - qdrant_docker_running_image.stdout != qdrant_docker_image
+
 - name: Create Qdrant full-storage pre-upgrade snapshot
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ qdrant_docker_http_port }}/snapshots?wait=true"
@@ -16,7 +103,40 @@
     - qdrant_docker_running_check.stdout != ''
     - qdrant_docker_running_image.stdout != qdrant_docker_image
 
-- name: Report the Qdrant pre-upgrade snapshot name
+- name: List Qdrant full-storage snapshots after creation
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ qdrant_docker_http_port }}/snapshots"
+    method: GET
+    headers:
+      api-key: "{{ qdrant_docker_api_key }}"
+    status_code: 200
+    timeout: "{{ qdrant_docker_preupgrade_snapshot_timeout }}"
+    return_content: true
+  register: qdrant_docker_preupgrade_snapshot_list
+  no_log: true
+  when: qdrant_docker_preupgrade_snapshot_response is not skipped
+
+- name: Verify Qdrant pre-upgrade snapshot is present and complete
+  ansible.builtin.assert:
+    that:
+      - qdrant_docker_preupgrade_snapshot_response.json.result.checksum | default('') | length > 0
+      - qdrant_docker_preupgrade_snapshot_response.json.result.size | int > 0
+      - >-
+        qdrant_docker_preupgrade_snapshot_list.json.result
+        | selectattr('name', 'equalto', qdrant_docker_preupgrade_snapshot_response.json.result.name)
+        | map(attribute='size')
+        | map('int')
+        | list
+        == [qdrant_docker_preupgrade_snapshot_response.json.result.size | int]
+    fail_msg: >-
+      The Qdrant snapshot is missing from the full-storage snapshot list or
+      does not match the create response; refusing the image upgrade.
+    quiet: true
+  when: qdrant_docker_preupgrade_snapshot_response is not skipped
+
+- name: Report the verified Qdrant pre-upgrade snapshot name
   ansible.builtin.debug:
-    msg: "Created Qdrant pre-upgrade snapshot {{ qdrant_docker_preupgrade_snapshot_response.json.result.name }}"
+    msg: >-
+      Created and verified Qdrant pre-upgrade snapshot
+      {{ qdrant_docker_preupgrade_snapshot_response.json.result.name }}
   when: qdrant_docker_preupgrade_snapshot_response is not skipped

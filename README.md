@@ -59,7 +59,7 @@ allows both to be skipped only on pushes and on pull requests into `develop`.
 ### RAG (retrieval-augmented generation)
 
 - `llamaindex` — Python + Ollama CPU-only embeddings pipeline
-- `qdrant_docker` — Qdrant vector database (Docker in LXC)
+- [`qdrant_docker`](roles/qdrant_docker/README.md) — Qdrant vector database (Docker in LXC)
 
 ### Agents
 

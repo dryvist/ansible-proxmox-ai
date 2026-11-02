@@ -270,7 +270,7 @@ def test_preupgrade_snapshot_is_hidden_and_only_runs_for_an_image_upgrade() -> N
 def test_preupgrade_snapshot_is_enabled_by_default() -> None:
     defaults = _defaults("qdrant_docker")
     assert defaults["qdrant_docker_preupgrade_snapshot_enabled"] is True
-    assert defaults["qdrant_docker_preupgrade_snapshot_timeout"] == 600
+    assert defaults["qdrant_docker_preupgrade_snapshot_timeout"] == 60
 
 
 def test_minted_token_carries_exactly_the_untrusted_grants() -> None:
