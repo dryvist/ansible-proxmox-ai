@@ -32,7 +32,7 @@ SEED_FIELDS = {
 }
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 DIGEST_REF = re.compile(r"^[a-z0-9./-]+:[$A-Za-z0-9._{}-]+@sha256:[0-9a-f]{64}$")
-PINNED_COMMIT = "df3db64ed17a5eb73fef8ccc95da180b0a1cf4b5"
+PINNED_COMMIT = "61544827f92e9802517b5f2c4f55a6ab1ef4070c"
 PINNED_SHA256 = "0d679883a0e80ecd656abca9fc44e012b572e0f4ec945476216f9ec9a151a9ce"
 
 # Values the role gets from the secret store or the controller environment at run time.
@@ -143,8 +143,8 @@ def test_every_image_is_pinned_by_digest_and_sim_images_follow_sim_version() -> 
 def test_env_pins_sim_version_and_cron_and_turns_off_hosted_features() -> None:
     env = _env()
 
-    assert env["SIM_VERSION"] == "v0.9.32"
-    assert env["SIM_CRON_VERSION"].startswith("v0.9.32@sha256:")
+    assert env["SIM_VERSION"] == "v0.9.33"
+    assert env["SIM_CRON_VERSION"].startswith("v0.9.33@sha256:")
     assert env["NEXT_PUBLIC_CHAT_DISABLED"] == "true"
     assert env["NEXT_TELEMETRY_DISABLED"] == "1"
     for name in (
