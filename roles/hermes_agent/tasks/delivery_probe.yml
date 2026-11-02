@@ -1,0 +1,46 @@
+---
+# Read-only cron delivery probe (defaults/main/195-delivery-probe.yml). Every
+# read is no_log because config.yaml and jobs.json can carry credentials; the
+# single debug prints only the projected routing fields.
+- name: Delivery probe | Read the primary gateway config
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_hermes_home }}/config.yaml"
+  register: hermes_agent_delivery_probe_primary_config
+  failed_when: false
+  no_log: true
+
+- name: Delivery probe | Read the managed config overlay
+  ansible.builtin.slurp:
+    src: /etc/hermes/config.yaml
+  register: hermes_agent_delivery_probe_managed_config
+  failed_when: false
+  no_log: true
+
+- name: Delivery probe | Read each named profile's cron jobs
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_hermes_home }}/profiles/{{ item }}/cron/jobs.json"
+  loop: "{{ hermes_agent_profiles | map(attribute='name') | list }}"
+  register: hermes_agent_delivery_probe_jobs
+  failed_when: false
+  no_log: true
+
+- name: Delivery probe | Resolve the Hermes root path
+  ansible.builtin.command:
+    argv: [realpath, -m, "{{ hermes_agent_hermes_home }}"]
+  register: hermes_agent_delivery_probe_root
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Delivery probe | Resolve each named profile's home path
+  ansible.builtin.command:
+    argv: [realpath, -m, "{{ hermes_agent_hermes_home }}/profiles/{{ item }}"]
+  loop: "{{ hermes_agent_profiles | map(attribute='name') | list }}"
+  register: hermes_agent_delivery_probe_homes
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Delivery probe | Report the routing fields
+  ansible.builtin.debug:
+    msg: "{{ hermes_agent_delivery_probe_report }}"

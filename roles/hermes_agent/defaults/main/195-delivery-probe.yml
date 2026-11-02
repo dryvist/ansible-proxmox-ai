@@ -1,0 +1,41 @@
+---
+# Read-only cron delivery probe (tasks/delivery_probe.yml). Run it with
+# `-e hermes_agent_delivery_probe_only=true --check`: the play reads the
+# primary gateway routes, each named profile's cron jobs and the home paths
+# that profile_matches_home compares, prints only the projected fields below,
+# and ends the host before any converge task.
+hermes_agent_delivery_probe_only: false
+
+# Only routing fields leave the host: route {profile, chat_id, enabled}, job
+# {id, name, deliver}, and each profile's expected and resolved home path.
+hermes_agent_delivery_probe_report: >-
+  {%- set ns = namespace(routes=[], profiles=[]) -%}
+  {%- for label, layer in [('config', hermes_agent_delivery_probe_primary_config | default({})),
+                           ('managed', hermes_agent_delivery_probe_managed_config | default({}))] -%}
+  {%-   set cfg = (layer.content | default('') | b64decode | from_yaml) if layer.content is defined else {} -%}
+  {%-   set cfg = cfg if cfg is mapping else {} -%}
+  {%-   set raw = cfg.get('profile_routes', (cfg.get('gateway') or {}).get('profile_routes', [])) -%}
+  {%-   for route in (raw if raw is sequence and raw is not string else []) -%}
+  {%-     set ns.routes = ns.routes + [{
+            'source': label,
+            'profile': route.profile | default('') | string,
+            'chat_id': route.chat_id | default('') | string,
+            'enabled': route.enabled | default(true)}] -%}
+  {%-   endfor -%}
+  {%- endfor -%}
+  {%- for read in (hermes_agent_delivery_probe_jobs.results | default([])) -%}
+  {%-   set doc = (read.content | default('') | b64decode | from_json) if read.content is defined else {} -%}
+  {%-   set jobs = doc.get('jobs', []) if doc is mapping else [] -%}
+  {%-   set home = (hermes_agent_delivery_probe_homes.results | default([]))
+                   | selectattr('item', 'equalto', read.item) | first | default({}) -%}
+  {%-   set ns.profiles = ns.profiles + [{
+            'profile': read.item,
+            'expected_home': hermes_agent_hermes_home ~ '/profiles/' ~ read.item,
+            'resolved_home': (home.stdout | default('')) | trim,
+            'jobs_readable': read.content is defined,
+            'jobs': jobs | map('dict2items')
+                         | map('selectattr', 'key', 'in', ['id', 'name', 'deliver'])
+                         | map('items2dict') | list}] -%}
+  {%- endfor -%}
+  {{ {'root_resolved': (hermes_agent_delivery_probe_root.stdout | default('')) | trim,
+      'routes': ns.routes, 'profiles': ns.profiles} }}
