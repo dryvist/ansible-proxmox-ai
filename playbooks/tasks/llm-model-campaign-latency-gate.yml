@@ -27,37 +27,101 @@
   delegate_to: localhost
   when: llm_campaign_latency_gate_enabled | bool
 
+- name: Capture the interactive latency gate response values
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_observation:
+      http_status: "{{ _llm_campaign_latency_response.status | default(0) | int }}"
+      prometheus_status: >-
+        {{ _llm_campaign_latency_json.get('status')
+           if _llm_campaign_latency_json is mapping else none }}
+      result_count: >-
+        {{ _llm_campaign_latency_result | length
+           if _llm_campaign_latency_result is sequence
+              and _llm_campaign_latency_result is not string
+              and _llm_campaign_latency_result is not mapping else none }}
+      raw_ratio: >-
+        {{ _llm_campaign_latency_result[0]['value'][1]
+           if _llm_campaign_latency_result is sequence
+              and _llm_campaign_latency_result is not string
+              and _llm_campaign_latency_result is not mapping
+              and _llm_campaign_latency_result | length == 1
+              and _llm_campaign_latency_result[0] is mapping
+              and _llm_campaign_latency_result[0].get('value') is sequence
+              and _llm_campaign_latency_result[0].get('value') | length == 2
+           else none }}
+      well_formed: >-
+        {{ _llm_campaign_latency_data is mapping
+           and 'result' in _llm_campaign_latency_data
+           and _llm_campaign_latency_result is sequence
+           and _llm_campaign_latency_result is not string
+           and _llm_campaign_latency_result is not mapping
+           and _llm_campaign_latency_result | length <= 1
+           and (
+             _llm_campaign_latency_result | length == 0
+             or (
+               _llm_campaign_latency_result[0] is mapping
+               and _llm_campaign_latency_result[0].get('value') is sequence
+               and _llm_campaign_latency_result[0].get('value') | length == 2
+               and (
+                 _llm_campaign_latency_result[0]['value'][1] == 'NaN'
+                 or _llm_campaign_latency_result[0]['value'][1]
+                    is match('^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$')
+               )
+             )
+           ) }}
+      max_ratio: "{{ llm_campaign_latency_max_ratio }}"
+  vars:
+    _llm_campaign_latency_json: "{{ _llm_campaign_latency_response.json | default({}) }}"
+    _llm_campaign_latency_data: >-
+      {{ _llm_campaign_latency_json.get('data', {})
+         if _llm_campaign_latency_json is mapping else {} }}
+    _llm_campaign_latency_result: >-
+      {{ _llm_campaign_latency_data.get('result')
+         if _llm_campaign_latency_data is mapping else none }}
+  changed_when: false
+  when: llm_campaign_latency_gate_enabled | bool
+
+- name: Determine the interactive latency gate condition
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_reason: >-
+      {{ 'query/HTTP error'
+         if _llm_campaign_latency_observation.http_status | int != 200
+         else 'malformed response'
+           if _llm_campaign_latency_observation.prometheus_status is none
+         else 'query/HTTP error'
+           if _llm_campaign_latency_observation.prometheus_status != 'success'
+         else 'malformed response'
+           if not (_llm_campaign_latency_observation.well_formed | bool)
+         else 'no data'
+           if _llm_campaign_latency_observation.result_count | int == 0
+         else 'NaN'
+           if _llm_campaign_latency_observation.raw_ratio == 'NaN'
+         else 'ratio over max'
+           if (_llm_campaign_latency_observation.raw_ratio | float)
+              > (llm_campaign_latency_max_ratio | float)
+         else 'pass' }}
+  changed_when: false
+  when: llm_campaign_latency_gate_enabled | bool
+
 - name: Fail closed on query errors or a regressed interactive p95
   ansible.builtin.assert:
     that:
-      - _llm_campaign_latency_response.status | default(0) | int == 200
-      - _llm_campaign_latency_response.json is mapping
-      - _llm_campaign_latency_response.json.status | default('') == 'success'
-      - _llm_campaign_latency_response.json.data is mapping
-      - _llm_campaign_latency_response.json.data.result is defined
-      - _llm_campaign_latency_response.json.data.result is sequence
-      - _llm_campaign_latency_response.json.data.result is not string
-      - _llm_campaign_latency_response.json.data.result is not mapping
-      - _llm_campaign_latency_response.json.data.result | length <= 1
-      - >-
-        _llm_campaign_latency_response.json.data.result | length == 0
-        or (
-          _llm_campaign_latency_response.json.data.result[0].value is defined
-          and _llm_campaign_latency_response.json.data.result[0].value is sequence
-          and _llm_campaign_latency_response.json.data.result[0].value | length == 2
-          and (
-            _llm_campaign_latency_response.json.data.result[0].value[1] == 'NaN'
-            or _llm_campaign_latency_response.json.data.result[0].value[1]
-               is match('^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$')
-          )
-        )
-      - >-
-        _llm_campaign_latency_response.json.data.result | length == 0
-        or _llm_campaign_latency_response.json.data.result[0].value[1] == 'NaN'
-        or (_llm_campaign_latency_response.json.data.result[0].value[1] | float)
-           <= (llm_campaign_latency_max_ratio | float)
+      - _llm_campaign_latency_reason in ['pass', 'no data', 'NaN']
     fail_msg: >-
-      Prometheus did not return one valid interactive p95 ratio, or the current
-      30-minute p95 exceeds the configured threshold against the prior-week baseline.
+      Interactive latency gate failed: {{ _llm_campaign_latency_reason }};
+      HTTP status={{ _llm_campaign_latency_observation.http_status }};
+      Prometheus status={{ _llm_campaign_latency_observation.prometheus_status }};
+      result count={{ _llm_campaign_latency_observation.result_count | default('none', true) }};
+      raw ratio={{ _llm_campaign_latency_observation.raw_ratio | default('none', true) }};
+      max ratio={{ _llm_campaign_latency_observation.max_ratio }}.
     quiet: true
   when: llm_campaign_latency_gate_enabled | bool
+
+- name: Report the interactive latency gate result
+  ansible.builtin.debug:
+    msg: >-
+      Interactive latency gate passed: ratio={{ _llm_campaign_latency_observation.raw_ratio | default('none', true) }},
+      max={{ _llm_campaign_latency_observation.max_ratio }}.
+  when:
+    - llm_campaign_latency_gate_enabled | bool
+    - _llm_campaign_latency_reason in ['pass', 'no data', 'NaN']

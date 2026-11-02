@@ -46,13 +46,33 @@ def test_latency_gate_defaults_query_and_fail_closed_contract():
     assert request["failed_when"] is False
     assert request["delegate_to"] == "localhost"
 
+    observation = _named(tasks, "Capture the interactive latency gate response values")
+    observation_vars = observation["ansible.builtin.set_fact"]["_llm_campaign_latency_observation"]
+    assert set(observation_vars) == {
+        "http_status",
+        "prometheus_status",
+        "result_count",
+        "raw_ratio",
+        "well_formed",
+        "max_ratio",
+    }
+
+    reason = _named(tasks, "Determine the interactive latency gate condition")
+    reason_expression = reason["ansible.builtin.set_fact"]["_llm_campaign_latency_reason"]
+    for branch in ("query/HTTP error", "malformed response", "no data", "NaN", "ratio over max", "pass"):
+        assert branch in reason_expression
+
     guard = _named(tasks, "Fail closed on query errors or a regressed interactive p95")
     conditions = "\n".join(guard["ansible.builtin.assert"]["that"])
-    assert "response.status" in conditions
-    assert "response.json.status" in conditions
-    assert "'NaN'" in conditions
-    assert "llm_campaign_latency_max_ratio" in conditions
-    assert " | length == 0" in conditions
+    message = guard["ansible.builtin.assert"]["fail_msg"]
+    assert "_llm_campaign_latency_reason" in conditions
+    for value in ("HTTP status=", "Prometheus status=", "result count=", "raw ratio=", "max ratio="):
+        assert value in message
+
+    report = _named(tasks, "Report the interactive latency gate result")
+    assert "ratio=" in report["ansible.builtin.debug"]["msg"]
+    assert "max=" in report["ansible.builtin.debug"]["msg"]
+    assert "llm_campaign_latency_gate_enabled | bool" in report["when"]
 
 
 def test_gate_runs_before_campaign_work_and_between_cells():
