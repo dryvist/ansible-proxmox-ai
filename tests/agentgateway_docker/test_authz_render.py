@@ -12,8 +12,9 @@ import pytest
 import yaml
 from ansible.plugins.filter.core import FilterModule
 
+from _group_vars import load_group_vars_all
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
-INVENTORY_DIR = REPO_ROOT / "inventory/group_vars/all"
 DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/00-gateway.yml"
 MCP_ROUTE_AUTH_DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/30-mcp-route-auth.yml"
 TASKS = REPO_ROOT / "roles/agentgateway_docker/tasks/main.yml"
@@ -35,12 +36,7 @@ KEYS = {
 
 ENV = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
 ENV.filters.update(FilterModule().filters())
-# Every top-level group_vars/all file, in load order, so a file split cannot drop a var.
-INVENTORY_VARS = {
-    key: value
-    for path in sorted(INVENTORY_DIR.glob("*.yml"))
-    for key, value in (yaml.safe_load(path.read_text()) or {}).items()
-}
+INVENTORY_VARS = load_group_vars_all()
 FACADE_DEFAULTS = yaml.safe_load((DEFAULTS.parent / "40-facade.yml").read_text())
 ROLE_DEFAULTS = {
     **yaml.safe_load(DEFAULTS.read_text()),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import yaml
 
+from _group_vars import load_group_vars_all
 from conftest import REPO_ROOT, ROLE_ROOT, _task, role_defaults
 from _registry import (
     backend_for_role,
@@ -57,7 +58,7 @@ def test_reviewer_prompt_carries_no_leftover_self_perpetuation() -> None:
 
 def test_hermes_inference_paths_use_the_declared_alias() -> None:
     defaults = role_defaults(ROLE_ROOT)
-    group_vars = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all/00-core.yml").read_text())
+    group_vars = load_group_vars_all()
     registry = load_registry()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
     environment = template_text(ROLE_ROOT, "hermes-env.j2")

@@ -18,9 +18,9 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
 from jinja2 import Environment
 
+from _group_vars import load_group_vars_all
 from _role_files import role_defaults
 
 ROLE_ROOT = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
@@ -57,9 +57,7 @@ def router_request_timeout_seconds() -> int:
     the wall-clock ceiling is capped below it, so tests must read the same
     source rather than pin a copy of the number that could drift from it.
     """
-    all_vars = yaml.safe_load(
-        (REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml").read_text()
-    )
+    all_vars = load_group_vars_all()
     return int(all_vars["ai_router_request_timeout_seconds"])
 
 

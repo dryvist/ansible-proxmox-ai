@@ -9,6 +9,8 @@ import jinja2
 import pytest
 import yaml
 
+from _group_vars import load_group_vars_all
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NVIDIA_ROLE_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 LLAMACPP_ROLE_ROOT = REPO_ROOT / "roles/llamacpp_serving"
@@ -19,7 +21,6 @@ LLAMACPP_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-llama-cpp.yml"
 GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
 LLM_GPU_SERVING_ROLE_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
-ROUTER_GPU_PROFILE_VARS = REPO_ROOT / "inventory/group_vars/all/00-core.yml"
 ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 
 
@@ -132,7 +133,7 @@ def test_profile_comes_from_the_shared_selector_not_a_new_variable() -> None:
         path.read_text(encoding="utf-8")
         for path in (SERVING_PLAYBOOK, LLAMACPP_PLAYBOOK, GPU_ENGINE_PLAYBOOK)
     )
-    all_vars = _load(REPO_ROOT / "inventory/group_vars/all/00-core.yml")
+    all_vars = load_group_vars_all()
     selector_expression = all_vars["llm_active_profile"]
 
     assert "hostvars['localhost']['tofu_data']" in selector_expression
@@ -228,7 +229,7 @@ def test_legacy_serving_play_installs_fan_control_only_when_enabled() -> None:
 
 
 def test_router_projects_gpu_profiles_only_when_a_gpu_host_exists() -> None:
-    expression = _load(ROUTER_GPU_PROFILE_VARS)["llm_router_gpu_profiles_enabled"]
+    expression = load_group_vars_all()["llm_router_gpu_profiles_enabled"]
     env = jinja2.Environment()
 
     def render(groups: dict) -> str:

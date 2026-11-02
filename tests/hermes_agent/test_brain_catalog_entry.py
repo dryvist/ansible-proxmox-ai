@@ -15,9 +15,9 @@ import ast
 from pathlib import Path
 
 import pytest
-import yaml
 from jinja2 import Environment, StrictUndefined, UndefinedError
 
+from _group_vars import load_group_vars_all
 from _registry import load_registry
 from _role_files import role_defaults
 
@@ -43,9 +43,7 @@ def _render_brain_entry(brain: str, registry: list[dict]) -> dict:
 
 
 def test_brain_capability_resolves_to_its_enabled_registry_entry() -> None:
-    brain = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all/00-core.yml").read_text())[
-        "hermes_brain_model"
-    ]
+    brain = load_group_vars_all()["hermes_brain_model"]
     registry = load_registry()
     expected = [
         e["client_model_id"]

@@ -30,9 +30,7 @@ def test_probe_deadline_exceeds_the_router_rate_limit_backoff() -> None:
     429 and curl rc 28 as busy), but the deadline still has to outlive one
     backoff or the probe can never observe a successful retry at all.
     """
-    retry_after = _int_var(
-        r"^ai_router_retry_after_seconds:\s*(\d+)", ALL_VARS, "ai_router_retry_after_seconds"
-    )
+    retry_after = int(ALL_VARS["ai_router_retry_after_seconds"])
     probe_timeout = _int_var(
         r"^hermes_agent_brain_watchdog_probe_timeout:\s*(\d+)",
         DEFAULTS,
@@ -158,9 +156,7 @@ def test_sustained_saturation_still_escalates_to_down() -> None:
         DEFAULTS,
         "hermes_agent_brain_watchdog_interval",
     )
-    retry_after = _int_var(
-        r"^ai_router_retry_after_seconds:\s*(\d+)", ALL_VARS, "ai_router_retry_after_seconds"
-    )
+    retry_after = int(ALL_VARS["ai_router_retry_after_seconds"])
     rate_limit_retries = _int_var(
         r"^llm_router_rate_limit_retries:\s*(\d+)",
         ROUTER_DEFAULTS,

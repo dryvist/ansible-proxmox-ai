@@ -19,6 +19,7 @@ role variables and an operator may tune them.
 import re
 from pathlib import Path
 
+from _group_vars import load_group_vars_all
 from _role_files import role_defaults_text
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
@@ -26,7 +27,7 @@ REPO_ROOT = ROLE.parents[1]
 WATCHDOG = (ROLE / "templates" / "hermes-brain-watchdog.sh.j2").read_text()
 DEFAULTS = role_defaults_text(ROLE)
 ROUTER_DEFAULTS = role_defaults_text(REPO_ROOT / "roles" / "llm_router")
-ALL_VARS = (REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml").read_text()
+ALL_VARS = load_group_vars_all()
 
 
 def _int_var(pattern: str, haystack: str, what: str) -> int:
