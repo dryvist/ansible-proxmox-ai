@@ -1,0 +1,48 @@
+---
+# Fail the converge before any key is seeded when an enabled app-agent tier
+# lacks exactly one single-server key, a write or admin tier would be issued to
+# a roster entry that is not trusted, or the read-tier probe has no target.
+- name: Require exactly one single-server key per enabled app-agent tier
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _keys | length == 1
+      - _keys[0].object_permission.mcp_servers == [_row.server_id]
+    fail_msg: >-
+      App-agent tier {{ _row.id }} has an enabled server but {{ _keys | length }}
+      roster keys; add exactly one roster entry named {{ _row.id }}.
+  loop: "{{ _llm_router_app_agent_matrix | selectattr('enabled') | list }}"
+  loop_control:
+    loop_var: _row
+    label: "{{ _row.id }}"
+  vars:
+    _keys: "{{ _llm_router_agent_keys | selectattr('alias', 'equalto', _row.id) | list }}"
+  no_log: true
+
+- name: Issue write and admin tier keys only to trusted roster entries
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - (ai_agents | default({})).get(_row.id, {}).get('trust_tier', '') == 'trusted'
+    fail_msg: >-
+      App-agent tier {{ _row.id }} grants {{ _row.tier }} access, but its roster
+      entry is not trust_tier trusted.
+  loop: >-
+    {{ _llm_router_app_agent_matrix
+       | selectattr('tier', 'in', llm_router_app_agent_trusted_tiers) | list }}
+  loop_control:
+    loop_var: _row
+    label: "{{ _row.id }}"
+  when: _row.id in (ai_agents | default({}))
+
+- name: Require the read-tier probe target and the published allowlist
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_app_agent_probe_vikunja_forbidden_project_id | string is match('^[1-9][0-9]*$')
+      - llm_router_app_agent_vikunja_read_allowlist | length > 0
+    fail_msg: >-
+      The Vikunja read tier is enabled, so its probes are required: set
+      llm_router_app_agent_probe_vikunja_forbidden_project_id to a project outside
+      the allowlist, and publish VIKUNJA_AGENT_READ_ALLOWLIST with the read token.
+  when: "'vikunja-read' in (_llm_router_app_agent_matrix | selectattr('enabled') | map(attribute='id'))"
