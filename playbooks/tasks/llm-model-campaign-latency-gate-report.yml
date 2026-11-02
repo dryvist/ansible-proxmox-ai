@@ -23,6 +23,11 @@
         {{ _llm_campaign_latency_largest_window.sample_count | default(none)
            if _llm_campaign_latency_largest_window is mapping else none }}
       baseline_value: "{{ _llm_campaign_latency_baseline_observation.raw_value | default(none) }}"
+      window_counts: >-
+        {{ _llm_campaign_latency_window_counts
+           | map('dict2items') | map('selectattr', 'key', 'in',
+               ['window', 'http_status', 'prometheus_status', 'result_count', 'sample_count'])
+           | map('items2dict') | list }}
   changed_when: false
 
 - name: Fail closed on interactive latency gate failures
@@ -33,14 +38,16 @@
       Interactive latency gate failed: {{ _llm_campaign_latency_reason }};
       HTTP status={{ _llm_campaign_latency_observation.http_status }};
       Prometheus status={{ _llm_campaign_latency_observation.prometheus_status | default('none', true) }};
-      result count={{ _llm_campaign_latency_observation.result_count | default('none', true) }};
+      result count={{ 'none' if _llm_campaign_latency_observation.result_count is none
+                      else _llm_campaign_latency_observation.result_count }};
       raw ratio={{ _llm_campaign_latency_observation.raw_ratio | default('none', true) }};
       baseline p95={{ _llm_campaign_latency_observation.baseline_value | default('none', true) }};
       max ratio={{ _llm_campaign_latency_observation.max_ratio }};
       window={{ _llm_campaign_latency_observation.window | default('none', true) }};
       sample count={{ _llm_campaign_latency_observation.sample_count | default('none', true) }};
       largest window={{ _llm_campaign_latency_observation.largest_window | default('none', true) }};
-      count={{ _llm_campaign_latency_observation.largest_window_count | default('none', true) }}.
+      count={{ _llm_campaign_latency_observation.largest_window_count | default('none', true) }};
+      window counts={{ _llm_campaign_latency_observation.window_counts | to_json }}.
     quiet: true
 
 - name: Report idle interactive latency gate

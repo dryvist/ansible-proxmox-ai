@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import re
 from typing import Any
 
 from jinja2 import Environment
@@ -23,7 +25,10 @@ def _named(path: Path, name: str) -> dict[str, Any]:
 
 
 def _render(expression: str, **context: Any) -> str:
-    return Environment().from_string(expression).render(**context).strip()
+    env = Environment()
+    env.filters["to_json"] = json.dumps  # Ansible filter used by the report message
+    env.tests["match"] = lambda value, pattern: re.match(pattern, str(value)) is not None  # Ansible test
+    return env.from_string(expression).render(**context).strip()
 
 
 def _count_reason(
@@ -95,6 +100,16 @@ def test_empty_count_ladder_does_not_pass_as_idle():
     assert _count_reason(counts, selected=None) == "no data: minimum sample count not met"
 
 
+def test_underflowed_positive_counts_are_not_idle():
+    counts = [
+        {"window": window, "window_seconds": seconds, "sample_count": "1e-9999"}
+        for window, seconds in (("30m", 1800), ("2h", 7200), ("6h", 21600))
+    ]
+    reason = _count_reason(counts, selected=None)
+    assert not reason.startswith("idle")
+    assert reason not in ("pass", "idle: nothing to protect")
+
+
 def test_thin_count_ladder_fails_closed_with_largest_window_and_count():
     counts = [
         {"window": window, "window_seconds": seconds, "sample_count": sample_count}
@@ -125,11 +140,13 @@ def test_thin_count_ladder_fails_closed_with_largest_window_and_count():
             "sample_count": 12,
             "largest_window": "6h",
             "largest_window_count": 12,
+            "window_counts": [{"window": "6h", "sample_count": "12"}],
         },
     )
     assert "thin" in message
     assert "largest window=6h" in message
     assert "count=12" in message
+    assert 'window counts=[{"window": "6h", "sample_count": "12"}]' in message
 
 
 def test_first_sufficient_window_and_ratio_classification():
