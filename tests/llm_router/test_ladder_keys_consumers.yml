@@ -46,7 +46,7 @@
           - hermes_brain_model in (_config.model_list | map(attribute='model_name') | list)
         fail_msg: >-
           Consumer declarations={{ _class_scope_mismatches }}, model scope={{ _class_model_mismatches }},
-          MCP scope={{ _mcp_permission_mismatches }}.
+          target scope={{ _target_model_mismatches }}, MCP scope={{ _mcp_permission_mismatches }}.
         success_msg: "Target key scopes, budgets, and fallback access render as declared."
       vars:
         _declared_target_aliases: >-
@@ -84,12 +84,20 @@
                 | selectattr('alias', 'equalto', 'sandbox-agent') | first -%}
           {%- set _judge = _llm_router_declared_virtual_keys
                 | selectattr('alias', 'equalto', 'judge') | first -%}
-          {%- set _opencode_zdr_groups = llm_router_opencode_models
-                | map(attribute='client_model_id')
-                | select('in', llm_router_d1_zdr_rungs_by_class['sub']) | list -%}
+          {%- set ns = namespace(groups=[]) -%}
+          {%- for m in llm_router_opencode_models -%}
+          {%- set _name = m.route_group | default(m.client_model_id) -%}
+          {%- if _name in llm_router_d1_zdr_rungs_by_class['sub'] -%}
+          {%- set ns.groups = ns.groups + [_name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- set _opencode_zdr_groups = ns.groups | unique | list -%}
           {%- set _sandbox_expected = ([llm_router_small_model, llm_router_primary_model,
                 llm_router_large_model] + (llm_router_d1_all_key_groups
-                | difference(_llm_router_sandbox_agent_excluded_groups))) | unique | list -%}
+                | difference(_llm_router_sandbox_agent_excluded_groups))
+                + (llm_router_sandbox_only_aliases
+                   | select('in', llm_router_model_group_aliases.keys() | list) | list))
+                | unique | list -%}
           {{ (['claude-llm'] if _claude_llm.models | unique | sort !=
                 ([llm_router_small_model, llm_router_primary_model, llm_router_large_model]
                  + llm_router_d1_zdr_key_groups) | unique | sort else [])
