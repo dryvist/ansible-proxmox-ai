@@ -81,6 +81,7 @@ def test_runner_processes_stop_before_the_account_is_removed() -> None:
     ]
     assert stop["changed_when"] == "hermes_agent_retired_runner_process_stop.rc == 0"
     assert stop["failed_when"] == "hermes_agent_retired_runner_process_stop.rc not in [0, 1]"
+    assert wait["failed_when"] == "hermes_agent_retired_runner_processes.rc not in [0, 1]"
     assert wait["until"] == "hermes_agent_retired_runner_processes.rc == 1"
     assert stop["when"] == wait["when"]
     assert "hermes_agent_retired_runner_account_lookup.ansible_facts.getent_passwd" in stop["when"]
