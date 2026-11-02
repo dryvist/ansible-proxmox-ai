@@ -1,0 +1,38 @@
+{% set _api_server_on = hermes_agent_api_server_key | length > 0 %}
+{% set _a2a_inbound_on = hermes_agent_a2a_inbound_enabled | bool %}
+{% set _profile_channels = hermes_agent_slack_profile_channels
+     if hermes_agent_slack_profile_channels is defined and hermes_agent_slack_profile_channels is mapping else {} %}
+{% set _profile_routes_on = _profile_channels | length > 0 %}
+{% if _api_server_on or _a2a_inbound_on or _profile_routes_on %}
+{% if _api_server_on %}
+# Inbound job-submission API queue hardening. The platform itself is enabled by
+# key presence via the .env bridge (API_SERVER_* in hermes-env.j2); this caps
+# in-flight agent runs across all its agent-serving endpoints. Over-cap
+# submissions are refused up front (429 + Retry-After) instead of stacking
+# prefills on the single shared serving deployment — see defaults/main.yml
+# for the measured-envelope rationale behind the value.
+{% endif %}
+gateway:
+{% if _api_server_on %}
+  api_server:
+    max_concurrent_runs: {{ hermes_agent_api_max_concurrent_runs }}
+{% endif %}
+{% if _a2a_inbound_on %}
+  platforms:
+    a2a:
+      enabled: true
+      extra:
+        port: {{ hermes_agent_a2a_inbound_port }}
+{% endif %}
+{% if _profile_routes_on %}
+  # Named-profile Slack routes: 152-profile-slack-routes.yml.
+  multiplex_profiles: true
+  profile_routes:
+{% for profile, channel in _profile_channels | dictsort %}
+    - name: {{ (profile ~ '-reports') | to_json }}
+      platform: slack
+      chat_id: {{ channel | string | to_json }}
+      profile: {{ profile | to_json }}
+{% endfor %}
+{% endif %}
+{% endif %}
