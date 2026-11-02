@@ -175,8 +175,10 @@ def test_first_sufficient_window_and_ratio_classification():
     assert _scalar_reason("baseline", count=0, value=None) == "no data: baseline result is empty"
 
 
-def _well_formed(timestamp: Any, sample: str = "50") -> tuple[str, str]:
-    result = [{"metric": {}, "value": [timestamp, sample]}]
+def _well_formed(
+    timestamp: Any = 1793660000.123, sample: str = "50", metric: Any = None
+) -> tuple[str, str]:
+    result = [{"metric": {} if metric is None else metric, "value": [timestamp, sample]}]
     data = {"resultType": "vector", "result": result}
     counts = _named(COUNTS, "Capture interactive request counts for each latency window")["vars"][
         "_llm_campaign_latency_count_well_formed"
@@ -206,8 +208,30 @@ def test_sample_timestamps_must_be_finite_and_positive():
 
 def test_count_samples_must_be_finite():
     assert _well_formed(1793660000.0, "1234")[0] == "True"
-    for bad in ("1e9999", "9e15"):
-        assert _well_formed(1793660000.0, bad)[0] == "False", bad
+    for bad in ("1e9999", "9e15", "0\n", "20\n", "-1", "-1e-9999"):
+        assert _well_formed(sample=bad)[0] == "False", repr(bad)
+    for zero in ("-0", "-0.0", "-0e0"):
+        assert _well_formed(sample=zero)[0] == "True", zero
+
+
+def test_signed_zero_counts_pass_as_idle():
+    counts = [
+        {"window": window, "window_seconds": seconds, "sample_count": "-0"}
+        for window, seconds in (("30m", 1800), ("2h", 7200), ("6h", 21600))
+    ]
+    assert _count_reason(counts, selected=None) == "idle: nothing to protect"
+
+
+def test_scalar_samples_must_be_finite_positive_and_untrimmed():
+    for good in ("1.19", "0.5", "74.6", "NaN"):
+        assert _well_formed(sample=good)[1] == "True", good
+    for bad in ("1e9999", "1e-9999", "0", "-0", "1\n", " 1", "Inf", "+Inf", ""):
+        assert _well_formed(sample=bad)[1] == "False", repr(bad)
+
+
+def test_aggregated_results_carry_no_labels():
+    for metric in ({"bad": None}, {"le": "+Inf"}, {"x": ["a"]}, {"x": True}):
+        assert _well_formed(metric=metric) == ("False", "False"), metric
 
 
 def test_count_stage_failure_headline_points_at_window_counts():
