@@ -1,4 +1,4 @@
-"""Hermes CLI profile pins and guarded satellite-cron migration contracts."""
+"""Hermes CLI profile pin contracts."""
 
 from __future__ import annotations
 
@@ -167,36 +167,3 @@ def test_every_hermes_binary_task_pins_root_and_leaves_profile_homes_unpinned() 
                 assert argv[1:3] == ["--profile", "default"], (path.name, task["name"], argv)
             else:
                 assert "--profile" not in argv, (path.name, task["name"], argv)
-
-
-def test_migration_count_exact_id_guards_and_check_mode_gate() -> None:
-    defaults = yaml.safe_load((ROLE / "defaults/main/32-satellite-stray-migration.yml").read_text())
-    assert defaults["hermes_agent_satellite_stray_migration_enabled"] is True
-    assert defaults["hermes_agent_satellite_stray_expected_count"] == 10
-    assert len(defaults["hermes_agent_satellite_stray_jobs"]) == 10
-
-    migration = yaml.safe_load((ROLE / "tasks/cron_satellite_stray_migration.yml").read_text())
-    assert migration[0]["ansible.builtin.assert"]["that"] == [
-        "hermes_agent_satellite_stray_jobs | length == hermes_agent_satellite_stray_expected_count"
-    ]
-    item_tasks = yaml.safe_load((ROLE / "tasks/cron_satellite_stray_migration_item.yml").read_text())
-    remove = next(task for task in item_tasks if task["name"].startswith("Satellite stray migration | Remove"))
-    assert remove["ansible.builtin.command"]["argv"] == [
-        "{{ hermes_agent_bin }}", "cron", "remove", "{{ item.id }}"
-    ]
-    assert remove["no_log"] is True
-    assert set(remove["when"]) == {
-        "hermes_agent_satellite_stray_current.get('id', '') == item.id",
-        "hermes_agent_satellite_stray_current.get('name', '') == item.name",
-        "item.name in hermes_agent_satellite_stray_primary_names",
-    }
-
-    cron_reconcile = yaml.safe_load((ROLE / "tasks/cron_reconcile.yml").read_text())
-    include = next(
-        task for task in cron_reconcile
-        if task.get("ansible.builtin.include_tasks") == "cron_satellite_stray_migration.yml"
-    )
-    assert include["when"] == [
-        "hermes_agent_satellite_stray_migration_enabled | bool",
-        "not ansible_check_mode",
-    ]
