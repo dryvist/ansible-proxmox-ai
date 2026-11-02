@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 from jinja2 import Environment, FileSystemLoader
+
+from _group_vars import load_group_vars_all
 from _role_files import role_defaults, role_tasks, role_tasks_text, template_text
 from _cron_pool_ceiling_shared import wall_timeout_seconds
 
@@ -83,9 +85,7 @@ def _group_vars_all() -> dict[str, Any]:
     single-pass render below sees a resolved int, the way Ansible's templar
     would after resolving both levels.
     """
-    group_vars = yaml.safe_load(
-        (REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml").read_text()
-    )
+    group_vars = load_group_vars_all()
     group_vars["tofu_data"] = {"constants": {"serving": {"llm_concurrency": 8}}}
     group_vars["ai_llm_concurrency"] = (
         _jinja_env().from_string(str(group_vars["ai_llm_concurrency"])).render(**group_vars)

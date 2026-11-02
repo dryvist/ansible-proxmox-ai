@@ -9,6 +9,7 @@ from pathlib import Path
 
 import yaml
 
+from _group_vars import load_group_vars_all
 from _compose_render import env_line, render
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -18,7 +19,7 @@ LIVE_FIXTURE = REPO_ROOT / "tests/hindsight_docker/fixtures/live-retain-observat
 
 def test_retain_scope_uses_the_dedicated_primary_route_alias() -> None:
     rendered = render()
-    inventory = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all/00-core.yml").read_text())
+    inventory = load_group_vars_all()
     selected_model = inventory["hindsight_retain_model"]
     assert f'"{selected_model}"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MODEL")
     assert f'"{selected_model}"' in env_line(rendered, "HINDSIGHT_API_LLM_MODEL")

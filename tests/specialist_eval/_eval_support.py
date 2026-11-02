@@ -16,6 +16,8 @@ import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 
+from _group_vars import load_group_vars_all
+
 ROOT = Path(__file__).resolve().parents[2]
 ROLES = ROOT / "roles"
 GROUP_VARS = ROOT / "inventory/group_vars"
@@ -64,7 +66,7 @@ def group_vars(group: str) -> dict:
 
 def core_defaults() -> dict:
     """What group_vars/all gives every host: the empty bao_* maps, and the production converge writer."""
-    core = load_yaml(GROUP_VARS / "all/00-core.yml")
+    core = load_group_vars_all()
     seed = load_yaml(GROUP_VARS / "all/openbao_secrets/00-seed-vars.yml")
     values = {key: core[key] for key in ("bao_local_llm_secrets", "bao_apps_secrets")}
     values["openbao_secrets_converge_writer_token"] = seed["openbao_secrets_converge_writer_token"]

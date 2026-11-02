@@ -13,14 +13,14 @@ from pathlib import Path
 import jinja2
 import yaml
 
+from _group_vars import load_group_vars_all
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "roles/hindsight_docker/templates/docker-compose.yml.j2"
 ROLE_DEFAULTS = yaml.safe_load(
     (REPO_ROOT / "roles/hindsight_docker/defaults/main.yml").read_text()
 )
-INVENTORY_DEFAULTS = yaml.safe_load(
-    (REPO_ROOT / "inventory/group_vars/all/00-core.yml").read_text()
-)
+INVENTORY_DEFAULTS = load_group_vars_all()
 
 DEFAULT_CONTEXT = {
     **{

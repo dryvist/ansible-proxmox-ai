@@ -15,16 +15,12 @@ from __future__ import annotations
 import pytest
 import yaml
 
+from _group_vars import load_group_vars_all
 from _role_files import template_text
 from _shell_harness_shared import ROLES, defaults_of, render
 
 SENTINEL = "http://otel-sentinel.test.invalid:4318"
-# Every top-level group_vars/all file, in load order, so a file split cannot drop a var.
-INVENTORY_VARS = {
-    key: value
-    for path in sorted((ROLES.parent / "inventory/group_vars/all").glob("*.yml"))
-    for key, value in (yaml.safe_load(path.read_text()) or {}).items()
-}
+INVENTORY_VARS = load_group_vars_all()
 INVENTORY_CONTEXT = {
     "agentgateway_docker_a2a_allowed_tier": INVENTORY_VARS[
         "agentgateway_docker_a2a_allowed_tier"
