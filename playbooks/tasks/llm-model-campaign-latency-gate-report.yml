@@ -1,0 +1,60 @@
+---
+- name: Assemble interactive latency gate report values
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_observation:
+      http_status: "{{ _llm_campaign_latency_classification_observation.http_status | default(0) }}"
+      prometheus_status: "{{ _llm_campaign_latency_classification_observation.prometheus_status | default(none) }}"
+      result_count: "{{ _llm_campaign_latency_classification_observation.result_count | default(none) }}"
+      raw_ratio: >-
+        {{ _llm_campaign_latency_classification_observation.raw_value
+           if _llm_campaign_latency_classification_kind == 'ratio' else none }}
+      max_ratio: "{{ llm_campaign_latency_max_ratio }}"
+      window: >-
+        {{ _llm_campaign_latency_selected_window.window
+           if _llm_campaign_latency_selected_window is mapping else none }}
+      sample_count: >-
+        {{ _llm_campaign_latency_selected_window.sample_count
+           if _llm_campaign_latency_selected_window is mapping
+           else _llm_campaign_latency_largest_window.sample_count | default(none) }}
+      largest_window: >-
+        {{ _llm_campaign_latency_largest_window.window
+           if _llm_campaign_latency_largest_window is mapping else none }}
+      largest_window_count: >-
+        {{ _llm_campaign_latency_largest_window.sample_count | default(none)
+           if _llm_campaign_latency_largest_window is mapping else none }}
+      baseline_value: "{{ _llm_campaign_latency_baseline_observation.raw_value | default(none) }}"
+  changed_when: false
+
+- name: Fail closed on interactive latency gate failures
+  ansible.builtin.assert:
+    that:
+      - "_llm_campaign_latency_reason in ['pass', 'idle: nothing to protect']"
+    fail_msg: >-
+      Interactive latency gate failed: {{ _llm_campaign_latency_reason }};
+      HTTP status={{ _llm_campaign_latency_observation.http_status }};
+      Prometheus status={{ _llm_campaign_latency_observation.prometheus_status | default('none', true) }};
+      result count={{ _llm_campaign_latency_observation.result_count | default('none', true) }};
+      raw ratio={{ _llm_campaign_latency_observation.raw_ratio | default('none', true) }};
+      baseline p95={{ _llm_campaign_latency_observation.baseline_value | default('none', true) }};
+      max ratio={{ _llm_campaign_latency_observation.max_ratio }};
+      window={{ _llm_campaign_latency_observation.window | default('none', true) }};
+      sample count={{ _llm_campaign_latency_observation.sample_count | default('none', true) }};
+      largest window={{ _llm_campaign_latency_observation.largest_window | default('none', true) }};
+      count={{ _llm_campaign_latency_observation.largest_window_count | default('none', true) }}.
+    quiet: true
+
+- name: Report idle interactive latency gate
+  ansible.builtin.debug:
+    msg: >-
+      idle: nothing to protect; largest window={{ _llm_campaign_latency_observation.largest_window }}
+      count={{ _llm_campaign_latency_observation.largest_window_count }}
+  when: "_llm_campaign_latency_reason == 'idle: nothing to protect'"
+
+- name: Report the interactive latency gate result
+  ansible.builtin.debug:
+    msg: >-
+      Interactive latency gate passed: ratio={{ _llm_campaign_latency_observation.raw_ratio }},
+      max={{ _llm_campaign_latency_observation.max_ratio }},
+      window={{ _llm_campaign_latency_observation.window }},
+      samples={{ _llm_campaign_latency_observation.sample_count }}.
+  when: _llm_campaign_latency_reason == 'pass'
