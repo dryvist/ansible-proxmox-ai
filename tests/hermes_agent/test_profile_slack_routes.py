@@ -8,6 +8,7 @@ named profile's single Slack target must move to its routed channel.
 
 from __future__ import annotations
 
+import json
 import re
 
 import yaml
@@ -70,6 +71,25 @@ def test_unrouted_or_default_targets_are_unchanged() -> None:
         _resolve_deliver({"deliver": "slack:C0HOME,local", "hermes_home": "/h/profiles/splunk-admin"})
         == "slack:C0HOME,local"
     )
+
+
+def _channels(env: dict, ai_agents: dict | None = None) -> str:
+    """Render the profile-channel default as Ansible would, env lookups stubbed."""
+    expr = role_defaults(ROLE_ROOT)["hermes_agent_slack_profile_channels"]
+    jenv = Environment()
+    jenv.filters["from_json"] = json.loads
+    jenv.globals["lookup"] = lambda kind, name: env.get(name, "")
+    return jenv.from_string(expr).render(
+        ai_agents=ai_agents or {}, hermes_agent_id="hermes", hermes_agent_env_prefix="HERMES"
+    ).strip()
+
+
+def test_profile_channels_fall_back_to_the_run_environment() -> None:
+    env = {"SLACK_HERMES_PROFILE_CHANNELS": json.dumps({"splunk-admin": CHANNELS["splunk-admin"]})}
+    assert _channels(env) == str({"splunk-admin": CHANNELS["splunk-admin"]})
+    roster = {"hermes": {"slack": {"profile_channels": CHANNELS}}}
+    assert _channels(env, roster) == str(CHANNELS)
+    assert _channels({}) == "{}"
 
 
 def test_zammad_review_is_bounded_and_gated_on_its_route() -> None:

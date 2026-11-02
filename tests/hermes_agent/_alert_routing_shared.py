@@ -31,6 +31,7 @@ are findings produced by a job that worked.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -49,6 +50,7 @@ _ENV = Environment(autoescape=False)
 _ENV.filters["regex_replace"] = lambda value, pattern, replacement="": re.sub(
     pattern, replacement, value
 )
+_ENV.filters["from_json"] = json.loads
 
 # Work and routine reports use home; failures and Splunk findings have their
 # own configured destinations.
