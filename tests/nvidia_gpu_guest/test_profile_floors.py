@@ -15,7 +15,8 @@ PROFILE_DEFAULTS = {
 }
 REGISTRY_FILES = (
     REPO_ROOT / "llm-models.d/60-gpu.yml",
-    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
+    REPO_ROOT / "llm-models.d/61-gpu-sweeps.yml",
+    REPO_ROOT / "llm-models.d/62-gpu-matrix.yml",
 )
 FLOOR_FIELDS = {
     "concurrency",

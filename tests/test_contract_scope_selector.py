@@ -99,6 +99,18 @@ def test_changed_router_playbook_selects_only_its_playbook() -> None:
     ]
 
 
+@pytest.mark.parametrize("path", [
+    "tests/llm_router/test_gpu_registry.py",
+    "tests/llm_router/test_gpu_registry_projection.py",
+])
+def test_changed_router_pytest_selects_router_contract_job(path: str) -> None:
+    result = run_selector(path)
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert selection["llm_router_playbooks"]
+
+
 @pytest.mark.parametrize("playbook", [
     "tests/llm_router/test_drift_live_keys.yml",
     "tests/llm_router/test_hermes_public_key_alias_brain.yml",
@@ -114,6 +126,7 @@ def test_registered_router_playbook_selects_its_own_entry(playbook: str) -> None
 @pytest.mark.parametrize(("imported", "importer"), [
     ("tests/llm_router/test_ladder_keys_order.yml", "tests/llm_router/test_ladder_keys.yml"),
     ("tests/llm_router/test_ladder_keys_consumers.yml", "tests/llm_router/test_ladder_keys.yml"),
+    ("tests/llm_router/test_ladder_keys_consumers_permissions.yml", "tests/llm_router/test_ladder_keys.yml"),
     ("tests/llm_router/test_ladder_keys_zdr.yml", "tests/llm_router/test_ladder_keys.yml"),
     ("tests/llm_router/test_gpu_pro6000_inactive_render.yml",
      "tests/llm_router/test_gpu_pro6000_render.yml"),
