@@ -37,7 +37,9 @@ def test_job_is_a_splunk_profile_job_delivered_to_the_splunk_channel() -> None:
     job = _direct_job(NAME_VAR)
     assert job["skill"] == "dryvist/splunk-monitor"
     assert job["hermes_home"].endswith("/profiles/splunk-admin")
-    assert "hermes_agent_slack_splunk_channel" in job["deliver"]
+    assert job["deliver"] == (
+        "{{ hermes_agent_slack_profile_deliver_targets.get('splunk-admin', '') }}"
+    )
     assert "hermes_agent_llm_stats_hourly_enabled" in job["enabled"]
     assert "hermes_agent_splunk_mcp_url" in job["enabled"]
 

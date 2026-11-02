@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 
+from jinja2 import Environment
 import yaml
 
 from _alert_routing_shared import (
@@ -32,6 +33,57 @@ from _alert_routing_shared import (
     _direct_job,
     _resolve,
 )
+
+PROFILE_CHANNELS = {
+    "homelab-admin": "C_HOMELAB",
+    "splunk-admin": "C_SPLUNK",
+    "github-maint": "C_GITHUB",
+    "orchestrator": "C_ORCHESTRATOR",
+}
+
+PROFILE_ROUTED_JOBS = {
+    "homelab-admin": (
+        "hermes_agent_zammad_review_cron_name",
+        "hermes_agent_backlog_sweep_cron_name",
+    ),
+    "splunk-admin": (
+        "hermes_agent_splunk_triage_cron_name",
+        "hermes_agent_splunk_security_cron_name",
+        "hermes_agent_splunk_parsing_cron_name",
+        "hermes_agent_splunk_deepdive_cron_name",
+        "hermes_agent_splunk_health_cron_name",
+        "hermes_agent_router_capacity_digest_cron_name",
+        "hermes_agent_llm_stats_hourly_cron_name",
+    ),
+    "github-maint": (
+        "hermes_agent_github_maint_cron_name",
+        "hermes_agent_pricing_diff_cron_name",
+        "hermes_agent_github_cache_stats_cron_name",
+    ),
+    "orchestrator": (
+        "hermes_agent_kanban_reviewer_job",
+        "hermes_agent_fleet_health_cron_name",
+    ),
+}
+
+ROOT_HOME_JOBS = (
+    "hermes_agent_anomaly_hunt_cron_name",
+    "hermes_agent_ai_news_cron_name",
+    "hermes_agent_daily_innovation_cron_name",
+    "hermes_agent_docs_study_cron_name",
+    "hermes_agent_release_watch_cron_name",
+    "hermes_agent_daily_status_cron_name",
+)
+
+
+def _routed_context() -> dict[str, str]:
+    ctx = _resolve(CONFIGURED)
+    ctx["hermes_agent_slack_profile_channels"] = PROFILE_CHANNELS
+    ctx["hermes_agent_slack_profile_deliver_targets"] = {
+        profile: f"slack:{channel}" for profile, channel in PROFILE_CHANNELS.items()
+    }
+    ctx["hermes_agent_kanban_orchestrator_profile"] = "orchestrator"
+    return ctx
 
 
 # --- per-job routing: the recurring fleet is not one undifferentiated tier ----
@@ -90,15 +142,43 @@ def test_the_former_kanban_cards_report_to_the_home_channel() -> None:
 
 
 def test_splunk_findings_and_anomaly_hunt_route_by_reader() -> None:
-    """splunk-triage/security/parsing/deepdive and anomaly-hunt share the Splunk
-    digest domain with the script-fed splunk-status/error/security digests
-    (100-splunk.yml). The anomaly hunt is an operator-facing finding, so it
-    stays with the regular work reports."""
-    ctx = _resolve(CONFIGURED)
+    """Named Splunk findings use their routed profile channel; anomaly-hunt
+    stays in the root home and keeps its operator-facing home destination."""
+    ctx = _routed_context()
     for var in ("hermes_agent_splunk_triage_cron_name", "hermes_agent_splunk_security_cron_name",
                 "hermes_agent_splunk_parsing_cron_name", "hermes_agent_splunk_deepdive_cron_name"):
         assert _direct_deliver(var, ctx) == "slack:C_SPLUNK", var
     assert _direct_deliver("hermes_agent_anomaly_hunt_cron_name", ctx) == "slack:C_HOME"
+
+
+def test_profile_cron_homes_and_delivery_targets_match_the_decision() -> None:
+    ctx = _routed_context()
+    assert sum(map(len, PROFILE_ROUTED_JOBS.values())) == 14
+    assert len(ROOT_HOME_JOBS) == 6
+
+    for profile, cron_names in PROFILE_ROUTED_JOBS.items():
+        route_target = f"slack:{PROFILE_CHANNELS[profile]}"
+        route_key = (
+            "hermes_agent_kanban_orchestrator_profile" if profile == "orchestrator" else repr(profile)
+        )
+        for cron_name in cron_names:
+            job = _direct_job(cron_name)
+            assert "hermes_agent_slack_profile_deliver_targets" in str(job["deliver"]), cron_name
+            home = Environment().from_string(str(job["hermes_home"])).render(
+                hermes_agent_hermes_home="/hermes-home",
+                hermes_agent_kanban_orchestrator_profile="orchestrator",
+            )
+            assert home == f"/hermes-home/profiles/{profile}", cron_name
+            assert _direct_deliver(cron_name, ctx) == route_target, cron_name
+            if job.get("enabled") is not False:
+                assert f"{route_key} in hermes_agent_slack_profile_deliver_targets" in str(
+                    job["enabled"]
+                ), cron_name
+
+    for cron_name in ROOT_HOME_JOBS:
+        job = _direct_job(cron_name)
+        assert "hermes_home" not in job, cron_name
+        assert _direct_deliver(cron_name, ctx) == "slack:C_HOME", cron_name
 
 
 def test_release_watch_uses_the_agent_home_channel() -> None:
