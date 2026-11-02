@@ -15,8 +15,9 @@ Dispatch verifies the data and pinned base, stages the output directory, stops
 Laya and a configured GPU peer when that peer was active, and starts the
 `laya-finetune.service` transient unit with `systemd-run --no-block`. Training
 output goes to the system journal. The Ansible run does not wait for training.
-The persisted peer-state file is beside the staging directory; if collect is
-never run, a peer that dispatch stopped remains stopped.
+The persisted peer-state file is beside the staging directory. The Semaphore
+schedule runs collect every 15 minutes through `ai-laya-finetune-collect`, so
+the peer is restored within about 15 minutes of training ending.
 
 Run collect separately. A scheduler may call this command repeatedly; collect
 is idempotent and returns successfully while the job is still running.
@@ -30,7 +31,7 @@ ansible-playbook playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.yml \
 
 Collect validates and promotes a successful checkpoint, restores Laya and only
 the peer recorded as active by dispatch, runs bounded health checks, and
-reports a sanitized failure class. No schedule is defined here.
+reports a sanitized failure class.
 
 Dispatch caps each dataset transfer at 30 seconds and the first-time pinned
 base fetch at 420 seconds. The pinned `model.safetensors` file is 843 MB; at

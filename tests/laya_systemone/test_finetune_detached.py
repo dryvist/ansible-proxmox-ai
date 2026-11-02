@@ -65,6 +65,53 @@ def test_collect_returns_while_running_before_it_can_touch_services() -> None:
     assert _find_task(finish["block"], "Start Laya after GPU fine-tuning")
 
 
+def test_idle_collect_without_state_or_unit_needs_no_training_inputs_or_services() -> None:
+    collection = _load_tasks(FINETUNE_COLLECT_TASKS)
+    validate_state = _find_task(collection, "Validate the Laya fine-tune systemd unit state")
+    pending = _find_task(collection, "Determine whether collection or recovery is pending")
+    idle = _find_task(collection, "Report that there is no completed Laya fine-tune job to collect")
+    probe = _find_task(collection, "Probe the configured GPU peer when dispatch state is unavailable")
+    finish = _find_task(collection, "Collect every finished Laya fine-tune job")
+
+    environment = jinja2.Environment()
+    environment.filters["bool"] = bool
+    context = {
+        "laya_systemone_finetune_job_state_result": {"rc": 0, "unreachable": False},
+        "laya_systemone_finetune_job_load_state": "not-found",
+        "laya_systemone_finetune_job_active_state": "inactive",
+        "laya_systemone_finetune_dispatch_state_stat": {
+            "stat": {"exists": False},
+            "unreachable": False,
+        },
+        "laya_systemone_finetune_dispatch_state_file": {"unreachable": False},
+    }
+    valid_state = environment.from_string(
+        validate_state["ansible.builtin.set_fact"]["laya_systemone_finetune_job_state_valid"]
+    ).render(**context)
+    assert valid_state == "True"
+    context["laya_systemone_finetune_job_state_valid"] = valid_state == "True"
+
+    pending_state = environment.from_string(
+        pending["ansible.builtin.set_fact"]["laya_systemone_finetune_collection_pending"]
+    ).render(**context)
+    assert pending_state == "False"
+    context["laya_systemone_finetune_collection_pending"] = pending_state == "True"
+    context["laya_systemone_finetune_job_running"] = False
+
+    assert all(environment.compile_expression(condition)(**context) for condition in idle["when"])
+    assert not environment.compile_expression(probe["when"][0])(**context)
+    assert not all(environment.compile_expression(condition)(**context) for condition in finish["when"])
+
+    service_tasks = [task for task in _walk_tasks(collection) if "ansible.builtin.systemd" in task]
+    guarded_tasks = list(_walk_tasks(finish["block"]))
+    assert service_tasks
+    assert all(task in guarded_tasks for task in service_tasks)
+
+    references: list[Path] = []
+    _load_tasks(FINETUNE_COLLECT_TASKS, references)
+    assert (ROLE / "tasks/finetune-validate-config.yml").resolve() not in references
+
+
 def test_collect_recovers_manifest_inputs_from_the_collect_include_chain() -> None:
     references: list[Path] = []
     _load_tasks(FINETUNE_COLLECT_TASKS, references)
