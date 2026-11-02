@@ -1,6 +1,6 @@
 """Operational settings must reach every Hermes store, not just the default.
 
-A named profile's scheduled work runs as `hermes cron tick` under that
+A named profile's scheduled work runs under that
 profile's own HERMES_HOME, and the CLI loads only the .env belonging to that
 home (dotenv, override=True) before any agent code runs. A setting written to
 the default store alone therefore does not apply to a profile's jobs at all —

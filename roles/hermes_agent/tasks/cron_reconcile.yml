@@ -32,31 +32,16 @@
         and hermes_agent_slack_app_token | length > 0
         and hermes_agent_slack_home_channel | length > 0)
 
-# See hermes_agent_profile_cron_tick_timeout (defaults) for why this exists:
-# a job registered under a named profile's HERMES_HOME needs its OWN ticker,
-# since `hermes cron`'s ticker runs in-process inside whichever gateway
-# registered it and only the default profile's gateway is persistent.
-- name: Reconcile the profile cron tick trigger per profile
+# The gateway ticks every profile home in-process and sends a satellite's Slack
+# output through the primary's profile route. A standalone per-profile
+# `hermes cron tick` has no adapters, so it fired first and dropped each report
+# ("platform 'slack' not configured/enabled"). Remove those crontab entries.
+- name: Remove the retired per-profile cron tick triggers
   ansible.builtin.cron:
     name: "hermes-cron-tick-{{ item }}"
     user: "{{ hermes_agent_user }}"
-    job: >-
-      HERMES_HOME={{ hermes_agent_hermes_home }}/profiles/{{ item }}
-      timeout {{ hermes_agent_profile_cron_tick_timeout }}
-      {{ hermes_agent_bin }} cron tick
-      >> {{ hermes_agent_log_directory }}/cron-tick-{{ item }}.log 2>&1
-    minute: "*/5"
-    state: present
-  # Derived from hermes_agent_profiles, not hand-kept: a hardcoded list means
-  # a new profile's job is created under its own store and then never ticks —
-  # registered, scheduled, silent. The `when` below already skips a profile
-  # with no enabled job pointing at it, so deriving adds no stray cron entries.
+    state: absent
   loop: "{{ hermes_agent_profiles | map(attribute='name') | list }}"
-  when: >-
-    hermes_agent_direct_cron_jobs_owned
-    | selectattr('hermes_home', 'defined')
-    | selectattr('hermes_home', 'search', item)
-    | selectattr('enabled') | list | length > 0
 
 # No daily backfill safety net any more: it existed to re-create a slot-keyed
 # Kanban card a missed fire would otherwise drop forever. Recurring work is a
