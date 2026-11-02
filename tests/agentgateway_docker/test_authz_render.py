@@ -13,7 +13,7 @@ import yaml
 from ansible.plugins.filter.core import FilterModule
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-INVENTORY = REPO_ROOT / "inventory/group_vars/all/00-core.yml"
+INVENTORY_DIR = REPO_ROOT / "inventory/group_vars/all"
 DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/00-gateway.yml"
 MCP_ROUTE_AUTH_DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/30-mcp-route-auth.yml"
 TASKS = REPO_ROOT / "roles/agentgateway_docker/tasks/main.yml"
@@ -35,7 +35,12 @@ KEYS = {
 
 ENV = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
 ENV.filters.update(FilterModule().filters())
-INVENTORY_VARS = yaml.safe_load(INVENTORY.read_text())
+# Every top-level group_vars/all file, in load order, so a file split cannot drop a var.
+INVENTORY_VARS = {
+    key: value
+    for path in sorted(INVENTORY_DIR.glob("*.yml"))
+    for key, value in (yaml.safe_load(path.read_text()) or {}).items()
+}
 FACADE_DEFAULTS = yaml.safe_load((DEFAULTS.parent / "40-facade.yml").read_text())
 ROLE_DEFAULTS = {
     **yaml.safe_load(DEFAULTS.read_text()),
@@ -54,7 +59,7 @@ def _render_map(expression: str, **context: Any) -> dict[str, Any]:
 
 
 def _render_callers(roster: dict[str, Any], registry: dict[str, Any] | None = None) -> dict[str, Any]:
-    """`ai_callers` as inventory/group_vars/all/00-core.yml derives it: registry plus roster."""
+    """`ai_callers` as inventory/group_vars/all derives it: registry plus roster."""
     # The test environment's strict undefined cannot evaluate `| default`, so an unloaded
     # registry is passed as empty, which is what the default yields in a play.
     return _render_map(INVENTORY_VARS["ai_callers"], ai_agents=roster, agent_callers_registry=registry or {})
