@@ -25,13 +25,14 @@ from conftest import ROLE_ROOT
 from _role_files import role_defaults
 
 
-# Keys the default store renders that no profile store carries. Each is a
-# deliberate exclusion, and the parity check below turns anything NOT listed
-# here into a failure — so adding a key to hermes-env.j2 forces a choice: put
-# it in the shared operational partial, where every store gets it, or record it
-# here as default-store-only. Making that choice explicit is the whole point:
+# Keys whose presence or value intentionally differs between stores. Most are
+# gateway-only; API_SERVER_KEY is also granted to eval with its separate
+# OpenBao value. The parity check below turns anything NOT listed here into a
+# failure — so adding a key to hermes-env.j2 forces a choice: put it in the
+# shared operational partial, where every store gets it, or record its scope
+# here. Making that choice explicit is the whole point:
 # left unmade, a setting reaches the default store's jobs and no profile's.
-_DEFAULT_STORE_ONLY_KEYS = {
+_STORE_SPECIFIC_KEYS = {
     # Inbound platforms, served by the long-running gateway process only.
     "WEBHOOK_ENABLED",
     "WEBHOOK_PORT",
@@ -105,6 +106,9 @@ def _context() -> dict[str, Any]:
         hermes_agent_webhook_enabled=True,
         hermes_agent_webhook_secret="WEBHOOKSECRET",
         hermes_agent_api_server_key="APIKEY",
+        # The role default resolves this from bao_apps_secrets in Ansible; an
+        # empty value keeps this parity render focused on store key presence.
+        hermes_agent_eval_api_server_key="",
         hermes_agent_langfuse_enabled=True,
         hermes_agent_langfuse_public_key="pk-lf-test",
         hermes_agent_langfuse_secret_key="sk-lf-test",
@@ -154,10 +158,10 @@ def test_every_operational_setting_reaches_every_profile_store() -> None:
                 f"the default store ({value!r}), got {profile_values.get(key)!r}"
             )
 
-        unshared = set(default_values) - set(profile_values) - _DEFAULT_STORE_ONLY_KEYS
+        unshared = set(default_values) - set(profile_values) - _STORE_SPECIFIC_KEYS
         assert not unshared, (
             f"profile {profile['name']!r} never sees {sorted(unshared)}, which the "
             "default store sets. Move the setting into "
             "templates/hermes-env-operational.j2 so every store gets it, or add it "
-            "to _DEFAULT_STORE_ONLY_KEYS to record that the default store keeps it."
+            "to _STORE_SPECIFIC_KEYS to record its intentional store-specific scope."
         )
