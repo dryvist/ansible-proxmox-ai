@@ -1,27 +1,26 @@
 ---
-- name: Validate the opt-in fine-tune configuration
+- name: Read the detached fine-tune unit state before dispatch
+  ansible.builtin.include_tasks: finetune-read-job-state.yml
+
+- name: Check for an uncollected fine-tune dispatch
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_dispatch_state_path }}"
+  register: laya_systemone_finetune_dispatch_state_stat
+  become: true
+
+- name: Refuse overlapping or uncollected fine-tune jobs
   ansible.builtin.assert:
     that:
-      - laya_systemone_finetune_name is string
-      - laya_systemone_finetune_name | length > 0
-      - laya_systemone_finetune_name is match('^[a-z0-9][a-z0-9._-]*$')
-      - laya_systemone_finetune_name not in ['auto', 'english', 'multilingual', 'typed-decisions']
-      - laya_systemone_finetune_bucket is string
-      - laya_systemone_finetune_bucket | length > 0
-      - laya_systemone_finetune_train_key is string
-      - laya_systemone_finetune_train_key | length > 0
-      - laya_systemone_finetune_train_sha256 is match('^[A-Fa-f0-9]{64}$')
-      - laya_systemone_finetune_eval_key is string
-      - laya_systemone_finetune_eval_key | length > 0
-      - laya_systemone_finetune_eval_sha256 is match('^[A-Fa-f0-9]{64}$')
-      - laya_systemone_finetune_base is string
-      - laya_systemone_finetune_base | length > 0
-      - laya_systemone_finetune_base_revision is match('^[a-f0-9]{40}$')
-      - laya_systemone_finetune_root is match('^/')
-      - laya_systemone_finetune_root | regex_search("'") is none
-      - laya_systemone_finetune_root | regex_search("[\r\n]") is none
-    fail_msg: Laya fine-tuning requires a safe model name, object keys, checksums, and root path.
+      - >-
+        laya_systemone_finetune_job_load_state != 'loaded'
+        or laya_systemone_finetune_job_active_state
+        not in ['active', 'activating', 'deactivating', 'reloading']
+      - not laya_systemone_finetune_dispatch_state_stat.stat.exists
+    fail_msg: A Laya fine-tune job is active or awaits collect.
     quiet: true
+
+- name: Validate the opt-in fine-tune configuration
+  ansible.builtin.include_tasks: finetune-validate-config.yml
 
 - name: Create the fine-tune data and model directories
   ansible.builtin.file:
@@ -45,129 +44,50 @@
     path: "{{ laya_systemone_unit_path }}"
   register: laya_systemone_finetune_unit_stat
 
-- name: Download and train the fine-tuned checkpoint when its manifest is stale
+- name: Determine whether the installed fine-tune manifest is stale
+  ansible.builtin.set_fact:
+    laya_systemone_finetune_manifest_stale: >-
+      {{ (laya_systemone_finetune_manifest.name | default('') != laya_systemone_finetune_name)
+         or (laya_systemone_finetune_manifest.train_sha256 | default('')
+         != laya_systemone_finetune_train_sha256 | lower)
+         or (laya_systemone_finetune_manifest.eval_sha256 | default('')
+         != laya_systemone_finetune_eval_sha256 | lower)
+         or (laya_systemone_finetune_manifest.epochs | default(none)
+         != laya_systemone_finetune_epochs | int)
+         or (laya_systemone_finetune_manifest.text_column | default('')
+         != laya_systemone_finetune_text_column)
+         or (laya_systemone_finetune_manifest.label_column | default('')
+         != laya_systemone_finetune_label_column)
+         or (laya_systemone_finetune_manifest.target_error | default(none)
+         != laya_systemone_finetune_target_error | float)
+         or (laya_systemone_finetune_manifest.seed | default(none)
+         != laya_systemone_finetune_seed | int)
+         or (laya_systemone_finetune_manifest.base | default('')
+         != laya_systemone_finetune_base)
+         or (laya_systemone_finetune_manifest.base_revision | default('')
+         != laya_systemone_finetune_base_revision)
+         or (laya_systemone_finetune_manifest.laya_version | default('')
+         != laya_systemone_finetune_laya_version.stdout | trim) }}
+
+- name: Prepare and dispatch the fine-tuned checkpoint when its manifest is stale
   when:
     - not ansible_check_mode
-    - >-
-      (laya_systemone_finetune_manifest.name | default('') != laya_systemone_finetune_name)
-      or (laya_systemone_finetune_manifest.train_sha256 | default('')
-      != laya_systemone_finetune_train_sha256 | lower)
-      or (laya_systemone_finetune_manifest.eval_sha256 | default('')
-      != laya_systemone_finetune_eval_sha256 | lower)
-      or (laya_systemone_finetune_manifest.epochs | default(none)
-      != laya_systemone_finetune_epochs | int)
-      or (laya_systemone_finetune_manifest.text_column | default('')
-      != laya_systemone_finetune_text_column)
-      or (laya_systemone_finetune_manifest.label_column | default('')
-      != laya_systemone_finetune_label_column)
-      or (laya_systemone_finetune_manifest.target_error | default(none)
-      != laya_systemone_finetune_target_error | float)
-      or (laya_systemone_finetune_manifest.seed | default(none)
-      != laya_systemone_finetune_seed | int)
-      or (laya_systemone_finetune_manifest.base | default('')
-      != laya_systemone_finetune_base)
-      or (laya_systemone_finetune_manifest.base_revision | default('')
-      != laya_systemone_finetune_base_revision)
-      or (laya_systemone_finetune_manifest.laya_version | default('')
-      != laya_systemone_finetune_laya_version.stdout | trim)
+    - laya_systemone_finetune_manifest_stale | bool
   block:
     - name: Download and verify the fine-tuning datasets
       ansible.builtin.include_tasks: finetune-datasets.yml
     - name: Fetch and verify the pinned Laya base checkpoint
       ansible.builtin.include_tasks: finetune-base.yml
-    - name: Stage, train, and validate the fine-tuned model
+    - name: Stage and dispatch detached Laya training
       ansible.builtin.include_tasks: finetune-train.yml
-    - name: Promote the validated fine-tuned model
-      ansible.builtin.include_tasks: finetune-promote.yml
   rescue:
-    - name: Record the fine-tuning failure for sanitized reporting
-      ansible.builtin.set_fact:
-        laya_systemone_finetune_failed: true
-        laya_systemone_finetune_failure_class: >-
-          {%- set train_result = laya_systemone_finetune_train_result | default({}) -%}
-          {%- set stderr_lines = train_result.stderr_lines | default([]) -%}
-          {%- set class_lines = stderr_lines
-              | select('match', '^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception)\\b') | list -%}
-          {%- if train_result.finished | default(-1) | int == 0
-                or 'async task did not complete within the requested time'
-                   in (train_result.msg | default('')) -%}
-          timeout
-          {%- elif class_lines | length > 0 -%}
-          {{ class_lines[-1] | regex_search('^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception)\\b') }}
-          {%- else -%}
-          unknown
-          {%- endif -%}
-    - name: Stop any leftover Laya training process before GPU services restart
-      ansible.builtin.command:
-        argv:
-          - pkill
-          - -u
-          - "{{ laya_systemone_user }}"
-          - -f
-          - bin/laya-train
-      become: true
-      failed_when: false
-      changed_when: false
-  always:
-    - name: Start Laya after GPU fine-tuning
-      ansible.builtin.systemd:
-        name: laya-systemone.service
-        state: started
-      when: laya_systemone_finetune_unit_stat.stat.exists | default(false)
-      register: laya_systemone_finetune_service_start
-      ignore_errors: true
-      no_log: true
-    - name: Start the GPU peer serving unit after fine-tuning
-      ansible.builtin.systemd:
-        name: "{{ laya_systemone_finetune_gpu_peer_unit }}"
-        state: started
-      delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
-      when: >-
-        laya_systemone_finetune_gpu_peer_stop is defined
-        and laya_systemone_finetune_gpu_peer_stop is changed
-      register: laya_systemone_finetune_gpu_peer_start
-      ignore_errors: true
-    - name: Wait for Laya health after GPU fine-tuning
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ laya_systemone_port }}/health"
-        status_code: 200
-      register: laya_systemone_finetune_health
-      retries: "{{ laya_systemone_health_retries }}"
-      delay: "{{ laya_systemone_health_delay }}"
-      until: laya_systemone_finetune_health.status | default(0) == 200
-      when: laya_systemone_finetune_unit_stat.stat.exists | default(false)
-      ignore_errors: true
-    - name: Wait for GPU peer serving health after fine-tuning
-      ansible.builtin.uri:
-        url: "{{ laya_systemone_finetune_gpu_peer_health_url }}"
-        status_code: 200
-      delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
-      register: laya_systemone_finetune_gpu_peer_health
-      retries: "{{ laya_systemone_health_retries }}"
-      delay: "{{ laya_systemone_health_delay }}"
-      until: laya_systemone_finetune_gpu_peer_health.status | default(0) == 200
-      when: >-
-        laya_systemone_finetune_gpu_peer_stop is defined
-        and laya_systemone_finetune_gpu_peer_stop is changed
-      ignore_errors: true
+    - name: Report preparation failure without dataset output
+      ansible.builtin.fail:
+        msg: Laya fine-tune preparation failed; no training output was included.
 
-- name: Report the fine-tuning failure without exposing dataset output
-  ansible.builtin.fail:
-    msg: >-
-      Laya fine-tuning failed ({{ laya_systemone_finetune_failure_class | default('unknown') }});
-      service start and health were checked for Laya and any stopped GPU peer.
-  when: >-
-    laya_systemone_finetune_failed | default(false)
-    or (laya_systemone_finetune_service_start is defined
-        and laya_systemone_finetune_service_start is failed)
-    or (laya_systemone_finetune_gpu_peer_start is defined
-        and laya_systemone_finetune_gpu_peer_start is failed)
-    or (laya_systemone_finetune_health is defined
-        and laya_systemone_finetune_health is failed)
-    or (laya_systemone_finetune_gpu_peer_health is defined
-        and laya_systemone_finetune_gpu_peer_health is failed)
-
-- name: Check whether the fine-tuned model directory exists
-  ansible.builtin.stat:
-    path: "{{ laya_systemone_finetune_model_dir }}"
-  register: laya_systemone_finetune_model_dir_stat
+- name: Report when the installed checkpoint already matches the requested configuration
+  ansible.builtin.debug:
+    msg: Laya fine-tune manifest is current; no detached job was started.
+  when:
+    - not ansible_check_mode
+    - not laya_systemone_finetune_manifest_stale | bool

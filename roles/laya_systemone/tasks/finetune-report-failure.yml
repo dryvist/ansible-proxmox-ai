@@ -1,0 +1,23 @@
+---
+- name: Classify a service recovery failure
+  ansible.builtin.set_fact:
+    laya_systemone_finetune_failed: true
+    laya_systemone_finetune_failure_class: service-recovery
+  when: >-
+    not laya_systemone_finetune_failed | default(false) | bool
+    and ((laya_systemone_finetune_service_start is defined
+          and laya_systemone_finetune_service_start is failed)
+         or (laya_systemone_finetune_gpu_peer_start is defined
+             and (laya_systemone_finetune_gpu_peer_start is failed
+                  or laya_systemone_finetune_gpu_peer_start.unreachable | default(false)))
+         or (laya_systemone_finetune_health is defined and laya_systemone_finetune_health is failed)
+         or (laya_systemone_finetune_gpu_peer_health is defined
+             and (laya_systemone_finetune_gpu_peer_health is failed
+                  or laya_systemone_finetune_gpu_peer_health.unreachable | default(false))))
+
+- name: Report the fine-tuning failure without exposing dataset output
+  ansible.builtin.fail:
+    msg: >-
+      Laya fine-tuning failed ({{ laya_systemone_finetune_failure_class | default('unknown') }});
+      service start and health were checked for Laya and any previously active GPU peer.
+  when: laya_systemone_finetune_failed | default(false) | bool

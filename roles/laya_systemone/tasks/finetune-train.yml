@@ -1,143 +1,140 @@
 ---
-- name: Remove any stale fine-tune staging directory
-  ansible.builtin.file:
-    path: "{{ laya_systemone_finetune_staging_dir }}"
-    state: absent
-  become: true
+- name: Start detached Laya fine-tuning
+  block:
+    - name: Remove any stale fine-tune staging directory
+      ansible.builtin.file:
+        path: "{{ laya_systemone_finetune_staging_dir }}"
+        state: absent
+      become: true
 
-- name: Create the private fine-tune staging directory
-  ansible.builtin.file:
-    path: "{{ laya_systemone_finetune_staging_dir }}"
-    state: directory
-    owner: "{{ laya_systemone_user }}"
-    group: "{{ laya_systemone_group }}"
-    mode: "0700"
-  become: true
+    - name: Create the private fine-tune staging directory
+      ansible.builtin.file:
+        path: "{{ laya_systemone_finetune_staging_dir }}"
+        state: directory
+        owner: "{{ laya_systemone_user }}"
+        group: "{{ laya_systemone_group }}"
+        mode: "0700"
+      become: true
 
-- name: Stop Laya to free the guest GPU for fine-tuning
-  ansible.builtin.systemd:
-    name: laya-systemone.service
-    state: stopped
-  when: laya_systemone_finetune_unit_stat.stat.exists
-  no_log: true
+    - name: Read the GPU peer serving unit state before training
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - --quiet
+          - "{{ laya_systemone_finetune_gpu_peer_unit }}"
+      delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
+      register: laya_systemone_finetune_gpu_peer_state
+      changed_when: false
+      failed_when: laya_systemone_finetune_gpu_peer_state.rc not in [0, 3]
+      when:
+        - laya_systemone_finetune_device == 'cuda'
+        - laya_systemone_finetune_gpu_peer_host | length > 0
 
-- name: Gather the GPU peer network facts its serving unit binds to
-  ansible.builtin.setup:
-    gather_subset:
-      - "!all"
-      - "!min"
-      - network
-  delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
-  delegate_facts: true
-  when:
-    - laya_systemone_finetune_device == 'cuda'
-    - laya_systemone_finetune_gpu_peer_host | length > 0
+    - name: Record whether the GPU peer serving unit was active
+      ansible.builtin.set_fact:
+        laya_systemone_finetune_gpu_peer_was_active: "{{ laya_systemone_finetune_gpu_peer_state.rc == 0 }}"
+      when:
+        - laya_systemone_finetune_device == 'cuda'
+        - laya_systemone_finetune_gpu_peer_host | length > 0
 
-- name: Read the GPU peer serving unit state before training
-  ansible.builtin.command:
-    argv:
-      - systemctl
-      - is-active
-      - --quiet
-      - "{{ laya_systemone_finetune_gpu_peer_unit }}"
-  delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
-  register: laya_systemone_finetune_gpu_peer_state
-  changed_when: false
-  failed_when: laya_systemone_finetune_gpu_peer_state.rc not in [0, 3]
-  when:
-    - laya_systemone_finetune_device == 'cuda'
-    - laya_systemone_finetune_gpu_peer_host | length > 0
+    - name: Persist the GPU peer state for the collect run
+      ansible.builtin.copy:
+        content: >-
+          {{ {'gpu_peer_was_active':
+              laya_systemone_finetune_gpu_peer_was_active | default(false) | bool} | to_json }}
+        dest: "{{ laya_systemone_finetune_dispatch_state_path }}"
+        owner: "{{ laya_systemone_user }}"
+        group: "{{ laya_systemone_group }}"
+        mode: "0600"
+      become: true
 
-- name: Record whether the GPU peer serving unit was active
-  ansible.builtin.set_fact:
-    laya_systemone_finetune_gpu_peer_was_active: "{{ laya_systemone_finetune_gpu_peer_state.rc == 0 }}"
-  when:
-    - laya_systemone_finetune_device == 'cuda'
-    - laya_systemone_finetune_gpu_peer_host | length > 0
+    - name: Stop Laya to free the guest GPU for fine-tuning
+      ansible.builtin.systemd:
+        name: laya-systemone.service
+        state: stopped
+      when: laya_systemone_finetune_unit_stat.stat.exists
+      no_log: true
 
-- name: Stop the active GPU peer serving unit for training
-  ansible.builtin.systemd:
-    name: "{{ laya_systemone_finetune_gpu_peer_unit }}"
-    state: stopped
-  delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
-  register: laya_systemone_finetune_gpu_peer_stop
-  when:
-    - laya_systemone_finetune_device == 'cuda'
-    - laya_systemone_finetune_gpu_peer_host | length > 0
-    - laya_systemone_finetune_gpu_peer_was_active | default(false) | bool
+    - name: Stop the active GPU peer serving unit for training
+      ansible.builtin.systemd:
+        name: "{{ laya_systemone_finetune_gpu_peer_unit }}"
+        state: stopped
+      delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
+      when: laya_systemone_finetune_gpu_peer_was_active | default(false) | bool
 
-- name: Train the Laya model from the verified CSV files
-  ansible.builtin.command:
-    argv:
-      - "{{ laya_systemone_venv }}/bin/laya-train"
-      - --data
-      - "{{ laya_systemone_finetune_train_path }}"
-      - --base
-      - "{{ laya_systemone_finetune_base_path }}"
-      - --eval-data
-      - "{{ laya_systemone_finetune_eval_path }}"
-      - --out
-      - "{{ laya_systemone_finetune_staging_dir }}"
-      - --text-column
-      - "{{ laya_systemone_finetune_text_column }}"
-      - --label-column
-      - "{{ laya_systemone_finetune_label_column }}"
-      - --epochs
-      - "{{ laya_systemone_finetune_epochs | string }}"
-      - --target-error
-      - "{{ laya_systemone_finetune_target_error | string }}"
-      - --seed
-      - "{{ laya_systemone_finetune_seed | string }}"
-      - --device
-      - "{{ laya_systemone_finetune_device }}"
-  async: "{{ laya_systemone_finetune_train_timeout_seconds }}"
-  poll: 15
-  register: laya_systemone_finetune_train_result
-  become: true
-  become_user: "{{ laya_systemone_user }}"
-  changed_when: true
-  environment:
-    HF_HUB_OFFLINE: "1"
-    TRANSFORMERS_OFFLINE: "1"
-  no_log: true
+    - name: Launch the Laya training command as a detached systemd job
+      ansible.builtin.command:
+        argv:
+          - systemd-run
+          - --unit={{ laya_systemone_finetune_unit }}
+          - --service-type=exec
+          - --no-block
+          - --quiet
+          - --remain-after-exit
+          - --uid={{ laya_systemone_user }}
+          - --gid={{ laya_systemone_group }}
+          - --property=RuntimeMaxSec={{ laya_systemone_finetune_train_timeout_seconds }}
+          - --property=StandardOutput=journal
+          - --property=StandardError=journal
+          - --setenv=HF_HUB_OFFLINE=1
+          - --setenv=TRANSFORMERS_OFFLINE=1
+          - "{{ laya_systemone_venv }}/bin/laya-train"
+          - --data
+          - "{{ laya_systemone_finetune_train_path }}"
+          - --base
+          - "{{ laya_systemone_finetune_base_path }}"
+          - --eval-data
+          - "{{ laya_systemone_finetune_eval_path }}"
+          - --out
+          - "{{ laya_systemone_finetune_staging_dir }}"
+          - --text-column
+          - "{{ laya_systemone_finetune_text_column }}"
+          - --label-column
+          - "{{ laya_systemone_finetune_label_column }}"
+          - --epochs
+          - "{{ laya_systemone_finetune_epochs | string }}"
+          - --target-error
+          - "{{ laya_systemone_finetune_target_error | string }}"
+          - --seed
+          - "{{ laya_systemone_finetune_seed | string }}"
+          - --device
+          - "{{ laya_systemone_finetune_device }}"
+      register: laya_systemone_finetune_dispatch_result
+      become: true
+      changed_when: true
+      no_log: true
+  rescue:
+    - name: Check whether systemd accepted the detached fine-tune job
+      ansible.builtin.include_tasks: finetune-read-job-state.yml
 
-- name: Check the staged model.safetensors file
-  ansible.builtin.stat:
-    path: "{{ laya_systemone_finetune_staging_dir }}/model.safetensors"
-  register: laya_systemone_finetune_staging_model_stat
+    - name: Record a failed fine-tune dispatch
+      ansible.builtin.set_fact:
+        laya_systemone_finetune_failed: true
+        laya_systemone_finetune_failure_class: dispatch
+      when: laya_systemone_finetune_job_active_state not in ['active', 'activating', 'deactivating', 'reloading']
 
-- name: Check the staged rl_agent_config.json file
-  ansible.builtin.stat:
-    path: "{{ laya_systemone_finetune_staging_dir }}/rl_agent_config.json"
-  register: laya_systemone_finetune_staging_config_stat
+    - name: Restore services after a dispatch that did not start
+      ansible.builtin.include_tasks: finetune-restore-services.yml
+      when: laya_systemone_finetune_failed | default(false) | bool
 
-- name: Validate staged checkpoint files before promotion
-  ansible.builtin.assert:
-    that:
-      - laya_systemone_finetune_staging_model_stat.stat.exists
-      - laya_systemone_finetune_staging_model_stat.stat.isreg
-      - laya_systemone_finetune_staging_model_stat.stat.size | int > 0
-      - laya_systemone_finetune_staging_config_stat.stat.exists
-      - laya_systemone_finetune_staging_config_stat.stat.isreg
-    fail_msg: Laya fine-tuning did not produce a complete checkpoint.
-    quiet: true
+    - name: Clear state after a dispatch that did not start
+      ansible.builtin.file:
+        path: "{{ laya_systemone_finetune_dispatch_state_path }}"
+        state: absent
+      become: true
+      when: laya_systemone_finetune_failed | default(false) | bool
 
-- name: Write the fine-tune completion manifest into staging
-  ansible.builtin.copy:
-    content: >-
-      {{ {'name': laya_systemone_finetune_name,
-          'train_sha256': laya_systemone_finetune_train_sha256 | lower,
-          'eval_sha256': laya_systemone_finetune_eval_sha256 | lower,
-          'epochs': laya_systemone_finetune_epochs | int,
-          'text_column': laya_systemone_finetune_text_column,
-          'label_column': laya_systemone_finetune_label_column,
-          'target_error': laya_systemone_finetune_target_error | float,
-          'seed': laya_systemone_finetune_seed | int,
-          'base': laya_systemone_finetune_base,
-          'base_revision': laya_systemone_finetune_base_revision,
-          'laya_version': laya_systemone_finetune_laya_version.stdout | trim} | to_json }}
-    dest: "{{ laya_systemone_finetune_staging_dir }}/finetune-manifest.json"
-    owner: "{{ laya_systemone_user }}"
-    group: "{{ laya_systemone_group }}"
-    mode: "0600"
-  become: true
+    - name: Report a failed fine-tune dispatch
+      ansible.builtin.include_tasks: finetune-report-failure.yml
+      when: laya_systemone_finetune_failed | default(false) | bool
+
+    - name: Report that systemd accepted the detached fine-tune job
+      ansible.builtin.debug:
+        msg: Laya fine-tune job is active or complete; collect its result in a separate run.
+      when: not laya_systemone_finetune_failed | default(false) | bool
+
+- name: Report the detached fine-tune job launch
+  ansible.builtin.debug:
+    msg: Laya fine-tune job was dispatched; collect its result in a separate run.
+  when: not laya_systemone_finetune_failed | default(false) | bool

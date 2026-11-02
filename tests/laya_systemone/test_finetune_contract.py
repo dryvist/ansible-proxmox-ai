@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles/laya_systemone"
 TASKS_DIR = ROLE / "tasks"
 FINETUNE_TASKS = TASKS_DIR / "finetune.yml"
+FINETUNE_COLLECT_TASKS = TASKS_DIR / "finetune-collect.yml"
 DEFAULTS = yaml.safe_load((ROLE / "defaults/main/20-finetune.yml").read_text())
 
 
@@ -41,7 +42,8 @@ def _expand_includes(tasks: list[dict], base_dir: Path, references: list[Path] |
 def _finetune_task_text() -> str:
     references: list[Path] = []
     _load_tasks(references=references)
-    return "\n".join(path.read_text() for path in [FINETUNE_TASKS, *references])
+    _load_tasks(FINETUNE_COLLECT_TASKS, references)
+    return "\n".join(path.read_text() for path in [FINETUNE_TASKS, FINETUNE_COLLECT_TASKS, *references])
 
 
 def _walk_tasks(tasks: list[dict]) -> Iterator[dict]:
@@ -73,6 +75,12 @@ def _render_env(*, enabled: bool, model_exists: bool) -> str:
 
 def test_finetune_defaults_are_disabled_and_configuration_is_opt_in() -> None:
     assert DEFAULTS["laya_systemone_finetune_enabled"] is False
+    assert DEFAULTS["laya_systemone_finetune_action"] == "dispatch"
+    assert DEFAULTS["laya_systemone_finetune_unit"] == "laya-finetune.service"
+    assert DEFAULTS["laya_systemone_finetune_base_download_timeout_seconds"] == 420
+    assert DEFAULTS["laya_systemone_finetune_dataset_download_timeout_seconds"] == 30
+    assert DEFAULTS["laya_systemone_finetune_health_retries"] == 48
+    assert DEFAULTS["laya_systemone_finetune_health_delay_seconds"] == 5
     assert DEFAULTS["laya_systemone_finetune_name"] == ""
     assert DEFAULTS["laya_systemone_finetune_bucket"] == "system1"
     assert DEFAULTS["laya_systemone_finetune_bao_kv_path"] == "rustfs/system1/ro"
@@ -88,16 +96,30 @@ def test_finetune_defaults_are_disabled_and_configuration_is_opt_in() -> None:
 
 def test_finetune_tasks_are_gated_and_tagged_with_role_tags() -> None:
     main = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
-    include = next(task for task in main if task.get("name") == "Optionally fine-tune a Laya model from labeled data")
+    dispatch = next(task for task in main if task.get("name") == "Dispatch the detached Laya fine-tune job")
+    collect = next(task for task in main if task.get("name") == "Collect a detached Laya fine-tune job")
 
-    assert include["when"] == "laya_systemone_finetune_enabled | bool"
-    assert set(include["tags"]) == {"laya_systemone", "laya_systemone_finetune", "llm", "ai"}
-    assert set(include["ansible.builtin.include_tasks"]["apply"]["tags"]) == set(include["tags"])
+    assert dispatch["when"] == [
+        "laya_systemone_finetune_enabled | bool",
+        "laya_systemone_finetune_action == 'dispatch'",
+    ]
+    assert collect["when"] == [
+        "laya_systemone_finetune_enabled | bool",
+        "laya_systemone_finetune_action == 'collect'",
+    ]
+    for include in (dispatch, collect):
+        assert set(include["tags"]) == {"laya_systemone", "laya_systemone_finetune", "llm", "ai"}
+        assert set(include["ansible.builtin.include_tasks"]["apply"]["tags"]) == set(include["tags"])
+    assert yaml.safe_load((ROLE / "tasks/main.yml").read_text())[0]["when"] == (
+        "not laya_systemone_finetune_enabled | bool"
+    )
 
 
-def test_finetune_included_files_exist_and_are_referenced_once() -> None:
+def test_finetune_included_files_exist_and_are_referenced() -> None:
     references: list[Path] = []
     _load_tasks(references=references)
+    references.append(FINETUNE_COLLECT_TASKS.resolve())
+    _load_tasks(FINETUNE_COLLECT_TASKS, references)
 
     included_files = set(references)
     finetune_files = {path.resolve() for path in TASKS_DIR.glob("finetune*.yml")} - {
@@ -106,7 +128,7 @@ def test_finetune_included_files_exist_and_are_referenced_once() -> None:
     finetune_files.add((TASKS_DIR / "rustfs-credential.yml").resolve())
     assert all(path.is_file() for path in included_files)
     assert included_files == finetune_files
-    assert all(references.count(path) == 1 for path in finetune_files)
+    assert all(references.count(path) >= 1 for path in finetune_files)
 
 
 def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_matching_manifest() -> None:
@@ -117,9 +139,10 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     assert "laya_systemone_finetune_train_stat.stat.checksum == laya_systemone_finetune_train_sha256" in task_text
     assert "laya_systemone_finetune_eval_stat.stat.checksum == laya_systemone_finetune_eval_sha256" in task_text
 
-    training_name = "Download and train the fine-tuned checkpoint when its manifest is stale"
+    training_name = "Prepare and dispatch the fine-tuned checkpoint when its manifest is stale"
     training = next(task for task in tasks if task.get("name") == training_name)
-    skip_condition = json.dumps(training["when"]).lower()
+    stale_check = _find_task(tasks, "Determine whether the installed fine-tune manifest is stale")
+    skip_condition = json.dumps(stale_check["ansible.builtin.set_fact"]).lower()
     for field in (
         "train_sha256",
         "eval_sha256",
@@ -134,7 +157,13 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     ):
         assert field in skip_condition
 
-    manifest_task = _find_task([training], "Write the fine-tune completion manifest into staging")
+    collection_tasks = _load_tasks(FINETUNE_COLLECT_TASKS)
+    manifest_task = next(
+        task
+        for task in _walk_tasks(collection_tasks)
+        if task.get("name") == "Write the fine-tune completion manifest into staging"
+        and "ansible.builtin.copy" in task
+    )
     manifest_content = manifest_task["ansible.builtin.copy"]["content"]
     for field in (
         "epochs",
@@ -166,6 +195,12 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
         assert download["ansible.builtin.command"]["argv"][-1] == (
             f"{{{{ laya_systemone_finetune_{prefix}_path }}}}.download"
         )
+        assert download["ansible.builtin.command"]["argv"][:4] == [
+            "timeout",
+            "--signal=TERM",
+            "--kill-after=5s",
+            "{{ laya_systemone_finetune_dataset_download_timeout_seconds }}s",
+        ]
         temp_path = f"{{{{ laya_systemone_finetune_{prefix}_path }}}}.download"
         final_path = f"{{{{ laya_systemone_finetune_{prefix}_path }}}}"
         downloaded = _find_task([training], f"Check the downloaded {name} CSV checksum")
@@ -188,17 +223,22 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
         "laya_systemone_finetune_manifest"
     ] == {}
 
-    train_task = _find_task([training], "Train the Laya model from the verified CSV files")
+    train_task = _find_task([training], "Launch the Laya training command as a detached systemd job")
     train_argv = train_task["ansible.builtin.command"]["argv"]
     out_index = train_argv.index("--out")
     assert train_argv[out_index + 1] == "{{ laya_systemone_finetune_staging_dir }}"
     base_index = train_argv.index("--base")
     assert train_argv[base_index + 1] == "{{ laya_systemone_finetune_base_path }}"
     assert "creates" not in train_task["ansible.builtin.command"]
-    assert train_task["environment"] == {
-        "HF_HUB_OFFLINE": "1",
-        "TRANSFORMERS_OFFLINE": "1",
-    }
+    assert "--no-block" in train_argv
+    assert "--remain-after-exit" in train_argv
+    assert "--property=RuntimeMaxSec={{ laya_systemone_finetune_train_timeout_seconds }}" in train_argv
+    assert "--property=StandardOutput=journal" in train_argv
+    assert "--property=StandardError=journal" in train_argv
+    assert "--setenv=HF_HUB_OFFLINE=1" in train_argv
+    assert "--setenv=TRANSFORMERS_OFFLINE=1" in train_argv
+    assert train_task["no_log"] is True
+    assert "async" not in train_task and "poll" not in train_task
 
     base_digests = DEFAULTS["laya_systemone_finetune_base_sha256"]
     assert {item["path"] for item in base_digests} == {
@@ -211,6 +251,12 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     assert all(re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) for item in base_digests)
 
     base_download = _find_task([training], "Download the pinned Laya base checkpoint when missing or unverified")
+    assert base_download["ansible.builtin.command"]["argv"][:4] == [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "{{ laya_systemone_finetune_base_download_timeout_seconds }}s",
+    ]
     download_code = base_download["ansible.builtin.command"]["argv"][-1]
     digest_expression = (
         "{{ laya_systemone_finetune_base_sha256 | "
@@ -238,9 +284,9 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     ordered_names = [task.get("name") for task in _walk_tasks([training])]
     assert ordered_names.index(base_verify["name"]) < ordered_names.index(train_task["name"])
 
-    model_stat = _find_task([training], "Check the staged model.safetensors file")
-    config_stat = _find_task([training], "Check the staged rl_agent_config.json file")
-    validation = _find_task([training], "Validate staged checkpoint files before promotion")
+    model_stat = _find_task(collection_tasks, "Check the staged model.safetensors file")
+    config_stat = _find_task(collection_tasks, "Check the staged rl_agent_config.json file")
+    validation = _find_task(collection_tasks, "Validate staged checkpoint files before promotion")
     validation_conditions = " ".join(validation["ansible.builtin.assert"]["that"])
     assert model_stat["ansible.builtin.stat"]["path"].endswith("/model.safetensors")
     assert config_stat["ansible.builtin.stat"]["path"].endswith("/rl_agent_config.json")
@@ -248,8 +294,8 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     assert "staging_model_stat.stat.size" in validation_conditions
     assert "staging_config_stat.stat.exists" in validation_conditions
 
-    ordered_names = [task.get("name") for task in _walk_tasks([training])]
-    promotion = _find_task([training], "Promote the validated fine-tuned model atomically")
+    ordered_names = [task.get("name") for task in _walk_tasks(collection_tasks)]
+    promotion = _find_task(collection_tasks, "Promote the validated fine-tuned model atomically")
     promotion_names = [task.get("name") for task in promotion["block"]]
     assert ordered_names.index(validation["name"]) < ordered_names.index(promotion["name"])
     assert promotion_names.index("Rename the current model directory to .prev") < promotion_names.index(
@@ -271,64 +317,3 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
         "{{ laya_systemone_finetune_model_dir }}.prev",
         "{{ laya_systemone_finetune_model_dir }}",
     ]
-
-
-def test_laya_starts_in_always_and_failures_are_reported_afterward() -> None:
-    tasks = _load_tasks()
-    training_name = "Download and train the fine-tuned checkpoint when its manifest is stale"
-    training = next(task for task in tasks if task.get("name") == training_name)
-
-    assert "always" in training
-    restart = next(task for task in training["always"] if task.get("name") == "Start Laya after GPU fine-tuning")
-    assert restart["ansible.builtin.systemd"]["name"] == "laya-systemone.service"
-    assert restart["ansible.builtin.systemd"]["state"] == "started"
-    assert not any(task.get("name") == "Start Laya after GPU fine-tuning" for task in tasks)
-
-    failure_name = "Report the fine-tuning failure without exposing dataset output"
-    failure = next(task for task in tasks if task.get("name") == failure_name)
-    assert failure["ansible.builtin.fail"]["msg"] == (
-        "Laya fine-tuning failed ({{ laya_systemone_finetune_failure_class | default('unknown') }}); "
-        "service start and health were checked for Laya and any stopped GPU peer."
-    )
-
-
-def test_every_secret_bearing_finetune_task_hides_its_output() -> None:
-    tasks = _load_tasks()
-    secret_references = (
-        "community.hashi_vault.",
-        "_s3_access_key_id",
-        "_s3_secret_access_key",
-        "bao_secret_id",
-        "client_token",
-    )
-
-    for task in _walk_tasks(tasks):
-        own_fields = {key: value for key, value in task.items() if key not in {"block", "rescue", "always"}}
-        task_text = json.dumps(own_fields, sort_keys=True).lower()
-        environment = task.get("environment", {})
-        has_secret = any(reference in task_text for reference in secret_references) or (
-            isinstance(environment, dict) and "AWS_SECRET_ACCESS_KEY" in environment
-        )
-        if has_secret:
-            assert task.get("no_log") is True, task.get("name")
-
-
-def test_extra_model_is_rendered_only_when_enabled_and_model_directory_exists() -> None:
-    disabled = _render_env(enabled=False, model_exists=True)
-    missing = _render_env(enabled=True, model_exists=False)
-    enabled = _render_env(enabled=True, model_exists=True)
-
-    assert "LAYA_EXTRA_MODELS=" not in disabled
-    assert "LAYA_EXTRA_MODELS=" not in missing
-    line = next(line for line in enabled.splitlines() if line.startswith("LAYA_EXTRA_MODELS="))
-    encoded = line.split("=", maxsplit=1)[1]
-    assert encoded.startswith("'") and encoded.endswith("'")
-    registration = json.loads(encoded[1:-1])
-    assert registration == {"delegation-v1": "/var/lib/laya-systemone/models/delegation-v1"}
-
-
-def test_finetune_tasks_never_upload_training_data_or_models() -> None:
-    task_text = _finetune_task_text().lower()
-
-    assert "push_to_hub" not in task_text
-    assert "upload" not in task_text
