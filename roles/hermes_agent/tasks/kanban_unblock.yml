@@ -1,0 +1,31 @@
+---
+# Re-open named Kanban cards through Hermes' own `kanban unblock` (the CLI path
+# the dashboard's drag-to-ready also uses), so the dispatcher re-runs them.
+# Only ids that are blocked right now are unblocked, so a re-run is a no-op.
+- name: Read the blocked Kanban cards
+  ansible.builtin.command:
+    argv: ["{{ hermes_agent_bin }}", kanban, list, --status, blocked, --json]
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_kanban_blocked_raw
+  changed_when: false
+
+- name: Select the requested cards that are blocked
+  ansible.builtin.set_fact:
+    hermes_agent_kanban_unblock_ids: >-
+      {{ hermes_agent_kanban_unblock
+         | intersect(hermes_agent_kanban_blocked_raw.stdout | from_json
+                     | selectattr('status', 'equalto', 'blocked') | map(attribute='id') | list) }}
+
+- name: Unblock the selected Kanban cards
+  ansible.builtin.command:
+    argv: "{{ [hermes_agent_bin, 'kanban', 'unblock'] + hermes_agent_kanban_unblock_ids
+              + ['--reason', hermes_agent_kanban_unblock_reason] }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  when: hermes_agent_kanban_unblock_ids | length > 0
+  changed_when: true
