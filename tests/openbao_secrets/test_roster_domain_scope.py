@@ -52,11 +52,26 @@ def test_hermes_agent_only_play_resolves_without_container_less_roster_domains()
     assert "ci-fixer" not in selected
 
 
-def test_router_play_still_requires_every_roster_domain():
-    selected = _selected(list(ROSTER), _domain_groups(ROSTER), _active_groups(["llm-router-1"]))
+def _domain_names(ai_agents):
+    roster = yaml.safe_load(ROSTER_DEFAULTS.read_text(encoding="utf-8"))
+    domains = _environment().from_string(roster["openbao_secrets_domains"]).render(
+        _openbao_secrets_static_domains=[],
+        ai_agents=ai_agents,
+        ai_agent_owner={},
+        ai_callers={name: {} for name in ai_agents},
+    )
+    return [domain["name"] for domain in domains]
 
-    assert "ci-fixer" in selected
+
+def test_router_play_requires_guest_backed_and_owning_roster_domains_only():
+    roster = {**ROSTER, "mcp-owner": {"owns": ["github"]}}
+    selected = _selected(_domain_names(roster), _domain_groups(roster), _active_groups(["llm-router-1"]))
+
     assert "hermes-x" in selected
+    assert "mcp-owner" in selected
+    # An empty-owns, container-less agent's leaf rides the reader domain; it needs no login of its own.
+    assert "ci-fixer" not in selected
+    assert "llm-router-agent-keys" in selected
 
 
 def test_only_roster_domains_are_group_scoped():
