@@ -27,7 +27,7 @@ still run.
 
 ## What gets deployed
 
-- Vendor file: `docker-compose.prod.yml` at release `v0.9.32`, commit `df3db64e`. The role fetches it
+- Vendor file: `docker-compose.prod.yml` at release `v0.9.33`, commit `61544827`. The role fetches it
   from the commit URL and rejects it unless its SHA-256 matches `sim_docker_compose_sha256`.
 - Local override: `docker-compose.override.yml`, rendered from `templates/docker-compose.override.yml.j2`.
   It pins digests for the three Sim images and for `db` and `redis`, bind-mounts the uploads
@@ -40,8 +40,8 @@ still run.
 
 ## Pinned release
 
-- `SIM_VERSION` is `v0.9.32`, published 2026-10-23T03:22:48Z. The digests are the registry manifest
-  digests for each tag, resolved 2026-10-31. Changing the version means changing the digests in the
+- `SIM_VERSION` is `v0.9.33`, published 2026-10-25. The digests are the registry manifest
+  digests for each tag, resolved 2026-11-02. Changing the version means changing the digests in the
   defaults too. A digest takes precedence over a tag, so a `SIM_VERSION` edit alone does not move the
   running images.
 - `pgvector/pgvector:pg17` and `redis:7-alpine` are pinned by digest in the override.
