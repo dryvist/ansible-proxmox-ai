@@ -1,4 +1,17 @@
 ---
+- name: Wait for Laya health before held-out evaluation
+  ansible.builtin.include_tasks:
+    file: health.yml
+    apply:
+      tags:
+        - laya_systemone_heldout
+  vars:
+    laya_systemone_health_retries: "{{ laya_systemone_heldout_health_retries }}"
+    laya_systemone_health_delay: "{{ laya_systemone_heldout_health_delay_seconds }}"
+    laya_systemone_health_timeout_seconds: "{{ laya_systemone_heldout_health_timeout_seconds }}"
+  tags:
+    - laya_systemone_heldout
+
 - name: Validate the held-out evaluation configuration
   ansible.builtin.assert:
     that:
@@ -203,25 +216,57 @@
     msg: "Skipping held-out scoring and upload because {{ laya_systemone_heldout_result_filename }} already exists."
   when: laya_systemone_heldout_result_stat.stat.exists
 
-- name: Run the held-out evaluation on the guest
-  ansible.builtin.command:
-    cmd: >-
-      python3 {{ laya_systemone_heldout_script_path | quote }}
-      --csv {{ laya_systemone_heldout_path | quote }}
-      {% if laya_systemone_finetune_enabled | bool %}
-      --train-csv {{ laya_systemone_finetune_train_path | quote }}
-      {% endif %}
-      --url {{ ('http://127.0.0.1:' ~ laya_systemone_port ~ '/v1/systemone/batch') | quote }}
-      {% for model in laya_systemone_heldout_models %}--model {{ model | quote }} {% endfor %}
-      --batch-size {{ laya_systemone_heldout_batch_size | quote }}
-      --out {{ laya_systemone_heldout_result_path | quote }}
-  environment:
-    LAYA_API_KEY: "{{ laya_systemone_api_key }}"
+- name: Remove a stale held-out evaluation error sidecar
+  ansible.builtin.file:
+    path: "{{ laya_systemone_heldout_error_path }}"
+    state: absent
+  when: not laya_systemone_heldout_result_stat.stat.exists
   become: true
   become_user: "{{ laya_systemone_user }}"
+
+- name: Run the held-out evaluation on the guest
   when: not laya_systemone_heldout_result_stat.stat.exists
-  changed_when: true
-  no_log: true
+  block:
+    - name: Run the held-out evaluation command
+      ansible.builtin.command:
+        cmd: >-
+          python3 {{ laya_systemone_heldout_script_path | quote }}
+          --csv {{ laya_systemone_heldout_path | quote }}
+          {% if laya_systemone_finetune_enabled | bool %}
+          --train-csv {{ laya_systemone_finetune_train_path | quote }}
+          {% endif %}
+          --url {{ ('http://127.0.0.1:' ~ laya_systemone_port ~ '/v1/systemone/batch') | quote }}
+          {% for model in laya_systemone_heldout_models %}--model {{ model | quote }} {% endfor %}
+          --batch-size {{ laya_systemone_heldout_batch_size | quote }}
+          --request-timeout {{ laya_systemone_heldout_request_timeout_seconds | quote }}
+          --out {{ laya_systemone_heldout_result_path | quote }}
+      environment:
+        LAYA_API_KEY: "{{ laya_systemone_api_key }}"
+      become: true
+      become_user: "{{ laya_systemone_user }}"
+      changed_when: true
+      async: "{{ laya_systemone_heldout_run_timeout_seconds }}"
+      poll: 5
+      no_log: true
+  rescue:
+    - name: Check for the sanitized held-out evaluation error sidecar
+      ansible.builtin.stat:
+        path: "{{ laya_systemone_heldout_error_path }}"
+      register: laya_systemone_heldout_error_stat
+      become: true
+
+    - name: Read the sanitized held-out evaluation error
+      ansible.builtin.slurp:
+        src: "{{ laya_systemone_heldout_error_path }}"
+      register: laya_systemone_heldout_error
+      when: laya_systemone_heldout_error_stat.stat.exists
+      become: true
+
+    - name: Fail with the sanitized held-out evaluation error
+      ansible.builtin.fail:
+        msg: >-
+          {{ laya_systemone_heldout_error.content | default('') | b64decode | trim
+             or 'Held-out evaluation failed without a sanitized error sidecar.' }}
 
 - name: Read the held-out evaluation aggregates
   ansible.builtin.slurp:

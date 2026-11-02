@@ -84,7 +84,14 @@ def batches(rows: list[dict[str, str]], model: str, questions: dict, batch_size:
         yield current
 
 
-def post_batch(url: str, api_key: str, model: str, states: list[str], questions: dict) -> list[dict]:
+def post_batch(
+    url: str,
+    api_key: str,
+    model: str,
+    states: list[str],
+    questions: dict,
+    request_timeout: float,
+) -> list[dict]:
     request = Request(
         url,
         data=encoded_body(model, states, questions),
@@ -97,7 +104,7 @@ def post_batch(url: str, api_key: str, model: str, states: list[str], questions:
 
     for attempt in range(4):
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=request_timeout) as response:
                 if response.status != 200:
                     raise EvaluationError(f"Laya returned HTTP {response.status} for model {model}")
                 try:
@@ -115,6 +122,8 @@ def post_batch(url: str, api_key: str, model: str, states: list[str], questions:
                 time.sleep(2**attempt)
                 continue
             raise EvaluationError(f"Laya returned HTTP {exc.code} for model {model}") from exc
+        except TimeoutError as exc:
+            raise EvaluationError("Laya batch request timed out") from exc
         except URLError as exc:
             raise EvaluationError("could not reach the Laya batch endpoint") from exc
 
@@ -122,7 +131,13 @@ def post_batch(url: str, api_key: str, model: str, states: list[str], questions:
 
 
 def score_model(
-    rows: list[dict[str, str]], model: str, questions: dict, url: str, api_key: str, batch_size: int
+    rows: list[dict[str, str]],
+    model: str,
+    questions: dict,
+    url: str,
+    api_key: str,
+    batch_size: int,
+    request_timeout: float,
 ) -> dict:
     correct = 0
     unanswered = 0
@@ -132,7 +147,7 @@ def score_model(
         per_class.setdefault(row["label"], {"n": 0, "correct": 0})["n"] += 1
 
     for state_batch, start in _indexed_batches(rows, model, questions, batch_size):
-        results = post_batch(url, api_key, model, state_batch, questions)
+        results = post_batch(url, api_key, model, state_batch, questions, request_timeout)
         for row, result in zip(rows[start : start + len(state_batch)], results):
             answers = result.get("answers")
             answer = answers.get("label") if isinstance(answers, dict) else None
@@ -181,9 +196,26 @@ def write_atomic(path: Path, result: dict) -> None:
             os.unlink(temporary_name)
 
 
+def write_error_atomic(path: Path, message: str) -> None:
+    encoded = (" ".join(message.splitlines()) + "\n").encode("utf-8")
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(encoded)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary_name, 0o600)
+        os.replace(temporary_name, path)
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+
+
 def evaluate(args: argparse.Namespace) -> dict:
     if not 1 <= args.batch_size <= 64:
         raise EvaluationError("batch size must be between 1 and 64")
+    if args.request_timeout <= 0:
+        raise EvaluationError("request timeout must be greater than zero")
     if not args.models or not all(MODEL_NAME.fullmatch(model) for model in args.models):
         raise EvaluationError("at least one safe model name is required")
 
@@ -202,7 +234,9 @@ def evaluate(args: argparse.Namespace) -> dict:
         raise EvaluationError("LAYA_API_KEY is required")
 
     models = {
-        model: score_model(rows, model, questions, args.url, api_key, args.batch_size)
+        model: score_model(
+            rows, model, questions, args.url, api_key, args.batch_size, args.request_timeout
+        )
         for model in args.models
     }
     digest = hashlib.sha256(args.csv.read_bytes()).hexdigest()
@@ -222,16 +256,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--url", required=True)
     parser.add_argument("--model", dest="models", action="append", required=True)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--request-timeout", type=float, default=60)
     parser.add_argument("--out", type=Path, required=True)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    error_path = Path(f"{args.out}.error")
     try:
+        error_path.unlink(missing_ok=True)
         write_atomic(args.out, evaluate(args))
     except (EvaluationError, OSError, csv.Error, UnicodeError) as exc:
-        print(f"held-out evaluation failed: {exc}", file=sys.stderr)
+        message = f"held-out evaluation failed: {' '.join(str(exc).splitlines())}"
+        try:
+            write_error_atomic(error_path, message)
+        except OSError:
+            message = "held-out evaluation failed: could not write the sanitized error sidecar"
+        print(message, file=sys.stderr)
         return 1
     return 0
 

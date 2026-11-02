@@ -183,6 +183,48 @@
           vars:
             _isolated_play_name: laya_systemone
 
+- name: Score Laya models on held-out data
+  hosts: llm_classify
+  become: true
+  gather_facts: false
+  serial: 1
+  tags:
+    - never
+    - laya_systemone_heldout
+  vars:
+    laya_systemone_api_key: >-
+      {{ (bao_local_llm_secrets | default({}, true)).get('laya_api_key',
+         lookup('ansible.builtin.env', 'LLM_LAYA_API_KEY')) | default('', true) }}
+  pre_tasks:
+    - name: Load shared NVIDIA guest defaults without converging the guest
+      ansible.builtin.include_role:
+        name: nvidia_gpu_guest
+        tasks_from: defaults-only.yml
+        public: true
+        apply:
+          tags:
+            - laya_systemone_heldout
+
+    - name: Require the classifier guest to be in nvidia_gpu_group
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname in groups.get('nvidia_gpu_group', [])
+        fail_msg: >-
+          {{ inventory_hostname }} is in llm_classify but not in
+          nvidia_gpu_group. Tag the guest nvidia-gpu or remove it from
+          llm_classify.
+        quiet: true
+
+  tasks:
+    - name: Include laya_systemone held-out evaluation
+      ansible.builtin.include_role:
+        name: laya_systemone
+        tasks_from: heldout-eval.yml
+        apply:
+          tags:
+            - laya_systemone_heldout
+      when: not ansible_check_mode
+
 - name: Configure the selected vLLM engine guest
   hosts: llm_gpu_serving_vllm_group
   become: true

@@ -1,4 +1,22 @@
-# Laya fine-tuning
+# Laya Systemone
+
+## Serving and held-out evaluation
+
+Converge the serving role and verify that Laya is healthy:
+
+```sh
+ansible-playbook playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.yml \
+  --tags laya_systemone --limit <one host>
+```
+
+After serving is healthy, run the held-out evaluation as its own opt-in component:
+
+```sh
+ansible-playbook playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.yml \
+  --tags laya_systemone_heldout --limit <one host>
+```
+
+## Fine-tuning
 
 Fine-tuning is an opt-in, two-run workflow. The role must first be converged
 normally so the Laya virtual environment, service unit, and pinned `laya-train`
