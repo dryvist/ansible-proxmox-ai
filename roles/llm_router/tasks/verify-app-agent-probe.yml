@@ -240,13 +240,52 @@
           arguments:
             subcommand: delete
             id: "{{ item }}"
-        status_code: 200
+        status_code: [200, 204]
         return_content: true
         timeout: 20
       register: _llm_router_app_probe_cleanup
       loop: "{{ _llm_router_app_probe_created_task_ids | default([]) }}"
       loop_control:
         label: "task {{ item }}"
+      when: _llm_router_app_probe_create is defined
+      no_log: true
+
+    - name: Search for the probe task after cleanup
+      ansible.builtin.uri:
+        url: "{{ _llm_router_app_probe_url }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _llm_router_app_probe_keys['vikunja-write'] }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          server_id: vikunja_write
+          name: vikunja_tasks
+          arguments:
+            subcommand: list
+            projectId: >-
+              {{ (_llm_router_app_probe['read-lists-projects'].json.content[0].text
+                  | from_json).data.projects[0].id }}
+            search: "{{ _llm_router_app_probe_task_title }}"
+        status_code: 200
+        return_content: true
+        timeout: 20
+      register: _llm_router_app_probe_cleanup_verify
+      when: _llm_router_app_probe_create is defined
+      no_log: true
+
+    - name: Require the probe task to be absent after cleanup
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _remaining_probe_tasks | length == 0
+        fail_msg: The read-tier authorization probe left its task behind after cleanup.
+      vars:
+        _search: "{{ _llm_router_app_probe_cleanup_verify.json.content[0].text | from_json }}"
+        _data: "{{ _search.data | default({}, true) }}"
+        _tasks: "{{ _data.tasks | default(_data, true) }}"
+        _remaining_probe_tasks: >-
+          {{ _tasks | selectattr('title', 'equalto', _llm_router_app_probe_task_title) | list }}
       when: _llm_router_app_probe_create is defined
       no_log: true
 
