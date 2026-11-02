@@ -166,17 +166,24 @@ def test_campaign_profile_join_rejects_a_different_artifact_before_target_work()
     plays = yaml.safe_load((PLAYBOOKS / "llm-model-campaign.yml").read_text(encoding="utf-8"))
     controller = plays[0]
     tasks = controller["tasks"]
-    profile_loader = _named(tasks, "Load the shared vLLM profile map for an explicit campaign profile")
-    registry_loader = _named(tasks, "Load GPU profile registry entries for an explicit campaign profile")
-    guard = _named(tasks, "Validate the explicit campaign profile against its artifact and engine")
+    include = _named(tasks, "Resolve and validate an explicit campaign serving profile")
     save = _named(tasks, "Save the prepared campaign inputs for the inventory target play")
+    profile_tasks = _load_tasks(TASKS / "llm-model-campaign-serving-profile.yml")
+    profile_loader = _named(profile_tasks, "Load the shared vLLM profile map for an explicit campaign profile")
+    registry_loader = _named(profile_tasks, "Load GPU profile registry entries for an explicit campaign profile")
+    guard = _named(profile_tasks, "Validate the explicit campaign profile against its artifact and engine")
 
     assert controller["hosts"] == "localhost"
+    assert include["ansible.builtin.include_tasks"] == "tasks/llm-model-campaign-serving-profile.yml"
+    assert "llm_model_campaign_serving_profile" in include["when"]
+    assert tasks.index(include) < tasks.index(save)
     assert profile_loader["ansible.builtin.include_vars"]["dir"].endswith(
         "roles/vllm_serving/defaults/main"
     )
     assert registry_loader["ansible.builtin.include_vars"]["dir"].endswith("llm-models.d")
-    assert tasks.index(profile_loader) < tasks.index(registry_loader) < tasks.index(guard) < tasks.index(save)
+    assert (
+        profile_tasks.index(profile_loader) < profile_tasks.index(registry_loader) < profile_tasks.index(guard)
+    )
     assert plays[-1]["ansible.builtin.import_playbook"] == "llm-model-campaign-target.yml"
 
     guard_condition = guard["ansible.builtin.assert"]["that"][0]
