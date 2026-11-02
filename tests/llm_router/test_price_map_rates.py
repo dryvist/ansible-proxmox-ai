@@ -29,7 +29,7 @@ def _fixture() -> dict:
     return json.loads(FIXTURE_FILE.read_text(encoding="utf-8"))
 
 
-def _registry_entries() -> list[dict]:
+def _registry_entries(*, include_disabled: bool = False) -> list[dict]:
     values = _defaults()
     chatgpt_defaults = yaml.safe_load(
         (REPO_ROOT / "roles/llm_router/defaults/main/34-chatgpt.yml").read_text(encoding="utf-8")
@@ -39,7 +39,7 @@ def _registry_entries() -> list[dict]:
         registry = yaml.safe_load(path.read_text(encoding="utf-8"))
         rows = next(value for value in registry.values() if isinstance(value, list))
         for entry in rows:
-            if not entry.get("enabled", False):
+            if not include_disabled and not entry.get("enabled", False):
                 continue
             model = entry.get("litellm_model_name") or f"{entry['provider']}/{entry['upstream_model_id']}"
             for variable in ("llm_router_chatgpt_model", "llm_router_ci_luna_model"):
@@ -182,7 +182,7 @@ def test_pinned_fixture_contains_only_current_rate_map_rows_needed_by_registry()
     entries = _registry_entries()
     fixture = _fixture()
     rates, keys_by_entry = _resolve_rates(fixture, entries)
-    assert len(fixture) == 9
+    assert len(fixture) == 7
     assert set(fixture) == set(keys_by_entry.values())
     assert not any(entry["provider"] == "dashscope" and entry["client_model_id"] in rates for entry in entries)
     assert all(rate["input"] > 0 and rate["output"] > 0 for rate in rates.values())
@@ -251,7 +251,7 @@ def test_unmatched_and_zero_rate_rows_render_no_cost_fields():
 
 
 def test_price_map_resolution_tries_full_then_only_its_provider_prefix_stripped_key():
-    entries = _registry_entries()
+    entries = _registry_entries(include_disabled=True)
     openrouter_model = next(entry["_resolved_model"] for entry in entries if entry["provider"] == "openrouter")
     gemini_model = next(entry["_resolved_model"] for entry in entries if entry["provider"] == "gemini")
     assert _candidate_keys(openrouter_model, "openrouter") == [
