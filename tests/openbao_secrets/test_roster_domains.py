@@ -12,7 +12,7 @@ DOMAIN_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domai
 ROSTER_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/11-roster-domains.yml"
 IDENTITY_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains-identities.yml"
 AGENT_DEFAULTS = REPO_ROOT / "inventory/group_vars/hermes_agent_group/00-agent-settings.yml"
-ROSTER = {"splunk-heimdall": {"owns": ["splunk"]}}
+ROSTER = {"splunk-heimdall": {"container": "splunk-heimdall", "owns": ["splunk"]}}
 TWO_AGENT_ROSTER = {"a-x": {"owns": []}, "b-y": {"owns": []}}
 READER_DOMAIN_NAMES = {"llm-router-agent-keys", "agentgateway-agent-keys"}
 
@@ -78,6 +78,15 @@ def test_roster_agent_gets_its_paths_and_owned_mcp_paths():
             "required": True,
         }
     ]
+
+
+def test_logical_owner_reads_only_its_seeded_apps_leaf():
+    # A container-less owner has no runtime that reads ai/<agent>, so strict reads need only apps/<agent>.
+    domains = _render_domains({"ci-fixer": {"owns": []}})
+    (domain,) = [domain for domain in domains if domain["name"] == "ci-fixer"]
+    required = [path for path in domain["paths"] if not isinstance(path, dict)]
+    assert required == ["apps/ci-fixer"]
+    assert {"path": "apps/ci-fixer-gw", "optional": True} in domain["paths"]
 
 
 def test_owned_mcp_paths_are_removed_from_legacy_domains():
