@@ -19,7 +19,9 @@ def test_prefetch_uses_shared_role_with_repo_parity_inputs():
     )
 
     assert fetch["ansible.builtin.include_role"]["name"] == "dryvist.homelab.openbao_secrets"
-    assert fetch["vars"] == {
+    # Its value is rendered and exercised in test_roster_domain_scope.py.
+    assert "ansible_play_hosts_all" in fetch["vars"]["openbao_secrets_active_groups"]
+    assert {key: value for key, value in fetch["vars"].items() if key != "openbao_secrets_active_groups"} == {
         "openbao_secrets_fail_on_missing_credentials": True,
         "openbao_secrets_fail_when_unavailable": True,
         "openbao_secrets_skip_cidr_refusals": True,
