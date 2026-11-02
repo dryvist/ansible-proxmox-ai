@@ -46,16 +46,16 @@
         _render_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
         _render_keys: "{{ llm_router_virtual_keys }}"
 
-    - name: Derive sandbox-only route groups from the registry
+    - name: Derive sandbox-only model ids from the registry
       ansible.builtin.set_fact:
-        _sandbox_route_groups: >-
-          {%- set ns = namespace(groups=[]) -%}
+        _sandbox_model_ids: >-
+          {%- set ns = namespace(ids=[]) -%}
           {%- for model in llm_router_registry_enabled
-                if 'sandbox-only' in (model.tags | default([]))
-                   and model.route_group is defined -%}
-          {%- set ns.groups = ns.groups + [model.route_group] -%}
+                if model.tier == 'opencode'
+                   and 'sandbox-only' in (model.tags | default([])) -%}
+          {%- set ns.ids = ns.ids + [model.client_model_id] -%}
           {%- endfor -%}
-          {{ ns.groups | unique | list }}
+          {{ ns.ids | unique | list }}
 
     - name: Trace all rendered keys through model and tag filters
       ansible.builtin.set_fact:
@@ -108,52 +108,52 @@
           {%- set ns.aliases = ns.aliases + [key.alias] -%}
           {%- endfor -%}
           {{ ns.aliases | unique | list }}
-        _other_keys_with_sandbox_route: >-
+        _other_keys_with_sandbox_model: >-
           {%- set ns = namespace(aliases=[]) -%}
           {%- for key in _render_keys
                 if key.alias != 'sandbox-agent'
-                   and (key.models | intersect(_sandbox_route_groups) | length > 0) -%}
+                   and (key.models | intersect(_sandbox_model_ids) | length > 0) -%}
           {%- set ns.aliases = ns.aliases + [key.alias] -%}
           {%- endfor -%}
           {{ ns.aliases }}
-        _other_tagged_route_reaches: >-
+        _other_tagged_model_reaches: >-
           {%- set ns = namespace(reaches=[]) -%}
           {%- for reach in _tagged_hosted_reaches_by_render['all-keys'].reaches
                 if reach.key != 'sandbox-agent'
-                   and reach.group in _sandbox_route_groups
+                   and reach.group in _sandbox_model_ids
                    and (['sub', 'retains'] | intersect(reach.deployment_tags | default([])) | length > 0) -%}
           {%- set ns.reaches = ns.reaches + [reach.key ~ ':' ~ reach.group] -%}
           {%- endfor -%}
           {{ ns.reaches }}
-        _sandbox_route_rows: >-
+        _sandbox_deployments: >-
           {{ _render_config.model_list
-             | selectattr('model_name', 'in', _sandbox_route_groups) | list }}
+             | selectattr('model_name', 'in', _sandbox_model_ids) | list }}
 
     - name: Sandbox-agent keeps the registry-derived sandbox route after key filtering
       ansible.builtin.assert:
         quiet: true
         that:
-          - _sandbox_route_groups | length > 0
-          - _sandbox_route_groups | difference(_sandbox_key.models) | length == 0
-          - _sandbox_route_rows | length > 0
+          - _sandbox_model_ids | length > 0
+          - _sandbox_model_ids | difference(_sandbox_key.models) | length == 0
+          - _sandbox_deployments | length == _sandbox_model_ids | length
           - >-
-            _sandbox_route_rows
+            _sandbox_deployments
             | selectattr('litellm_params.tags', 'defined') | list | length
-            == _sandbox_route_rows | length
+            == _sandbox_deployments | length
           - >-
-            _sandbox_route_rows
+            _sandbox_deployments
             | selectattr('litellm_params.tags', 'contains', 'sub') | list | length
-            == _sandbox_route_rows | length
+            == _sandbox_deployments | length
           - "'!sub' not in (_sandbox_key.tags | default([]))"
           - "'!retains' not in (_sandbox_key.tags | default([]))"
           - "'!paid-zdr' in (_sandbox_key.tags | default([]))"
           - "'!free' in (_sandbox_key.tags | default([]))"
           - (_sandbox_key.router_settings | default({})).get('enable_tag_filtering', false) | bool
         fail_msg: >-
-          sandbox groups={{ _sandbox_route_groups }}, key models={{ _sandbox_key.models }},
-          key tags={{ _sandbox_key.tags }}, route rows={{ _sandbox_route_rows }}.
+          sandbox models={{ _sandbox_model_ids }}, key models={{ _sandbox_key.models }},
+          key tags={{ _sandbox_key.tags }}, deployments={{ _sandbox_deployments }}.
         success_msg: >-
-          sandbox-agent's model allowlist and tag policy admit its registry-derived sandbox route.
+          sandbox-agent's model allowlist and tag policy admit its registry-derived model ids.
 
     - name: No other key changes its declared sub or retains tag filters
       ansible.builtin.assert:
@@ -176,10 +176,10 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _other_keys_with_sandbox_route | length == 0
-          - _other_tagged_route_reaches | length == 0
+          - _other_keys_with_sandbox_model | length == 0
+          - _other_tagged_model_reaches | length == 0
         fail_msg: >-
-          Other sandbox route models={{ _other_keys_with_sandbox_route }};
-          tagged reaches={{ _other_tagged_route_reaches }}.
+          Other sandbox model ids={{ _other_keys_with_sandbox_model }};
+          tagged reaches={{ _other_tagged_model_reaches }}.
         success_msg: >-
-          Only sandbox-agent can reach a sandbox-only subscription or retaining route.
+          Only sandbox-agent can reach sandbox-only subscription model ids.
