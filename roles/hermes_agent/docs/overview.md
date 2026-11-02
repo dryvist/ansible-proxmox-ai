@@ -64,6 +64,30 @@ page continues with the variable surface.
 Targets `hermes_agent_group`, derived from the `hermes-agent` tag in `load_tofu.yml`.
 Run via `site.yml` (`--tags hermes_agent`).
 
+For focused, single-guest runs, use one entry tag at a time:
+
+| Entry tag | Converged work |
+| --- | --- |
+| `hermes_runtime_install` | Hermes prerequisites, runtime install, browser support, dashboard build |
+| `hermes_patches` | Hermes source patches and their readback assertions |
+| `hermes_profiles_env` | Config, skills, profiles, plugin and GitHub identity |
+| `hermes_crons` | SSH/cron drift, prechecks, cron reconciliation |
+| `hermes_content_scripts` | Prompt catalog, curriculum and deployed scripts |
+| `hermes_units_gateways` | Gateway, dashboard, companion units, watchdogs, relay and final verification |
+| `hermes_delivery_probe` | Read-only delivery probe; add `-e hermes_agent_delivery_probe_only=true` |
+
+Use the site's wrapper so inventory and secret prerequisites run as usual; the
+limit must include localhost for the inventory loader:
+
+```sh
+scripts/run-ansible.sh playbooks/site.yml --tags <entry> --limit '<one guest>,localhost'
+```
+
+Add `--check -e hermes_agent_delivery_probe_only=true` for the delivery probe.
+Each entry selects its own task set. Shared `always` prerequisites (inventory,
+secret and fabric reads, facts, wiring assertions, and handler definitions) are
+included in every run.
+
 ## A converge that looks wedged restarting the gateway
 
 `Restart hermes-gateway` runs `hermes-cron-drain-restart`, which pauses every

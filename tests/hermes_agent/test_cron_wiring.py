@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from _role_files import role_tasks_text
+from _role_files import include_file, role_tasks_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
@@ -22,7 +22,7 @@ def _task(name):
 
 def test_pr_reconcile_is_a_no_agent_script_enqueuer():
     task = _task("Reconcile the PR-reconcile cron")
-    assert task["ansible.builtin.include_tasks"] == "reconcile_enqueuer_cron.yml"
+    assert include_file(task) == "reconcile_enqueuer_cron.yml"
     item = task["vars"]["item"]
     assert item["name"] == "{{ hermes_agent_pr_reconcile_cron_name }}"
     assert item["script"] == "{{ hermes_agent_pr_reconcile_script_name }}"
@@ -31,7 +31,7 @@ def test_pr_reconcile_is_a_no_agent_script_enqueuer():
 
 def test_repo_crawl_is_a_monitor_mode_direct_cron():
     task = _task("Reconcile the repo-crawl cron")
-    assert task["ansible.builtin.include_tasks"] == "reconcile_direct_cron.yml"
+    assert include_file(task) == "reconcile_direct_cron.yml"
     item = task["vars"]["item"]
     assert item["name"] == "{{ hermes_agent_repo_crawl_cron_name }}"
     assert item["script"] == "{{ hermes_agent_repo_crawl_script_name }}"

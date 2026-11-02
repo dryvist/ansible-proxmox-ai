@@ -15,7 +15,7 @@ import re
 import yaml
 from jinja2 import Environment
 
-from _role_files import role_defaults
+from _role_files import include_file, role_defaults
 from test_a2a_config import ROLE_ROOT, _gateway_fragment
 
 CHANNELS = {"splunk-admin": "C0EXAMPLE1", "homelab-admin": "C0EXAMPLE2"}
@@ -162,7 +162,7 @@ def test_enqueuer_items_do_not_set_profile_homes() -> None:
     tasks = yaml.safe_load((ROLE_ROOT / "tasks" / "cron_reconcile.yml").read_text())
     enqueuers = [
         task for task in tasks
-        if task.get("ansible.builtin.include_tasks") == "reconcile_enqueuer_cron.yml"
+        if include_file(task) == "reconcile_enqueuer_cron.yml"
     ]
     assert enqueuers
     for task in enqueuers:

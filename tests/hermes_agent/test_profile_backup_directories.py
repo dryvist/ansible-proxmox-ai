@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from _role_files import role_defaults
+from _role_files import include_file, role_defaults
 
 ROLE_ROOT = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 
@@ -26,7 +26,7 @@ def test_profile_config_backup_directories_follow_profile_defaults() -> None:
     profile_include = next(
         task
         for task in profile_flow
-        if task.get("ansible.builtin.include_tasks") == "profiles.yml"
+        if include_file(task) == "profiles.yml"
     )
     assert defaults["hermes_agent_profiles"]
     assert profile_include["loop"] == "{{ hermes_agent_profiles }}"

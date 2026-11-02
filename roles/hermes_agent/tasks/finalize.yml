@@ -1,8 +1,10 @@
 ---
 - name: Ship the hermes unit logs to the dedicated hermes Splunk index
-  ansible.builtin.include_tasks: syslog_route.yml
+  ansible.builtin.import_tasks: syslog_route.yml
   when: hermes_agent_syslog_route_enabled | bool
-  tags: hermes_agent_logging
+  tags:
+    - hermes_agent_logging
+    - "{{ hermes_agent_entry_point_task_tags['syslog_route.yml'] }}"
 
 # A handler fires only for a task that reported changed in THIS run, so a run
 # killed before the flush loses every pending restart and its re-run finds the
@@ -12,6 +14,7 @@
 # shortcut: patched source files are not compared, upgrade if a code-only
 # patch ever ships without a config, env or unit change.
 - name: Stat the gateway input files
+  tags: always
   ansible.builtin.stat:
     path: "{{ item }}"
     get_checksum: true
@@ -23,6 +26,7 @@
   register: hermes_agent_gateway_input_stats
 
 - name: Set the desired gateway input digest
+  tags: always
   ansible.builtin.set_fact:
     hermes_agent_gateway_desired_digest: >-
       {{
@@ -37,11 +41,13 @@
       }}
 
 - name: Stat the gateway restart marker
+  tags: always
   ansible.builtin.stat:
     path: "{{ hermes_agent_gateway_restart_marker }}"
   register: hermes_agent_gateway_marker_stat
 
 - name: Read the recorded gateway digest
+  tags: always
   ansible.builtin.slurp:
     src: "{{ hermes_agent_gateway_restart_marker }}"
   register: hermes_agent_gateway_marker_content
@@ -50,6 +56,7 @@
   when: hermes_agent_gateway_marker_stat.stat.exists
 
 - name: Restart a gateway whose inputs differ from the recorded digest
+  tags: always
   ansible.builtin.debug:
     msg: The gateway has not restarted since its inputs last changed.
   vars:
@@ -60,9 +67,11 @@
   notify: Restart hermes-gateway
 
 - name: Flush handlers so config/unit changes apply before verification
+  tags: always
   ansible.builtin.meta: flush_handlers
 
 # Layer 2 — post-converge verification gate (gateway up + clean journal + a real
 # tool-call probe through the router), with a rollback recipe on any failure.
 - name: Verify the brain wiring end-to-end after converge
   ansible.builtin.import_tasks: verify.yml
+  tags: "{{ hermes_agent_entry_point_task_tags['verify.yml'] }}"

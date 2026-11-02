@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from _role_files import include_file
+
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 TASKS = ROLE / "tasks"
 
@@ -16,11 +18,17 @@ def test_cleanup_follows_config_render_and_handler_flush() -> None:
     main = yaml.safe_load((TASKS / "main.yml").read_text())
     config = next(
         index for index, task in enumerate(main)
-        if task.get("ansible.builtin.include_tasks") == "config_and_content.yml"
+        if (
+            include_file(task, "ansible.builtin.import_tasks")
+            or include_file(task, "ansible.builtin.include_tasks")
+        ) == "config_and_content.yml"
     )
     finalize = next(
         index for index, task in enumerate(main)
-        if task.get("ansible.builtin.include_tasks") == "finalize.yml"
+        if (
+            include_file(task, "ansible.builtin.import_tasks")
+            or include_file(task, "ansible.builtin.include_tasks")
+        ) == "finalize.yml"
     )
     cleanup = next(
         index for index, task in enumerate(main)

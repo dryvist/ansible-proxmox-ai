@@ -8,7 +8,7 @@ from pathlib import Path
 from jinja2 import Environment
 import yaml
 
-from _role_files import role_defaults
+from _role_files import include_file, role_defaults
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
@@ -34,7 +34,7 @@ def _task_items(task_file: str) -> list[dict]:
     return [
         task["vars"]["item"]
         for task in tasks
-        if task.get("ansible.builtin.include_tasks")
+        if include_file(task)
         in ("reconcile_direct_cron.yml", "reconcile_enqueuer_cron.yml")
         and "item" in task.get("vars", {})
     ]

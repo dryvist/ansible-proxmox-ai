@@ -137,7 +137,8 @@ def test_probe_mode_ends_the_host_before_any_converge_task() -> None:
     gate = next(i for i, task in enumerate(main) if task.get("name") == "Probe cron delivery routing and end the host")
     block = main[gate]["block"]
     assert main[gate]["when"] == "hermes_agent_delivery_probe_only | bool"
-    assert block[-1] == {"name": "End the host after the delivery probe", "ansible.builtin.meta": "end_host"}
+    assert block[-1]["name"] == "End the host after the delivery probe"
+    assert block[-1]["ansible.builtin.meta"] == "end_host"
     assert not any("ansible.builtin.template" in task or "ansible.builtin.include_tasks" in task
                    for task in main[:gate] if task.get("name") != "Keep operational profiles off the private identity")
     assert DEFAULTS["hermes_agent_delivery_probe_only"] is False
