@@ -1,0 +1,31 @@
+---
+llm_campaign_latency_gate_enabled: true
+llm_campaign_interactive_key_aliases:
+  - hermes-default
+  - litellm-local-workstation
+llm_campaign_latency_max_ratio: 1.2
+_llm_campaign_latency_alias_regex: >-
+  {{ llm_campaign_interactive_key_aliases | join('|') }}
+_llm_campaign_latency_prometheus_host: >-
+  {{ (hostvars['localhost']['tofu_data']['containers'] | default({}) | dict2items
+      | selectattr('value.tags', 'defined')
+      | selectattr('value.tags', 'contains', 'prometheus')
+      | map(attribute='value.ip', default='') | reject('equalto', '')
+      | list | first) | default('', true) }}
+_llm_campaign_latency_prometheus_port: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['prometheus_web']
+     | default(9090) }}
+_llm_campaign_latency_prometheus_url: >-
+  {{ ('http://' ~ (_llm_campaign_latency_prometheus_host | trim) ~ ':'
+      ~ (_llm_campaign_latency_prometheus_port | string | trim))
+     if (_llm_campaign_latency_prometheus_host | trim | length > 0) else '' }}
+_llm_campaign_latency_query: >-
+  histogram_quantile(0.95, sum by (le) (
+    rate(litellm_request_total_latency_metric_bucket{
+      api_key_alias=~"{{ _llm_campaign_latency_alias_regex }}"}[30m])
+  ))
+  /
+  histogram_quantile(0.95, sum by (le) (
+    rate(litellm_request_total_latency_metric_bucket{
+      api_key_alias=~"{{ _llm_campaign_latency_alias_regex }}"}[7d] offset 1d)
+  ))
