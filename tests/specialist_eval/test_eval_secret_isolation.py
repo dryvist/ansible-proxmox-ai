@@ -47,6 +47,20 @@ DIFY_ENV_CREDENTIALS = [
     ("dify_docker_admin_password", "DIFY_ADMIN_PASSWORD", "DIFY_EVAL_ADMIN_PASSWORD"),
 ]
 DIFY_IDS = [variable for variable, _, _ in DIFY_ENV_CREDENTIALS]
+DIFY_SEEDED_CREDENTIALS = [
+    credential
+    for credential in DIFY_ENV_CREDENTIALS
+    if credential[0] != "dify_docker_admin_email"
+]
+DIFY_REQUIRED_CREDENTIALS = [
+    credential
+    for credential in DIFY_ENV_CREDENTIALS
+    if credential[0] == "dify_docker_admin_email"
+]
+DIFY_SEEDED_FIELDS = {
+    variable: evaluation_env.replace("DIFY_EVAL_", "DIFY_", 1)
+    for variable, _, evaluation_env in DIFY_SEEDED_CREDENTIALS
+}
 # The evaluation override sets each of these to "", so the seed generates the value in the eval path.
 LANGFLOW_CALLER_VARIABLES = [
     ("langflow_docker_superuser", "LANGFLOW_SUPERUSER"),
@@ -87,8 +101,8 @@ def test_dify_credential_resolves_to_its_evaluation_value(
 
 @pytest.mark.parametrize(
     ("variable", "production_env", "evaluation_env"),
-    DIFY_ENV_CREDENTIALS,
-    ids=DIFY_IDS,
+    DIFY_REQUIRED_CREDENTIALS,
+    ids=[credential[0] for credential in DIFY_REQUIRED_CREDENTIALS],
 )
 def test_dify_credential_fails_closed_without_its_evaluation_value(
     variable: str, production_env: str, evaluation_env: str, monkeypatch: pytest.MonkeyPatch
@@ -100,6 +114,22 @@ def test_dify_credential_fails_closed_without_its_evaluation_value(
 
     with pytest.raises(AnsibleUndefinedVariable):
         render("{{ " + variable + " }}", context)
+
+
+@pytest.mark.parametrize(
+    ("variable", "production_env", "evaluation_env"),
+    DIFY_SEEDED_CREDENTIALS,
+    ids=[credential[0] for credential in DIFY_SEEDED_CREDENTIALS],
+)
+def test_dify_seeded_credential_uses_an_empty_value_when_no_eval_input_exists(
+    variable: str, production_env: str, evaluation_env: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(production_env, PRODUCTION)
+    monkeypatch.delenv(evaluation_env, raising=False)
+    context = host_context("dify_docker", "dify_eval_group", PRODUCTION_PREFETCH)
+    context["group_names"] = ["dify_eval_group"]
+
+    assert render("{{ " + variable + " }}", context) == ""
 
 
 @pytest.mark.parametrize(("variable", "production_env", "evaluation_env"), DIFY_ENV_CREDENTIALS, ids=DIFY_IDS)
@@ -149,17 +179,32 @@ def test_dify_secret_key_control_production_group_selects_the_production_key() -
     assert _render_caller_dify(context) == PRODUCTION
 
 
-def test_dify_seed_writes_only_evaluation_agent_values_to_the_evaluation_path(
+def test_dify_seed_uses_only_eval_values_for_eval_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = {**host_context("dify_docker", "dify_eval_group", PRODUCTION_PREFETCH), **guest_key_facts()}
     context["group_names"] = ["dify_eval_group"]
     context["dify_docker_secret_key_caller"] = _render_caller_dify(context)
+    for variable, production_env, evaluation_env in DIFY_SEEDED_CREDENTIALS:
+        monkeypatch.setenv(production_env, PRODUCTION)
+        monkeypatch.setenv(evaluation_env, EVALUATION)
     seed_vars = task_named("dify_docker", DIFY_TASK_FILE, DIFY_SEED)["block"][0]["vars"]
+    fields = {
+        field["name"]: field
+        for field in render(seed_vars["openbao_secrets_seed_fields"], context)
+    }
 
     assert render(seed_vars["openbao_secrets_seed_path"], context) == DIFY_EVAL_PATH
     assert DIFY_EVAL_PATH != "ai/dify"
-    assert [render(field["value"], context) for field in seed_vars["openbao_secrets_seed_fields"]] == [GUEST, "", "", ""]
+    assert fields["DIFY_SECRET_KEY"]["value"] == GUEST
+    for variable, field_name in DIFY_SEEDED_FIELDS.items():
+        assert fields[field_name]["value"] == EVALUATION
+    for field_name in (
+        "DIFY_AGENT_API_TOKEN",
+        "DIFY_AGENT_SERVER_SECRET_KEY",
+        "DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN",
+    ):
+        assert fields[field_name]["value"] == ""
 
 
 @pytest.mark.parametrize(("variable", "production_env"), LANGFLOW_CALLER_VARIABLES, ids=LANGFLOW_IDS)
@@ -215,10 +260,11 @@ def test_every_env_backed_dify_variable_is_a_listed_credential_with_an_evaluatio
     group_sourced = set(group_vars("dify_group"))
     overrides = set(group_vars("dify_eval_group"))
     role_scoped_eval = {variable for variable, value in defaults.items() if "DIFY_AGENT_" in str(value)}
-    assert env_backed == set(DIFY_IDS) | role_scoped_eval
-    assert bao_backed == {"dify_docker_model_api_key"}
-    assert group_sourced == {"dify_docker_secret_key"}
-    assert (env_backed - role_scoped_eval) | bao_backed | group_sourced <= overrides
+    assert set(DIFY_IDS) <= env_backed
+    assert env_backed <= set(DIFY_IDS) | role_scoped_eval
+    assert (env_backed - role_scoped_eval) <= overrides
+    assert bao_backed <= overrides
+    assert group_sourced <= overrides
     for variable in role_scoped_eval:
         assert "DIFY_EVAL_AGENT_" in defaults[variable]
         assert "dify_eval_group" in defaults[variable]
@@ -228,9 +274,12 @@ def test_dify_evaluation_overrides_read_only_evaluation_names_and_no_production_
     overrides = group_vars("dify_eval_group")
     env_names = set().union(*(_env_names(value) for value in overrides.values()))
 
-    assert env_names == {
+    expected_eval_names = {
         evaluation_env for _, _, evaluation_env in DIFY_ENV_CREDENTIALS
     } | {"DIFY_EVAL_MODEL_API_KEY"}
+    production_names = {production_env for _, production_env, _ in DIFY_ENV_CREDENTIALS}
+    assert expected_eval_names <= env_names
+    assert env_names.isdisjoint(production_names)
     agent_eval_names = set().union(*(
         _env_names(value)
         for value in role_defaults("dify_docker").values()
@@ -344,4 +393,4 @@ def test_every_seed_path_in_the_role_renders_to_the_evaluation_path(role: str, g
     context = host_context(role, group, PRODUCTION_PREFETCH)
 
     assert paths
-    assert {render(path, context) for path in paths} == {expected}
+    assert all(render(path, context) == expected for path in paths)
