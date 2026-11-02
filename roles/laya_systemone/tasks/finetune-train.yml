@@ -21,6 +21,51 @@
   when: laya_systemone_finetune_unit_stat.stat.exists
   no_log: true
 
+- name: Gather the GPU peer network facts its serving unit binds to
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!min"
+      - network
+  delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
+  delegate_facts: true
+  when:
+    - laya_systemone_finetune_device == 'cuda'
+    - laya_systemone_finetune_gpu_peer_host | length > 0
+
+- name: Read the GPU peer serving unit state before training
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - --quiet
+      - "{{ laya_systemone_finetune_gpu_peer_unit }}"
+  delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
+  register: laya_systemone_finetune_gpu_peer_state
+  changed_when: false
+  failed_when: laya_systemone_finetune_gpu_peer_state.rc not in [0, 3]
+  when:
+    - laya_systemone_finetune_device == 'cuda'
+    - laya_systemone_finetune_gpu_peer_host | length > 0
+
+- name: Record whether the GPU peer serving unit was active
+  ansible.builtin.set_fact:
+    laya_systemone_finetune_gpu_peer_was_active: "{{ laya_systemone_finetune_gpu_peer_state.rc == 0 }}"
+  when:
+    - laya_systemone_finetune_device == 'cuda'
+    - laya_systemone_finetune_gpu_peer_host | length > 0
+
+- name: Stop the active GPU peer serving unit for training
+  ansible.builtin.systemd:
+    name: "{{ laya_systemone_finetune_gpu_peer_unit }}"
+    state: stopped
+  delegate_to: "{{ laya_systemone_finetune_gpu_peer_host }}"
+  register: laya_systemone_finetune_gpu_peer_stop
+  when:
+    - laya_systemone_finetune_device == 'cuda'
+    - laya_systemone_finetune_gpu_peer_host | length > 0
+    - laya_systemone_finetune_gpu_peer_was_active | default(false) | bool
+
 - name: Train the Laya model from the verified CSV files
   ansible.builtin.command:
     argv:
@@ -44,7 +89,10 @@
       - --seed
       - "{{ laya_systemone_finetune_seed | string }}"
       - --device
-      - cuda
+      - "{{ laya_systemone_finetune_device }}"
+  async: "{{ laya_systemone_finetune_train_timeout_seconds }}"
+  poll: 15
+  register: laya_systemone_finetune_train_result
   become: true
   become_user: "{{ laya_systemone_user }}"
   changed_when: true
