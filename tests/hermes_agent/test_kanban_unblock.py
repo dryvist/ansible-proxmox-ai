@@ -45,7 +45,15 @@ def test_only_requested_cards_that_are_blocked_are_selected() -> None:
 
 def test_read_is_side_effect_free_and_unblock_runs_as_hermes_only_when_needed() -> None:
     read, _, unblock = TASKS
-    assert read["ansible.builtin.command"]["argv"][1:] == ["kanban", "list", "--status", "blocked", "--json"]
+    expression = read["ansible.builtin.command"]["argv"].strip()[2:-2]
+    argv = _env().compile_expression(expression)(
+        hermes_agent_bin="/usr/local/bin/hermes",
+        hermes_agent_cli_profile_args=["--profile", "default"],
+    )
+    assert argv == [
+        "/usr/local/bin/hermes", "--profile", "default", "kanban", "list",
+        "--status", "blocked", "--json",
+    ]
     assert read["changed_when"] is False
     assert "'kanban', 'unblock'" in unblock["ansible.builtin.command"]["argv"]
     assert unblock["become_user"] == "{{ hermes_agent_user }}"

@@ -6,8 +6,8 @@
 # and ends the host before any converge task.
 hermes_agent_delivery_probe_only: false
 
-# Only routing fields leave the host: route {profile, chat_id, enabled}, job
-# {id, name, deliver}, and each profile's expected and resolved home path.
+# Only projected fields leave the host: route_lookup counts/errors, routes,
+# jobs, and each profile's expected and resolved home path.
 hermes_agent_delivery_probe_report: >-
   {%- set ns = namespace(routes=[], profiles=[]) -%}
   {%- for label, layer in [('config', hermes_agent_delivery_probe_primary_config | default({})),
@@ -26,16 +26,27 @@ hermes_agent_delivery_probe_report: >-
   {%- for read in (hermes_agent_delivery_probe_jobs.results | default([])) -%}
   {%-   set doc = (read.content | default('') | b64decode | from_json) if read.content is defined else {} -%}
   {%-   set jobs = doc.get('jobs', []) if doc is mapping else [] -%}
+  {%-   set route_result = (hermes_agent_delivery_probe_routes.results | default([]))
+                         | selectattr('item', 'equalto', read.item) | first | default({}) -%}
+  {%-   set route_data = (route_result.stdout | default('{}') | from_json)
+                        if route_result.stdout is defined else {} -%}
+  {%-   set route_lookup = route_data | dict2items
+                           | selectattr('key', 'in', ['routes', 'raw_routes', 'matching_profile',
+                                                       'primary_is_current', 'error', 'message', 'frames'])
+                           | items2dict -%}
   {%-   set home = (hermes_agent_delivery_probe_homes.results | default([]))
                    | selectattr('item', 'equalto', read.item) | first | default({}) -%}
   {%-   set ns.profiles = ns.profiles + [{
             'profile': read.item,
             'expected_home': hermes_agent_hermes_home ~ '/profiles/' ~ read.item,
             'resolved_home': (home.stdout | default('')) | trim,
+            'route_lookup': route_lookup,
             'jobs_readable': read.content is defined,
             'jobs': jobs | map('dict2items')
                          | map('selectattr', 'key', 'in', ['id', 'name', 'deliver'])
                          | map('items2dict') | list}] -%}
   {%- endfor -%}
   {{ {'root_resolved': (hermes_agent_delivery_probe_root.stdout | default('')) | trim,
+      'root_active_profile': (hermes_agent_delivery_probe_active_profile.content | default('')
+                              | b64decode | trim),
       'routes': ns.routes, 'profiles': ns.profiles} }}

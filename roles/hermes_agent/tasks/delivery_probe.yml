@@ -32,6 +32,77 @@
   check_mode: false
   no_log: true
 
+- name: Delivery probe | Read the active root profile
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_hermes_home }}/active_profile"
+  register: hermes_agent_delivery_probe_active_profile
+  failed_when: false
+  no_log: true
+
+- name: Delivery probe | Inspect primary routes from each profile home
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - |
+        import json
+        import traceback
+        from pathlib import Path
+
+        result = {
+            "routes": 0,
+            "raw_routes": 0,
+            "matching_profile": 0,
+            "primary_is_current": False,
+        }
+        try:
+            from cron.scheduler_preflight import _primary_profile_routes_for_current_home
+            from hermes_constants import get_default_hermes_root, get_hermes_home
+
+            routes = _primary_profile_routes_for_current_home()
+            result["routes"] = len(routes)
+            primary_home = get_default_hermes_root()
+            current_home = Path(get_hermes_home())
+            result["primary_is_current"] = (
+                primary_home.expanduser().resolve(strict=False)
+                == current_home.expanduser().resolve(strict=False)
+            )
+            if not result["primary_is_current"]:
+                from gateway.config_loader import read_yaml_layers
+
+                layered = read_yaml_layers(primary_home.expanduser())
+                raw_routes = layered.get("profile_routes")
+                if raw_routes is None and isinstance(layered.get("gateway"), dict):
+                    raw_routes = layered["gateway"].get("profile_routes")
+                raw_routes = raw_routes if isinstance(raw_routes, list) else []
+                result["raw_routes"] = len(raw_routes)
+                from gateway.profile_routing import parse_profile_routes
+                from hermes_cli.profiles import profile_matches_home
+
+                parsed_routes = parse_profile_routes(raw_routes)
+                result["matching_profile"] = sum(
+                    profile_matches_home(route.profile) for route in parsed_routes
+                )
+        except Exception as error:
+            frames = traceback.extract_tb(error.__traceback__)[-3:]
+            result.update({
+                "error": type(error).__name__,
+                "message": str(error)[:200],
+                "frames": [f"{Path(frame.filename).name}:{frame.lineno}" for frame in frames],
+            })
+        print(json.dumps(result))
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}/profiles/{{ item }}"
+  args:
+    chdir: "{{ hermes_agent_install_dir }}"
+  loop: "{{ hermes_agent_slack_profile_channels.keys() | list }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_delivery_probe_routes
+  changed_when: false
+  check_mode: false
+  no_log: true
+
 - name: Delivery probe | Resolve each named profile's home path
   ansible.builtin.command:
     argv: [realpath, -m, "{{ hermes_agent_hermes_home }}/profiles/{{ item }}"]
