@@ -1,10 +1,11 @@
 # Rendered by Ansible (dify_docker role). Do NOT edit on the host.
 # Agent shell egress is limited to Dify's agent-stub and signed file endpoints;
-# private destinations remain denied. The private-destination list is inherited
-# from squid.conf.j2 (the ssrf_proxy) so both proxies share one source; the
-# lines below it only add ranges that list lacks.
+# private destinations remain denied and only Compose-network clients may use it.
+# The client and private-destination lists are inherited from squid.conf.j2 (the
+# ssrf_proxy) so both proxies share one source; the lines below the loop only
+# add destination ranges that list lacks.
 {% set _ssrf_proxy_conf %}{% include 'squid.conf.j2' %}{% endset %}
-{% for _acl in _ssrf_proxy_conf.splitlines() if _acl.startswith('acl to_private_networks dst ') %}
+{% for _acl in _ssrf_proxy_conf.splitlines() if _acl.startswith(('acl client_localnet src ', 'acl to_private_networks dst ')) %}
 {{ _acl }}
 {% endfor %}
 acl to_private_networks dst 100.64.0.0/10
@@ -31,7 +32,8 @@ http_access deny CONNECT !SSL_ports
 http_access allow dst_agent_backend path_agent_stub
 http_access allow dst_dify_api path_files
 http_access deny to_private_networks
-http_access allow all
+http_access allow client_localnet
+http_access deny all
 
 coredump_dir /var/spool/squid
 refresh_pattern . 0 20% 4320

@@ -98,6 +98,13 @@
              .splitlines() | select('match', '^acl to_private_networks dst ') | list
              | difference(_agent_squid.splitlines())) == []
           - _agent_squid.splitlines() | select('match', '^acl to_private_networks dst ') | list | length >= 14
+          # Only the inherited Compose-network clients may use the Agent proxy; everything else is denied.
+          - >-
+            (lookup('ansible.builtin.template', playbook_dir ~ '/../../roles/dify_docker/templates/squid.conf.j2')
+             .splitlines() | select('match', '^acl client_localnet src ') | list
+             | difference(_agent_squid.splitlines())) == []
+          - "_agent_squid.splitlines() | select('match', '^http_access ') | list | last == 'http_access deny all'"
+          - "'http_access allow all' not in _agent_squid.splitlines()"
         fail_msg: >-
           Dify 1.18 Agent services must use non-empty auth, an isolated local
           sandbox network, and the existing pinned Squid image.
