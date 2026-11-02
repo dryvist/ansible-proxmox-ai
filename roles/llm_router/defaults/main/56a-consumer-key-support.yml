@@ -152,8 +152,11 @@ _llm_router_agent_keys: >-
   {%- for _name, _agent in _agents.items() -%}
   {%- set _scope = _scopes[_agent.router_key_class] -%}
   {%- set _field = (_name | replace('-', '_')) ~ '_llm_router_key' -%}
-  {%- set _value = _domain.get(_field) or undef(
-        'Router key missing for roster agent ' ~ _name) -%}
+  {%- set _app_agent = (_llm_router_app_agent_matrix
+        | selectattr('id', 'equalto', _name) | list | first) | default(none) -%}
+  {%- set _value = (_domain.get(_field, '') if _app_agent is not none
+        else (_domain.get(_field) or undef(
+          'Router key missing for roster agent ' ~ _name))) -%}
   {%- set _zdr = _agent.router_key_class == 'zdr' -%}
   {%- set _models = ((_scope.groups | unique | list
         if _agent.router_key_class == 'local'
@@ -163,7 +166,7 @@ _llm_router_agent_keys: >-
   {%- set _key = {
         'alias': _name,
         'value': _value,
-        'enabled': true,
+        'enabled': (_app_agent is none or (_value | string | length > 0)),
         'allowed_classes': _scope.classes,
         'models': _models,
         'models_authoritative': true,
@@ -174,7 +177,10 @@ _llm_router_agent_keys: >-
         } | dict2items | rejectattr('value', 'equalto', []) | items2dict,
         'router_settings': {'enable_tag_filtering': true}
           if _agent.router_key_class == 'local' else {},
-        'object_permission': {'mcp_servers': _llm_router_trusted_hub_servers},
+        'object_permission': {'mcp_servers': (
+          [_app_agent.server_id] if _app_agent is not none and _app_agent.enabled
+          else (llm_router_mcp_default_object_permission.mcp_servers
+                if _app_agent is not none else _llm_router_trusted_hub_servers))},
         'daily_budget': _llm_router_hermes_profile_daily_budget,
       } -%}
   {%- if _zdr -%}

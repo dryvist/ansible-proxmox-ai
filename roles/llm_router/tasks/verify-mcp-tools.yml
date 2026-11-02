@@ -44,3 +44,27 @@
   retries: 10
   delay: "{{ llm_router_liveness_delay }}"
   no_log: true
+
+- name: Verify each enabled app-agent MCP server exposes exactly its configured tools
+  ansible.builtin.uri:
+    url: >-
+      http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/list?server_id={{ _llm_router_app_agent.server_id }}
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    return_content: true
+    timeout: 5
+  loop: "{{ _llm_router_app_agent_matrix | selectattr('enabled') | list }}"
+  loop_control:
+    loop_var: _llm_router_app_agent
+    label: "{{ _llm_router_app_agent.server_id }}"
+  register: _llm_router_app_agent_mcp_tools
+  check_mode: false
+  until:
+    - _llm_router_app_agent_mcp_tools.status | default(0) == 200
+    - _llm_router_app_agent_mcp_tools.json.error | default(none) is none
+    - (_llm_router_app_agent_mcp_tools.json.tools | default([]) | map(attribute='name') | sort)
+      == (_llm_router_app_agent.allowed_tools | sort)
+  retries: 10
+  delay: "{{ llm_router_liveness_delay }}"
+  no_log: true

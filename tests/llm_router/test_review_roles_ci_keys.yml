@@ -17,6 +17,19 @@
     bao_apps_secrets:
       github_actions_llm_router_key: sk-fixture-gha
       github_actions_oss_llm_router_key: sk-fixture-gha-oss
+    ai_agents:
+      vikunja-read: {router_key_class: standard}
+      vikunja-write: {router_key_class: standard}
+      zammad-write: {router_key_class: standard}
+    ai_agent_owner:
+      vikunja-read: vikunja-read
+      vikunja-write: vikunja-write
+      zammad-write: zammad-write
+    openbao_secrets_by_domain:
+      llm-router-agent-keys:
+        vikunja_read_llm_router_key: sk-fixture-vikunja-read
+        vikunja_write_llm_router_key: sk-fixture-vikunja-write
+        zammad_write_llm_router_key: sk-fixture-zammad-write
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
@@ -34,10 +47,19 @@
       OPENROUTER_API_KEY: sk-or-fixture
       OPENROUTER_HERMES_KEY: sk-orh-fixture
       OPENAI_API_KEY: sk-oa-fixture
+      VIKUNJA_MCP_URL: fixture-vikunja-url
+      VIKUNJA_AGENT_READ_TOKEN: fixture-vikunja-read-token
+      VIKUNJA_MCP_TOKEN_RW: fixture-vikunja-write-token
+      ZAMMAD_MCP_URL: fixture-zammad-url
+      ZAMMAD_AGENT_WRITE_TOKEN: fixture-zammad-write-token
+      ZAMMAD_MCP_TOKEN: fixture-zammad-shared-token
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Reuse the pinned Vikunja MCP package version
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/load-app-agent-package-pin.yml"
 
     - name: Set the render's test subdomain after loading role defaults
       ansible.builtin.set_fact:
@@ -138,6 +160,38 @@
     - name: Render the credentialed model and fallback graph
       ansible.builtin.set_fact:
         _credentialed_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _credentialed_environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+        _credentialed_app_agent_keys: "{{ _llm_router_agent_keys }}"
+      no_log: true
+
+    - name: Confirm app-agent keys keep their one-server scope and token mapping
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _credentialed_app_agent_keys | selectattr('alias', 'equalto', 'vikunja-read')
+            | map(attribute='object_permission.mcp_servers') | first == ['vikunja_read']
+          - >-
+            _credentialed_app_agent_keys | selectattr('alias', 'equalto', 'vikunja-write')
+            | map(attribute='object_permission.mcp_servers') | first == ['vikunja_write']
+          - >-
+            _credentialed_app_agent_keys | selectattr('alias', 'equalto', 'zammad-write')
+            | map(attribute='object_permission.mcp_servers') | first == ['zammad_write']
+          - >-
+            _credentialed_app_agent_keys | selectattr('alias', 'in',
+              llm_router_app_agent_tiers | map(attribute='id') | list)
+            | map(attribute='object_permission.mcp_servers') | flatten
+            | intersect(_llm_router_trusted_hub_servers) | length == 0
+          - >-
+            _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'vikunja-read')
+            | map(attribute='token_field') | first == 'VIKUNJA_AGENT_READ_TOKEN'
+          - >-
+            _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'vikunja-read')
+            | map(attribute='token_value') | first == 'fixture-vikunja-read-token'
+          - "'LLM_ROUTER_APP_VIKUNJA_READ_TOKEN=fixture-vikunja-read-token' in _credentialed_environment"
+          - "'LLM_ROUTER_APP_VIKUNJA_READ_TOKEN=fixture-vikunja-write-token' not in _credentialed_environment"
+        fail_msg: App-agent router keys or the Vikunja read-token environment mapping drifted.
+      no_log: true
 
     - name: Map the credentialed fallback chains
       ansible.builtin.set_fact:
@@ -237,6 +291,24 @@
     - name: Render again with no Codex credential
       ansible.builtin.set_fact:
         _bare: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _bare_environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+        _bare_app_agent_keys: "{{ _llm_router_agent_keys }}"
+      no_log: true
+
+    - name: Keep absent app tokens fail-closed in the key projection and env file
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _bare_app_agent_keys | selectattr('alias', 'in',
+              llm_router_app_agent_tiers | map(attribute='id') | list)
+            | map(attribute='object_permission.mcp_servers') | flatten
+            | unique | list == ['no-mcp-servers']
+          - "'LLM_ROUTER_APP_VIKUNJA_READ_TOKEN=' not in _bare_environment"
+          - "'LLM_ROUTER_APP_VIKUNJA_WRITE_TOKEN=' not in _bare_environment"
+          - "'LLM_ROUTER_APP_ZAMMAD_WRITE_TOKEN=' not in _bare_environment"
+        fail_msg: An absent app token must remove its MCP process credential and deny the corresponding key.
+      no_log: true
 
     - name: Capture uncredentialed review fallback chains
       ansible.builtin.set_fact:
