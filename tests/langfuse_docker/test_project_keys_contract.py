@@ -57,3 +57,32 @@ def test_project_key_provisioning_contract():
 
     converge_block = play["tasks"][0]
     assert converge_block["tags"] == ["langfuse_docker", "observability", "langfuse_project_keys"]
+
+
+def test_hatchet_eval_project_key_provisioning_contract():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    play = next(play for play in plays if play.get("hosts") == "langfuse_group")
+    key_task = next(
+        task
+        for task in play["tasks"]
+        if task.get("name") == "Provision Langfuse project API keys for Hatchet eval"
+    )
+    include = key_task["ansible.builtin.include_role"]
+    role_vars = key_task["vars"]
+
+    assert include["name"] == "dryvist.homelab.langfuse_project_keys"
+    assert include["apply"]["delegate_to"] == "localhost"
+    assert include["apply"]["become"] is False
+    assert include["apply"]["tags"] == ["never", "langfuse_project_keys"]
+    assert key_task["tags"] == ["never", "langfuse_project_keys"]
+    assert key_task["run_once"] is True
+    assert key_task["no_log"] is True
+
+    assert role_vars["langfuse_project_keys_project_name"] == "hatchet-eval"
+    assert role_vars["langfuse_project_keys_openbao_path"] == "apps/hatchet/eval"
+    assert role_vars["langfuse_project_keys_public_key_field"] == "hatchet_eval_langfuse_public_key"
+    assert role_vars["langfuse_project_keys_secret_key_field"] == "hatchet_eval_langfuse_secret_key"
+    assert role_vars["langfuse_project_keys_openbao_token"] == "{{ openbao_secrets_converge_writer_token }}"
+    assert role_vars["openbao_secrets_seed_expected_writer_policy"] == "ansible-converge"
+    assert role_vars["openbao_secrets_seed_check_capabilities"] == "{{ not ansible_check_mode }}"
+    assert role_vars["openbao_secrets_seed_revoke_token"] is False
