@@ -149,62 +149,8 @@
         _llm_campaign_config: >-
           {{ _llm_campaign_config_file.content | b64decode | community.general.from_toml }}
 
-    - name: Validate sample-slice rows from the selected recipe
-      ansible.builtin.assert:
-        that:
-          - _llm_campaign_recipe_run.sample_task is defined
-          - _llm_campaign_recipe_run.sample_task | string | length > 0
-          - _llm_campaign_recipe_run.sample_indices is sequence
-          - _llm_campaign_recipe_run.sample_indices is not string
-          - _llm_campaign_recipe_run.sample_indices | length > 0
-          - >-
-            _llm_campaign_recipe_run.sample_indices
-            | select('integer') | list | length
-            == _llm_campaign_recipe_run.sample_indices | length
-          - _llm_campaign_recipe_run.sample_indices | min >= 0
-          - >-
-            _llm_campaign_recipe_run.sample_indices | unique | length
-            == _llm_campaign_recipe_run.sample_indices | length
-          - _llm_campaign_recipe_run.slice_size | string is match('^[1-9][0-9]*$')
-          - _llm_campaign_recipe_run.sample_task in _llm_campaign_recipe_run.argv
-        fail_msg: >-
-          Sample-slice rows require one task, a unique non-negative sample-index
-          list, and a positive slice_size.
-        quiet: true
-      loop: "{{ _llm_campaign_config.run }}"
-      loop_control:
-        loop_var: _llm_campaign_recipe_run
-        label: "{{ _llm_campaign_recipe_run.name }}"
-      when: "'sample_slice_list' in _llm_campaign_recipe_run.dimensions"
-
-    - name: Require a selected-slice override to target a sliceable recipe
-      ansible.builtin.assert:
-        that:
-          - >-
-            llm_model_campaign_sample_slice_index is not defined
-            or _llm_campaign_config.run
-               | selectattr('dimensions', 'contains', 'sample_slice_list')
-               | list | length > 0
-        fail_msg: A sample_slice_index override requires a recipe with sample_slice_list.
-        quiet: true
-
-    - name: Validate the selected sample-slice index against each sliceable row
-      ansible.builtin.assert:
-        that:
-          - >-
-            (llm_model_campaign_sample_slice_index | int)
-            < ((_llm_campaign_recipe_run.sample_indices | length
-                + _llm_campaign_recipe_run.slice_size | int - 1)
-               // (_llm_campaign_recipe_run.slice_size | int))
-        fail_msg: The selected sample_slice_index is outside the recipe's sample slices.
-        quiet: true
-      loop: "{{ _llm_campaign_config.run }}"
-      loop_control:
-        loop_var: _llm_campaign_recipe_run
-        label: "{{ _llm_campaign_recipe_run.name }}"
-      when:
-        - llm_model_campaign_sample_slice_index is defined
-        - "'sample_slice_list' in _llm_campaign_recipe_run.dimensions"
+    - name: Validate sample-slice recipe configuration and selected override
+      ansible.builtin.import_tasks: tasks/llm-model-campaign-sample-slice-validation.yml
 
     - name: Verify the envelope converter is available before target work
       ansible.builtin.command:
