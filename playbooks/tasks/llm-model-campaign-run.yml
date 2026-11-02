@@ -7,19 +7,34 @@
                if _llm_campaign_run.prompt_tokens is defined else [0]) }}
     _llm_campaign_concurrency_axis: >-
       {{ _llm_campaign_concurrencies if 'concurrency_list' in _llm_campaign_run.dimensions else [1] }}
+    _llm_campaign_sample_slice_count: >-
+      {{ (((_llm_campaign_run.sample_indices | length)
+           + (_llm_campaign_run.slice_size | int) - 1)
+          // (_llm_campaign_run.slice_size | int))
+         if 'sample_slice_list' in _llm_campaign_run.dimensions else 1 }}
+    _llm_campaign_sample_slice_axis: >-
+      {{ ([llm_model_campaign_sample_slice_index | int]
+          if llm_model_campaign_sample_slice_index is defined
+          else range(_llm_campaign_sample_slice_count | int) | list)
+         if 'sample_slice_list' in _llm_campaign_run.dimensions else [0] }}
+    _llm_campaign_repetition_count: >-
+      {{ llm_model_campaign_repetitions
+         | default(_llm_campaign_run.repetitions) | int }}
 
-- name: Run the row for each requested context, concurrency, and repetition
+- name: Run the row for each requested context, concurrency, sample slice, and repetition
   ansible.builtin.include_tasks: llm-model-campaign-cell.yml
   loop: >-
     {{ query('community.general.cartesian', _llm_campaign_context_axis,
-             _llm_campaign_concurrency_axis,
-             range(1, _llm_campaign_run.repetitions | int + 1) | list) }}
+             _llm_campaign_concurrency_axis, _llm_campaign_sample_slice_axis,
+             range(1, _llm_campaign_repetition_count | int + 1) | list) }}
   loop_control:
     loop_var: _llm_campaign_cell
     label: >-
       {{ _llm_campaign_run.name }}:context={{ _llm_campaign_cell[0] }}
-      :concurrency={{ _llm_campaign_cell[1] }}:repeat={{ _llm_campaign_cell[2] }}
+      :concurrency={{ _llm_campaign_cell[1] }}:slice={{ _llm_campaign_cell[2] }}
+      :repeat={{ _llm_campaign_cell[3] }}
   vars:
     _llm_campaign_context_value: "{{ _llm_campaign_cell[0] | int }}"
     _llm_campaign_concurrency_value: "{{ _llm_campaign_cell[1] | int }}"
-    _llm_campaign_repetition_value: "{{ _llm_campaign_cell[2] | int }}"
+    _llm_campaign_sample_slice_value: "{{ _llm_campaign_cell[2] | int }}"
+    _llm_campaign_repetition_value: "{{ _llm_campaign_cell[3] | int }}"

@@ -210,6 +210,24 @@ def test_no_leaf_is_written_as_null_and_only_known_groups_appear():
     assert all(value is not None for group in groups.values() for value in group.values())
 
 
+def test_sample_slice_index_and_repetition_override_are_projected():
+    dimensions = _render(
+        _cell(
+            _llm_campaign_run={
+                "name": "example-row",
+                "output_tokens": 256,
+                "repetitions": 2,
+                "dimensions": ["sample_slice_list"],
+            },
+            _llm_campaign_sample_slice_value=4,
+            _llm_campaign_repetition_count=1,
+        )
+    )["campaign_dimensions"]["run"]
+
+    assert dimensions["sample_slice_index"] == 4
+    assert dimensions["repeats"] == 1
+
+
 @pytest.mark.parametrize(
     ("metadata", "expected_tags"),
     [
