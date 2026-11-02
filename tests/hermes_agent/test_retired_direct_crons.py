@@ -40,6 +40,10 @@ def load_defaults():
     return role_defaults(DEFAULTS_PATH)
 
 
+def _expression(template: str):
+    return ENV.compile_expression(template.strip()[2:-2].strip())
+
+
 def test_every_disabled_direct_cron_has_a_recognised_pause_task():
     defaults = load_defaults()
     tasks = role_tasks_text(TASKS_PATH)
@@ -144,8 +148,12 @@ def _retired_burst_pause_calls(store_boards):
             if not result:
                 break
         else:
-            command = ENV.from_string(pause_task["ansible.builtin.command"]).render(task_context)
             home = ENV.from_string(pause_task["environment"]["HERMES_HOME"]).render(task_context)
+            task_context["hermes_agent_cli_profile_args"] = _expression(
+                defaults["hermes_agent_cli_profile_args"]
+            )(**{**task_context, "hermes_agent_cli_home": home})
+            # The command module splits on whitespace, so an empty profile flag's extra space is inert.
+            command = " ".join(ENV.from_string(pause_task["ansible.builtin.command"]).render(task_context).split())
             calls.append((command, home))
     return calls
 

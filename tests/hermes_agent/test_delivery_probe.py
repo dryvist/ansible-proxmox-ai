@@ -51,6 +51,18 @@ def _fixture() -> dict:
             {"item": "splunk-admin", "failed": True},
         ]},
         "hermes_agent_delivery_probe_root": {"stdout": HOME},
+        "hermes_agent_delivery_probe_active_profile": _b64("homelab-admin\n"),
+        "hermes_agent_delivery_probe_routes": {"results": [
+            {"item": "homelab-admin", "stdout": json.dumps({
+                "routes": 1, "raw_routes": 2, "matching_profile": 1,
+                "primary_is_current": False, "private_field": "must-not-report",
+            })},
+            {"item": "splunk-admin", "stdout": json.dumps({
+                "routes": 0, "raw_routes": 2, "matching_profile": 1,
+                "primary_is_current": False, "error": "ValueError",
+                "message": "invalid route configuration", "frames": ["config_loader.py:42"],
+            })},
+        ]},
         "hermes_agent_delivery_probe_homes": {"results": [
             {"item": "homelab-admin", "stdout": f"{HOME}/profiles/homelab-admin"},
             {"item": "splunk-admin", "stdout": f"{HOME}/profiles/splunk-admin"},
@@ -69,17 +81,42 @@ def test_every_read_is_hidden_and_only_the_report_prints() -> None:
         assert set(task) & {"ansible.builtin.slurp", "ansible.builtin.command"}, task["name"]
         if "ansible.builtin.command" in task:
             assert task["changed_when"] is False
-            assert task["ansible.builtin.command"]["argv"][0] == "realpath"
+            argv = task["ansible.builtin.command"]["argv"]
+            if "Inspect primary routes" in task["name"]:
+                assert task["check_mode"] is False
+                assert task["become_user"] == "{{ hermes_agent_user }}"
+                assert task["environment"]["HERMES_HOME"] == (
+                    "{{ hermes_agent_hermes_home }}/profiles/{{ item }}"
+                )
+                assert argv[:2] == ["{{ hermes_agent_venv_python }}", "-c"]
+                python = argv[2]
+                assert "_primary_profile_routes_for_current_home()" in python
+                assert "read_yaml_layers" in python and "parse_profile_routes" in python
+                assert "profile_matches_home" in python
+                assert python.count("print(") == 1
+                assert "print(json.dumps(result))" in python
+                assert "print(routes" not in python and "print(route" not in python
+            else:
+                assert argv[0] == "realpath"
 
 
 def test_report_projects_routes_jobs_and_homes() -> None:
     report = _render(_fixture())
     assert report["root_resolved"] == HOME
+    assert report["root_active_profile"] == "homelab-admin"
     assert report["routes"] == [
         {"source": "config", "profile": "homelab-admin", "chat_id": "C0ROUTE1", "enabled": True},
         {"source": "config", "profile": "splunk-admin", "chat_id": "C0ROUTE2", "enabled": False},
     ]
     admin, splunk = report["profiles"]
+    assert admin["route_lookup"] == {
+        "routes": 1, "raw_routes": 2, "matching_profile": 1, "primary_is_current": False,
+    }
+    assert splunk["route_lookup"] == {
+        "routes": 0, "raw_routes": 2, "matching_profile": 1, "primary_is_current": False,
+        "error": "ValueError", "message": "invalid route configuration",
+        "frames": ["config_loader.py:42"],
+    }
     assert admin["jobs"] == [{"id": "abc123", "name": "fabric-status", "deliver": "slack:C0ROUTE1"}]
     assert admin["expected_home"] == admin["resolved_home"] == f"{HOME}/profiles/homelab-admin"
     assert splunk["jobs_readable"] is False and splunk["jobs"] == []
@@ -87,6 +124,12 @@ def test_report_projects_routes_jobs_and_homes() -> None:
 
 def test_report_carries_no_token_shaped_string() -> None:
     assert not TOKEN_SHAPES.search(json.dumps(_render(_fixture())))
+
+
+def test_missing_active_profile_reports_empty_name() -> None:
+    fixture = _fixture()
+    fixture["hermes_agent_delivery_probe_active_profile"] = {"failed": True}
+    assert _render(fixture)["root_active_profile"] == ""
 
 
 def test_probe_mode_ends_the_host_before_any_converge_task() -> None:

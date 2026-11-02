@@ -1,0 +1,42 @@
+---
+- name: Assert app servers match the matrix
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        _mcp_servers.mcp_servers.keys() | sort | list
+        == (['zammad', 'slack'] + (_llm_router_app_agent_matrix
+            | selectattr('enabled') | map(attribute='server_id') | list)) | sort
+      # LiteLLM server names cannot contain '-'.
+      - _mcp_servers.mcp_servers.keys() | select('search', '-') | list | length == 0
+      - >-
+        _vikunja_read_server.args[-1]
+        == '@democratize-technology/vikunja-mcp@' ~ llm_router_app_agent_vikunja_mcp_version
+      - _vikunja_read_server.env.VIKUNJA_API_TOKEN == 'os.environ/' ~ _vikunja_read_row.token_env_key
+      - _vikunja_read_row.token_field == 'VIKUNJA_AGENT_READ_TOKEN'
+      - _vikunja_read_row.reader_domain == 'app-agent-vikunja-read'
+      - _vikunja_read_row.token_value == openbao_secrets_by_domain['app-agent-vikunja-read'].VIKUNJA_AGENT_READ_TOKEN
+      - _vikunja_write_row.token_field == 'VIKUNJA_AGENT_WRITE_TOKEN'
+      - _vikunja_write_row.reader_domain == 'app-agent-vikunja-write'
+      - _vikunja_write_row.token_value == openbao_secrets_by_domain['app-agent-vikunja-write'].VIKUNJA_AGENT_WRITE_TOKEN
+      - _vikunja_write_row.token_value != bao_local_llm_secrets.VIKUNJA_MCP_TOKEN_RW
+      - _zammad_write_row.token_field == 'ZAMMAD_AGENT_WRITE_TOKEN'
+      - _zammad_write_row.reader_domain == 'app-agent-zammad-write'
+      - _zammad_write_row.token_value == openbao_secrets_by_domain['app-agent-zammad-write'].ZAMMAD_AGENT_WRITE_TOKEN
+      - >-
+        llm_router_app_agent_tiers | selectattr('token_field', 'equalto', 'VIKUNJA_MCP_TOKEN_RW')
+        | list | length == 0
+      - _vikunja_read_row.allowed_tools | select('search', '(create|update|add|delete|comment)') | list == []
+      - llm_router_app_agent_matrix_markdown | trim == _matrix_file | trim
+      - "'_app_agent.token_env_key' in _environment_template"
+      - "'_app_agent.token_value' in _environment_template"
+      - "'/mcp-rest/tools/call' in (_probe_tasks | to_json)"
+      - (_probe_tasks | rejectattr('no_log', 'defined') | to_json) is not search('Bearer')
+      - _probe_tasks | rejectattr('tags', 'defined') | list == []
+    fail_msg: The app-agent matrix, isolated server permissions, probe, or generated knowledge table drifted.
+  vars:
+    _vikunja_read_row: "{{ _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'vikunja-read') | first }}"
+    _vikunja_write_row: "{{ _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'vikunja-write') | first }}"
+    _zammad_write_row: "{{ _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'zammad-write') | first }}"
+    _vikunja_read_server: "{{ _mcp_servers.mcp_servers[_vikunja_read_row.server_id] }}"
+  no_log: true

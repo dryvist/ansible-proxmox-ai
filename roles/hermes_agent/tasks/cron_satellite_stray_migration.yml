@@ -1,0 +1,59 @@
+---
+- name: Assert the satellite stray migration list has the expected size
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_satellite_stray_jobs | length == hermes_agent_satellite_stray_expected_count
+
+# The v0.22.5 `hermes cron list` CLI has no JSON option. Use its structured
+# cron.jobs.list_jobs API and project only id/name; explicit HERMES_HOME keeps
+# these reads on the selected store without invoking active_profile resolution.
+- name: List primary cron jobs as safe ID/name JSON
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - |
+        import json
+        from cron.jobs import list_jobs
+        print(json.dumps([
+            {"id": job.get("id"), "name": job.get("name")}
+            for job in list_jobs(include_disabled=True)
+        ]))
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  args:
+    chdir: "{{ hermes_agent_install_dir }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_satellite_stray_primary_jobs
+  changed_when: false
+  no_log: true
+
+- name: List homelab-admin cron jobs as safe ID/name JSON
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - |
+        import json
+        from cron.jobs import list_jobs
+        print(json.dumps([
+            {"id": job.get("id"), "name": job.get("name")}
+            for job in list_jobs(include_disabled=True)
+        ]))
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}/profiles/homelab-admin"
+  args:
+    chdir: "{{ hermes_agent_install_dir }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_satellite_stray_profile_jobs
+  changed_when: false
+  no_log: true
+
+- name: Check each expected homelab-admin stray by ID and primary name
+  ansible.builtin.include_tasks: cron_satellite_stray_migration_item.yml
+  loop: "{{ hermes_agent_satellite_stray_jobs }}"
+  loop_control:
+    label: "{{ item.id }}"

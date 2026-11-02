@@ -84,6 +84,7 @@ def _render_env(price_map_url: str) -> str:
         "llm_router_untrusted_classify_enabled": False,
         "_llm_router_m_hermes_cloud_models_credentialed": [],
         "_llm_router_m_resolved_credentials": {},
+        "_llm_router_app_agent_matrix": [],
         "llm_router_price_map_url": price_map_url,
     }
     return env.get_template("litellm.env.j2").render(**values)

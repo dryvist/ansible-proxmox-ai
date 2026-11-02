@@ -10,6 +10,9 @@
 # the key scopes and roles below are projections of it, and this file runs in
 # its own play, so it cannot rely on facts the rolling converge left behind
 # (that play may be skipped with --skip-tags llm_router_rolling).
+- name: Load the shared Vikunja MCP package pin for key and probe projections
+  ansible.builtin.import_tasks: load-app-agent-package-pin.yml
+
 - name: Load the fabric model registry for the seeding steps
   ansible.builtin.import_tasks: registry.yml
 
@@ -22,11 +25,20 @@
 # below so a key is registered with the scope it will need by the time anything
 # uses it; a consumer whose key value is not seeded yet renders empty and is
 # skipped, making this a no-op until then.
+- name: Refuse to seed app-agent keys that break the tier contract
+  ansible.builtin.import_tasks: assert-app-agents.yml
+
 - name: Seed the per-caller virtual keys that have a value
   ansible.builtin.import_tasks: seed-keys.yml
   when:
     - llm_router_db_host | length > 0
     - llm_router_store_model_in_db | bool
+
+# This is after seed-keys reconciles each key's object_permission in the shared
+# database, and after the rolling role has restarted and verified the servers.
+- name: Probe app-agent tool and server boundaries after converge
+  ansible.builtin.import_tasks: verify-app-agent-probe.yml
+  tags: [llm_router_app_agent_probe]
 
 # The task file only returns existing keys when `seed_mode: rebuild`; in the
 # default `initial` mode, new keys already receive their budget at creation.
