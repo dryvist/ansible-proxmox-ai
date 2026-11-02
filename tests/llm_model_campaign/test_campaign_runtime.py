@@ -108,7 +108,7 @@ def test_vllm_kv_preflight_reads_the_current_serving_invocation():
 
     unit = Template(unit_task["ansible.builtin.set_fact"]["_llm_campaign_serving_unit"]).render(
         _llm_campaign_role_defaults={"llm_gpu_serving_unit_prefix": "vllm-serving"},
-        _llm_campaign_model={"serving_profile": "large"},
+        _llm_campaign_serving_profile="large",
     )
     assert unit == "vllm-serving-large.service"
     assert not any(character.isspace() for character in unit)
@@ -134,6 +134,68 @@ def test_vllm_kv_preflight_reads_the_current_serving_invocation():
     assert rendered_condition == "False"
     assert "not running" in running_guard["ansible.builtin.assert"]["fail_msg"]
     assert pre_tasks.index(running_guard) < pre_tasks.index(journal_read) < pre_tasks.index(kv_preflight)
+
+
+def test_campaign_serving_profile_defaults_to_artifact_and_selects_override_unit():
+    controller = yaml.safe_load((PLAYBOOKS / "llm-model-campaign.yml").read_text(encoding="utf-8"))
+    selection = _named(controller[0]["tasks"], "Resolve the campaign serving profile")
+    selection_template = selection["ansible.builtin.set_fact"]["_llm_campaign_selected_serving_profile"]
+
+    default_profile = Template(selection_template).render(
+        llm_model_campaign_serving_profile="",
+        _llm_campaign_selected_artifacts=[{"serving_profile": "artifact-profile"}],
+    )
+    override_profile = Template(selection_template).render(
+        llm_model_campaign_serving_profile="explicit-profile",
+        _llm_campaign_selected_artifacts=[{"serving_profile": "artifact-profile"}],
+    )
+    assert default_profile == "artifact-profile"
+    assert override_profile == "explicit-profile"
+
+    target = yaml.safe_load(TARGET_PLAYBOOK.read_text(encoding="utf-8"))[0]
+    unit_task = _named(target["pre_tasks"], "Record the selected serving profile systemd unit")
+    unit = Template(unit_task["ansible.builtin.set_fact"]["_llm_campaign_serving_unit"]).render(
+        _llm_campaign_role_defaults={"llm_gpu_serving_unit_prefix": "llm-gpu-serving"},
+        _llm_campaign_serving_profile=override_profile,
+    )
+    assert unit == "llm-gpu-serving-explicit-profile.service"
+    assert not any(character.isspace() for character in unit)
+
+
+def test_campaign_profile_join_rejects_a_different_artifact_before_target_work():
+    plays = yaml.safe_load((PLAYBOOKS / "llm-model-campaign.yml").read_text(encoding="utf-8"))
+    controller = plays[0]
+    tasks = controller["tasks"]
+    profile_loader = _named(tasks, "Load the shared vLLM profile map for an explicit campaign profile")
+    registry_loader = _named(tasks, "Load GPU profile registry entries for an explicit campaign profile")
+    guard = _named(tasks, "Validate the explicit campaign profile against its artifact and engine")
+    save = _named(tasks, "Save the prepared campaign inputs for the inventory target play")
+
+    assert controller["hosts"] == "localhost"
+    assert profile_loader["ansible.builtin.include_vars"]["dir"].endswith(
+        "roles/vllm_serving/defaults/main"
+    )
+    assert registry_loader["ansible.builtin.include_vars"]["dir"].endswith("llm-models.d")
+    assert tasks.index(profile_loader) < tasks.index(registry_loader) < tasks.index(guard) < tasks.index(save)
+    assert plays[-1]["ansible.builtin.import_playbook"] == "llm-model-campaign-target.yml"
+
+    guard_condition = guard["ansible.builtin.assert"]["that"][0]
+    rejected = Template("{{ " + guard_condition + " }}").render(
+        _llm_campaign_selected_serving_profile="registered-profile",
+        vllm_serving_profiles={"registered-profile": {"enabled": True, "engine": "vllm"}},
+        _llm_campaign_selected_serving_profile_records=[{"artifact_id": "registered-artifact"}],
+        _llm_campaign_selected_artifacts=[
+            {"artifact_id": "requested-artifact", "use": "serving", "engines": ["vllm"]}
+        ],
+        engine="vllm",
+    )
+    assert rejected == "False"
+    assert "artifact {{ artifact_id }}" in guard["ansible.builtin.assert"]["fail_msg"]
+
+    target = yaml.safe_load(TARGET_PLAYBOOK.read_text(encoding="utf-8"))[0]
+    profile_limits = _named(target["pre_tasks"], "Require survey axes to fit explicit serving profile limits")
+    assert "max_model_len" in str(profile_limits["ansible.builtin.assert"]["that"])
+    assert "max_num_seqs" in str(profile_limits["ansible.builtin.assert"]["that"])
 
 
 def test_authenticated_recipes_require_runtime_alias_and_key():
