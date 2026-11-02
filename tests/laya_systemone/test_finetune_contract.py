@@ -111,9 +111,10 @@ def test_finetune_tasks_are_gated_and_tagged_with_role_tags() -> None:
     for include in (dispatch, collect):
         assert set(include["tags"]) == {"laya_systemone", "laya_systemone_finetune", "llm", "ai"}
         assert set(include["ansible.builtin.include_tasks"]["apply"]["tags"]) == set(include["tags"])
-    assert yaml.safe_load((ROLE / "tasks/main.yml").read_text())[0]["when"] == (
-        "not laya_systemone_finetune_enabled | bool"
-    )
+    # Every action loads the shared NVIDIA guest defaults first; only serving is gated.
+    assert main[0]["ansible.builtin.include_role"] == {"name": "nvidia_gpu_guest", "public": True}
+    assert "when" not in main[0]
+    assert main[1]["when"] == "not laya_systemone_finetune_enabled | bool"
 
 
 def test_finetune_included_files_exist_and_are_referenced() -> None:
