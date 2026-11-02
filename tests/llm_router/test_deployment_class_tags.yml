@@ -58,6 +58,11 @@
         that:
           - _deployment_rows | length > 0
           - _bad_deployments | length == 0
+          - _bad_priority_deployments | length == 0
+          - >-
+            _priority_deployments
+            | selectattr('litellm_params.tags', 'contains', 'agent-priority')
+            | list | length == _priority_deployments | length
           - _bad_zdr_evidence | length == 0
           - _bad_telemetry_tags | length == 0
           - _bad_sensitivity_routes | length == 0
@@ -104,12 +109,25 @@
           {%- set _class = _policy_tags | first | default('') -%}
           {%- if _class not in _class_names
                 or (_policy_tags | difference(['zdr', 'retains', _class,
-                    'sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii']) | length > 0)
+                    'sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii',
+                    'default', 'agent-priority']) | length > 0)
                 or 'sensitivity:public' not in _tags
                 or ('retains' in _tags and _class not in ['sub', 'free', 'retains'])
-                or 'default' in _tags
+                or ('agent-priority' in _tags and 'default' in _tags)
                 or d.model_info.allow_fail_open | default(false) != true -%}
           {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (_tags | string)] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _priority_deployments: >-
+          {{ _deployment_rows
+             | selectattr('litellm_params.extra_body.priority', 'defined') | list }}
+        _bad_priority_deployments: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _priority_deployments -%}
+          {%- if 'agent-priority' not in (d.litellm_params.tags | default([]))
+                or d.litellm_params.extra_body.priority | int != 10 -%}
+          {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (d.litellm_params.tags | string)] -%}
           {%- endif -%}
           {%- endfor -%}
           {{ ns.rows }}

@@ -19,6 +19,10 @@ _llm_router_consumer_classes_all: [local, sub, paid-zdr, free, retains]
 _llm_router_consumer_classes_standard: [local, sub, paid-zdr, free]
 _llm_router_consumer_classes_zdr: [local, sub, paid-zdr]
 _llm_router_consumer_classes_local: [local]
+_llm_router_local_agent_groups: >-
+  {{ ([llm_router_small_capability_name, llm_router_primary_model]
+      + llm_router_agent_only_groups + [llm_router_embedding_model])
+     | unique | list }}
 _llm_router_sandbox_agent_excluded_groups: >-
   {%- set ns = namespace(names=[]) -%}
   {%- for m in llm_router_registry_enabled
@@ -114,10 +118,7 @@ _llm_router_agent_keys: >-
         zdr={'classes': _llm_router_consumer_classes_zdr,
              'groups': llm_router_d1_zdr_key_groups},
         local={'classes': _llm_router_consumer_classes_local,
-               'groups': [llm_router_small_capability_name,
-                          llm_router_primary_model]
-                         + llm_router_agent_only_groups
-                         + [llm_router_embedding_model]},
+               'groups': _llm_router_local_agent_groups},
       ) -%}
   {%- set _domain = (openbao_secrets_by_domain | default({}, true))
         .get('llm-router-agent-keys', {}) -%}
@@ -142,8 +143,11 @@ _llm_router_agent_keys: >-
         'models_authoritative': true,
         'metadata': {
           'router_key_class': 'agent',
-          'router_request_priority': 10,
-        },
+          'tags': (['agent-priority']
+            if _agent.router_key_class == 'local' else []),
+        } | dict2items | rejectattr('value', 'equalto', []) | items2dict,
+        'router_settings': {'enable_tag_filtering': true}
+          if _agent.router_key_class == 'local' else {},
         'object_permission': {'mcp_servers': _llm_router_trusted_hub_servers},
         'daily_budget': _llm_router_hermes_profile_daily_budget,
       } -%}
