@@ -51,7 +51,7 @@ configuration option.
 From the repository root:
 
 ```sh
-python -m pytest -o pythonpath=tests/agentgateway_docker -q -s \
+python -m pytest -o pythonpath="tests tests/agentgateway_docker" -q -s \
   integration/vikunja-read-token
 ```
 
