@@ -114,6 +114,8 @@ def test_changed_router_pytest_selects_router_contract_job(path: str) -> None:
 @pytest.mark.parametrize("playbook", [
     "tests/llm_router/test_drift_live_keys.yml",
     "tests/llm_router/test_hermes_public_key_alias_brain.yml",
+    "tests/llm_router/test_zcode_sandbox_route_exclusions.yml",
+    "tests/llm_router/test_virtual_key_sub_retains_matrix.yml",
 ])
 def test_registered_router_playbook_selects_its_own_entry(playbook: str) -> None:
     result = run_selector(playbook)
