@@ -115,8 +115,7 @@ def test_underflowed_positive_counts_are_not_idle():
         for window, seconds in (("30m", 1800), ("2h", 7200), ("6h", 21600))
     ]
     reason = _count_reason(counts, selected=None)
-    assert not reason.startswith("idle")
-    assert reason not in ("pass", "idle: nothing to protect")
+    assert reason == "thin: minimum sample count not met"
 
 
 def test_thin_count_ladder_fails_closed_with_largest_window_and_count():
