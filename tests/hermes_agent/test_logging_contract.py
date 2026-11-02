@@ -14,8 +14,12 @@ DASHBOARD_UNIT_TASKS = (
 ).read_text()
 
 
-def test_debug_logging_remains_enabled() -> None:
-    assert "hermes_agent_log_level: DEBUG" in DEFAULTS
+def test_info_is_the_default_log_level_and_stays_overridable() -> None:
+    assert "hermes_agent_log_level: INFO" in DEFAULTS
+    assert "hermes_agent_log_level: DEBUG" not in DEFAULTS
+    for template in ("config.yaml.j2", "config-profile.yaml.j2", "config-public-gateway.yaml.j2"):
+        text = (REPO_ROOT / "roles/hermes_agent/templates" / template).read_text()
+        assert "level: {{ hermes_agent_log_level }}" in text
 
 
 def test_rsyslog_routes_unit_children_and_file_logs() -> None:
