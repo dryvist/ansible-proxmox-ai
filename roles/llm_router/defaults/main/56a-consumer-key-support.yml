@@ -19,6 +19,22 @@ _llm_router_consumer_classes_all: [local, sub, paid-zdr, free, retains]
 _llm_router_consumer_classes_standard: [local, sub, paid-zdr, free]
 _llm_router_consumer_classes_zdr: [local, sub, paid-zdr]
 _llm_router_consumer_classes_local: [local]
+_llm_router_agent_excluded_groups: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for m in llm_router_registry_enabled
+        if (m.subscription | default(false) | bool)
+           or (m.price_class | default('') == 'subscription')
+           or m.client_model_id.split('/')[-1].startswith(('codex-', 'claude-'))
+           or (m.route_group | default('')).startswith(('codex-', 'claude-'))
+           or (m.fallback_group | default('')).startswith(('codex-', 'claude-'))
+           or (m.stable_aliases | default([])
+               | select('match', '^(codex|claude)-') | list | length > 0) -%}
+  {%- set ns.names = ns.names + [m.client_model_id]
+        + ([m.route_group] if m.route_group is defined else [])
+        + ([m.fallback_group] if m.fallback_group is defined else [])
+        + (m.stable_aliases | default([])) -%}
+  {%- endfor -%}
+  {{ ns.names | unique | list }}
 _llm_router_local_agent_groups: >-
   {{ ([llm_router_small_capability_name, llm_router_primary_model]
       + llm_router_agent_only_groups + [llm_router_embedding_model])
@@ -76,11 +92,14 @@ _llm_router_hermes_profile_keys: >-
         'value': _value,
         'enabled': (_value | string | length > 0),
         'allowed_classes': _llm_router_consumer_classes_all,
-        'models': [llm_router_small_model, llm_router_primary_model,
-                   llm_router_large_model] + llm_router_d1_all_key_groups
+        'models': ([llm_router_small_model, llm_router_primary_model,
+                    llm_router_large_model] + llm_router_d1_all_key_groups
                    + llm_router_agent_only_groups
-                   + [llm_router_review_aliases.local],
+                   + [llm_router_review_aliases.local])
+                  | reject('in', _llm_router_agent_excluded_groups)
+                  | unique | list,
         'models_authoritative': true,
+        'metadata': {'router_key_class': 'agent'},
         'object_permission': {'mcp_servers': (
           _llm_router_hermes_profile_object_permissions.get(
             _name, {'mcp_servers': []}).mcp_servers
@@ -130,10 +149,11 @@ _llm_router_agent_keys: >-
   {%- set _value = _domain.get(_field) or undef(
         'Router key missing for roster agent ' ~ _name) -%}
   {%- set _zdr = _agent.router_key_class == 'zdr' -%}
-  {%- set _models = (_scope.groups | unique | list
+  {%- set _models = ((_scope.groups | unique | list
         if _agent.router_key_class == 'local'
         else _base_models + _scope.groups + llm_router_agent_only_groups
-             + ([llm_router_review_aliases.local] if _zdr else [])) -%}
+             + ([llm_router_review_aliases.local] if _zdr else []))
+        | reject('in', _llm_router_agent_excluded_groups) | unique | list) -%}
   {%- set _key = {
         'alias': _name,
         'value': _value,

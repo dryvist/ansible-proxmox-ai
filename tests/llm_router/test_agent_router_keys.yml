@@ -197,6 +197,16 @@
               - >-
                 _roster_virtual_keys | selectattr('alias', 'in', _roster_agent_keys | map(attribute='alias') | list)
                 | selectattr('metadata.router_key_class', 'equalto', 'agent') | list | length == 4
+              - _agent_key_projections | length >= 4
+              - >-
+                _agent_key_projections | map(attribute='models') | flatten
+                | intersect(_agent_forbidden_registry_names) | length == 0
+              - >-
+                _agent_forbidden_registry_names | difference(_llm_router_agent_excluded_groups)
+                | length == 0
+              - >-
+                _llm_router_agent_excluded_groups | difference(_agent_forbidden_registry_names)
+                | length == 0
               - >-
                 _roster_virtual_keys | selectattr('alias', 'in', _roster_agent_keys | map(attribute='alias') | list)
                 | selectattr('metadata.tags', 'defined') | list | length == 1
@@ -278,6 +288,26 @@
               {{ ([llm_router_small_capability_name, llm_router_primary_model]
                   + llm_router_agent_only_groups + [llm_router_embedding_model])
                  | unique | list }}
+            _agent_key_projections: >-
+              {{ _roster_virtual_keys
+                 | selectattr('metadata.router_key_class', 'defined')
+                 | selectattr('metadata.router_key_class', 'equalto', 'agent') | list }}
+            _agent_forbidden_registry_names: >-
+              {%- set ns = namespace(names=[]) -%}
+              {%- for m in llm_router_registry_enabled
+                    if (m.subscription | default(false) | bool)
+                       or (m.price_class | default('') == 'subscription')
+                       or m.client_model_id.split('/')[-1].startswith(('codex-', 'claude-'))
+                       or (m.route_group | default('')).startswith(('codex-', 'claude-'))
+                       or (m.fallback_group | default('')).startswith(('codex-', 'claude-'))
+                       or (m.stable_aliases | default([])
+                           | select('match', '^(codex|claude)-') | list | length > 0) -%}
+              {%- set ns.names = ns.names + [m.client_model_id]
+                    + ([m.route_group] if m.route_group is defined else [])
+                    + ([m.fallback_group] if m.fallback_group is defined else [])
+                    + (m.stable_aliases | default([])) -%}
+              {%- endfor -%}
+              {{ ns.names | unique | list }}
             _non_local_registry_names: >-
               {%- set ns = namespace(names=[]) -%}
               {%- for m in llm_router_model_registry
