@@ -24,6 +24,60 @@ EVALSCOPE_OPTIONS = (
     "--work-dir",
     "--no-timestamp",
 )
+LMEVAL_0413_TOP_LEVEL_HELP = """\
+usage: lm-eval [-h] COMMAND ...
+
+Language Model Evaluation Harness
+
+positional arguments:
+  COMMAND     Available commands
+    run       Run the evaluation harness on specified tasks
+    ls        List available tasks, groups, subtasks, or tags
+    validate  Validate task configurations
+
+options:
+  -h, --help  show this help message and exit
+
+quick start:
+  # Basic evaluation
+  lm-eval run --model hf --model_args pretrained=gpt2 --tasks hellaswag
+
+legacy compatibility:
+  The harness maintains backward compatibility with the original interface.
+  If no command is specified, 'run' is automatically inserted:
+
+  lm-eval --model hf --tasks hellaswag  # Equivalent to 'lm-eval run --model hf --tasks hellaswag'
+"""
+LMEVAL_0413_RUN_HELP = """\
+usage: lm-eval run --model <model> --tasks <task> <task> --model_args <arg=value> <arg=value> [options]
+
+model and tasks:
+  --tasks, -t <task> [<task> ...]
+  --model, -M <model>
+  --model_args, -a <arg> [<arg> ...]
+  --apply_chat_template [<template>]
+  --limit, -L <limit>
+
+evaluation settings:
+  --num_fewshot, -f <n>
+  --batch_size, -b <size>
+  --gen_kwargs <arg> [<arg> ...]
+
+data and output (see also: --limit):
+  --output_path, -o <path>
+  --log_samples, -s
+  --samples, -E <json>  JSON mapping task names to sample indices, e.g.
+                        '{"task1": [0,1,2]}'. Incompatible with --limit.
+
+instruct formatting (see also: --apply_chat_template):
+  --fewshot_as_multiturn [<bool>]
+
+advanced options:
+  --confirm_run_unsafe_code
+
+logging and tracking:
+  --metadata <args> [<args> ...]
+"""
 
 
 def _load_tasks(path: Path) -> list[dict[str, Any]]:
@@ -76,10 +130,17 @@ def test_lm_eval_preflight_checks_the_selected_execution_node():
     probe = _named(tasks, "Inspect the installed lm-eval command surface")
     options = _named(tasks, "Require every lm-eval option used by the selected recipe")
     code_guard = _named(tasks, "Require explicit lm-eval unsafe-code acknowledgement for code recipes")
+    required_options = [
+        condition.split("search('", 1)[1].split("')", 1)[0]
+        for condition in options["ansible.builtin.assert"]["that"]
+    ]
 
     assert "localhost" in probe["delegate_to"]
-    assert "--metadata" in options["ansible.builtin.assert"]["that"][-1]
+    assert probe["ansible.builtin.command"]["argv"] == ["lm_eval", "run", "--help"]
+    assert "If no command is specified, 'run' is automatically inserted:" in LMEVAL_0413_TOP_LEVEL_HELP
+    assert all(option in LMEVAL_0413_RUN_HELP for option in required_options)
     assert any("--confirm_run_unsafe_code" in condition for condition in code_guard["ansible.builtin.assert"]["that"])
+    assert "--confirm_run_unsafe_code" in LMEVAL_0413_RUN_HELP
 
 
 def test_lm_eval_is_installed_for_selected_vllm_campaign_targets():
@@ -112,7 +173,7 @@ def test_lm_eval_is_installed_for_selected_vllm_campaign_targets():
         "{{ nvidia_gpu_guest_uv_tool_bin_dir }}/lm_eval"
     )
     assert role_tasks[2]["ansible.builtin.file"]["dest"] == "/usr/local/bin/lm_eval"
-    assert probe["ansible.builtin.command"]["argv"] == ["lm_eval", "--help"]
+    assert probe["ansible.builtin.command"]["argv"] == ["lm_eval", "run", "--help"]
     assert defaults["nvidia_gpu_guest_lm_eval_version"] == "0.4.13"
     assert "# renovate: datasource=pypi depName=lm-eval" in defaults_text
     assert "model_campaign" in campaign["tags"]
