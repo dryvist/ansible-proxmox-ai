@@ -100,6 +100,15 @@ def test_empty_count_ladder_does_not_pass_as_idle():
     assert _count_reason(counts, selected=None) == "no data: minimum sample count not met"
 
 
+def test_zero_counts_in_any_numeric_spelling_pass_as_idle():
+    for zero in ("0e0", "+0", ".0", "0.000", "00E+5"):
+        counts = [
+            {"window": window, "window_seconds": seconds, "sample_count": zero}
+            for window, seconds in (("30m", 1800), ("2h", 7200), ("6h", 21600))
+        ]
+        assert _count_reason(counts, selected=None) == "idle: nothing to protect", zero
+
+
 def test_underflowed_positive_counts_are_not_idle():
     counts = [
         {"window": window, "window_seconds": seconds, "sample_count": "1e-9999"}
