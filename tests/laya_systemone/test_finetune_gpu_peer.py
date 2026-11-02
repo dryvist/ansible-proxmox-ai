@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import jinja2
 import yaml
-from test_finetune_contract import DEFAULTS, REPO_ROOT, _find_task, _load_tasks, _walk_tasks
+from test_finetune_contract import DEFAULTS, REPO_ROOT, ROLE, _find_task, _load_tasks, _walk_tasks
 
 CLASSIFY_HOST_VARS_PATH = REPO_ROOT / "inventory/host_vars/llm-ada-lovelace-6X-16GB-classify.yml"
 PEER_HOST_VARS_PATH = REPO_ROOT / "inventory/host_vars/llm-ada-lovelace-6X-16GB-embed.yml"
@@ -14,7 +14,7 @@ NVIDIA_DEFAULTS_PATH = REPO_ROOT / "roles/nvidia_gpu_guest/defaults/main/00-core
 def test_gpu_peer_stops_only_when_active_and_train_has_a_bound_and_device_selection() -> None:
     tasks = _load_tasks()
     training_name = "Prepare and dispatch the fine-tuned checkpoint when its manifest is stale"
-    training = next(task for task in tasks if task.get("name") == training_name)
+    training = _find_task(tasks, training_name)
     ordered = list(_walk_tasks([training]))
     state = _find_task([training], "Read the GPU peer serving unit state before training")
     record_state = _find_task([training], "Record whether the GPU peer serving unit was active")
@@ -80,7 +80,7 @@ def test_gpu_peer_defaults_are_inert_until_a_host_names_a_peer() -> None:
 
 
 def test_restore_tasks_wait_for_laya_and_the_gpu_peer_with_a_bounded_window() -> None:
-    restore_tasks = yaml.safe_load((REPO_ROOT / "roles/laya_systemone/tasks/finetune-restore-services.yml").read_text())
+    restore_tasks = _load_tasks(ROLE / "tasks/finetune-restore-services.yml")
 
     laya_health = _find_task(restore_tasks, "Wait for Laya health after GPU fine-tuning")
     assert laya_health["ansible.builtin.uri"]["url"] == (
@@ -88,6 +88,7 @@ def test_restore_tasks_wait_for_laya_and_the_gpu_peer_with_a_bounded_window() ->
     )
     assert laya_health["retries"] == "{{ laya_systemone_finetune_health_retries }}"
     assert laya_health["delay"] == "{{ laya_systemone_finetune_health_delay_seconds }}"
+    assert laya_health["ansible.builtin.uri"]["timeout"] == "{{ laya_systemone_finetune_health_timeout_seconds }}"
     assert laya_health["ignore_errors"] is True
 
     peer_start = _find_task(restore_tasks, "Start the GPU peer serving unit after fine-tuning")
@@ -100,5 +101,6 @@ def test_restore_tasks_wait_for_laya_and_the_gpu_peer_with_a_bounded_window() ->
     assert peer_health["delegate_to"] == "{{ laya_systemone_finetune_gpu_peer_host }}"
     assert peer_health["retries"] == "{{ laya_systemone_finetune_health_retries }}"
     assert peer_health["delay"] == "{{ laya_systemone_finetune_health_delay_seconds }}"
+    assert peer_health["ansible.builtin.uri"]["timeout"] == "{{ laya_systemone_finetune_health_timeout_seconds }}"
     assert "laya_systemone_finetune_gpu_peer_was_active" in peer_health["when"]
     assert peer_health["ignore_errors"] is True

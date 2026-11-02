@@ -46,19 +46,21 @@ def test_dispatch_refuses_an_active_job_and_a_pending_collect_state() -> None:
     refuse = next(task for task in dispatch if task.get("name") == "Refuse overlapping or uncollected fine-tune jobs")
     conditions = " ".join(refuse["ansible.builtin.assert"]["that"])
 
+    assert "laya_systemone_finetune_job_state_valid | bool" in conditions
     assert "laya_systemone_finetune_job_active_state not in ['active', 'activating', 'deactivating', 'reloading']" in conditions
     assert "not laya_systemone_finetune_dispatch_state_stat.stat.exists" in conditions
 
 
 def test_collect_returns_while_running_before_it_can_touch_services() -> None:
     collection = _load_tasks(FINETUNE_COLLECT_TASKS)
+    tasks = list(_walk_tasks(collection))
     running = _find_task(collection, "Report that the detached Laya fine-tune job is still running")
-    stat = _find_task(collection, "Check for persisted dispatch state after the job finishes")
+    stat = _find_task(collection, "Read persisted dispatch state before querying the transient unit")
     finish = _find_task(collection, "Collect every finished Laya fine-tune job")
 
     assert running["ansible.builtin.debug"]["msg"] == "running"
     assert running["when"] == "laya_systemone_finetune_job_running | bool"
-    assert stat["when"] == "not laya_systemone_finetune_job_running | bool"
+    assert stat["ignore_unreachable"] is True
     assert "not laya_systemone_finetune_job_running | bool" in finish["when"]
     assert _find_task(finish["block"], "Start Laya after GPU fine-tuning")
 
@@ -98,7 +100,7 @@ def test_invalid_dispatch_state_probes_the_gpu_peer_and_restores_an_inactive_uni
     train = _load_tasks()
     persisted = _find_task(train, "Persist the GPU peer state for the collect run")
     collection = _load_tasks(FINETUNE_COLLECT_TASKS)
-    probe = _find_task(collection, "Read the GPU peer state when dispatch state is invalid")
+    probe = _find_task(collection, "Probe the configured GPU peer when dispatch state is unavailable")
     record = _find_task(collection, "Use the delegated GPU peer state for service recovery")
     start = _find_task(collection, "Start the GPU peer serving unit after fine-tuning")
     health = _find_task(collection, "Wait for GPU peer serving health after fine-tuning")
@@ -120,7 +122,7 @@ def test_invalid_dispatch_state_probes_the_gpu_peer_and_restores_an_inactive_uni
         "{{ laya_systemone_finetune_gpu_peer_recovery_probe.rc | default(-1) == 0 }}"
     )
     assert record["ansible.builtin.set_fact"]["laya_systemone_finetune_gpu_peer_restore_required"] == (
-        "{{ laya_systemone_finetune_gpu_peer_recovery_probe.rc | default(-1) == 3 }}"
+        "{{ laya_systemone_finetune_gpu_peer_recovery_probe.rc | default(-1) != 0 }}"
     )
 
     environment = jinja2.Environment()
@@ -147,6 +149,8 @@ def test_valid_dispatch_state_with_lost_unit_validates_and_promotes_the_staged_c
         "laya_systemone_finetune_job_sub_state": "unknown",
         "laya_systemone_finetune_job_result": "unknown",
         "laya_systemone_finetune_job_exit_status": "unknown",
+        "laya_systemone_finetune_job_state_valid": True,
+        "laya_systemone_finetune_job_state_result": {"unreachable": False},
     }
     environment = jinja2.Environment()
     environment.filters["bool"] = bool
@@ -173,7 +177,8 @@ def test_valid_dispatch_state_with_lost_unit_validates_and_promotes_the_staged_c
 
 def test_restarts_and_health_waits_ignore_errors_before_the_final_failure() -> None:
     collection = _load_tasks(FINETUNE_COLLECT_TASKS)
-    names = [task.get("name") for task in _walk_tasks(collection)]
+    tasks = list(_walk_tasks(collection))
+    names = [task.get("name") for task in tasks]
     recovery_names = (
         "Start Laya after GPU fine-tuning",
         "Start the GPU peer serving unit after fine-tuning",
@@ -182,9 +187,14 @@ def test_restarts_and_health_waits_ignore_errors_before_the_final_failure() -> N
     )
     for name in recovery_names:
         assert _find_task(collection, name)["ignore_errors"] is True
-    final_fail = _find_task(collection, "Report the fine-tuning failure without exposing dataset output")
+    final_fail_index = max(
+        index
+        for index, task in enumerate(tasks)
+        if task.get("name") == "Report the fine-tuning failure without exposing dataset output"
+    )
+    final_fail = tasks[final_fail_index]
     assert final_fail["ansible.builtin.fail"]
-    assert all(names.index(name) < names.index(final_fail["name"]) for name in recovery_names)
+    assert all(names.index(name) < final_fail_index for name in recovery_names)
 
 
 def test_collect_restarts_laya_after_promotion_and_starts_it_idempotently_afterward() -> None:
@@ -207,9 +217,13 @@ def test_dispatch_and_collect_share_recovery_and_failure_reporting_tasks() -> No
     _load_tasks(FINETUNE_TASKS, dispatch_refs)
     _load_tasks(FINETUNE_COLLECT_TASKS, collect_refs)
     restore = (ROLE / "tasks/finetune-restore-services.yml").resolve()
+    peer_restore = (ROLE / "tasks/finetune-restore-peer.yml").resolve()
+    laya_restore = (ROLE / "tasks/finetune-restore-laya.yml").resolve()
     report = (ROLE / "tasks/finetune-report-failure.yml").resolve()
 
     assert dispatch_refs.count(restore) == 1
-    assert collect_refs.count(restore) == 1
+    assert collect_refs.count(restore) == 0
+    assert collect_refs.count(peer_restore) == 1
+    assert collect_refs.count(laya_restore) == 1
     assert dispatch_refs.count(report) == 1
-    assert collect_refs.count(report) == 1
+    assert collect_refs.count(report) == 2

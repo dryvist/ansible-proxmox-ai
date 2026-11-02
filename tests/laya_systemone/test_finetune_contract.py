@@ -79,8 +79,9 @@ def test_finetune_defaults_are_disabled_and_configuration_is_opt_in() -> None:
     assert DEFAULTS["laya_systemone_finetune_unit"] == "laya-finetune.service"
     assert DEFAULTS["laya_systemone_finetune_base_download_timeout_seconds"] == 420
     assert DEFAULTS["laya_systemone_finetune_dataset_download_timeout_seconds"] == 30
-    assert DEFAULTS["laya_systemone_finetune_health_retries"] == 48
-    assert DEFAULTS["laya_systemone_finetune_health_delay_seconds"] == 5
+    assert DEFAULTS["laya_systemone_finetune_health_retries"] == 20
+    assert DEFAULTS["laya_systemone_finetune_health_delay_seconds"] == 2
+    assert DEFAULTS["laya_systemone_finetune_health_timeout_seconds"] == 5
     assert DEFAULTS["laya_systemone_finetune_name"] == ""
     assert DEFAULTS["laya_systemone_finetune_bucket"] == "system1"
     assert DEFAULTS["laya_systemone_finetune_bao_kv_path"] == "rustfs/system1/ro"
@@ -140,8 +141,12 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
     assert "laya_systemone_finetune_eval_stat.stat.checksum == laya_systemone_finetune_eval_sha256" in task_text
 
     training_name = "Prepare and dispatch the fine-tuned checkpoint when its manifest is stale"
-    training = next(task for task in tasks if task.get("name") == training_name)
-    stale_check = _find_task(tasks, "Determine whether the installed fine-tune manifest is stale")
+    training = _find_task(tasks, training_name)
+    stale_check = _find_task(
+        _load_tasks(ROLE / "tasks/finetune-check-manifest.yml"),
+        "Determine whether the installed fine-tune manifest is stale",
+    )
+    assert "when" not in stale_check
     skip_condition = json.dumps(stale_check["ansible.builtin.set_fact"]).lower()
     for field in (
         "train_sha256",

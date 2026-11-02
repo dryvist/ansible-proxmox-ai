@@ -1,0 +1,106 @@
+---
+- name: Check whether the Laya systemd unit is present for recovery
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_unit_path }}"
+  register: laya_systemone_finetune_unit_stat
+  when: not laya_systemone_finetune_job_state_result.unreachable | default(false)
+  ignore_errors: true
+  ignore_unreachable: true
+
+- name: Start Laya after GPU fine-tuning
+  ansible.builtin.systemd:
+    name: laya-systemone.service
+    state: started
+  when:
+    - not laya_systemone_finetune_job_state_result.unreachable | default(false)
+    - laya_systemone_finetune_unit_stat.stat.exists | default(false)
+  register: laya_systemone_finetune_service_start
+  ignore_errors: true
+  ignore_unreachable: true
+  no_log: true
+
+- name: Wait for Laya health after GPU fine-tuning
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ laya_systemone_port }}/health"
+    status_code: 200
+    timeout: "{{ laya_systemone_finetune_health_timeout_seconds }}"
+  register: laya_systemone_finetune_health
+  retries: "{{ laya_systemone_finetune_health_retries }}"
+  delay: "{{ laya_systemone_finetune_health_delay_seconds }}"
+  until: laya_systemone_finetune_health.status | default(0) == 200
+  when:
+    - not laya_systemone_finetune_job_state_result.unreachable | default(false)
+    - laya_systemone_finetune_unit_stat.stat.exists | default(false)
+  ignore_errors: true
+  ignore_unreachable: true
+  no_log: true
+
+- name: Evaluate service readiness before clearing fine-tune state
+  ansible.builtin.set_fact:
+    laya_systemone_finetune_services_ready: >-
+      {{ not (laya_systemone_finetune_job_state_result.unreachable | default(false))
+         and not (laya_systemone_finetune_unit_stat.unreachable | default(false))
+         and not (laya_systemone_finetune_unit_stat.failed | default(false))
+         and (not (laya_systemone_finetune_unit_stat.stat.exists | default(false))
+              or (laya_systemone_finetune_service_start is defined
+                  and not (laya_systemone_finetune_service_start.failed | default(false))
+                  and not (laya_systemone_finetune_service_start.unreachable | default(false))
+                  and laya_systemone_finetune_health is defined
+                  and (laya_systemone_finetune_health.status | default(0) | int) == 200
+                  and not (laya_systemone_finetune_health.failed | default(false))
+                  and not (laya_systemone_finetune_health.unreachable | default(false))))
+         and (not (laya_systemone_finetune_gpu_peer_was_active | default(false) | bool
+                   or laya_systemone_finetune_gpu_peer_restore_required | default(false) | bool)
+              or (laya_systemone_finetune_gpu_peer_setup is defined
+                  and not (laya_systemone_finetune_gpu_peer_setup.failed | default(false))
+                  and not (laya_systemone_finetune_gpu_peer_setup.unreachable | default(false))
+                  and laya_systemone_finetune_gpu_peer_start is defined
+                  and not (laya_systemone_finetune_gpu_peer_start.failed | default(false))
+                  and not (laya_systemone_finetune_gpu_peer_start.unreachable | default(false))
+                  and laya_systemone_finetune_gpu_peer_health is defined
+                  and (laya_systemone_finetune_gpu_peer_health.status | default(0) | int) == 200
+                  and not (laya_systemone_finetune_gpu_peer_health.failed | default(false))
+                  and not (laya_systemone_finetune_gpu_peer_health.unreachable | default(false)))) }}
+
+- name: Stop the completed transient fine-tune unit after service health passes
+  ansible.builtin.systemd:
+    name: "{{ laya_systemone_finetune_unit }}"
+    state: stopped
+  register: laya_systemone_finetune_job_stop
+  when:
+    - laya_systemone_finetune_services_ready | bool
+    - laya_systemone_finetune_job_state_valid | bool
+    - laya_systemone_finetune_job_load_state == 'loaded'
+  ignore_errors: true
+  ignore_unreachable: true
+  no_log: true
+
+- name: Reset the completed transient fine-tune unit after service health passes
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - reset-failed
+      - "{{ laya_systemone_finetune_unit }}"
+  register: laya_systemone_finetune_job_reset
+  changed_when: false
+  when:
+    - laya_systemone_finetune_services_ready | bool
+    - laya_systemone_finetune_job_state_valid | bool
+    - laya_systemone_finetune_job_load_state == 'loaded'
+    - laya_systemone_finetune_job_stop is defined
+    - not laya_systemone_finetune_job_stop.failed | default(false)
+    - not laya_systemone_finetune_job_stop.unreachable | default(false)
+  ignore_errors: true
+  ignore_unreachable: true
+
+- name: Confirm recovery and transient-unit cleanup completed
+  ansible.builtin.set_fact:
+    laya_systemone_finetune_recovery_cleanup_ready: >-
+      {{ laya_systemone_finetune_services_ready | bool
+         and (laya_systemone_finetune_job_load_state != 'loaded'
+              or (laya_systemone_finetune_job_stop is defined
+                  and not (laya_systemone_finetune_job_stop.failed | default(false))
+                  and not (laya_systemone_finetune_job_stop.unreachable | default(false))
+                  and laya_systemone_finetune_job_reset is defined
+                  and not (laya_systemone_finetune_job_reset.failed | default(false))
+                  and not (laya_systemone_finetune_job_reset.unreachable | default(false)))) }}

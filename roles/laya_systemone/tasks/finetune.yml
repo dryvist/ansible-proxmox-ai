@@ -11,83 +11,150 @@
 - name: Refuse overlapping or uncollected fine-tune jobs
   ansible.builtin.assert:
     that:
+      - laya_systemone_finetune_job_state_valid | bool
       - >-
         laya_systemone_finetune_job_load_state != 'loaded'
         or laya_systemone_finetune_job_active_state
         not in ['active', 'activating', 'deactivating', 'reloading']
       - not laya_systemone_finetune_dispatch_state_stat.stat.exists
-    fail_msg: A Laya fine-tune job is active or awaits collect.
+    fail_msg: A Laya fine-tune job is active, has unknown state, or awaits collect.
     quiet: true
 
 - name: Validate the opt-in fine-tune configuration
   ansible.builtin.include_tasks: finetune-validate-config.yml
 
-- name: Create the fine-tune data and model directories
+- name: Ensure the fine-tune lock parent exists
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ laya_systemone_finetune_root }}"
     state: directory
     owner: "{{ laya_systemone_user }}"
     group: "{{ laya_systemone_group }}"
     mode: "0700"
-  loop:
-    - "{{ laya_systemone_finetune_root }}"
-    - "{{ laya_systemone_finetune_root }}/base"
-    - "{{ laya_systemone_finetune_root }}/datasets"
-    - "{{ laya_systemone_finetune_root }}/models"
   become: true
 
-- name: Recover interrupted promotion and read the installed Laya version
-  ansible.builtin.include_tasks: finetune-recover.yml
-
-- name: Check whether the Laya systemd unit is present
-  ansible.builtin.stat:
-    path: "{{ laya_systemone_unit_path }}"
-  register: laya_systemone_finetune_unit_stat
-
-- name: Determine whether the installed fine-tune manifest is stale
-  ansible.builtin.set_fact:
-    laya_systemone_finetune_manifest_stale: >-
-      {{ (laya_systemone_finetune_manifest.name | default('') != laya_systemone_finetune_name)
-         or (laya_systemone_finetune_manifest.train_sha256 | default('')
-         != laya_systemone_finetune_train_sha256 | lower)
-         or (laya_systemone_finetune_manifest.eval_sha256 | default('')
-         != laya_systemone_finetune_eval_sha256 | lower)
-         or (laya_systemone_finetune_manifest.epochs | default(none)
-         != laya_systemone_finetune_epochs | int)
-         or (laya_systemone_finetune_manifest.text_column | default('')
-         != laya_systemone_finetune_text_column)
-         or (laya_systemone_finetune_manifest.label_column | default('')
-         != laya_systemone_finetune_label_column)
-         or (laya_systemone_finetune_manifest.target_error | default(none)
-         != laya_systemone_finetune_target_error | float)
-         or (laya_systemone_finetune_manifest.seed | default(none)
-         != laya_systemone_finetune_seed | int)
-         or (laya_systemone_finetune_manifest.base | default('')
-         != laya_systemone_finetune_base)
-         or (laya_systemone_finetune_manifest.base_revision | default('')
-         != laya_systemone_finetune_base_revision)
-         or (laya_systemone_finetune_manifest.laya_version | default('')
-         != laya_systemone_finetune_laya_version.stdout | trim) }}
-
-- name: Prepare and dispatch the fine-tuned checkpoint when its manifest is stale
-  when:
-    - not ansible_check_mode
-    - laya_systemone_finetune_manifest_stale | bool
+- name: Acquire an atomic lock and prepare the fine-tune dispatch
   block:
-    - name: Download and verify the fine-tuning datasets
-      ansible.builtin.include_tasks: finetune-datasets.yml
-    - name: Fetch and verify the pinned Laya base checkpoint
-      ansible.builtin.include_tasks: finetune-base.yml
-    - name: Stage and dispatch detached Laya training
-      ansible.builtin.include_tasks: finetune-train.yml
+    - name: Atomically acquire the per-host fine-tune dispatch lock
+      # mkdir is intentionally exclusive so a concurrent dispatch fails at creation.
+      ansible.builtin.command:
+        argv:
+          - mkdir
+          - -m
+          - "0700"
+          - --
+          - "{{ laya_systemone_finetune_dispatch_lock_path }}"
+      register: laya_systemone_finetune_dispatch_lock_create
+      become: true
+      changed_when: laya_systemone_finetune_dispatch_lock_create.rc == 0
+      ignore_unreachable: true
+      when: not ansible_check_mode
+
+    - name: Record ownership of the fine-tune dispatch lock
+      ansible.builtin.set_fact:
+        laya_systemone_finetune_dispatch_lock_acquired: true
+      when: not ansible_check_mode
+
+    - name: Create the fine-tune data and model directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ laya_systemone_user }}"
+        group: "{{ laya_systemone_group }}"
+        mode: "0700"
+      loop:
+        - "{{ laya_systemone_finetune_root }}"
+        - "{{ laya_systemone_finetune_root }}/base"
+        - "{{ laya_systemone_finetune_root }}/datasets"
+        - "{{ laya_systemone_finetune_root }}/models"
+      become: true
+
+    - name: Recover interrupted promotion and read the installed Laya version
+      ansible.builtin.include_tasks: finetune-recover.yml
+
+    - name: Determine whether the installed fine-tune manifest is stale
+      ansible.builtin.include_tasks: finetune-check-manifest.yml
+
+    - name: Check whether the Laya systemd unit is present
+      ansible.builtin.stat:
+        path: "{{ laya_systemone_unit_path }}"
+      register: laya_systemone_finetune_unit_stat
+
+    - name: Prepare and dispatch the fine-tuned checkpoint when its manifest is stale
+      when:
+        - not ansible_check_mode
+        - laya_systemone_finetune_manifest_stale | bool
+      block:
+        - name: Download and verify the fine-tuning datasets
+          ansible.builtin.include_tasks: finetune-datasets.yml
+
+        - name: Fetch and verify the pinned Laya base checkpoint
+          ansible.builtin.include_tasks: finetune-base.yml
+
+        - name: Stage and dispatch detached Laya training
+          ansible.builtin.include_tasks: finetune-train.yml
+      rescue:
+        - name: Report preparation failure without dataset output
+          ansible.builtin.fail:
+            msg: >-
+              Laya fine-tune preparation failed; dispatch state and the lock are
+              retained only when a detached job may need collection.
+
+    - name: Release the lock when the installed manifest is already current
+      ansible.builtin.file:
+        path: "{{ laya_systemone_finetune_dispatch_lock_path }}"
+        state: absent
+      become: true
+      when:
+        - not ansible_check_mode
+        - not laya_systemone_finetune_manifest_stale | bool
+      register: laya_systemone_finetune_dispatch_lock_remove
+
+    - name: Report when the installed checkpoint already matches the requested configuration
+      ansible.builtin.debug:
+        msg: Laya fine-tune manifest is current; no detached job was started.
+      when:
+        - not ansible_check_mode
+        - not laya_systemone_finetune_manifest_stale | bool
   rescue:
-    - name: Report preparation failure without dataset output
+    - name: Refuse to release a lock owned by another dispatch
+      ansible.builtin.fail:
+        msg: Another Laya fine-tune dispatch holds the atomic lock.
+      when:
+        - not ansible_check_mode
+        - not laya_systemone_finetune_dispatch_lock_acquired | default(false) | bool
+
+    - name: Release the lock after a safe preparation failure
+      ansible.builtin.file:
+        path: "{{ laya_systemone_finetune_dispatch_lock_path }}"
+        state: absent
+      register: laya_systemone_finetune_dispatch_lock_remove
+      become: true
+      when:
+        - laya_systemone_finetune_dispatch_lock_acquired | default(false) | bool
+        - not laya_systemone_finetune_dispatch_state_created | default(false) | bool
+        - not laya_systemone_finetune_dispatch_lock_released | default(false) | bool
+      ignore_errors: true
+      ignore_unreachable: true
+
+    - name: Report a dispatch that requires collect recovery
+      ansible.builtin.fail:
+        msg: >-
+          Laya fine-tune dispatch did not finish safely; its state and lock remain
+          available for collect recovery.
+      when:
+        - laya_systemone_finetune_dispatch_state_created | default(false) | bool
+        - not laya_systemone_finetune_dispatch_lock_released | default(false) | bool
+
+    - name: Report the safe preparation failure
       ansible.builtin.fail:
         msg: Laya fine-tune preparation failed; no training output was included.
+      when: not laya_systemone_finetune_dispatch_state_created | default(false) | bool
 
-- name: Report when the installed checkpoint already matches the requested configuration
-  ansible.builtin.debug:
-    msg: Laya fine-tune manifest is current; no detached job was started.
-  when:
-    - not ansible_check_mode
-    - not laya_systemone_finetune_manifest_stale | bool
+    - name: Report a failed dispatch after safe service restoration
+      ansible.builtin.fail:
+        msg: >-
+          Laya fine-tune dispatch failed, but service recovery completed and its
+          dispatch state and lock were released.
+      when:
+        - laya_systemone_finetune_dispatch_state_created | default(false) | bool
+        - laya_systemone_finetune_dispatch_lock_released | default(false) | bool
