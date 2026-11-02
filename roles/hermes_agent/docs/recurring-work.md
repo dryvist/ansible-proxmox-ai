@@ -41,19 +41,15 @@ itself — not assumed):
   via a per-job `hermes_home:` override (7 of the 18 converted jobs had a real
   profile: `daily-status`, `zammad-review` → `homelab-admin`; `splunk-triage`,
   `splunk-security`, `splunk-parsing`, `splunk-deepdive`, `anomaly-hunt` →
-  `splunk-admin`) — but a HERMES_HOME override alone is not sufficient: cron
-  jobs run IN-PROCESS inside whichever gateway registered them, and only the
-  default profile's gateway (`hermes-gateway.service`) is persistent. A named
-  profile needs its own trigger — `hermes cron tick` ("run due jobs once and
-  exit"), fired every 5 minutes per profile
-  (`hermes_agent_profile_cron_tick_timeout`, `tasks/main.yml`).
+  `splunk-admin`). The persistent gateway (`hermes-gateway.service`) ticks
+  every profile home in-process and delivers a named profile's Slack output
+  through the primary's `gateway.profile_routes` entry for that profile. The
+  role no longer installs a per-profile `hermes cron tick` crontab: it had no
+  adapters and dropped every report.
 - **`max_runtime`** — no `cron create` flag either. The role adds an internal
   monotonic wall clock around every agentic cron conversation, independent of
-  upstream's reset-on-activity `HERMES_CRON_TIMEOUT`. The 7 profile-scoped jobs
-  additionally retain `timeout <duration>` around their tick-trigger invocation,
-  an approximate per-TICK outer ceiling (more than one due job can share a
-  5-minute window), not a second per-job setting. Script-only jobs retain their
-  separate native script timeout.
+  upstream's reset-on-activity `HERMES_CRON_TIMEOUT`. Script-only jobs retain
+  their separate native script timeout.
 - **`max_retries`** — no `cron create` equivalent. Not restored; an accepted,
   documented loss.
 - **Outcome-based delivery split** (`channel_when_healthy`, used by the status

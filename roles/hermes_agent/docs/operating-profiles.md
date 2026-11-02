@@ -15,12 +15,10 @@ the `default` profile is `{{ hermes_agent_hermes_home }}` itself.
 
 There is **one shared gateway, dispatcher, Kanban board, and Slack bot** for
 every profile — no per-profile gateway service exists. Cron is the one
-exception (native-cron reframe): `hermes cron`'s ticker runs in-process
-inside whichever gateway registered a job, and only the default profile's
-gateway is persistent, so a direct-cron job on a named profile
-(`hermes_home:` in `hermes_agent_direct_cron_jobs`) gets its own cron store
-AND its own periodic `hermes cron tick` trigger (`tasks/main.yml`) rather
-than sharing the default gateway's. See `hermes_agent_profiles` in
+exception (native-cron reframe): a direct-cron job on a named profile
+(`hermes_home:` in `hermes_agent_direct_cron_jobs`) gets its own cron store,
+which the persistent gateway ticks in that profile's scope and delivers through
+the primary's profile route. See `hermes_agent_profiles` in
 `defaults/main.yml` for the full design comment, the decision rule, and the
 isolation caveat (profile scoping is a config/tool-availability boundary, not
 an OS sandbox: every profile runs as the same `hermes` user in the same LXC).
