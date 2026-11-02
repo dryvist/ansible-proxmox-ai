@@ -157,3 +157,74 @@
       vars:
         _reader: "{{ _sources.results[0].content | b64decode }}"
         _retire: "{{ _sources.results[1].content | b64decode }}"
+
+- name: Estate-backend deletes fail closed on an empty render or above the cap
+  hosts: localhost
+  gather_facts: false
+  vars:
+    llm_router_gpu_profiles_enabled: false
+    llm_router_gpu_members: []
+    llm_router_model_group_aliases: {}
+    llm_router_role_deployments:
+      - {role: medium, model: catalog-model}
+    llm_router_apex_domain: example.test
+    _rendered:
+      - {entry: {}, params: {api_base: "http://cpu.example.test:8080/v1"}}
+    _estate_rows:
+      - {model_name: gone-1, litellm_params: {api_base: "http://gone-1.example.test:8000/v1"},
+         model_info: {id: row-1, db_model: true}}
+      - {model_name: gone-2, litellm_params: {api_base: "http://gone-2.example.test:8000/v1"},
+         model_info: {id: row-2, db_model: true}}
+      - {model_name: gone-3, litellm_params: {api_base: "http://gone-3.example.test:8000/v1"},
+         model_info: {id: row-3, db_model: true}}
+      - {model_name: gone-4, litellm_params: {api_base: "http://gone-4.example.test:8000/v1"},
+         model_info: {id: row-4, db_model: true}}
+  tasks:
+    - name: Load the revert projection
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/llm_router/defaults/main/76-drift.yml"
+
+    - name: Assert an empty render refuses every estate delete
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_db_model_estate_deletes | length == 1
+          - _llm_router_db_model_estate_guard_errors
+            == ['no enabled capability member renders an estate backend']
+      vars:
+        _llm_router_model_rows: "{{ _estate_rows[:1] }}"
+        _llm_router_capability_member_params: []
+
+    - name: Assert three estate deletes pass the guards
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_db_model_estate_deletes | length == 3
+          - _llm_router_db_model_estate_guard_errors == []
+      vars:
+        _llm_router_model_rows: "{{ _estate_rows[:3] }}"
+        _llm_router_capability_member_params: "{{ _rendered }}"
+
+    - name: Assert four estate deletes are refused by the cap
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_db_model_estate_guard_errors == ['4 estate rows exceed the cap of 3']
+      vars:
+        _llm_router_model_rows: "{{ _estate_rows }}"
+        _llm_router_capability_member_params: "{{ _rendered }}"
+
+- name: The estate guard runs before any delete
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Assert the guard task precedes the delete task
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _names.index('Refuse estate-backend deletes the guards do not allow')
+            < _names.index('Delete each reported deployment')
+      vars:
+        _names: >-
+          {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../roles/llm_router/tasks/retire-role-deployments.yml')
+             | from_yaml | map(attribute='name') | list }}

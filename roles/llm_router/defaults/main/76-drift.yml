@@ -30,8 +30,7 @@ _llm_router_db_model_reverts: >-
   {%- set roles = llm_router_role_deployments | map(attribute='role')
         | reject('in', aliases) | list -%}
   {%- set gpu_backend_hosts = llm_router_gpu_members | map(attribute='endpoint_host') | list -%}
-  {%- set rendered_backend_hosts = _llm_router_capability_member_params
-        | map(attribute='params.api_base', default='') | select | map('urlsplit', 'hostname') | list -%}
+  {%- set rendered_estate_hosts = _llm_router_rendered_estate_hosts -%}
   {%- set ns = namespace(out=[]) -%}
   {%- for row in rows | selectattr('model_info.db_model', 'equalto', true) -%}
   {%- set row_backend_host = ((row.litellm_params | default({})).api_base
@@ -46,8 +45,8 @@ _llm_router_db_model_reverts: >-
   {#- Estate hosts only: cloud backends are never in the rendered member set. -#}
   {%- elif row_backend_host
         and row_backend_host.endswith('.' ~ llm_router_apex_domain)
-        and row_backend_host not in rendered_backend_hosts -%}
-  {%- set reason = 'uses a backend no enabled registry entry renders' -%}
+        and row_backend_host not in rendered_estate_hosts -%}
+  {%- set reason = _llm_router_db_model_unrendered_reason -%}
   {%- elif row.model_name not in roles -%}
   {%- set reason = 'is not tracked in Git' -%}
   {%- else -%}
@@ -69,6 +68,36 @@ llm_router_db_model_revert_untracked: false
 _llm_router_db_model_deletes: >-
   {{ _llm_router_db_model_reverts if llm_router_db_model_revert_untracked | bool
      else _llm_router_db_model_reverts | rejectattr('reason', 'equalto', 'is not tracked in Git') | list }}
+
+# Estate hosts the enabled capability members render, the set the unrendered-
+# backend rule compares against.
+_llm_router_rendered_estate_hosts: >-
+  {%- set ns = namespace(hosts=[]) -%}
+  {%- for m in _llm_router_capability_member_params -%}
+  {%- set host = (m.params.api_base | default('', true)) | urlsplit('hostname') -%}
+  {%- if host and host.endswith('.' ~ llm_router_apex_domain) and host not in ns.hosts -%}
+  {%- set ns.hosts = ns.hosts + [host] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.hosts }}
+_llm_router_db_model_unrendered_reason: uses a backend no enabled registry entry renders
+# Fail closed before any delete: an empty rendered estate set (a registry or
+# vars bug) would mark every estate row, and a batch above the cap is refused.
+llm_router_db_model_estate_delete_cap: 3
+_llm_router_db_model_estate_deletes: >-
+  {{ _llm_router_db_model_deletes
+     | selectattr('reason', 'equalto', _llm_router_db_model_unrendered_reason) | list }}
+_llm_router_db_model_estate_guard_errors: >-
+  {%- set rows = _llm_router_db_model_estate_deletes -%}
+  {%- set errors = [] -%}
+  {%- if rows and not _llm_router_rendered_estate_hosts -%}
+  {%- set _ = errors.append('no enabled capability member renders an estate backend') -%}
+  {%- endif -%}
+  {%- if rows | length > llm_router_db_model_estate_delete_cap | int -%}
+  {%- set _ = errors.append((rows | length | string) ~ ' estate rows exceed the cap of '
+        ~ (llm_router_db_model_estate_delete_cap | string)) -%}
+  {%- endif -%}
+  {{ errors }}
 
 # Direct routes deliberately project an identity alias to a deployment with
 # that same name. Only aliases that point to another model name can shadow a
