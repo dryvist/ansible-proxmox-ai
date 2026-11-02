@@ -91,14 +91,22 @@ def test_card_crons_get_kanban_only_through_their_per_job_toolsets() -> None:
         if job.get("prompt_var") and "kanban_create" in str(defaults.get(job["prompt_var"], ""))
     ]
     assert card_jobs
+    root_home_jobs = {
+        "{{ hermes_agent_anomaly_hunt_cron_name }}",
+        "{{ hermes_agent_ai_news_cron_name }}",
+        "{{ hermes_agent_daily_innovation_cron_name }}",
+        "{{ hermes_agent_docs_study_cron_name }}",
+    }
+    assert {job["name"] for job in card_jobs if "hermes_home" not in job} == root_home_jobs
     for job in card_jobs:
-        assert "hermes_home" in job, job["name"]
         assert "enabled_toolsets" in job, job["name"]
         job_toolsets = yaml.safe_load(env.from_string(str(job["enabled_toolsets"])).render(
             hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"]
         ))
         assert "kanban" in job_toolsets, job["name"]
         assert set(defaults["hermes_agent_api_server_toolsets"]).issubset(job_toolsets)
+        if job["name"] in root_home_jobs:
+            continue
         home = env.from_string(job["hermes_home"]).render(
             hermes_agent_hermes_home="/home/hermes/.hermes",
             hermes_agent_kanban_orchestrator_profile="orchestrator",

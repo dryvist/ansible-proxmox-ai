@@ -8,6 +8,7 @@ named profile's single Slack target must move to its routed channel.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 
@@ -40,6 +41,24 @@ def test_no_profile_channels_renders_no_gateway_block() -> None:
     assert _gateway_fragment(**BASE, hermes_agent_slack_profile_channels={}) == ""
 
 
+def _profile_deliver_targets(channels: dict) -> dict[str, str]:
+    expr = role_defaults(ROLE_ROOT)["hermes_agent_slack_profile_deliver_targets"]
+    env = Environment()
+    env.filters["regex_replace"] = lambda value, pattern, replacement="": re.sub(
+        pattern, replacement, value
+    )
+    env.filters["zip"] = lambda left, right: zip(left, right)
+    rendered = env.from_string(str(expr)).render(hermes_agent_slack_profile_channels=channels)
+    return ast.literal_eval(rendered)
+
+
+def test_profile_deliver_targets_add_the_slack_prefix_from_the_route_map() -> None:
+    assert _profile_deliver_targets(CHANNELS) == {
+        profile: f"slack:{channel}" for profile, channel in CHANNELS.items()
+    }
+    assert _profile_deliver_targets({}) == {}
+
+
 def _resolve_deliver(item: dict, channels: dict | None = None, digest_channel: str = "C0HOME") -> str:
     """Evaluate the reconcile task's deliver expressions as Ansible would."""
     task = next(
@@ -52,6 +71,7 @@ def _resolve_deliver(item: dict, channels: dict | None = None, digest_channel: s
         "item": item,
         "hermes_agent_digest_slack_channel": digest_channel,
         "hermes_agent_slack_profile_channels": channels or CHANNELS,
+        "hermes_agent_slack_profile_deliver_targets": _profile_deliver_targets(channels or CHANNELS),
     }
     for key in ("_deliver", "_home", "_profile"):
         ctx[key] = env.from_string(task["vars"][key]).render(**ctx).strip()
@@ -115,6 +135,7 @@ def test_every_routed_profile_direct_cron_single_slack_target_uses_its_channel()
         },
         "hermes_agent_digest_slack_channel": "C0TEST00",
         "hermes_agent_slack_profile_channels": channels,
+        "hermes_agent_slack_profile_deliver_targets": _profile_deliver_targets(channels),
     }
     checked = 0
     for job in jobs:
@@ -175,4 +196,4 @@ def test_zammad_review_is_bounded_and_gated_on_its_route() -> None:
         j for j in defaults["hermes_agent_direct_cron_jobs"]
         if j["name"] == "{{ hermes_agent_zammad_review_cron_name }}"
     )
-    assert "'homelab-admin' in hermes_agent_slack_profile_channels" in str(job["enabled"])
+    assert "'homelab-admin' in hermes_agent_slack_profile_deliver_targets" in str(job["enabled"])
