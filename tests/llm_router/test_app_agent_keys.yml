@@ -15,29 +15,41 @@
     - name: Prepare role-backed rendered contract
       ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
 
-    - name: Read local-llm app-agent paths from inventory
+    - name: Read the app-agent tier readers from inventory
       ansible.builtin.set_fact:
+        _app_agent_reader_domains: >-
+          {{ (lookup('file', playbook_dir ~
+              '/../../inventory/group_vars/all/openbao_secrets/10-domains-identities.yml')
+              | from_yaml).openbao_app_agent_tier_reader_domains }}
         _app_agent_local_llm_paths: >-
           {{ ((lookup('file', playbook_dir ~
               '/../../inventory/group_vars/all/openbao_secrets/10-domains-identities.yml')
               | from_yaml)._openbao_secrets_static_domains_identities
              | selectattr('name', 'equalto', 'local-llm') | first).paths }}
 
-    - name: Require optional agent-tier leaves on the dedicated mount
+    - name: Require one optional reader domain per exact tier leaf
       ansible.builtin.assert:
         quiet: true
         that:
           - >-
-            _app_agent_local_llm_paths | select('mapping')
-            | selectattr('mount', 'defined')
-            | selectattr('mount', 'equalto', 'agent-tier')
-            | map(attribute='path') | list | sort
+            _app_agent_reader_domains | map(attribute='name') | list | sort
+            == ['app-agent-vikunja-read', 'app-agent-vikunja-write', 'app-agent-zammad-write']
+          - >-
+            _app_agent_reader_domains | map(attribute='path') | list | sort
             == ['vikunja-read', 'vikunja-write', 'zammad-write']
           - >-
+            _app_agent_reader_domains | map(attribute='name') | list
+            == ['app-agent-vikunja-read', 'app-agent-vikunja-write', 'app-agent-zammad-write']
+          - >-
+            _app_agent_reader_domains | map(attribute='name')
+            | zip(_app_agent_reader_domains | map(attribute='tier')) | list
+            == [('app-agent-vikunja-read', 'vikunja-read'),
+                ('app-agent-vikunja-write', 'vikunja-write'),
+                ('app-agent-zammad-write', 'zammad-write')]
+          - >-
             _app_agent_local_llm_paths | select('mapping')
-            | selectattr('mount', 'defined')
-            | selectattr('mount', 'equalto', 'agent-tier')
-            | map(attribute='optional') | list == [true, true, true]
+            | selectattr('mount', 'defined') | map(attribute='path') | list
+            | intersect(['vikunja-read', 'vikunja-write', 'zammad-write']) | length == 0
 
     - name: Set the app-agent roster, keys, and per-tier app credentials
       ansible.builtin.set_fact:
@@ -54,13 +66,17 @@
             vikunja_read_llm_router_key: fixture-vikunja-read-key
             vikunja_write_llm_router_key: fixture-vikunja-write-key
             zammad_write_llm_router_key: fixture-zammad-write-key
+          app-agent-vikunja-read:
+            VIKUNJA_AGENT_READ_TOKEN: fixture-vikunja-read-token
+            VIKUNJA_AGENT_READ_ALLOWLIST: '["Hermes"]'
+          app-agent-vikunja-write:
+            VIKUNJA_AGENT_WRITE_TOKEN: fixture-vikunja-write-token
+          app-agent-zammad-write:
+            ZAMMAD_AGENT_WRITE_TOKEN: fixture-zammad-write-token
         bao_local_llm_secrets: >-
           {{ bao_local_llm_secrets | combine({
             'VIKUNJA_MCP_URL': 'fixture-vikunja-url',
-            'VIKUNJA_AGENT_READ_TOKEN': 'fixture-vikunja-read-token',
-            'VIKUNJA_AGENT_WRITE_TOKEN': 'fixture-vikunja-write-token',
-            'ZAMMAD_MCP_URL': 'fixture-zammad-url',
-            'ZAMMAD_AGENT_WRITE_TOKEN': 'fixture-zammad-write-token'
+            'ZAMMAD_MCP_URL': 'fixture-zammad-url'
           }) }}
       no_log: true
 
@@ -186,7 +202,8 @@
 
     - name: Remove only the Vikunja read app token from the fixture
       ansible.builtin.set_fact:
-        bao_local_llm_secrets: "{{ bao_local_llm_secrets | combine({'VIKUNJA_AGENT_READ_TOKEN': ''}) }}"
+        openbao_secrets_by_domain: >-
+          {{ openbao_secrets_by_domain | combine({'app-agent-vikunja-read': {}}) }}
       no_log: true
 
     - name: Refresh key and server projections after the read app token disappears
@@ -215,6 +232,11 @@
     - name: Remove every app token for the bare render
       ansible.builtin.set_fact:
         bao_local_llm_secrets: {}
+        openbao_secrets_by_domain: >-
+          {{ openbao_secrets_by_domain | combine({
+             'app-agent-vikunja-read': {},
+             'app-agent-vikunja-write': {},
+             'app-agent-zammad-write': {}}) }}
       no_log: true
 
     - name: Refresh router projections without app tokens

@@ -58,7 +58,8 @@ llm_router_app_agent_trusted_tiers: [write, admin]
 # allowlisted project titles the apps converge publishes beside the read token.
 llm_router_app_agent_probe_vikunja_forbidden_project_id: ""
 llm_router_app_agent_vikunja_read_allowlist: >-
-  {{ (bao_local_llm_secrets | default({}, true)).get('VIKUNJA_AGENT_READ_ALLOWLIST', '[]')
+  {{ ((openbao_secrets_by_domain | default({}, true))
+      .get('app-agent-vikunja-read', {})).get('VIKUNJA_AGENT_READ_ALLOWLIST', '[]')
      | default('[]', true) | from_json }}
 
 # Private resolved credentials are only consumed by the process env template
@@ -67,12 +68,15 @@ _llm_router_app_agent_matrix: >-
   {%- set ns = namespace(rows=[]) -%}
   {%- for tier in llm_router_app_agent_tiers -%}
   {%- set app = llm_router_app_agent_apps[tier.app] -%}
-  {%- set token = (bao_local_llm_secrets | default({}, true)).get(tier.token_field, '')
+  {%- set reader_domain = 'app-agent-' ~ tier.id -%}
+  {%- set reader_secrets = (openbao_secrets_by_domain | default({}, true)).get(reader_domain, {}) -%}
+  {%- set token = reader_secrets.get(tier.token_field, '')
        | default('', true) | string | trim -%}
   {%- set token_env_key = 'LLM_ROUTER_APP_' ~ (tier.id | upper | regex_replace('[^A-Z0-9]', '_')) ~ '_TOKEN' -%}
   {%- set url_env_key = 'LLM_ROUTER_APP_' ~ (tier.id | upper | regex_replace('[^A-Z0-9]', '_')) ~ '_URL' -%}
   {%- set row = tier | combine(app, recursive=true) | combine({
         'server_id': tier.id | replace('-', '_'),
+        'reader_domain': reader_domain,
         'token_value': token,
         'token_env_key': token_env_key,
         'url_env_key': url_env_key,
