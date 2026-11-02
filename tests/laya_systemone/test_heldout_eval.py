@@ -53,7 +53,7 @@ def test_heldout_defaults_use_separate_read_and_write_paths_and_bound_runtime() 
     assert defaults["laya_systemone_heldout_batch_size"] == 16
     assert defaults["laya_systemone_heldout_request_timeout_seconds"] == 60
     assert defaults["laya_systemone_heldout_run_timeout_seconds"] == 360
-    assert defaults["laya_systemone_heldout_total_budget_seconds"] < 600
+    assert defaults["laya_systemone_heldout_total_budget_seconds"] == 540
 
 
 def test_serving_tag_does_not_select_the_heldout_component() -> None:
@@ -71,9 +71,9 @@ def test_serving_tag_does_not_select_the_heldout_component() -> None:
     evaluation_entry = heldout_play["tasks"][0]
     assert evaluation_entry["ansible.builtin.include_role"]["tasks_from"] == "heldout-eval.yml"
     assert "laya_systemone_heldout" in evaluation_entry["ansible.builtin.include_role"]["apply"]["tags"]
-    assert evaluation_entry["timeout"] == "{{ laya_systemone_heldout_preflight_budget_seconds }}"
+    assert evaluation_entry["timeout"] == 30
     defaults_entry = heldout_play["pre_tasks"][0]
-    assert defaults_entry["timeout"] == "{{ laya_systemone_heldout_preflight_budget_seconds }}"
+    assert defaults_entry["timeout"] == 30
 
 
 def test_heldout_component_checks_health_and_csv_checksum_before_scoring() -> None:
@@ -90,7 +90,8 @@ def test_heldout_component_checks_health_and_csv_checksum_before_scoring() -> No
     assert health_index == 1
     assert tasks[0]["name"] == "Validate the held-out component time budget"
     assert health["ansible.builtin.uri"]["url"].endswith("/health")
-    assert health["timeout"] == "{{ laya_systemone_health_timeout_seconds }}"
+    assert health["ansible.builtin.uri"]["timeout"] == "{{ laya_systemone_health_timeout_seconds }}"
+    assert health["timeout"] == "{{ laya_systemone_health_task_timeout_seconds }}"
     assert checksum_index < command_index
 
 
