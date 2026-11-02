@@ -214,7 +214,7 @@ def test_galaxy_install_skips_exact_cache_hits(workflow: str, job: str) -> None:
     assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
 
 
-def test_molecule_callers_preserve_roles_galaxy_and_doppler_settings() -> None:
+def test_molecule_callers_preserve_roles_and_galaxy_settings() -> None:
     jobs = yaml.safe_load(CI_GATE.read_text())["jobs"]
     for name in ("molecule-hosted", "molecule-hermes-ui"):
         inputs = jobs[name]["with"]
@@ -225,7 +225,8 @@ def test_molecule_callers_preserve_roles_galaxy_and_doppler_settings() -> None:
         assert inputs["galaxy_step_timeout_minutes"] == 10
         assert inputs["galaxy_refresh_contracts_v5"] == "never"
         assert inputs["docker_timeout_seconds"] == 180
-        assert inputs["doppler_enabled"] is True
+        assert "doppler_enabled" not in inputs
+        assert "DOPPLER_TOKEN" not in jobs[name].get("secrets", {})
 
 
 @pytest.mark.parametrize("job", [
