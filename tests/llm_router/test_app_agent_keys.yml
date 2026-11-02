@@ -15,6 +15,30 @@
     - name: Prepare role-backed rendered contract
       ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
 
+    - name: Read local-llm app-agent paths from inventory
+      ansible.builtin.set_fact:
+        _app_agent_local_llm_paths: >-
+          {{ ((lookup('file', playbook_dir ~
+              '/../../inventory/group_vars/all/openbao_secrets/10-domains-identities.yml')
+              | from_yaml)._openbao_secrets_static_domains_identities
+             | selectattr('name', 'equalto', 'local-llm') | first).paths }}
+
+    - name: Require optional agent-tier leaves on the dedicated mount
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _app_agent_local_llm_paths | select('mapping')
+            | selectattr('mount', 'defined')
+            | selectattr('mount', 'equalto', 'agent-tier')
+            | map(attribute='path') | list | sort
+            == ['vikunja-read', 'vikunja-write', 'zammad-write']
+          - >-
+            _app_agent_local_llm_paths | select('mapping')
+            | selectattr('mount', 'defined')
+            | selectattr('mount', 'equalto', 'agent-tier')
+            | map(attribute='optional') | list == [true, true, true]
+
     - name: Set the app-agent roster, keys, and per-tier app credentials
       ansible.builtin.set_fact:
         ai_agents:
@@ -34,7 +58,7 @@
           {{ bao_local_llm_secrets | combine({
             'VIKUNJA_MCP_URL': 'fixture-vikunja-url',
             'VIKUNJA_AGENT_READ_TOKEN': 'fixture-vikunja-read-token',
-            'VIKUNJA_MCP_TOKEN_RW': 'fixture-vikunja-write-token',
+            'VIKUNJA_AGENT_WRITE_TOKEN': 'fixture-vikunja-write-token',
             'ZAMMAD_MCP_URL': 'fixture-zammad-url',
             'ZAMMAD_AGENT_WRITE_TOKEN': 'fixture-zammad-write-token'
           }) }}
@@ -87,6 +111,23 @@
           - "'LLM_ROUTER_APP_VIKUNJA_READ_TOKEN=fixture-vikunja-read-token' in _credentialed_environment"
           - "'LLM_ROUTER_APP_VIKUNJA_READ_TOKEN=fixture-vikunja-write-token' not in _credentialed_environment"
         fail_msg: The Vikunja read-tier token mapping drifted.
+      no_log: true
+
+    - name: Keep the write-tier token on its dedicated leaf field
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'vikunja-write')
+            | map(attribute='token_field') | first == 'VIKUNJA_AGENT_WRITE_TOKEN'
+          - >-
+            _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'vikunja-write')
+            | map(attribute='token_value') | first == 'fixture-vikunja-write-token'
+          - >-
+            llm_router_app_agent_tiers | selectattr('token_field', 'equalto', 'VIKUNJA_MCP_TOKEN_RW')
+            | list | length == 0
+          - "'LLM_ROUTER_APP_VIKUNJA_WRITE_TOKEN=fixture-vikunja-write-token' in _credentialed_environment"
+        fail_msg: The Vikunja write tier must use its own agent token field.
       no_log: true
 
     - name: Refuse write-tier keys for untrusted roster entries

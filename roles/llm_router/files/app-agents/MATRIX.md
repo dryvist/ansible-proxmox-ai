@@ -19,7 +19,7 @@ Generated from `llm_router_app_agent_tiers`; a test fails when this file drifts.
 - App: vikunja
 - Tier: write
 - MCP server: vikunja_write
-- OpenBao token field: VIKUNJA_MCP_TOKEN_RW
+- OpenBao token field: VIKUNJA_AGENT_WRITE_TOKEN
 - Allowed tools:
   - vikunja_tasks
   - vikunja_projects
