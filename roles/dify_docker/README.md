@@ -18,8 +18,9 @@ ansible-galaxy collection install -r requirements.yml --force
 
 - An LXC tagged `dify` (nesting enabled for Docker) with its data directory on
   a persistent mount.
-- The secret store reachable, or the corresponding env fallbacks present. The
-  key below is the one value the role refuses to proceed without.
+- The secret store reachable, or the corresponding env fallbacks present.
+- The role generates and stores Dify Agent runtime credentials through the
+  shared OpenBao seed task on first converge.
 
 ## Usage
 
@@ -42,6 +43,17 @@ app has already stored. Two properties follow, and both are load-bearing:
 The role resolves it from the secret store first, then the guest, and **asserts
 a non-empty result before deploying**. It never generates a replacement for an
 install that already has one.
+
+## Agent runtime credentials
+
+Dify 1.18.0 runs an Agent backend and local shell sandbox. The role generates
+and stores three independent secrets at `dify_docker_openbao_path`:
+`DIFY_AGENT_API_TOKEN` authenticates the API/backend pair,
+`DIFY_AGENT_SERVER_SECRET_KEY` protects Agent Stub tokens, and
+`DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN` authenticates shellctl requests. Stored
+values remain authoritative; values supplied through the environment seed
+only missing fields. The local sandbox reaches the API only through the
+dedicated SSRF proxy's signed file and Agent Stub routes.
 
 ## What in this stack needs protecting
 

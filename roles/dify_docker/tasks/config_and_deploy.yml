@@ -3,10 +3,56 @@
 # Config + Compose Files
 # =============================================================================
 
+- name: Check for the existing Dify Compose configuration
+  ansible.builtin.stat:
+    path: "{{ dify_docker_data_dir }}/docker-compose.yml"
+  register: dify_docker_previous_compose_stat
+
+- name: Read the existing rendered Dify environment before replacing Compose
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - config
+      - --format
+      - json
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_previous_compose_config
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: dify_docker_previous_compose_stat.stat.exists
+
+- name: Keep the existing Dify PASSWORD_PEPPER value
+  ansible.builtin.set_fact:
+    dify_docker_password_pepper: >-
+      {{ (dify_docker_previous_compose_config.stdout | from_json)
+         .services.api.environment.PASSWORD_PEPPER }}
+  no_log: true
+  when:
+    - dify_docker_previous_compose_stat.stat.exists
+    - dify_docker_password_pepper is not defined
+    - >-
+      (dify_docker_previous_compose_config.stdout | from_json)
+      .services.api.environment.PASSWORD_PEPPER is defined
+    - >-
+      (dify_docker_previous_compose_config.stdout | from_json)
+      .services.api.environment.PASSWORD_PEPPER | string | length > 0
+
 - name: Render Dify squid (ssrf_proxy) configuration
   ansible.builtin.template:
     src: squid.conf.j2
     dest: "{{ dify_docker_data_dir }}/ssrf_proxy/squid.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart dify
+
+- name: Render Dify Agent squid configuration
+  ansible.builtin.template:
+    src: squid-agent.conf.j2
+    dest: "{{ dify_docker_data_dir }}/ssrf_proxy/squid-agent.conf"
     owner: root
     group: root
     mode: "0644"
@@ -39,6 +85,9 @@
     openbao_secrets_required_vars:
       - dify_docker_db_password
       - dify_docker_redis_password
+      - dify_docker_agent_api_token
+      - dify_docker_agent_server_secret_key
+      - dify_docker_agent_local_sandbox_auth_token
 
 - name: Render Dify docker-compose.yml
   ansible.builtin.template:

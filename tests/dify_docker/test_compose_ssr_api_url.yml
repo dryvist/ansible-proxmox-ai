@@ -30,12 +30,21 @@
         dify_docker_weaviate_api_key: fixture-weaviate-key
         dify_docker_plugin_daemon_key: fixture-plugin-daemon-key
         dify_docker_inner_api_key: fixture-inner-api-key
+        dify_docker_agent_api_token: fixture-agent-api-token
+        dify_docker_agent_server_secret_key: fixture-agent-server-secret
+        dify_docker_agent_local_sandbox_auth_token: fixture-agent-sandbox-token
         dify_docker_model_endpoint_url: "http://llm.example.invalid/v1"
         dify_docker_model_api_key: fixture-model-api-key
 
     - name: Render the Compose document
       ansible.builtin.set_fact:
         _rendered: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+
+    - name: Render the dedicated Agent SSRF proxy configuration
+      ansible.builtin.set_fact:
+        _agent_squid: >-
+          {{ lookup('ansible.builtin.template', playbook_dir ~
+             '/../../roles/dify_docker/templates/squid-agent.conf.j2') }}
 
     - name: SSR uses the internal API while browser URLs remain public
       ansible.builtin.assert:
@@ -47,3 +56,63 @@
         fail_msg: >-
           The web service must route server-side console API requests to the
           internal Compose API and retain public browser API URLs.
+
+    - name: Agent backend and local sandbox use authenticated Dify 1.18 runtime wiring
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services['api'].environment.AGENT_BACKEND_BASE_URL == 'http://agent_backend:5050'
+          - _rendered.services['api'].environment.AGENT_BACKEND_API_TOKEN == 'fixture-agent-api-token'
+          - _rendered.services['api'].environment.RESPECT_XFORWARD_HEADERS_ENABLED == 'true'
+          - _rendered.services['api'].environment.get('PASSWORD_PEPPER') is none
+          - _rendered.services['worker'].environment.get('PASSWORD_PEPPER') is none
+          - _rendered.services['worker'].environment.AGENT_BACKEND_BASE_URL == 'http://agent_backend:5050'
+          - _rendered.services['worker'].environment.AGENT_BACKEND_API_TOKEN == 'fixture-agent-api-token'
+          - "'agent_backend' in _rendered.services['api'].depends_on"
+          - "'agent_backend' in _rendered.services['worker'].depends_on"
+          - >-
+            _rendered.services['agent_backend'].environment.DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN
+            == 'fixture-agent-sandbox-token'
+          - _rendered.services['agent_backend'].environment.DIFY_AGENT_API_TOKEN == 'fixture-agent-api-token'
+          - >-
+            _rendered.services['agent_backend'].environment.DIFY_AGENT_SERVER_SECRET_KEY
+            == 'fixture-agent-server-secret'
+          - _rendered.services['local_sandbox'].command[-1] == '--require-auth-token'
+          - _rendered.services['local_sandbox'].environment.SHELLCTL_AUTH_TOKEN == 'fixture-agent-sandbox-token'
+          - "'dify_agent_local_sandbox_home:/home/dify' in _rendered.services['local_sandbox'].volumes"
+          - "'dify_agent_local_sandbox_workspace:/workspace' in _rendered.services['local_sandbox'].volumes"
+          - _rendered.services['agent_ssrf_proxy'].image == _rendered.services['ssrf_proxy'].image
+          - _rendered.services['agent_backend'].networks == ['default', 'agent_sandbox_network']
+          - _rendered.services['local_sandbox'].networks == ['agent_sandbox_network', 'local_sandbox_proxy_network']
+          - _rendered.services['agent_ssrf_proxy'].networks == ['default', 'local_sandbox_proxy_network']
+          - _rendered.services['agent_ssrf_proxy'].volumes | length == 1
+          - _rendered.services['agent_ssrf_proxy'].volumes[0].endswith(':/etc/squid/squid.conf:ro')
+          - _rendered.networks['agent_sandbox_network'].internal
+          - _rendered.networks['local_sandbox_proxy_network'].internal
+          - "'http_access allow dst_agent_backend path_agent_stub' in _agent_squid"
+          - "'http_access allow dst_dify_api path_files' in _agent_squid"
+          - "'http_access deny to_private_networks' in _agent_squid"
+          # Every ssrf_proxy private-destination ACL is inherited by the Agent proxy.
+          - >-
+            (lookup('ansible.builtin.template', playbook_dir ~ '/../../roles/dify_docker/templates/squid.conf.j2')
+             .splitlines() | select('match', '^acl to_private_networks dst ') | list
+             | difference(_agent_squid.splitlines())) == []
+          - _agent_squid.splitlines() | select('match', '^acl to_private_networks dst ') | list | length >= 14
+        fail_msg: >-
+          Dify 1.18 Agent services must use non-empty auth, an isolated local
+          sandbox network, and the existing pinned Squid image.
+
+    - name: Preserve an existing PASSWORD_PEPPER when configured
+      ansible.builtin.set_fact:
+        dify_docker_password_pepper: fixture-password-pepper
+
+    - name: Render Compose with the existing PASSWORD_PEPPER
+      ansible.builtin.set_fact:
+        _rendered_with_password_pepper: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+
+    - name: Keep PASSWORD_PEPPER on the API and worker when configured
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered_with_password_pepper.services['api'].environment.PASSWORD_PEPPER == 'fixture-password-pepper'
+          - _rendered_with_password_pepper.services['worker'].environment.PASSWORD_PEPPER == 'fixture-password-pepper'

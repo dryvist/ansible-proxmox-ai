@@ -1,0 +1,92 @@
+---
+# Detect drift across every image-bearing service in the desired Compose file.
+- name: Check for an existing Dify Compose project
+  ansible.builtin.stat:
+    path: "{{ dify_docker_data_dir }}/docker-compose.yml"
+  register: dify_docker_compose_file_stat
+
+- name: Read the deployed Dify Compose services
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - config
+      - --services
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_deployed_services
+  changed_when: false
+  when: dify_docker_compose_file_stat.stat.exists
+
+- name: Read target images for every Dify Compose component
+  ansible.builtin.set_fact:
+    dify_docker_target_images:
+      api: "{{ dify_docker_api_image }}"
+      worker: "{{ dify_docker_api_image }}"
+      worker_beat: "{{ dify_docker_api_image }}"
+      web: "{{ dify_docker_web_image }}"
+      db: "{{ dify_docker_postgres_image }}"
+      redis: "{{ dify_docker_redis_image }}"
+      weaviate: "{{ dify_docker_weaviate_image }}"
+      sandbox: "{{ dify_docker_sandbox_image }}"
+      ssrf_proxy: "{{ dify_docker_ssrf_proxy_image }}"
+      plugin_daemon: "{{ dify_docker_plugin_daemon_image }}"
+      agent_backend: "{{ dify_docker_agent_backend_image }}"
+      local_sandbox: "{{ dify_docker_local_sandbox_image }}"
+      agent_ssrf_proxy: "{{ dify_docker_ssrf_proxy_image }}"
+      nginx: "{{ dify_docker_nginx_image }}"
+
+- name: Set the target Dify component service names
+  ansible.builtin.set_fact:
+    dify_docker_target_image_services: "{{ dify_docker_target_images.keys() | list }}"
+
+- name: Read all deployed Dify component container IDs
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - ps
+      - --all
+      - --quiet
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_existing_component_containers
+  changed_when: false
+  when: dify_docker_compose_file_stat.stat.exists
+
+- name: Read deployed Dify component service names and images
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'inspect', '--format',
+          ('{{' ~ 'index .Config.Labels "com.docker.compose.service"' ~
+           '}}={{' ~ '.Config.Image' ~ '}}')]
+         + (dify_docker_existing_component_containers.stdout_lines | default([])) }}
+  register: dify_docker_deployed_component_images
+  changed_when: false
+  no_log: true
+  when: dify_docker_existing_component_containers.stdout_lines | default([]) | length > 0
+
+- name: Set the deployed Dify component image lines
+  ansible.builtin.set_fact:
+    dify_docker_deployed_component_image_lines: >-
+      {{ dify_docker_deployed_component_images.stdout_lines | default([]) }}
+    dify_docker_deployed_component_services: >-
+      {{ (dify_docker_deployed_component_images.stdout_lines | default([]))
+         | map('regex_replace', '=.*$', '') | unique | list }}
+    dify_docker_upgrade_image_drift: false
+
+- name: Detect any deployed Dify image that differs from its target
+  ansible.builtin.set_fact:
+    dify_docker_upgrade_image_drift: true
+  loop: "{{ dify_docker_deployed_component_image_lines }}"
+  when: >-
+    item.split('=', 1)[0] not in dify_docker_target_images
+    or item.split('=', 1)[1] != dify_docker_target_images[item.split('=', 1)[0]]
+
+- name: Detect whether any deployed Dify component image differs from the target
+  ansible.builtin.set_fact:
+    dify_docker_upgrade_required: >-
+      {{ dify_docker_compose_file_stat.stat.exists
+         and (dify_docker_upgrade_image_drift | bool
+              or (dify_docker_target_image_services
+                  | difference(dify_docker_deployed_component_services) | length > 0)) }}

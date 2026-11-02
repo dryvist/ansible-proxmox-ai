@@ -1,9 +1,9 @@
 ---
 # Rendered by Ansible (dify_docker role). Do NOT edit on the host.
-# Dify LLMOps stack — bundled Weaviate vector store, Postgres, Redis, sandbox,
-# SSRF proxy, and an Nginx entrypoint. Mirrors the upstream
-# docker/docker-compose.yaml structure (api/worker/worker_beat share one env via
-# a YAML anchor) trimmed to the services this homelab runs. Service names are
+# Dify LLMOps stack — bundled Weaviate, Postgres, Redis, code/Agent sandboxes,
+# Agent backend, both SSRF proxies and Nginx. Mirrors the upstream Compose
+# structure (api/worker/worker_beat share one env via a YAML anchor), trimmed to
+# the services this homelab runs. Service names are
 # the in-network DNS identifiers, referenced directly; only IPs and ports that
 # exist in tofu_data are parametrized.
 # Ship stdout/stderr to journald with tag `dify` instead of the default
@@ -85,6 +85,9 @@ x-shared-env: &dify-api-worker-env
   # CORS — internal-only deployment behind the homelab reverse proxy.
   WEB_API_CORS_ALLOW_ORIGINS: "*"
   CONSOLE_CORS_ALLOW_ORIGINS: "*"
+{% if dify_docker_password_pepper is defined %}
+  PASSWORD_PEPPER: {{ dify_docker_password_pepper | tojson }}
+{% endif %}
 
 services:
   api:
@@ -95,12 +98,16 @@ services:
       <<: *dify-api-worker-env
       MODE: "api"
       SENTRY_DSN: ""
+      RESPECT_XFORWARD_HEADERS_ENABLED: "true"
+      AGENT_BACKEND_BASE_URL: "http://agent_backend:{{ dify_docker_agent_backend_port }}"
+      AGENT_BACKEND_API_TOKEN: "{{ dify_docker_agent_api_token }}"
     depends_on:
       - db
       - redis
       - weaviate
       - sandbox
       - ssrf_proxy
+      - agent_backend
     volumes:
       - {{ dify_docker_data_dir }}/storage:/app/api/storage
 
@@ -112,12 +119,15 @@ services:
       <<: *dify-api-worker-env
       MODE: "worker"
       SENTRY_DSN: ""
+      AGENT_BACKEND_BASE_URL: "http://agent_backend:{{ dify_docker_agent_backend_port }}"
+      AGENT_BACKEND_API_TOKEN: "{{ dify_docker_agent_api_token }}"
     depends_on:
       - db
       - redis
       - weaviate
       - sandbox
       - ssrf_proxy
+      - agent_backend
     volumes:
       - {{ dify_docker_data_dir }}/storage:/app/api/storage
 
@@ -175,6 +185,8 @@ services:
     logging: *dify_docker_logging
     environment:
       PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+      ENABLE_MODULES: "backup-filesystem"
+      BACKUP_FILESYSTEM_PATH: "/var/lib/weaviate/backups"
       QUERY_DEFAULTS_LIMIT: "25"
       DEFAULT_VECTORIZER_MODULE: "none"
       CLUSTER_HOSTNAME: "node1"
@@ -251,6 +263,63 @@ services:
     volumes:
       - {{ dify_docker_data_dir }}/plugin_daemon:/app/storage
 
+  agent_backend:
+    image: {{ dify_docker_agent_backend_image }}
+    restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
+    environment:
+      DIFY_AGENT_REDIS_URL: "redis://:{{ dify_docker_redis_password }}@redis:{{ dify_docker_redis_port }}/2"
+      DIFY_AGENT_PLUGIN_DAEMON_URL: "http://plugin_daemon:{{ dify_docker_plugin_daemon_port }}"
+      DIFY_AGENT_PLUGIN_DAEMON_API_KEY: "{{ dify_docker_plugin_daemon_key }}"
+      DIFY_AGENT_INNER_API_URL: "http://api:{{ dify_docker_api_port }}"
+      DIFY_AGENT_INNER_API_KEY: "{{ dify_docker_inner_api_key }}"
+      DIFY_AGENT_RUNTIME_BACKEND: "local"
+      DIFY_AGENT_LOCAL_SANDBOX_ENDPOINT: "http://local_sandbox:{{ dify_docker_local_sandbox_port }}"
+      DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN: "{{ dify_docker_agent_local_sandbox_auth_token }}"
+      DIFY_AGENT_STUB_API_BASE_URL: "http://agent_backend:{{ dify_docker_agent_backend_port }}/agent-stub"
+      DIFY_AGENT_SANDBOX_FILES_BASE_URL: "http://api:{{ dify_docker_api_port }}"
+      DIFY_AGENT_SERVER_SECRET_KEY: "{{ dify_docker_agent_server_secret_key }}"
+      DIFY_AGENT_API_TOKEN: "{{ dify_docker_agent_api_token }}"
+    depends_on:
+      - redis
+      - plugin_daemon
+    networks:
+      - default
+      - agent_sandbox_network
+
+  local_sandbox:
+    image: {{ dify_docker_local_sandbox_image }}
+    command: ["shellctl", "serve", "--listen", "0.0.0.0:{{ dify_docker_local_sandbox_port }}", "--require-auth-token"]
+    restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
+    environment:
+      SHELLCTL_AUTH_TOKEN: "{{ dify_docker_agent_local_sandbox_auth_token }}"
+      HTTP_PROXY: "http://agent_ssrf_proxy:{{ dify_docker_ssrf_proxy_port }}"
+      HTTPS_PROXY: "http://agent_ssrf_proxy:{{ dify_docker_ssrf_proxy_port }}"
+      NO_PROXY: "localhost,127.0.0.1"
+    volumes:
+      - dify_agent_local_sandbox_home:/home/dify
+      - dify_agent_local_sandbox_workspace:/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:{{ dify_docker_local_sandbox_port }}/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - agent_sandbox_network
+      - local_sandbox_proxy_network
+
+  agent_ssrf_proxy:
+    image: {{ dify_docker_ssrf_proxy_image }}
+    restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
+    volumes:
+      - {{ dify_docker_data_dir }}/ssrf_proxy/squid-agent.conf:/etc/squid/squid.conf:ro
+    networks:
+      - default
+      - local_sandbox_proxy_network
+
   nginx:
     image: {{ dify_docker_nginx_image }}
     container_name: "{{ dify_docker_container_name }}"
@@ -264,3 +333,15 @@ services:
       - {{ dify_docker_data_dir }}/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "{{ dify_docker_web_port }}:80"
+
+networks:
+  agent_sandbox_network:
+    driver: bridge
+    internal: true
+  local_sandbox_proxy_network:
+    driver: bridge
+    internal: true
+
+volumes:
+  dify_agent_local_sandbox_home:
+  dify_agent_local_sandbox_workspace:
