@@ -108,10 +108,21 @@ def test_lm_eval_results_are_found_on_the_run_executor():
     assert "_llm_campaign_run.run_on != 'controller'" in fetch["when"]
 
 
-def test_keyed_controller_commands_keep_runtime_credentials_out_of_task_output():
+def test_cell_command_timeout_and_keyed_no_log():
     tasks = _load_tasks(TASKS / "llm-model-campaign-cell.yml")
-    command = _named(tasks, "Run the tool-native command from the selected recipe row")
+    command_block = _named(tasks, "Run the tool-native command from the selected recipe row")
+    command = _named(command_block["block"], "Execute the selected recipe command")
+    failure = _named(command_block["rescue"], "Report the failed model campaign cell command")
+    target = yaml.safe_load(TARGET_PLAYBOOK.read_text(encoding="utf-8"))[0]
+    timeout_seconds = target["vars"]["llm_model_campaign_cell_timeout_seconds"]
+    fail_msg = failure["ansible.builtin.fail"]["msg"]
 
     assert "OPENAI_API_KEY" in command["environment"]
     assert "HF_ALLOW_CODE_EVAL" in command["environment"]
+    assert command["async"] == "{{ llm_model_campaign_cell_timeout_seconds }}"
+    assert command["poll"] == 1
+    assert timeout_seconds == 540
+    assert timeout_seconds < 600
     assert command["no_log"] == "{{ _llm_campaign_run.api_key_env is defined }}"
+    assert "llm_model_campaign_cell_timeout_seconds" in fail_msg
+    assert "_llm_campaign_command_result.stdout" not in fail_msg
