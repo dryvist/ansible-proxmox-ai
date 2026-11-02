@@ -173,3 +173,32 @@ def test_first_sufficient_window_and_ratio_classification():
     assert _scalar_reason("ratio", count=1, value="2.0") == "ratio over max"
     assert _scalar_reason("ratio", count=1, value="NaN") == "NaN"
     assert _scalar_reason("baseline", count=0, value=None) == "no data: baseline result is empty"
+
+
+def _well_formed(timestamp: Any) -> tuple[str, str]:
+    result = [{"metric": {}, "value": [timestamp, "50"]}]
+    data = {"resultType": "vector", "result": result}
+    counts = _named(COUNTS, "Capture interactive request counts for each latency window")["vars"][
+        "_llm_campaign_latency_count_well_formed"
+    ]
+    scalar = _named(CLASSIFY, "Capture the interactive Prometheus scalar response")[
+        "ansible.builtin.set_fact"
+    ]["_llm_campaign_latency_classification_observation"]["well_formed"]
+    return (
+        _render(
+            counts,
+            _llm_campaign_latency_count_data=data,
+            _llm_campaign_latency_count_result=result,
+        ),
+        _render(
+            scalar,
+            _llm_campaign_latency_response_data=data,
+            _llm_campaign_latency_response_result=result,
+        ),
+    )
+
+
+def test_sample_timestamps_must_be_finite_and_positive():
+    assert _well_formed(1793660000.123) == ("True", "True")
+    for bad in (float("nan"), float("inf"), float("-inf"), 0, -5, True):
+        assert _well_formed(bad) == ("False", "False"), bad
