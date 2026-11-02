@@ -1,0 +1,50 @@
+---
+- name: Remove the retired codex-runner sudoers grant
+  ansible.builtin.file:
+    path: /etc/sudoers.d/codex-runner-mcp
+    state: absent
+
+- name: Look up the retired codex-runner account
+  ansible.builtin.getent:
+    database: passwd
+    key: codex-runner
+    fail_key: false
+  register: hermes_agent_retired_runner_account_lookup
+  changed_when: false
+
+- name: Stop processes owned by the retired codex-runner account
+  ansible.builtin.command:
+    argv:
+      - pkill
+      - --signal
+      - TERM
+      - --uid
+      - codex-runner
+  register: hermes_agent_retired_runner_process_stop
+  changed_when: hermes_agent_retired_runner_process_stop.rc == 0
+  failed_when: hermes_agent_retired_runner_process_stop.rc not in [0, 1]
+  when: "'codex-runner' in (hermes_agent_retired_runner_account_lookup.ansible_facts.getent_passwd | default({}))"
+
+- name: Wait for retired codex-runner processes to stop
+  ansible.builtin.command:
+    argv:
+      - pgrep
+      - --uid
+      - codex-runner
+  register: hermes_agent_retired_runner_processes
+  changed_when: false
+  until: hermes_agent_retired_runner_processes.rc == 1
+  retries: 30
+  delay: 1
+  when: "'codex-runner' in (hermes_agent_retired_runner_account_lookup.ansible_facts.getent_passwd | default({}))"
+
+- name: Remove the retired codex-runner user
+  ansible.builtin.user:
+    name: codex-runner
+    state: absent
+    remove: true
+
+- name: Remove the retired codex-runner home
+  ansible.builtin.file:
+    path: /var/lib/codex-runner
+    state: absent

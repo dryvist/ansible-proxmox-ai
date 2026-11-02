@@ -16,10 +16,8 @@ def test_queue_recovery_requires_confirmation_and_uses_native_archival() -> None
     playbook = PLAYBOOK.read_text()
 
     assert "hermes_queue_recovery_confirm: false" in playbook
-    assert "../roles/codex_runner/defaults/main.yml" in playbook
     assert "kanban boards list --json" in playbook
     assert "include_tasks: tasks/recover-hermes-queue-board.yml" in playbook
-    assert "include_role:\n        name: codex_runner" in playbook
     assert "include_role:\n        name: hermes_agent" in playbook
     assert "cron remove {{ item.id }}" in playbook
     assert "Clear stale Hermes cron desired-state markers" in playbook

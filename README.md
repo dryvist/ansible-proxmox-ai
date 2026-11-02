@@ -66,7 +66,6 @@ allows both to be skipped only on pushes and on pull requests into `develop`.
 - `hermes_agent` — the autonomous NousResearch agent gateway
 - `agent_exec` — sandboxed agent execution
 - `agentgateway_docker` — agent gateway (Docker)
-- `codex_runner` — isolated Codex CLI execution user
 
 ### LLM app platforms
 
