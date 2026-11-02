@@ -1,8 +1,59 @@
 ---
 # Required boundary probes, run on every converge after the keys are seeded.
 # assert-app-agents.yml has already proven each enabled tier has its key and
-# probe target, so nothing here is skipped while a tier is enabled. A disabled
+# probe target, so nothing here is skipped while a tier is enabled. The shared
+# read-write Vikunja token proves the negative-probe target exists before the
+# restricted app-agent token is tested against it. A disabled
 # tier (no app token) renders no server and no key, so there is nothing to call.
+- name: Require the forbidden-project probe target to be outside the read ID allowlist
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_app_agent_probe_vikunja_forbidden_project_id | string is match('^[1-9][0-9]*$')
+      - >-
+        (llm_router_app_agent_probe_vikunja_forbidden_project_id | int)
+        not in (llm_router_app_agent_vikunja_read_allowlist | map('int') | list)
+      - (bao_local_llm_secrets | default({}, true)).get('VIKUNJA_MCP_URL', '') | length > 0
+      - (bao_local_llm_secrets | default({}, true)).get('VIKUNJA_MCP_TOKEN_RW', '') | length > 0
+    fail_msg: >-
+      The forbidden Vikunja project must be outside the ID allowlist and visible
+      to the shared verification identity.
+  when: "'vikunja-read' in (_llm_router_app_agent_matrix | selectattr('enabled') | map(attribute='id'))"
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Read the forbidden Vikunja project with the existing shared verification token
+  ansible.builtin.uri:
+    url: >-
+      {{ bao_local_llm_secrets.VIKUNJA_MCP_URL }}/projects/{{
+        llm_router_app_agent_probe_vikunja_forbidden_project_id | int }}
+    method: GET
+    headers:
+      Authorization: "Bearer {{ bao_local_llm_secrets.VIKUNJA_MCP_TOKEN_RW }}"
+    status_code: 200
+    return_content: true
+    timeout: 20
+  register: _llm_router_app_probe_forbidden_project
+  changed_when: false
+  when: "'vikunja-read' in (_llm_router_app_agent_matrix | selectattr('enabled') | map(attribute='id'))"
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
+- name: Require the forbidden Vikunja project to exist before the access probes
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_app_probe_forbidden_project.status == 200
+      - >-
+        _llm_router_app_probe_forbidden_project.json.id | int
+        == llm_router_app_agent_probe_vikunja_forbidden_project_id | int
+    fail_msg: >-
+      The configured forbidden Vikunja project does not exist or is not visible
+      to the shared verification identity.
+  when: "'vikunja-read' in (_llm_router_app_agent_matrix | selectattr('enabled') | map(attribute='id'))"
+  no_log: true
+  tags: [llm_router_app_agent_probe]
+
 - name: Materialize app-agent probe keys and enabled tiers
   ansible.builtin.set_fact:
     _llm_router_app_probe_keys: >-
@@ -10,7 +61,9 @@
          | zip(_llm_router_agent_keys | map(attribute='value'))) }}
     _llm_router_app_probe_tiers: >-
       {{ _llm_router_app_agent_matrix | selectattr('enabled') | map(attribute='id') | list }}
-    _llm_router_app_probe_url: "http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/call"
+    _llm_router_app_probe_task_title: >-
+      Router authorization probe {{ now(utc=true, fmt='%Y%m%dT%H%M%S.%fZ') }}
+    _llm_router_app_probe_url: "{{ llm_router_local_api_url }}/mcp-rest/tools/call"
   no_log: true
   tags: [llm_router_app_agent_probe]
 
@@ -71,33 +124,144 @@
   no_log: true
   tags: [llm_router_app_agent_probe]
 
-- name: Try a read-tier task create in a project the read user can see
-  ansible.builtin.uri:
-    url: "{{ _llm_router_app_probe_url }}"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ _llm_router_app_probe_keys['vikunja-read'] }}"
-      Content-Type: application/json
-    body_format: json
-    body:
-      server_id: vikunja_read
-      name: vikunja_tasks
-      arguments:
-        subcommand: create
-        projectId: "{{ _llm_router_app_probe_read_projects[0].id }}"
-        title: Router authorization probe task
-        description: Delete on sight; the read tier must not be able to create this.
-    status_code: [200, 400, 401, 403, 404, 422, 500]
-    return_content: true
-    timeout: 20
-  register: _llm_router_app_probe_create
-  check_mode: false
+- name: Probe read-tier task creation and always remove an unexpected task
   when: "'vikunja-read' in _llm_router_app_probe_tiers"
-  vars:
-    _llm_router_app_probe_read_projects: >-
-      {{ (_llm_router_app_probe['read-lists-projects'].json.content[0].text | from_json).data.projects }}
-  no_log: true
   tags: [llm_router_app_agent_probe]
+  no_log: true
+  block:
+    - name: Try a read-tier task create in an allowlisted project
+      ansible.builtin.uri:
+        url: "{{ _llm_router_app_probe_url }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _llm_router_app_probe_keys['vikunja-read'] }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          server_id: vikunja_read
+          name: vikunja_tasks
+          arguments:
+            subcommand: create
+            projectId: "{{ _llm_router_app_probe_read_projects[0].id }}"
+            title: "{{ _llm_router_app_probe_task_title }}"
+            description: Delete in the always path if the read tier can create tasks.
+        status_code: [200, 400, 401, 403, 404, 422, 500]
+        return_content: true
+        timeout: 20
+      register: _llm_router_app_probe_create
+      check_mode: false
+      vars:
+        _llm_router_app_probe_read_projects: >-
+          {{ (_llm_router_app_probe['read-lists-projects'].json.content[0].text | from_json).data.projects }}
+      no_log: true
+
+    - name: Require a specific authorization denial for the read-tier create probe
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _create.status == 403 or
+            (_create.status == 200 and (_create.json.isError | default(false)) and
+             ('forbidden' in _create_error or 'no access' in _create_error))
+        fail_msg: The read-tier create probe did not return an authorization denial.
+      vars:
+        _create: "{{ _llm_router_app_probe_create }}"
+        _create_error: >-
+          {{ _create.json.content | default([]) | map(attribute='text') | join(' ') | lower }}
+      no_log: true
+  always:
+    - name: Find tasks created by the read-tier probe, including after a timeout
+      ansible.builtin.uri:
+        url: "{{ _llm_router_app_probe_url }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _llm_router_app_probe_keys['vikunja-write'] }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          server_id: vikunja_write
+          name: vikunja_tasks
+          arguments:
+            subcommand: list
+            projectId: >-
+              {{ (_llm_router_app_probe['read-lists-projects'].json.content[0].text
+                  | from_json).data.projects[0].id }}
+            search: "{{ _llm_router_app_probe_task_title }}"
+        status_code: 200
+        return_content: true
+        timeout: 20
+      register: _llm_router_app_probe_cleanup_search
+      when: _llm_router_app_probe_create is defined
+      no_log: true
+
+    - name: Resolve every unexpected task created by the read-tier probe
+      ansible.builtin.set_fact:
+        _llm_router_app_probe_created_task_ids: >-
+          {%- set _ns = namespace(ids=[]) -%}
+          {%- set _create = _llm_router_app_probe_create | default({}, true) -%}
+          {%- set _create_json = _create.get('json', {}) -%}
+          {%- set _content = _create_json.get('content', []) -%}
+          {%- if _create.get('status', 0) == 200 and not _create_json.get('isError', false)
+                and _content | length > 0 -%}
+          {%- set _created = _content[0].text | from_json -%}
+          {%- set _created_data = _created.get('data', {}) -%}
+          {%- if _created_data is mapping -%}
+          {%- set _created_task = _created_data.get('task', _created_data) -%}
+          {%- set _created_id = _created_task.get('id', 0) | int -%}
+          {%- if _created_id > 0 -%}{%- set _ns.ids = _ns.ids + [_created_id] -%}{%- endif -%}
+          {%- endif -%}
+          {%- endif -%}
+          {%- set _search_json = _llm_router_app_probe_cleanup_search.json | default({}, true) -%}
+          {%- set _search_content = _search_json.get('content', []) -%}
+          {%- if _search_content | length > 0 -%}
+          {%- set _search = _search_content[0].text | from_json -%}
+          {%- set _data = _search.get('data', {}) -%}
+          {%- set _tasks = _data.get('tasks', _data) if _data is mapping else _data -%}
+          {%- for _task in _tasks if _task.get('title') == _llm_router_app_probe_task_title -%}
+          {%- set _task_id = _task.get('id', 0) | int -%}
+          {%- if _task_id > 0 -%}{%- set _ns.ids = _ns.ids + [_task_id] -%}{%- endif -%}
+          {%- endfor -%}
+          {%- endif -%}
+          {{ _ns.ids | unique | list }}
+      when: _llm_router_app_probe_create is defined
+      no_log: true
+
+    - name: Delete any task created by the read-tier probe with the write-tier token
+      ansible.builtin.uri:
+        url: "{{ _llm_router_app_probe_url }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _llm_router_app_probe_keys['vikunja-write'] }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          server_id: vikunja_write
+          name: vikunja_tasks
+          arguments:
+            subcommand: delete
+            id: "{{ item }}"
+        status_code: 200
+        return_content: true
+        timeout: 20
+      register: _llm_router_app_probe_cleanup
+      loop: "{{ _llm_router_app_probe_created_task_ids | default([]) }}"
+      loop_control:
+        label: "task {{ item }}"
+      when: _llm_router_app_probe_create is defined
+      no_log: true
+
+    - name: Fail if an unexpectedly created task has no ID that can be deleted
+      ansible.builtin.fail:
+        msg: >-
+          The read-tier create probe succeeded but its unique task could not be
+          found from the response or task list for cleanup.
+      when:
+        - _llm_router_app_probe_create is defined
+        - _llm_router_app_probe_create.status | default(0) == 200
+        - not (_llm_router_app_probe_create.json.isError | default(false))
+        - _llm_router_app_probe_created_task_ids | default([]) | length == 0
+      no_log: true
+
 
 - name: Require the read tier to see only allowlisted projects
   ansible.builtin.assert:
@@ -105,27 +269,29 @@
     that:
       - _r.status == 200
       - not (_r.json.isError | default(false))
-      - _titles | length > 0
-      - _titles | difference(llm_router_app_agent_vikunja_read_allowlist) | length == 0
+      - _project_ids | length > 0
+      - _project_ids | difference(llm_router_app_agent_vikunja_read_allowlist | map('int') | list) | length == 0
     fail_msg: The Vikunja read identity sees a project outside its allowlist, or cannot list projects.
   vars:
     _r: "{{ _llm_router_app_probe['read-lists-projects'] }}"
-    _titles: "{{ (_r.json.content[0].text | from_json).data.projects | map(attribute='title') | list }}"
+    _project_ids: "{{ (_r.json.content[0].text | from_json).data.projects | map(attribute='id') | map('int') | list }}"
   when: "'vikunja-read' in _llm_router_app_probe_tiers"
   no_log: true
   tags: [llm_router_app_agent_probe]
 
-- name: Require the read tier to be denied the non-allowlisted project and every write
+- name: Require the read tier to receive a specific denial for the forbidden project
   ansible.builtin.assert:
     quiet: true
     that:
-      - _get.status != 200 or (_get.json.isError | default(false))
-      - _llm_router_app_probe_create.status != 200 or (_llm_router_app_probe_create.json.isError | default(false))
-    fail_msg: >-
-      The Vikunja read tier read a non-allowlisted project or created a task; delete
-      any "Router authorization probe task" and fix the read identity's grants.
+      - >-
+        _get.status == 403 or
+        (_get.status == 200 and (_get.json.isError | default(false)) and
+         ('forbidden' in _get_error or 'no access' in _get_error))
+    fail_msg: The read tier's forbidden-project probe did not return an authorization denial.
   vars:
     _get: "{{ _llm_router_app_probe['read-gets-forbidden-project'] }}"
+    _get_error: >-
+      {{ _get.json.content | default([]) | map(attribute='text') | join(' ') | lower }}
   when: "'vikunja-read' in _llm_router_app_probe_tiers"
   no_log: true
   tags: [llm_router_app_agent_probe]

@@ -6,6 +6,10 @@
     - ladder_keys_fixture.yml
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _app_agent_read_allowlist_ids: [64]
+    _app_agent_forbidden_project_id: >-
+      {{ (lookup('file', playbook_dir ~ '/../../inventory/group_vars/llm_router_group.yml')
+         | from_yaml).llm_router_app_agent_probe_vikunja_forbidden_project_id }}
     llm_router_subdomain: pve.example.test
     ai_orchestration_otel_endpoint: "http://otel.example.test:4318"
   tasks:
@@ -68,7 +72,7 @@
             zammad_write_llm_router_key: fixture-zammad-write-key
           app-agent-vikunja-read:
             VIKUNJA_AGENT_READ_TOKEN: fixture-vikunja-read-token
-            VIKUNJA_AGENT_READ_ALLOWLIST: '["Hermes"]'
+            VIKUNJA_AGENT_READ_ALLOWLIST: "{{ _app_agent_read_allowlist_ids | to_json }}"
           app-agent-vikunja-write:
             VIKUNJA_AGENT_WRITE_TOKEN: fixture-vikunja-write-token
           app-agent-zammad-write:
@@ -76,6 +80,7 @@
         bao_local_llm_secrets: >-
           {{ bao_local_llm_secrets | combine({
             'VIKUNJA_MCP_URL': 'fixture-vikunja-url',
+            'VIKUNJA_MCP_TOKEN_RW': 'fixture-vikunja-shared-rw-token',
             'ZAMMAD_MCP_URL': 'fixture-zammad-url'
           }) }}
       no_log: true
@@ -129,6 +134,33 @@
         fail_msg: The Vikunja read-tier token mapping drifted.
       no_log: true
 
+    - name: Pin numeric project IDs, strict denials, guaranteed cleanup, and local API URLs
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_app_agent_vikunja_read_allowlist == _app_agent_read_allowlist_ids
+          - >-
+            _probe_source.index('Read the forbidden Vikunja project')
+            < _probe_source.index('Call each boundary probe')
+          - "'VIKUNJA_MCP_TOKEN_RW' in _probe_source"
+          - "'_project_ids | difference' in _probe_source"
+          - "'_create.status == 403' in _probe_source"
+          - "'no access' in _probe_source and 'forbidden' in _probe_source"
+          - "'always:' in _probe_source and 'subcommand: delete' in _probe_source"
+          - "'subcommand: list' in _probe_source and 'search:' in _probe_source"
+          - "'vikunja-write' in _probe_source"
+          - "'llm_router_local_api_url' in _probe_source"
+          - "'127.0.0.1' not in _probe_source"
+          - "'llm_router_local_api_url' in _tools_source"
+          - "'127.0.0.1' not in _tools_source"
+          - "'llm_router_local_api_url:' in _network_source"
+          - "'llm_router_api_port' in _network_source"
+      vars:
+        _probe_source: "{{ lookup('file', _role_dir ~ '/tasks/verify-app-agent-probe.yml') }}"
+        _tools_source: "{{ lookup('file', _role_dir ~ '/tasks/verify-mcp-tools.yml') }}"
+        _network_source: "{{ lookup('file', _role_dir ~ '/defaults/main/10-network.yml') }}"
+      no_log: true
+
     - name: Keep the write-tier token on its dedicated leaf field
       ansible.builtin.assert:
         quiet: true
@@ -151,8 +183,8 @@
         - name: Run the app-agent gate with an untrusted write tier
           ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
           vars:
-            llm_router_app_agent_probe_vikunja_forbidden_project_id: "43"
-            llm_router_app_agent_vikunja_read_allowlist: [Hermes]
+            llm_router_app_agent_probe_vikunja_forbidden_project_id: "{{ _app_agent_forbidden_project_id }}"
+            llm_router_app_agent_vikunja_read_allowlist: "{{ _app_agent_read_allowlist_ids }}"
 
         - name: Fail if the gate admitted an untrusted write tier
           ansible.builtin.fail:
@@ -180,7 +212,7 @@
           vars:
             ai_agents: "{{ _app_agent_trusted_roster }}"
             llm_router_app_agent_probe_vikunja_forbidden_project_id: ""
-            llm_router_app_agent_vikunja_read_allowlist: [Hermes]
+            llm_router_app_agent_vikunja_read_allowlist: "{{ _app_agent_read_allowlist_ids }}"
 
         - name: Fail if the read tier ran without a probe target
           ansible.builtin.fail:
@@ -197,8 +229,8 @@
       ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
       vars:
         ai_agents: "{{ _app_agent_trusted_roster }}"
-        llm_router_app_agent_probe_vikunja_forbidden_project_id: "43"
-        llm_router_app_agent_vikunja_read_allowlist: [Hermes]
+        llm_router_app_agent_probe_vikunja_forbidden_project_id: "{{ _app_agent_forbidden_project_id }}"
+        llm_router_app_agent_vikunja_read_allowlist: "{{ _app_agent_read_allowlist_ids }}"
 
     - name: Remove only the Vikunja read app token from the fixture
       ansible.builtin.set_fact:
