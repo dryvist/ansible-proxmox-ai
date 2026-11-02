@@ -7,6 +7,8 @@ logs stay off, so the export is metrics only.
 
 from __future__ import annotations
 
+import re
+
 from _role_files import role_defaults, role_tasks
 from _shell_harness_shared import defaults_of
 from test_context_limits import ROLE_ROOT, _render
@@ -50,6 +52,23 @@ def test_otlp_packages_are_installed_so_the_export_can_start() -> None:
     assert "hermes_agent_otel_endpoint" in task["when"]
     assert task["notify"] == "Restart hermes-gateway"
     assert role_defaults(ROLE_ROOT)["hermes_agent_otlp_sdk_version"]
+
+
+def test_slack_extra_is_installed_by_name_and_pinned() -> None:
+    # The editable checkout install re-resolves the whole checkout and hits upstream's pillow conflict.
+    installs = [t for t in role_tasks(ROLE_ROOT) if t.get("name") == "Install the Slack platform extra into the Hermes venv"]
+    assert len(installs) == 1
+    cmd = installs[0]["ansible.builtin.command"]["cmd"]
+    assert " -e " not in cmd
+    assert "hermes_agent_install_dir" not in cmd
+    defaults = role_defaults(ROLE_ROOT)
+    for package, variable in (
+        ("slack-bolt", "hermes_agent_slack_bolt_version"),
+        ("slack-sdk", "hermes_agent_slack_sdk_version"),
+        ("aiohttp", "hermes_agent_slack_aiohttp_version"),
+    ):
+        assert f"{package}==" + "{{ " + variable + " }}" in cmd, package
+        assert re.fullmatch(r"\d+\.\d+\.\d+", defaults[variable]), variable
 
 
 def test_profile_and_public_gateway_configs_do_not_export_it() -> None:

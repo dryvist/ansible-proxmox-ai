@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 from jinja2 import Environment, FileSystemLoader
+
+from _group_vars import load_group_vars_all
 from _role_files import role_defaults, role_tasks, role_tasks_text, template_text
 from _cron_pool_ceiling_shared import wall_timeout_seconds
 
@@ -83,9 +85,7 @@ def _group_vars_all() -> dict[str, Any]:
     single-pass render below sees a resolved int, the way Ansible's templar
     would after resolving both levels.
     """
-    group_vars = yaml.safe_load(
-        (REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml").read_text()
-    )
+    group_vars = load_group_vars_all()
     group_vars["tofu_data"] = {"constants": {"serving": {"llm_concurrency": 8}}}
     group_vars["ai_llm_concurrency"] = (
         _jinja_env().from_string(str(group_vars["ai_llm_concurrency"])).render(**group_vars)
@@ -285,17 +285,24 @@ def test_default_issue_crons_use_the_short_lived_github_identity() -> None:
     assert "HERMES_GH_TOKEN_SET=author" in skill
 
 
-def test_every_profile_cron_store_gets_its_own_tick_trigger() -> None:
-    """A job on a named profile registers in that profile's own cron store,
-    which only that profile's ticker drains — the default gateway's in-process
-    ticker never sees it. The tick loop must therefore cover every profile, so
-    it is derived from hermes_agent_profiles rather than hand-kept: a
-    hardcoded list leaves a new profile's job created, scheduled, and silent.
+def test_no_profile_gets_a_standalone_cron_tick() -> None:
+    """The gateway ticks every profile home and delivers a satellite's Slack
+    output through the primary's profile route. A standalone per-profile
+    `hermes cron tick` has no adapters and drops that output, so the role
+    installs none and removes any left from earlier converges, for every
+    profile in hermes_agent_profiles.
     """
-    tasks = role_tasks_text(ROLE_ROOT)
-    assert (
-        "loop: \"{{ hermes_agent_profiles | map(attribute='name') | list }}\"" in tasks
-    ), "the profile cron tick trigger must loop over every profile, not a fixed list"
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks" / "cron_reconcile.yml").read_text())
+    ticks = [
+        t for t in tasks
+        if "hermes-cron-tick-" in str(t.get("ansible.builtin.cron", {}).get("name", ""))
+    ]
+    assert len(ticks) == 1
+    assert ticks[0]["ansible.builtin.cron"]["state"] == "absent"
+    assert "job" not in ticks[0]["ansible.builtin.cron"]
+    assert ticks[0]["loop"] == "{{ hermes_agent_profiles | map(attribute='name') | list }}"
+    assert "when" not in ticks[0]
+    assert "{{ hermes_agent_bin }} cron tick" not in role_tasks_text(ROLE_ROOT)
 
 
 def test_profile_config_template_renders_scoped_mcp_only() -> None:

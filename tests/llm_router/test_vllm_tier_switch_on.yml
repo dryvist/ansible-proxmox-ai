@@ -53,6 +53,12 @@
           - _tier_groups | difference(_vllm_route_groups) | length == 0
           - _vllm_route_groups | difference(_tier_groups) | length == 0
           - _rendered_vllm_members | length == llm_router_vllm_models | length
+          - _rendered_agent_twins | length == _priority_vllm_models | length
+          - >-
+            _rendered_agent_twins
+            | selectattr('litellm_params.extra_body.priority', 'equalto', 10)
+            | list | length == _rendered_agent_twins | length
+          - _bad_priority_deployments | length == 0
           - _small_cpu | length == 1
           - _small_cpu | map(attribute='litellm_params.order') | map('int') | list == [3]
           - llm_router_small_model in _rendered_names
@@ -77,7 +83,44 @@
         _rendered_vllm_members: >-
           {{ _config.model_list
              | selectattr('model_name', 'in', _tier_groups)
-             | selectattr('litellm_params.model', 'in', _expected_vllm_models) | list }}
+             | selectattr('litellm_params.model', 'in', _expected_vllm_models)
+             | selectattr('litellm_params.tags', 'contains', 'default') | list }}
+        _priority_vllm_models: >-
+          {%- set ns = namespace(models=[]) -%}
+          {%- for m in llm_router_vllm_models
+                if ((m.provider == 'hosted_vllm' and m.tier in llm_router_local_registry_tiers)
+                    or (m.provider == 'openai' and m.tier == 'vllm'))
+                  and (m.route_group | default(m.client_model_id)) in _llm_router_local_agent_groups -%}
+          {%- set ns.models = ns.models + [m] -%}
+          {%- endfor -%}
+          {{ ns.models }}
+        _rendered_agent_twins: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _priority_vllm_models | map(attribute='route_group') | list)
+             | selectattr('litellm_params.tags', 'contains', 'agent-priority') | list }}
+        _bad_priority_deployments: >-
+          {%- set _sources = llm_router_vllm_models + llm_router_hermes_local_models
+                + llm_router_gpu_models -%}
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _config.model_list
+                if d.litellm_params.extra_body.priority is defined -%}
+          {%- set _eligible = namespace(found=false) -%}
+          {%- for m in _sources -%}
+          {%- set _model = m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) -%}
+          {%- if _model == d.litellm_params.model
+                and ((m.provider == 'hosted_vllm' and m.tier in llm_router_local_registry_tiers)
+                     or (m.provider == 'openai' and m.tier == 'vllm'))
+                and (m.route_group | default(m.client_model_id)) in _llm_router_local_agent_groups
+                and 'agent-priority' in d.litellm_params.tags | default([])
+                and d.litellm_params.extra_body.priority | int == 10 -%}
+          {%- set _eligible.found = true -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- if not _eligible.found -%}
+          {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (d.litellm_params.model | string)] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
         _vllm_route_groups: >-
           {{ llm_router_vllm_models | map(attribute='route_group') | unique | list }}
         _small_cpu: >-

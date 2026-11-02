@@ -20,6 +20,8 @@ from typing import Any
 import jinja2
 import yaml
 
+from _group_vars import load_group_vars_all
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALL_YML = REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml"
 
@@ -33,7 +35,7 @@ CONSTANTS_WITHOUT_SERVING: dict[str, Any] = {
 
 
 def _group_vars() -> dict[str, Any]:
-    return yaml.safe_load(ALL_YML.read_text())
+    return load_group_vars_all()
 
 
 def _render(expr: str, **ctx: Any) -> str:

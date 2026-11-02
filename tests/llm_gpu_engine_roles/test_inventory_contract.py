@@ -7,11 +7,12 @@ from pathlib import Path
 import jinja2
 import yaml
 
+from _group_vars import load_group_vars_all
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
 GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
-ROUTER_GPU_PROFILE_VARS = REPO_ROOT / "inventory/group_vars/all/00-core.yml"
 ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 
 
@@ -48,7 +49,7 @@ def test_site_reaches_the_serving_playbook_without_a_tag_filter():
 
 
 def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
-    all_vars = _load(REPO_ROOT / "inventory/group_vars/all/00-core.yml")
+    all_vars = load_group_vars_all()
     profiles_by_engine = all_vars["llm_gpu_active_profiles_by_engine"]
     assert profiles_by_engine["llama_cpp"] == "medium-b"
     llama_cpp_group = _load(
@@ -160,7 +161,7 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
     assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
 
 
-def test_ada_small_gpu_route_tag_keeps_the_light_lane_and_selects_its_cache():
+def test_ada_agent_long_context_profile_keeps_the_light_lane_and_selects_its_cache():
     host_vars = _load(
         REPO_ROOT / "inventory/host_vars/llm-ada-lovelace-6X-16GB-embed.yml"
     )
@@ -172,7 +173,7 @@ def test_ada_small_gpu_route_tag_keeps_the_light_lane_and_selects_its_cache():
     )
     groups = add_host["groups"]
 
-    assert host_vars["llm_active_profile"] == "small"
+    assert host_vars["llm_active_profile"] == "qwen38-27b-131k-1"
     assert host_vars["llm_gpu_serving_model_cache_mount_path"] == "/var/lib/llm"
     assert groups.count("'llm-gpu-small-router' in (item.value.tags | default([]))") == 2
     assert "['llm_gpu_legacy_group', 'llm_gpu_group']" in groups
@@ -295,7 +296,7 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
 
 
 def test_router_projects_gpu_profiles_only_when_the_selected_host_group_has_a_member():
-    expression = _load(ROUTER_GPU_PROFILE_VARS)["llm_router_gpu_profiles_enabled"]
+    expression = load_group_vars_all()["llm_router_gpu_profiles_enabled"]
     env = jinja2.Environment()
 
     def render(groups: dict) -> str:

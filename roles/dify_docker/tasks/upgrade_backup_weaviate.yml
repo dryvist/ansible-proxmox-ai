@@ -1,0 +1,143 @@
+---
+# Live Weaviate filesystem snapshot and archive verification.
+- name: Read the running Weaviate container address
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }}range .NetworkSettings.Networks{{ '}}' }}{{ '{{' }}.IPAddress{{ '}}' }}{{ '{{' }}end{{ '}}' }}"
+      - "{{ dify_docker_weaviate_container.stdout | trim }}"
+  register: dify_docker_weaviate_container_address
+  changed_when: false
+
+- name: Require a reachable Weaviate container address
+  ansible.builtin.assert:
+    that:
+      - dify_docker_weaviate_container_address.stdout | trim | length > 0
+    fail_msg: Could not determine the running Weaviate container address.
+    quiet: true
+
+- name: Set the Weaviate filesystem backup API URL
+  ansible.builtin.set_fact:
+    dify_docker_weaviate_backup_api_url: >-
+      {{ 'http://' ~ (dify_docker_weaviate_container_address.stdout | trim) ~
+         ':' ~ (dify_docker_weaviate_port | string) ~ '/v1/backups/filesystem' }}
+    dify_docker_weaviate_meta_api_url: >-
+      {{ 'http://' ~ (dify_docker_weaviate_container_address.stdout | trim) ~
+         ':' ~ (dify_docker_weaviate_port | string) ~ '/v1/meta' }}
+
+- name: Read the running Weaviate modules
+  ansible.builtin.uri:
+    url: "{{ dify_docker_weaviate_meta_api_url }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ dify_docker_weaviate_api_key }}"
+    status_code: 200
+    timeout: 30
+    use_proxy: false
+  register: dify_docker_weaviate_meta
+  changed_when: false
+  no_log: true
+
+- name: Detect whether Weaviate supports filesystem backups
+  ansible.builtin.set_fact:
+    dify_docker_weaviate_backup_module_available: >-
+      {{ 'backup-filesystem' in
+         (dify_docker_weaviate_meta.json.modules | default({})) }}
+
+- name: Start a live Weaviate filesystem backup
+  ansible.builtin.uri:
+    url: "{{ dify_docker_weaviate_backup_api_url }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ dify_docker_weaviate_api_key }}"
+    body_format: json
+    body:
+      id: "{{ dify_docker_weaviate_backup_id }}"
+    status_code:
+      - 200
+      - 201
+      - 202
+    timeout: 30
+    use_proxy: false
+  register: dify_docker_weaviate_backup_start
+  changed_when: true
+  no_log: true
+  when: dify_docker_weaviate_backup_module_available | bool
+
+- name: Wait for the Weaviate filesystem backup to finish
+  ansible.builtin.uri:
+    url: "{{ dify_docker_weaviate_backup_api_url }}/{{ dify_docker_weaviate_backup_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ dify_docker_weaviate_api_key }}"
+    status_code: 200
+    timeout: 30
+    use_proxy: false
+  register: dify_docker_weaviate_backup_status
+  until: >-
+    dify_docker_weaviate_backup_status.json.status | default('')
+    in ['SUCCESS', 'FAILED']
+  retries: 900
+  delay: 2
+  changed_when: false
+  no_log: true
+  when: dify_docker_weaviate_backup_module_available | bool
+
+- name: Require a successful Weaviate filesystem backup
+  ansible.builtin.assert:
+    that:
+      - dify_docker_weaviate_backup_status.json.status == 'SUCCESS'
+    fail_msg: Weaviate filesystem backup did not reach SUCCESS.
+    quiet: true
+  when: dify_docker_weaviate_backup_module_available | bool
+
+- name: Archive the completed Weaviate filesystem backup
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --create
+      - --gzip
+      - --numeric-owner
+      - --file
+      - "{{ dify_docker_weaviate_backup_path }}"
+      - --directory
+      - "{{ dify_docker_data_dir }}/weaviate/backups"
+      - "{{ dify_docker_weaviate_backup_id }}"
+  changed_when: true
+  when: dify_docker_weaviate_backup_module_available | bool
+
+- name: Read the Weaviate pre-upgrade backup file
+  ansible.builtin.stat:
+    path: "{{ dify_docker_weaviate_backup_path }}"
+  register: dify_docker_weaviate_backup_stat
+  when: dify_docker_weaviate_backup_module_available | bool
+
+- name: Require a non-empty Weaviate pre-upgrade backup
+  ansible.builtin.assert:
+    that:
+      - dify_docker_weaviate_backup_stat.stat.exists
+      - dify_docker_weaviate_backup_stat.stat.size > 0
+    fail_msg: Weaviate pre-upgrade backup is missing or empty.
+    quiet: true
+  when: dify_docker_weaviate_backup_module_available | bool
+
+- name: Set restrictive permissions on the Weaviate backup
+  ansible.builtin.file:
+    path: "{{ dify_docker_weaviate_backup_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: dify_docker_weaviate_backup_module_available | bool
+
+- name: Verify the Weaviate pre-upgrade archive integrity
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --list
+      - --gzip
+      - --file
+      - "{{ dify_docker_weaviate_backup_path }}"
+  changed_when: false
+  when: dify_docker_weaviate_backup_module_available | bool

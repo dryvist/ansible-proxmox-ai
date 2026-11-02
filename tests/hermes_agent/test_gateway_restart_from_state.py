@@ -271,9 +271,17 @@ def test_gateway_marker_modules_execute_with_ansible_check_mode(tmp_path):
 def test_restart_record_is_skipped_when_the_digest_was_never_set():
     handlers = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
     stamp = next(handler for handler in handlers if handler["name"] == "Record the gateway restart")
-    guard = ENV.compile_expression(stamp["when"])
+    conditions = stamp["when"]
+    conditions = conditions if isinstance(conditions, list) else [conditions]
+
+    def guard(**context):
+        return all(ENV.compile_expression(condition)(**context) for condition in conditions)
+
     assert guard() is False
-    assert guard(hermes_agent_gateway_desired_digest="digest") is True
+    assert guard(
+        hermes_agent_gateway_desired_digest="digest",
+        hermes_agent_gateway_input_stats={"results": [{}, {}, {"stat": {"exists": True}}]},
+    ) is True
     strict = Environment(undefined=StrictUndefined)
     content = stamp["ansible.builtin.copy"]["content"]
     # Skipped path: rendering content without the digest is the failure the guard prevents.

@@ -1,4 +1,7 @@
 ---
+- name: Recheck interactive latency before this recipe cell
+  ansible.builtin.import_tasks: llm-model-campaign-latency-gate.yml
+
 - name: Allocate a unique recipe cell name and result paths
   ansible.builtin.set_fact:
     _llm_campaign_cell_slug: >-
@@ -7,6 +10,7 @@
             if _llm_campaign_paired_trial | bool else '')
          ~ ('-ctx' ~ _llm_campaign_context_value if 'context_list' in _llm_campaign_run.dimensions else '')
          ~ ('-c' ~ _llm_campaign_concurrency_value if 'concurrency_list' in _llm_campaign_run.dimensions else '')
+         ~ ('-s' ~ _llm_campaign_sample_slice_value if 'sample_slice_list' in _llm_campaign_run.dimensions else '')
          ~ '-r' ~ _llm_campaign_repetition_value }}
     _llm_campaign_cell_target_dir: >-
       {{ _llm_campaign_target_results.path ~ '/' ~ _llm_campaign_run.name
@@ -15,6 +19,7 @@
             if _llm_campaign_paired_trial | bool else '')
          ~ ('-ctx' ~ _llm_campaign_context_value if 'context_list' in _llm_campaign_run.dimensions else '')
          ~ ('-c' ~ _llm_campaign_concurrency_value if 'concurrency_list' in _llm_campaign_run.dimensions else '')
+         ~ ('-s' ~ _llm_campaign_sample_slice_value if 'sample_slice_list' in _llm_campaign_run.dimensions else '')
          ~ '-r' ~ _llm_campaign_repetition_value }}
     _llm_campaign_cell_controller_dir: >-
       {{ _llm_campaign_workdir ~ '/results/' ~ _llm_campaign_run.name
@@ -23,6 +28,7 @@
             if _llm_campaign_paired_trial | bool else '')
          ~ ('-ctx' ~ _llm_campaign_context_value if 'context_list' in _llm_campaign_run.dimensions else '')
          ~ ('-c' ~ _llm_campaign_concurrency_value if 'concurrency_list' in _llm_campaign_run.dimensions else '')
+         ~ ('-s' ~ _llm_campaign_sample_slice_value if 'sample_slice_list' in _llm_campaign_run.dimensions else '')
          ~ '-r' ~ _llm_campaign_repetition_value }}
 
 - name: Create the row's target and controller result directories
@@ -54,6 +60,13 @@
     context: "{{ _llm_campaign_context_value }}"
     concurrency: "{{ _llm_campaign_concurrency_value }}"
     repetition: "{{ _llm_campaign_repetition_value }}"
+    sample_slice: >-
+      {{ {_llm_campaign_run.sample_task:
+           _llm_campaign_run.sample_indices[
+             (_llm_campaign_sample_slice_value | int) * (_llm_campaign_run.slice_size | int):
+             ((_llm_campaign_sample_slice_value | int) + 1) * (_llm_campaign_run.slice_size | int)
+           ]}
+         if 'sample_slice_list' in _llm_campaign_run.dimensions else {} }}
     output_tokens: "{{ _llm_campaign_run.output_tokens }}"
     model_id: >-
       {{ _llm_campaign_served_model_id
@@ -82,18 +95,33 @@
   changed_when: false
 
 - name: Run the tool-native command from the selected recipe row
-  ansible.builtin.command:
-    argv: "{{ _llm_campaign_rendered_argv }}"
-    chdir: "{{ _llm_campaign_checkout if _llm_campaign_run.run_on == 'controller' else omit }}"
-  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
-  vars:
-    ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
-  environment:
-    OPENAI_API_KEY: "{{ lookup('env', 'OPENAI_API_KEY') if _llm_campaign_run.api_key_env is defined else omit }}"
-    HF_ALLOW_CODE_EVAL: "{{ '1' if _llm_campaign_run.code_eval | default(false) else omit }}"
-  register: _llm_campaign_command_result
-  changed_when: true
-  no_log: "{{ _llm_campaign_run.api_key_env is defined }}"
+  block:
+    - name: Execute the selected recipe command
+      ansible.builtin.command:
+        argv: "{{ _llm_campaign_rendered_argv }}"
+        chdir: "{{ _llm_campaign_checkout if _llm_campaign_run.run_on == 'controller' else omit }}"
+      delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+      vars:
+        ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
+      environment:
+        OPENAI_API_KEY: "{{ lookup('env', 'OPENAI_API_KEY') if _llm_campaign_run.api_key_env is defined else omit }}"
+        HF_ALLOW_CODE_EVAL: "{{ '1' if _llm_campaign_run.code_eval | default(false) else omit }}"
+      async: "{{ llm_model_campaign_cell_timeout_seconds }}"
+      poll: 1
+      register: _llm_campaign_command_result
+      changed_when: true
+      no_log: "{{ _llm_campaign_run.api_key_env is defined }}"
+  rescue:
+    - name: Report the failed model campaign cell command
+      ansible.builtin.fail:
+        msg: >-
+          {{ ('Model campaign cell command exceeded its '
+              ~ (llm_model_campaign_cell_timeout_seconds | string)
+              ~ '-second timeout.')
+             if ((ansible_failed_result.msg | default('')) is search('Timeout exceeded|did not complete'))
+             else ('Model campaign cell command failed: '
+                   ~ (ansible_failed_result.msg | default('unknown error'))) }}
+      no_log: "{{ _llm_campaign_run.api_key_env is defined }}"
 
 - name: Record the cell finish in UTC
   ansible.builtin.command:
@@ -146,6 +174,8 @@
           'context_tokens': _llm_campaign_context_value,
           'concurrency': _llm_campaign_concurrency_value,
           'repetition': _llm_campaign_repetition_value,
+          'sample_slice_index': _llm_campaign_sample_slice_value
+            if 'sample_slice_list' in _llm_campaign_run.dimensions else none,
           'power_cap_w': power_cap_w,
           'argv': _llm_campaign_rendered_argv} | to_nice_json }}
     dest: "{{ _llm_campaign_cell_target_dir }}/{{ _llm_campaign_cell_slug }}.run.json"

@@ -12,7 +12,7 @@ DOMAIN_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domai
 ROSTER_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/11-roster-domains.yml"
 IDENTITY_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains-identities.yml"
 AGENT_DEFAULTS = REPO_ROOT / "inventory/group_vars/hermes_agent_group/00-agent-settings.yml"
-ROSTER = {"splunk-heimdall": {"owns": ["splunk"]}}
+ROSTER = {"splunk-heimdall": {"container": "splunk-heimdall", "owns": ["splunk"]}}
 TWO_AGENT_ROSTER = {"a-x": {"owns": []}, "b-y": {"owns": []}}
 READER_DOMAIN_NAMES = {"llm-router-agent-keys", "agentgateway-agent-keys"}
 
@@ -78,6 +78,24 @@ def test_roster_agent_gets_its_paths_and_owned_mcp_paths():
             "required": True,
         }
     ]
+
+
+def test_container_less_agent_that_owns_nothing_gets_no_domain_of_its_own():
+    # Its leaves are read by the reader domains, so it needs no AppRole login of its own.
+    by_name = {domain["name"]: domain for domain in _render_domains({"ci-fixer": {"owns": []}})}
+
+    assert "ci-fixer" not in by_name
+    assert "apps/ci-fixer" in by_name["llm-router-agent-keys"]["paths"]
+    assert {"path": "apps/ci-fixer-gw", "optional": True} in by_name["agentgateway-agent-keys"]["paths"]
+
+
+def test_container_less_owner_reads_only_its_seeded_apps_leaf_and_owned_mcp():
+    # A container-less owner has no runtime that reads ai/<agent>, so strict reads need only apps/<agent>.
+    domains = _render_domains({"ci-fixer": {"owns": ["github"]}})
+    (domain,) = [domain for domain in domains if domain["name"] == "ci-fixer"]
+    required = [path for path in domain["paths"] if not isinstance(path, dict)]
+    assert required == ["apps/ci-fixer", "ai/mcp/github"]
+    assert domain["required"] is True
 
 
 def test_owned_mcp_paths_are_removed_from_legacy_domains():
@@ -170,7 +188,10 @@ def test_roster_domain_is_selected_by_the_container_identity():
 
 
 def test_each_hermes_identity_reads_only_its_own_optional_gateway_leaf():
-    identities = {"hermes": {"owns": []}, "hermes-private": {"owns": []}}
+    identities = {
+        "hermes": {"container": "hermes-agent", "owns": []},
+        "hermes-private": {"container": "hermes-private", "owns": []},
+    }
     by_name = {domain["name"]: domain for domain in _render_domains(identities)}
 
     for identity, other in (("hermes", "hermes-private"), ("hermes-private", "hermes")):

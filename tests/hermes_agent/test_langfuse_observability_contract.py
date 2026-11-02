@@ -46,6 +46,16 @@ def _env_values(rendered: str) -> dict[str, str]:
 
 
 def test_langfuse_requires_both_keys_and_renders_sanitized_config() -> None:
+    collector_endpoint = "https://otel.collector.example.test"
+    langfuse_host = "https://langfuse.example.test"
+    base_url_template = str(
+        role_defaults(ROLE_ROOT)["hermes_agent_langfuse_base_url"]
+    )
+    collector_base_url = _jinja_env().from_string(base_url_template).render(
+        ai_orchestration_otel_endpoint=collector_endpoint,
+    )
+    assert collector_base_url == collector_endpoint
+
     cases = (
         ("", "", False),
         ("pk-lf-test", "", False),
@@ -63,7 +73,7 @@ def test_langfuse_requires_both_keys_and_renders_sanitized_config() -> None:
             "hermes_agent_plugins_enabled": _expected_plugins(enabled),
             "hermes_agent_langfuse_public_key": public_key,
             "hermes_agent_langfuse_secret_key": secret_key,
-            "hermes_agent_langfuse_base_url": "https://langfuse.example.test",
+            "hermes_agent_langfuse_base_url": collector_base_url,
         }
 
         plugin_config = yaml.safe_load(config.render(**context)) or {}
@@ -80,10 +90,16 @@ def test_langfuse_requires_both_keys_and_renders_sanitized_config() -> None:
             assert langfuse_values == {
                 "HERMES_LANGFUSE_PUBLIC_KEY": public_key,
                 "HERMES_LANGFUSE_SECRET_KEY": secret_key,
-                "HERMES_LANGFUSE_BASE_URL": "https://langfuse.example.test",
+                "HERMES_LANGFUSE_BASE_URL": collector_endpoint,
                 "HERMES_LANGFUSE_CAPTURE": "sanitized",
                 "HERMES_LANGFUSE_ENV": "production",
             }
+            # Langfuse SDK 4.15.2 appends this override to base_url:
+            # https://github.com/langfuse/langfuse-python/blob/v4.15.2/langfuse/_client/span_processor.py#L108-L118
+            assert values["LANGFUSE_OTEL_TRACES_EXPORT_PATH"] == "v1/traces"
+            assert langfuse_values["HERMES_LANGFUSE_BASE_URL"] != langfuse_host
+        else:
+            assert "LANGFUSE_OTEL_TRACES_EXPORT_PATH" not in values
 
 
 def test_root_and_profile_templates_share_the_gated_partials() -> None:

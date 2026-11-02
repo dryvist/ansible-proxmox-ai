@@ -1,16 +1,21 @@
 """Self-check for the gh wrapper (files/hermes-gh.py): boundary pin and outbound gate."""
 import base64
+import json
 import runpy
+import sys
 import types
 from pathlib import Path
 
 import pytest
+import yaml
+from jinja2.nativetypes import NativeEnvironment
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 MOD = types.SimpleNamespace(**runpy.run_path(str(ROLE / "files" / "hermes-gh.py"), run_name="wrapper"))
 
 CFG = {
-    "sets": {"review": {}, "author": {}},
+    "sets": {"review": {"public": "review-public", "private": "review-private"},
+             "author": {"public": "author-public"}},
     "deny_suffixes": ["corp.example.test"],
     "private_repos": ["acme/secret-infra"],
 }
@@ -47,6 +52,47 @@ def test_selects_set_and_boundary():
 def test_requires_boundary_and_known_set():
     refused(["pr", "list"], "no-boundary", boundary="")
     refused(["pr", "list", "-R", "acme/open"], "unknown-set", kind="admin")
+
+
+def test_refuses_unconfigured_set_boundary():
+    with pytest.raises(MOD.Refuse, match="token set 'author' is not configured for boundary 'private'") as exc:
+        decide(["search", "prs"], boundary="private", kind="author")
+    assert exc.value.rule == "unknown-set"
+
+
+def test_main_refuses_unconfigured_set_boundary(tmp_path, monkeypatch, capsys):
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({**CFG, "real_git": "git"}))
+    monkeypatch.setitem(MOD.main.__globals__, "CONFIG_PATH", str(config))
+    monkeypatch.setattr(sys, "argv", ["gh", "search", "prs"])
+    monkeypatch.setenv("HERMES_TRUST_BOUNDARY", "private")
+    monkeypatch.setenv("HERMES_GH_TOKEN_SET", "author")
+    monkeypatch.setattr(MOD.subprocess, "run", lambda *args, **kwargs: types.SimpleNamespace(stdout=""))
+    assert MOD.main() != 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "gh: refused (unknown-set): token set 'author' is not configured for boundary 'private'\n"
+
+
+def test_identity_set_mappings_and_rendered_token_sets():
+    defaults = yaml.safe_load((ROLE / "defaults/main/92-github-identity.yml").read_text())
+    assert defaults["hermes_agent_github_identity_sets"] == {
+        "review": {"public": "hermes-review-public", "private": "hermes-review-private"},
+        "author": {"public": "hermes-author-public"},
+    }
+    group_vars = yaml.safe_load(
+        (ROLE.parents[1] / "inventory/group_vars/hermes_agent_group/90-github-identity.yml").read_text()
+    )
+    expression = NativeEnvironment().from_string(group_vars["hermes_agent_github_identity_sets"])
+    assert expression.render(hermes_agent_identity="hermes") == {"review": {"public": "hermes-review-public"}}
+    private_sets = expression.render(hermes_agent_identity="hermes-private")
+    assert private_sets == {"review": {"public": "hermes-read-public", "private": "hermes-review-private"}}
+    environment = NativeEnvironment()
+    environment.filters["comment"] = lambda value: "# " + value
+    template = environment.from_string((ROLE / "templates/hermes-gh-token.env.j2").read_text())
+    rendered = template.render(ansible_managed="managed", hermes_agent_github_identity_approles={},
+                               hermes_agent_github_identity_sets=private_sets)
+    assert 'GH_TOKEN_SETS="review-public=public:hermes-read-public review-private=private:hermes-review-private "' in rendered
 
 
 def test_refuses_cross_boundary_both_ways():

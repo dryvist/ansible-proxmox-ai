@@ -18,7 +18,12 @@ MLX_ARTIFACTS = REPO_ROOT / "llm-models.d/69-gpu-artifacts-mlx.yml"
 
 def test_mlx_recipes_are_admitted_and_the_campaign_revision_is_pinned():
     plays = yaml.safe_load((PLAYBOOKS / "llm-model-campaign.yml").read_text(encoding="utf-8"))
-    conditions = plays[0]["tasks"][0]["ansible.builtin.assert"]["that"]
+    survey = next(
+        task
+        for task in plays[0]["tasks"]
+        if task.get("name") == "Validate the required survey values and safe config name"
+    )
+    conditions = survey["ansible.builtin.assert"]["that"]
     pattern = re.fullmatch(r"config_name is match\('(.+)'\)", next(item for item in conditions if item.startswith("config_name is match(")))
     assert pattern is not None
 

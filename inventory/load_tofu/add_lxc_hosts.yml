@@ -86,6 +86,13 @@
     load_tofu_gpu_engine_set_present: >-
       {{ load_tofu_gpu_engine_members | length > 0 }}
 
+- name: Record whether the started vLLM guest is the medium campaign target
+  ansible.builtin.set_fact:
+    load_tofu_medium_vllm_campaign: >-
+      {{ load_tofu_gpu_engine_set_present | bool
+         and load_tofu_gpu_engine_selector == 'vllm'
+         and llm_gpu_active_profiles_by_engine.get('vllm', '') is match('^medium') }}
+
 - name: Log the GPU engine inventory decision
   ansible.builtin.debug:
     msg: >-
@@ -124,6 +131,19 @@
 
 - name: Add AI LXC containers to inventory
   ansible.builtin.import_tasks: add_lxc_host_inventory.yml
+
+- name: Add the started vLLM guest to the medium campaign target group
+  ansible.builtin.add_host:
+    name: "{{ item.key }}"
+    groups:
+      - llm_campaign_medium_vllm_target
+  loop: "{{ tofu_data.containers | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - load_tofu_medium_vllm_campaign | bool
+    - item.value.llm_gpu_engine_identity | default('') == 'vllm'
+    - item.value.started | default(false) | bool
 
 - name: Add selected profile guests to the shared llama.cpp group
   ansible.builtin.import_tasks: add_profile_guest_groups.yml

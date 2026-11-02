@@ -57,6 +57,7 @@
     method: GET
     follow_redirects: none
     status_code: 302
+    return_content: true
   register: hermes_agent_dashboard_probe
   # Read-only; a check run needs the live value to preview dashboard authentication.
   check_mode: false
@@ -64,6 +65,20 @@
   delay: "{{ hermes_agent_verify_probe_delay }}"
   until: hermes_agent_dashboard_probe.status | default(0) == 302
   failed_when: false
+
+- name: Read the dashboard journal when the authentication redirect is missing
+  ansible.builtin.command:
+    argv:
+      - journalctl
+      - --unit=hermes-dashboard
+      - --lines={{ hermes_agent_verify_dashboard_journal_lines }}
+      - --no-pager
+      - --output=cat
+  register: hermes_agent_dashboard_auth_journal
+  changed_when: false
+  # Read-only; a check run needs the live value to preview the dashboard journal.
+  check_mode: false
+  when: hermes_agent_dashboard_probe.status | default(0) != 302
 
 - name: Gate — the dashboard redirect targets the self-hosted auth login
   ansible.builtin.assert:
@@ -85,5 +100,9 @@
       {{ hermes_agent_dashboard_probe.location | default('<none>') }}). A bare
       200 here means authentication is not in front of the dashboard — the
       exact "Frontend not built" outage shape this gate exists to catch.
+      Response body (truncated to 2000 characters):
+      {{ hermes_agent_dashboard_probe.content | default('') | truncate(2000) }}
+      Last {{ hermes_agent_verify_dashboard_journal_lines }} journal lines:
+      {{ hermes_agent_dashboard_auth_journal.stdout | default('<journal unreadable>') }}
     success_msg: "Dashboard redirects unauthenticated requests to auth login."
   when: not ansible_check_mode

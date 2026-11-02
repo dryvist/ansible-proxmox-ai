@@ -27,6 +27,7 @@ def _enabled(expression: str, service_enabled: bool) -> bool:
         "hermes_agent_slack_app_token": "set",
         "hermes_agent_slack_home_channel": "set",
         "hermes_agent_slack_issues_channel": "set",
+        "hermes_agent_slack_profile_deliver_targets": {"splunk-admin": "slack:profile-channel"},
     }
     return yaml.safe_load(ENV.from_string(expression).render(**context))
 

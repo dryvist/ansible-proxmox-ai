@@ -6,9 +6,11 @@ import jinja2
 import yaml
 from jinja2 import meta
 
+from _group_vars import load_group_vars_all
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ALL_VARS = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all/00-core.yml").read_text())
+ALL_VARS = load_group_vars_all()
 AGENT_CAP = int(ALL_VARS["ai_agent_default_concurrency"])
 
 

@@ -1,20 +1,23 @@
 ---
-# zcode and sandbox-agent exclude the subscription, paid-ZDR, free and retaining
-# route classes with tags. Each consumer key must exist, carry every exclusion
-# tag and enable tag filtering; every rendered deployment of an excluded class
-# must carry its class tag, so each exclusion matches real deployments; and the
-# trace must find no hosted reach into an excluded class for either key.
+# zcode excludes subscription, paid-ZDR, free and retaining routes. sandbox-agent
+# excludes paid-ZDR and free routes while retaining access to subscription and
+# retaining routes. Each key must carry its exclusion tags and enable tag
+# filtering; every excluded class must tag all its deployments; and the trace
+# must find no hosted reach into a class excluded by that key.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_zcode_sandbox_route_exclusions.yml -i localhost, -c local
-- name: Verify zcode and sandbox-agent exclude the subscription, paid-ZDR, free and retaining classes
+- name: Verify zcode and sandbox-agent route exclusions
   hosts: localhost
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    _consumer_aliases: [zcode, sandbox-agent]
-    _excluded_classes: [sub, paid-zdr, free, retains]
-    _excluded_tags: "{{ _excluded_classes | map('regex_replace', '^', '!') | list }}"
+    _consumer_key_policies:
+      - alias: zcode
+        excluded_classes: [sub, paid-zdr, free, retains]
+      - alias: sandbox-agent
+        excluded_classes: [paid-zdr, free]
+    _consumer_aliases: "{{ _consumer_key_policies | map(attribute='alias') | list }}"
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -74,7 +77,7 @@
       vars:
         _consumer_keys: "{{ _render_keys | selectattr('alias', 'in', _consumer_aliases) | list }}"
 
-    - name: Each consumer key carries every exclusion tag and enables tag filtering
+    - name: Each consumer key carries its exclusion tags and enables tag filtering
       ansible.builtin.assert:
         quiet: true
         that:
@@ -83,10 +86,16 @@
         fail_msg: >-
           {{ item.alias }} lacks exclusion tags
           {{ _excluded_tags | difference(item.tags | default([])) }} or tag filtering.
-        success_msg: "{{ item.alias }} excludes every class tag and enables tag filtering."
+        success_msg: "{{ item.alias }} excludes its configured classes and enables tag filtering."
       loop: "{{ _render_keys | selectattr('alias', 'in', _consumer_aliases) | list }}"
       loop_control:
         label: "{{ item.alias }}"
+      vars:
+        _excluded_classes: >-
+          {{ _consumer_key_policies
+             | selectattr('alias', 'equalto', item.alias)
+             | map(attribute='excluded_classes') | first }}
+        _excluded_tags: "{{ _excluded_classes | map('regex_replace', '^', '!') | list }}"
 
     - name: Each excluded class has rendered deployments, and every one carries its class tag
       ansible.builtin.assert:
@@ -94,17 +103,21 @@
         that:
           - _class_rows | length > 0
           - _untagged_rows | length == 0
-        fail_msg: "{{ item }}: rendered deployments without the class tag: {{ _untagged_rows }}."
-        success_msg: "{{ item }}: {{ _class_rows | length }} rendered deployments all carry the class tag."
-      loop: "{{ _excluded_classes }}"
+        fail_msg: >-
+          {{ item.0.alias }} excludes {{ item.1 }} but rendered deployments lack that class tag:
+          {{ _untagged_rows }}.
+        success_msg: >-
+          {{ item.0.alias }} excludes {{ item.1 }}; all {{ _class_rows | length }} rendered
+          deployments carry the class tag.
+      loop: "{{ query('ansible.builtin.subelements', _consumer_key_policies, 'excluded_classes') }}"
       loop_control:
-        label: "{{ item }}"
+        label: "{{ item.0.alias }}:{{ item.1 }}"
       vars:
         # A registry entry renders under its client id, or under its route group when it has one.
         _class_names: >-
           {%- set ns = namespace(names=[]) -%}
           {%- for m in llm_router_registry_enabled
-                if _llm_router_m_deployment_class_by_model[m.client_model_id] == item -%}
+                if _llm_router_m_deployment_class_by_model[m.client_model_id] == item.1 -%}
           {%- set ns.names = ns.names + [m.client_model_id]
                 + ([m.route_group] if m.route_group is defined else []) -%}
           {%- endfor -%}
@@ -112,25 +125,27 @@
         _class_rows: "{{ _render_config.model_list | selectattr('model_name', 'in', _class_names) | list }}"
         _untagged_rows: >-
           {%- set ns = namespace(names=[]) -%}
-          {%- for row in _class_rows if item not in (row.litellm_params.tags | default([])) -%}
+          {%- for row in _class_rows if item.1 not in (row.litellm_params.tags | default([])) -%}
           {%- set ns.names = ns.names + [row.model_name] -%}
           {%- endfor -%}
           {{ ns.names }}
 
-    - name: The trace finds no hosted reach into an excluded class for either consumer key
+    - name: The trace finds no hosted reach into each key's excluded classes
       ansible.builtin.assert:
         quiet: true
         that:
           - _excluded_reaches | length == 0
         fail_msg: "Consumer keys still reach excluded deployments: {{ _excluded_reaches }}."
-        success_msg: "Consumer keys reach no subscription, paid-ZDR, free or retaining deployment."
+        success_msg: "Each consumer key reaches no deployment in its excluded classes."
       vars:
         _excluded_reaches: >-
           {%- set ns = namespace(hits=[]) -%}
           {%- for reach in _tagged_hosted_reaches_by_render['consumer-exclusions'].reaches
                 if reach.key in _consumer_aliases -%}
-          {%- for cls in _excluded_classes if cls in (reach.deployment_tags | default([])) -%}
+          {%- for policy in _consumer_key_policies if policy.alias == reach.key -%}
+          {%- for cls in policy.excluded_classes if cls in (reach.deployment_tags | default([])) -%}
           {%- set ns.hits = ns.hits + [reach.key ~ ':' ~ reach.group ~ ':' ~ cls] -%}
+          {%- endfor -%}
           {%- endfor -%}
           {%- endfor -%}
           {{ ns.hits }}

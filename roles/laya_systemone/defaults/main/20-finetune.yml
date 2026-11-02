@@ -1,0 +1,78 @@
+---
+laya_systemone_finetune_enabled: false
+# Select dispatch for the ordinary opt-in converge, or collect in a later run.
+laya_systemone_finetune_action: dispatch
+# Fixed transient unit name: collect reads its result after the detached process exits.
+laya_systemone_finetune_unit: laya-finetune.service
+# Sibling to the model staging directory so a separate collect run can restore the peer.
+laya_systemone_finetune_dispatch_state_path: >-
+  {{ laya_systemone_finetune_root }}/models/.laya-finetune-dispatch-state.json
+laya_systemone_finetune_dispatch_lock_path: >-
+  {{ laya_systemone_finetune_root }}/.laya-finetune-dispatch.lock
+# Select cpu to train without stopping a shared GPU peer.
+laya_systemone_finetune_device: cuda
+# Inventory hostname of a guest sharing this GPU; empty means no peer.
+laya_systemone_finetune_gpu_peer_host: ""
+# Systemd unit stopped on the peer only when it was active before training.
+laya_systemone_finetune_gpu_peer_unit: ""
+# Health endpoint probed on the delegated peer after it is restarted.
+laya_systemone_finetune_gpu_peer_health_url: ""
+# 9k rows x 4 epochs of a 0.4 B encoder should take about 10-15 min on 16 GB; 45 min generously caps peer downtime.
+laya_systemone_finetune_train_timeout_seconds: 2700
+# Bound preparation downloads so dispatch stays below the 10-minute run limit.
+laya_systemone_finetune_base_download_timeout_seconds: 420
+laya_systemone_finetune_dataset_download_timeout_seconds: 30
+# Two checks: (20 retries + first attempt) x (2 s delay + 5 s timeout) x 2 = 294 s,
+# leaving 306 s of the 600 s collect budget for promotion and service recovery.
+laya_systemone_finetune_health_retries: 20
+laya_systemone_finetune_health_delay_seconds: 2
+laya_systemone_finetune_health_timeout_seconds: 5
+laya_systemone_finetune_name: ""
+laya_systemone_finetune_bucket: system1
+laya_systemone_finetune_bao_kv_path: rustfs/system1/ro
+laya_systemone_finetune_train_key: ""
+laya_systemone_finetune_train_sha256: ""
+# This validation CSV is for laya-train evaluation, not a benchmark held-out set.
+laya_systemone_finetune_eval_key: ""
+laya_systemone_finetune_eval_sha256: ""
+laya_systemone_finetune_base: convaiinnovations/laya
+laya_systemone_finetune_base_revision: 55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851
+laya_systemone_finetune_base_path: >-
+  {{ laya_systemone_finetune_root }}/base/{{ laya_systemone_finetune_base_revision }}
+# SHA-256 of every base file laya-train loads, at the pinned revision; verified offline before training.
+laya_systemone_finetune_base_sha256:
+  - path: model.safetensors
+    sha256: 891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c
+  - path: rl_agent_config.json
+    sha256: ae287b56bbcf5f8c4f4541ae9dfd00c914c4c48b940b8398c3058af37ba92bbd
+  - path: encoder/config.json
+    sha256: bf3ab80598fdccf414855a2ce80f22859e4492d06ca8a62ddd1cfb63972f8979
+  - path: tokenizer/tokenizer.json
+    sha256: 6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30
+  - path: tokenizer/tokenizer_config.json
+    sha256: 50044de60daaa73df97d262e15a40d4faf0160e7d742df64b377877a1320dd12
+laya_systemone_finetune_text_column: text
+laya_systemone_finetune_label_column: label
+laya_systemone_finetune_epochs: 4
+laya_systemone_finetune_target_error: 0.10
+laya_systemone_finetune_seed: 0
+laya_systemone_finetune_root: /var/lib/laya-systemone
+laya_systemone_finetune_model_dir: "{{ laya_systemone_finetune_root }}/models/{{ laya_systemone_finetune_name }}"
+laya_systemone_finetune_staging_dir: >-
+  {{ laya_systemone_finetune_root }}/models/.staging-{{ laya_systemone_finetune_name }}
+laya_systemone_finetune_dataset_dir: "{{ laya_systemone_finetune_root }}/datasets"
+laya_systemone_finetune_train_path: >-
+  {{ laya_systemone_finetune_dataset_dir }}/{{ laya_systemone_finetune_train_sha256 }}.csv
+laya_systemone_finetune_eval_path: >-
+  {{ laya_systemone_finetune_dataset_dir }}/{{ laya_systemone_finetune_eval_sha256 }}.csv
+
+# OpenBao AppRole settings follow the shared converge identity used by RustFS consumers.
+laya_systemone_finetune_bao_addr: "{{ lookup('ansible.builtin.env', 'BAO_ADDR') | default('', true) }}"
+laya_systemone_finetune_bao_role_id: >-
+  {{ lookup('ansible.builtin.env', 'CONVERGE_ROLE_ID')
+     | default(lookup('ansible.builtin.env', 'OPENBAO_APPROLE_ANSIBLE_ROLE_ID'), true) }}
+laya_systemone_finetune_bao_secret_id: >-
+  {{ lookup('ansible.builtin.env', 'CONVERGE_SECRET_ID')
+     | default(lookup('ansible.builtin.env', 'OPENBAO_APPROLE_ANSIBLE_SECRET_ID'), true) }}
+laya_systemone_finetune_bao_validate_certs: true
+laya_systemone_finetune_bao_kv_mount: secret

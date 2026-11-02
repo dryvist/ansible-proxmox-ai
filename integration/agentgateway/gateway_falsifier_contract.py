@@ -12,6 +12,7 @@ ENVOY_IMAGE = (
 )
 GATEWAY_URL = "http://127.0.0.1:15000"
 OBSERVER_URL = "http://127.0.0.1:18002"
+SIDECAR_OBSERVER_URL = "http://127.0.0.1:18003"
 OWNER = "falsifier-owner"
 NONOWNER = "falsifier-nonowner"
 OWNER_KEY = "fixture-owner-key-not-a-secret"
@@ -25,6 +26,14 @@ CALLER_CREDENTIAL_HEADERS = {
     "cookie",
     "x-agent-key",
 }
+VIKUNJA_CALLER_MARKERS = {
+    "optional_initialize": "vikunja-optional-no-key-initialize",
+    "optional_initialized": "vikunja-optional-no-key-initialized",
+    "optional_tools_list": "vikunja-optional-no-key-tools-list",
+    "initialize": "vikunja-same-request-initialize",
+    "initialized": "vikunja-same-request-initialized",
+    "tools_list": "vikunja-same-request-tools-list",
+    "task_read": "vikunja-same-request-task-read",
+}
 SUCCESS_URL = "https://fixture.invalid/falsifier-success"
-DIRECT_SUCCESS_URL = "https://fixture.invalid/direct-success"
 ERROR_URL = ""

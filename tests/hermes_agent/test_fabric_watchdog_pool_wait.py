@@ -17,6 +17,8 @@ below asserts that directly.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from _fabric_watchdog_shared import MINUTE, NOW, job, run, settle
 
 
@@ -114,3 +116,21 @@ def test_a_fast_sibling_cannot_tighten_a_slower_jobs_threshold() -> None:
     state = settle(jobs)
     _, _, state, _ = run(jobs, state, now=NOW + 20 * MINUTE)
     assert [e for e in state["waited"] if e.startswith("default/slow ")] == []
+
+
+def test_a_run_in_flight_does_not_repin_the_cadence() -> None:
+    """The scheduler advances next_run_at when a run STARTS, while last_run_at and
+    last_status still describe the previous run. Re-pinning on that tick reads
+    two cycles as one cadence (a daily job read as 2872m on 2026-11-01).
+    """
+    day = 24 * 60
+
+    def iso(epoch):
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+    daily = job("daily", cadence_min=day, last_ok_ago_min=0,
+                schedule={"kind": "cron", "expr": "16 6 * * *"})
+    state = settle([daily])
+    in_flight = dict(daily, next_run_at=iso(NOW + 2 * day * MINUTE))
+    run([in_flight], state, now=NOW + (day + 1) * MINUTE)
+    assert state["jobs"]["default/daily"]["cadence"] == day * MINUTE

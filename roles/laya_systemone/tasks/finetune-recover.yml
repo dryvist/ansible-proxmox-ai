@@ -1,0 +1,71 @@
+---
+- name: Check the current model directory before recovering an interrupted promotion
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_model_dir }}"
+  register: laya_systemone_finetune_current_before_recovery
+  become: true
+
+- name: Check for a previous model left by an interrupted promotion
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_model_dir }}.prev"
+  register: laya_systemone_finetune_previous_before_recovery
+  become: true
+
+- name: Restore the previous model when an interrupted promotion left no current model
+  ansible.builtin.command:
+    argv:
+      - mv
+      - -T
+      - --
+      - "{{ laya_systemone_finetune_model_dir }}.prev"
+      - "{{ laya_systemone_finetune_model_dir }}"
+  when:
+    - laya_systemone_finetune_previous_before_recovery.stat.isdir | default(false)
+    - not laya_systemone_finetune_current_before_recovery.stat.exists
+  become: true
+  changed_when: true
+  no_log: true
+
+- name: Remove a stale previous model when the current model is present
+  ansible.builtin.file:
+    path: "{{ laya_systemone_finetune_model_dir }}.prev"
+    state: absent
+  when:
+    - laya_systemone_finetune_previous_before_recovery.stat.exists
+    - laya_systemone_finetune_current_before_recovery.stat.exists
+  become: true
+
+- name: Read the installed Laya version for fine-tune reuse
+  ansible.builtin.command:
+    argv:
+      - "{{ laya_systemone_venv }}/bin/python"
+      - -c
+      - import laya; print(laya.__version__)
+  register: laya_systemone_finetune_laya_version
+  changed_when: false
+  check_mode: false
+  # In --check the venv may not exist yet; an unreadable version then just means "retrain".
+  failed_when: laya_systemone_finetune_laya_version.rc != 0 and not ansible_check_mode
+
+- name: Read the fine-tune completion manifest
+  ansible.builtin.slurp:
+    src: "{{ laya_systemone_finetune_model_dir }}/finetune-manifest.json"
+  register: laya_systemone_finetune_manifest_before
+  failed_when: false
+  changed_when: false
+
+- name: Initialize the parsed fine-tune manifest as missing
+  ansible.builtin.set_fact:
+    laya_systemone_finetune_manifest: {}
+
+- name: Parse the existing fine-tune completion manifest
+  when: laya_systemone_finetune_manifest_before.content is defined
+  block:
+    - name: Decode the existing fine-tune completion manifest
+      ansible.builtin.set_fact:
+        laya_systemone_finetune_manifest: >-
+          {{ laya_systemone_finetune_manifest_before.content | b64decode | from_json }}
+  rescue:
+    - name: Treat an invalid fine-tune completion manifest as missing
+      ansible.builtin.set_fact:
+        laya_systemone_finetune_manifest: {}

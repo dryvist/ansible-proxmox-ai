@@ -1,0 +1,183 @@
+---
+- name: Read the scoped RustFS credential for the training datasets
+  ansible.builtin.include_tasks: rustfs-credential.yml
+  vars:
+    laya_systemone_rustfs_kv_path: "{{ laya_systemone_finetune_bao_kv_path }}"
+
+- name: Check the existing training CSV checksum before download
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_train_path }}"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_train_existing_stat
+  become: true
+
+- name: Download the training CSV when missing or corrupt
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - --signal=TERM
+      - --kill-after=5s
+      - "{{ laya_systemone_finetune_dataset_download_timeout_seconds }}s"
+      - aws
+      - --endpoint-url
+      - "{{ laya_systemone_finetune_s3_endpoint }}"
+      - s3
+      - cp
+      - "s3://{{ laya_systemone_finetune_bucket }}/{{ laya_systemone_finetune_train_key }}"
+      - "{{ laya_systemone_finetune_train_path }}.download"
+  when: >-
+    not laya_systemone_finetune_train_existing_stat.stat.exists
+    or laya_systemone_finetune_train_existing_stat.stat.checksum | default('')
+    != laya_systemone_finetune_train_sha256 | lower
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ laya_systemone_finetune_s3_access_key_id }}"
+    AWS_SECRET_ACCESS_KEY: "{{ laya_systemone_finetune_s3_secret_access_key }}"
+    AWS_DEFAULT_REGION: "{{ laya_systemone_finetune_s3_region }}"
+  become: true
+  become_user: "{{ laya_systemone_user }}"
+  changed_when: true
+  no_log: true
+
+- name: Check the downloaded training CSV checksum
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_train_path }}.download"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_train_download_stat
+  when: >-
+    not laya_systemone_finetune_train_existing_stat.stat.exists
+    or laya_systemone_finetune_train_existing_stat.stat.checksum | default('')
+    != laya_systemone_finetune_train_sha256 | lower
+  become: true
+
+- name: Verify the downloaded training CSV checksum
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_train_download_stat.stat.exists
+      - laya_systemone_finetune_train_download_stat.stat.checksum == laya_systemone_finetune_train_sha256 | lower
+    fail_msg: The downloaded training CSV does not match its configured SHA-256 checksum.
+    quiet: true
+  when: laya_systemone_finetune_train_download_stat is not skipped
+  no_log: true
+
+- name: Move the verified training CSV into place
+  ansible.builtin.command:
+    argv:
+      - mv
+      - -fT
+      - --
+      - "{{ laya_systemone_finetune_train_path }}.download"
+      - "{{ laya_systemone_finetune_train_path }}"
+  when: laya_systemone_finetune_train_download_stat is not skipped
+  become: true
+  changed_when: true
+  no_log: true
+
+- name: Check the existing validation CSV checksum before download
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_eval_path }}"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_eval_existing_stat
+  become: true
+
+- name: Download the validation CSV when missing or corrupt
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - --signal=TERM
+      - --kill-after=5s
+      - "{{ laya_systemone_finetune_dataset_download_timeout_seconds }}s"
+      - aws
+      - --endpoint-url
+      - "{{ laya_systemone_finetune_s3_endpoint }}"
+      - s3
+      - cp
+      - "s3://{{ laya_systemone_finetune_bucket }}/{{ laya_systemone_finetune_eval_key }}"
+      - "{{ laya_systemone_finetune_eval_path }}.download"
+  when: >-
+    not laya_systemone_finetune_eval_existing_stat.stat.exists
+    or laya_systemone_finetune_eval_existing_stat.stat.checksum | default('')
+    != laya_systemone_finetune_eval_sha256 | lower
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ laya_systemone_finetune_s3_access_key_id }}"
+    AWS_SECRET_ACCESS_KEY: "{{ laya_systemone_finetune_s3_secret_access_key }}"
+    AWS_DEFAULT_REGION: "{{ laya_systemone_finetune_s3_region }}"
+  become: true
+  become_user: "{{ laya_systemone_user }}"
+  changed_when: true
+  no_log: true
+
+- name: Check the downloaded validation CSV checksum
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_eval_path }}.download"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_eval_download_stat
+  when: >-
+    not laya_systemone_finetune_eval_existing_stat.stat.exists
+    or laya_systemone_finetune_eval_existing_stat.stat.checksum | default('')
+    != laya_systemone_finetune_eval_sha256 | lower
+  become: true
+
+- name: Verify the downloaded validation CSV checksum
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_eval_download_stat.stat.exists
+      - laya_systemone_finetune_eval_download_stat.stat.checksum == laya_systemone_finetune_eval_sha256 | lower
+    fail_msg: The downloaded validation CSV does not match its configured SHA-256 checksum.
+    quiet: true
+  when: laya_systemone_finetune_eval_download_stat is not skipped
+  no_log: true
+
+- name: Move the verified validation CSV into place
+  ansible.builtin.command:
+    argv:
+      - mv
+      - -fT
+      - --
+      - "{{ laya_systemone_finetune_eval_path }}.download"
+      - "{{ laya_systemone_finetune_eval_path }}"
+  when: laya_systemone_finetune_eval_download_stat is not skipped
+  become: true
+  changed_when: true
+  no_log: true
+
+- name: Set private ownership and permissions on the CSV files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: file
+    owner: "{{ laya_systemone_user }}"
+    group: "{{ laya_systemone_group }}"
+    mode: "0600"
+  loop:
+    - "{{ laya_systemone_finetune_train_path }}"
+    - "{{ laya_systemone_finetune_eval_path }}"
+  become: true
+
+- name: Read the training CSV checksum
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_train_path }}"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_train_stat
+
+- name: Verify the training CSV checksum
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_train_stat.stat.exists
+      - laya_systemone_finetune_train_stat.stat.checksum == laya_systemone_finetune_train_sha256 | lower
+    fail_msg: The training CSV does not match its configured SHA-256 checksum.
+    quiet: true
+  no_log: true
+
+- name: Read the validation CSV checksum
+  ansible.builtin.stat:
+    path: "{{ laya_systemone_finetune_eval_path }}"
+    checksum_algorithm: sha256
+  register: laya_systemone_finetune_eval_stat
+
+- name: Verify the validation CSV checksum
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_finetune_eval_stat.stat.exists
+      - laya_systemone_finetune_eval_stat.stat.checksum == laya_systemone_finetune_eval_sha256 | lower
+    fail_msg: The validation CSV does not match its configured SHA-256 checksum.
+    quiet: true
+  no_log: true

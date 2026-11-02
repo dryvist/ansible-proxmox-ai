@@ -15,7 +15,8 @@ LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 LEGACY_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
 REGISTRY_FILES = (
     REPO_ROOT / "llm-models.d/60-gpu.yml",
-    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
+    REPO_ROOT / "llm-models.d/61-gpu-sweeps.yml",
+    REPO_ROOT / "llm-models.d/62-gpu-matrix.yml",
 )
 ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 
@@ -244,6 +245,7 @@ def test_each_vllm_profile_renders_its_runtime_flags():
         assert f"vllm serve /cache/models/{registry_model_id}" in exec_start
         assert f"--served-model-name {registry_model_id}" in exec_start
         assert "--port 10434" in exec_start
+        assert "--scheduling-policy priority" in exec_start
         assert f"--max-model-len {profile['max_model_len']}" in exec_start
         assert f"--max-num-seqs {profile['max_num_seqs']}" in exec_start
         assert f"--gpu-memory-utilization {profile['gpu_memory_utilization']}" in exec_start

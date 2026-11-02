@@ -1,0 +1,115 @@
+---
+- name: Verify public roster router key scope
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    ai_agents:
+      example-owner:
+        container: example-owner
+        hostname: example-owner.example.com
+        display: Example owner
+        purpose: Fixture owner
+        owns: [splunk]
+        router_key_class: zdr
+      example-standard:
+        container: example-standard
+        hostname: example-standard.example.com
+        display: Example standard
+        purpose: Fixture standard agent
+        owns: []
+        router_key_class: standard
+      example-local:
+        container: example-local
+        hostname: example-local.example.com
+        display: Example local agent
+        purpose: Fixture local-only agent
+        owns: []
+        router_key_class: local
+      example-public:
+        container: example-public
+        hostname: example-public.example.com
+        display: Example public agent
+        purpose: Fixture public-only agent
+        owns: []
+        router_key_class: public
+      example-all:
+        container: example-all
+        hostname: example-all.example.com
+        display: Example all-class agent
+        purpose: Fixture all-class agent
+        owns: []
+        router_key_class: all
+    ai_agent_owner: {splunk: example-owner}
+    openbao_secrets_by_domain:
+      llm-router-agent-keys:
+        example_owner_llm_router_key: fixture-owner-key
+        example_standard_llm_router_key: fixture-standard-key
+        example_local_llm_router_key: fixture-local-key
+        example_public_llm_router_key: fixture-public-key
+        example_all_llm_router_key: fixture-all-key
+  tasks:
+    - name: Prepare role-backed rendered contract
+      ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+
+    - name: Materialize roster agent keys
+      ansible.builtin.set_fact:
+        _roster_agent_keys: "{{ _llm_router_agent_keys }}"
+      no_log: true
+
+    - name: Verify raw agent key scopes
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _raw_owner.models == _expected_owner_models
+          - _raw_standard.models == _expected_standard_models
+          - _raw_local.models == _expected_local_models
+          - _raw_all_agent.models == _expected_all_models
+          - _raw_public.allowed_classes == ['retains', 'free']
+          - _raw_public.allowed_classes | intersect(['local', 'sub', 'paid-zdr']) | length == 0
+          - _raw_public.models | intersect(_public_allowed_route_groups) | length > 0
+          - _raw_public.models | intersect(llm_router_sandbox_only_model_ids) | length == 0
+          - _raw_public.models | intersect(_public_forbidden_groups) | length == 0
+          - _raw_public.tags == ['!zdr', '!local', '!sub', '!paid-zdr']
+          - _raw_public.sensitivity_tag == '&sensitivity:public'
+          - _raw_public.router_settings.enable_tag_filtering | bool
+      vars:
+        _raw_owner: "{{ _roster_agent_keys | selectattr('alias', 'equalto', 'example-owner') | first }}"
+        _raw_standard: "{{ _roster_agent_keys | selectattr('alias', 'equalto', 'example-standard') | first }}"
+        _raw_local: "{{ _roster_agent_keys | selectattr('alias', 'equalto', 'example-local') | first }}"
+        _raw_all_agent: "{{ _roster_agent_keys | selectattr('alias', 'equalto', 'example-all') | first }}"
+        _raw_public: "{{ _roster_agent_keys | selectattr('alias', 'equalto', 'example-public') | first }}"
+        _agent_base_models: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model] }}"
+        _expected_owner_models: >-
+          {{ (_agent_base_models + llm_router_d1_zdr_key_groups
+              + llm_router_agent_only_groups + [llm_router_review_aliases.local])
+             | reject('in', _llm_router_agent_excluded_groups) | unique | list }}
+        _expected_standard_models: >-
+          {{ (_agent_base_models + llm_router_d1_standard_key_groups
+              + llm_router_agent_only_groups)
+             | reject('in', _llm_router_agent_excluded_groups) | unique | list }}
+        _expected_all_models: >-
+          {{ (_agent_base_models + llm_router_d1_all_key_groups
+              + llm_router_agent_only_groups)
+             | reject('in', _llm_router_agent_excluded_groups) | unique | list }}
+        _expected_local_models: >-
+          {{ ([llm_router_small_capability_name, llm_router_primary_model]
+              + llm_router_agent_only_groups + [llm_router_embedding_model])
+             | unique | list }}
+        _public_allowed_route_groups: >-
+          {{ (llm_router_d1_rungs_by_class['retains']
+              + llm_router_d1_rungs_by_class['free'])
+             | difference(llm_router_d1_rungs_by_class['local']
+               + llm_router_d1_rungs_by_class['sub']
+               + llm_router_d1_rungs_by_class['paid-zdr']) | unique | list }}
+        _public_forbidden_groups: >-
+          {{ (llm_router_d1_rungs_by_class['local']
+              + llm_router_d1_rungs_by_class['sub']
+              + llm_router_d1_rungs_by_class['paid-zdr']
+              + llm_router_zdr_asserted_group_names
+              + llm_router_agent_only_groups
+              + _llm_router_private_zdr_model_scope
+              + llm_router_review_private_chain
+              + [llm_router_review_aliases.private]) | unique | list }}

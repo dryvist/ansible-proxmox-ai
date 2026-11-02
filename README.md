@@ -59,14 +59,13 @@ allows both to be skipped only on pushes and on pull requests into `develop`.
 ### RAG (retrieval-augmented generation)
 
 - `llamaindex` — Python + Ollama CPU-only embeddings pipeline
-- `qdrant_docker` — Qdrant vector database (Docker in LXC)
+- [`qdrant_docker`](roles/qdrant_docker/README.md) — Qdrant vector database (Docker in LXC)
 
 ### Agents
 
 - `hermes_agent` — the autonomous NousResearch agent gateway
 - `agent_exec` — sandboxed agent execution
 - `agentgateway_docker` — agent gateway (Docker)
-- `codex_runner` — isolated Codex CLI execution user
 
 ### LLM app platforms
 

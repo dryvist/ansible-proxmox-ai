@@ -51,7 +51,7 @@ def test_pin_task_fetches_by_explicit_tag_refspec() -> None:
 
     consumer_tasks = yaml.safe_load((ROLE_ROOT / "tasks" / "main.yml").read_text())
     install_include = next(task for task in consumer_tasks if task.get("name") == "Install the pinned Hermes runtime")
-    assert install_include["ansible.builtin.include_role"]["tasks_from"] == "install"
+    assert install_include["ansible.builtin.import_role"]["tasks_from"] == "install"
     assert install_include["vars"]["hermes_runtime_version_tag"] == "{{ hermes_agent_version_tag }}"
 
     changed = _installer_changed_expression(consumer_tasks)

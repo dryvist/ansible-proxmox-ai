@@ -14,7 +14,8 @@ PROFILE_DEFAULTS = ROLE_ROOT / "defaults/main/10-profiles.yml"
 TEMPLATE_DIR = ROLE_ROOT / "templates"
 REGISTRY_FILES = (
     REPO_ROOT / "llm-models.d/60-gpu.yml",
-    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
+    REPO_ROOT / "llm-models.d/61-gpu-sweeps.yml",
+    REPO_ROOT / "llm-models.d/62-gpu-matrix.yml",
 )
 ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 LLAMA_BIN = "/opt/llm-gpu-serving/llama.cpp/llama-server"

@@ -243,6 +243,36 @@ def test_publishing_is_off_by_default() -> None:
     assert _defaults("qdrant_docker")["qdrant_docker_publish_memory_mcp_jwt"] is False
 
 
+def test_preupgrade_snapshot_is_included_before_compose_deploy() -> None:
+    tasks = yaml.safe_load((ROLES / "qdrant_docker" / "tasks" / "main.yml").read_text())
+    include_index = next(
+        index
+        for index, task in enumerate(tasks)
+        if task.get("ansible.builtin.include_tasks") == "preupgrade-snapshot.yml"
+    )
+    deploy_index = next(index for index, task in enumerate(tasks) if task.get("name") == "Deploy qdrant via docker compose")
+    assert include_index < deploy_index
+
+
+def test_preupgrade_snapshot_is_hidden_and_only_runs_for_an_image_upgrade() -> None:
+    tasks = yaml.safe_load((ROLES / "qdrant_docker" / "tasks" / "preupgrade-snapshot.yml").read_text())
+    snapshot = next(task for task in tasks if task.get("name") == "Create Qdrant full-storage pre-upgrade snapshot")
+    conditions = snapshot["when"]
+    assert snapshot["no_log"] is True
+    assert snapshot["ansible.builtin.uri"]["headers"]["api-key"] == "{{ qdrant_docker_api_key }}"
+    assert snapshot["ansible.builtin.uri"]["status_code"] == 200
+    assert snapshot["ansible.builtin.uri"]["timeout"] == "{{ qdrant_docker_preupgrade_snapshot_timeout }}"
+    assert any("qdrant_docker_preupgrade_snapshot_enabled | bool" in condition for condition in conditions)
+    assert any("qdrant_docker_running_check.stdout != ''" in condition for condition in conditions)
+    assert any("qdrant_docker_running_image.stdout != qdrant_docker_image" in condition for condition in conditions)
+
+
+def test_preupgrade_snapshot_is_enabled_by_default() -> None:
+    defaults = _defaults("qdrant_docker")
+    assert defaults["qdrant_docker_preupgrade_snapshot_enabled"] is True
+    assert defaults["qdrant_docker_preupgrade_snapshot_timeout"] == 60
+
+
 def test_minted_token_carries_exactly_the_untrusted_grants() -> None:
     key = "test-api-key"
     token = _plugin().qdrant_jwt(key, _untrusted_access())

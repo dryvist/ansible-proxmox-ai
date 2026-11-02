@@ -18,6 +18,7 @@ import re
 import yaml
 
 from conftest import ROLE_ROOT, _task
+from _role_files import role_tasks
 
 TASK_NAME = "Widen the provider-error snippet so a fallback cause is not cut in half"
 
@@ -112,6 +113,5 @@ def test_the_readback_does_not_shadow_another_tasks_variable() -> None:
 
 def test_the_patch_is_included_in_the_role() -> None:
     """A patch file nothing includes is a file that never runs."""
-    assert "patches_provider_error_snippet.yml" in (
-        ROLE_ROOT / "tasks" / "main.yml"
-    ).read_text()
+    names = [task.get("name") for task in role_tasks(ROLE_ROOT)]
+    assert names.count(TASK_NAME) == 1

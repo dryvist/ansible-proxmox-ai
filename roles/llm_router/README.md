@@ -85,11 +85,15 @@ confidential material through it).
 
 ## The vLLM tier and the Hermes local GPU leg
 
-The `vllm`-tier loop renders one deployment per model — vLLM serves a single
-model per instance and there is no standby serving the same weights, so this
-tier deliberately does not render a pair. The same loop also carries any
-`hermes-local` entries: distinct Hermes-fallback-chain rungs over that same
-backend/URL/key, not a second physical tier. A `context_window` here is
+The `vllm`-tier loop renders one base deployment per registry entry. For a
+local-key route group, it also projects a tagged twin with the same backend
+parameters and `extra_body.priority: 10`. The twin and base row address the same
+physical model; they let LiteLLM's native tag filtering send local-class agent
+keys to vLLM's priority scheduler while untagged requests select the `default`
+deployment pool. The GPU profile projection uses the same rule. This does not
+start a second model instance. The same loop also carries any `hermes-local`
+entries: distinct Hermes-fallback-chain rungs over that same backend/URL/key,
+not a second physical tier. A `context_window` here is
 mandatory rather than optional (unlike other tiers) because these backend ids
 are absent from LiteLLM's catalog — an omitted value silently resolves
 `max_input_tokens` to null, disables `enable_pre_call_checks` for the
@@ -100,6 +104,11 @@ unhealthy: a merely-busy single GPU must not be cooled out of rotation the way
 a real failure would be. Its `num_retries: 0` is the same idea — a
 single-instance local leg is only ever accepting or rejecting, never worth
 retrying, since a retry just re-queues behind the same busy box.
+
+The `embed` route group currently has no `vllm`-tier entry, so its light
+embedding deployment remains a base/default row. A future vLLM embedding entry
+in a local-key route group gets the same generated twin; the pinned vLLM
+embedding request schema accepts the priority field.
 
 ## Retry and cooldown policy
 

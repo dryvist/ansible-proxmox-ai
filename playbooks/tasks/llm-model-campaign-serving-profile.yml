@@ -1,0 +1,53 @@
+---
+# Resolve and validate an explicit llm_model_campaign_serving_profile against the shared
+# vLLM profile map and the GPU registry. Included only when that variable is set.
+
+- name: Resolve the shared vLLM profile API port from target inventory
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_api_port: >-
+      {{ hostvars[machine].tofu_data.constants.service_ports[
+           (lookup('file', playbook_dir ~ '/../roles/llm_gpu_serving/defaults/main/00-core.yml')
+            | from_yaml).llm_gpu_serving_api_port_key] }}
+
+- name: Load the shared vLLM profile map for an explicit campaign profile
+  ansible.builtin.include_vars:
+    dir: "{{ playbook_dir }}/../roles/vllm_serving/defaults/main"
+    files_matching: '^(10-profiles|11-profile-families)\.yml$'
+
+- name: Load GPU profile registry entries for an explicit campaign profile
+  ansible.builtin.include_vars:
+    dir: "{{ playbook_dir }}/../llm-models.d"
+    files_matching: '.*gpu.*\.yml$'
+
+- name: Resolve the explicit campaign profile registry record
+  ansible.builtin.set_fact:
+    _llm_campaign_selected_serving_profile_records: >-
+      {{ (((_llm_registry_gpu | default([]))
+           + (_llm_registry_gpu_sweeps | default([]))
+           + (_llm_registry_gpu_matrix | default([])))
+         | selectattr('profile', 'equalto', _llm_campaign_selected_serving_profile)
+         | list) }}
+
+- name: Validate the explicit campaign profile against its artifact and engine
+  ansible.builtin.assert:
+    that:
+      - >-
+        _llm_campaign_selected_serving_profile in vllm_serving_profiles
+        and vllm_serving_profiles.get(_llm_campaign_selected_serving_profile, {}).get('enabled', true)
+        and vllm_serving_profiles.get(_llm_campaign_selected_serving_profile, {}).get('engine') == engine
+        and _llm_campaign_selected_serving_profile_records | length == 1
+        and (_llm_campaign_selected_serving_profile_records | first | default({})).get('artifact_id')
+            == _llm_campaign_selected_artifacts[0].artifact_id
+        and _llm_campaign_selected_artifacts[0].use == 'serving'
+        and engine in _llm_campaign_selected_artifacts[0].engines
+    fail_msg: >-
+      Campaign serving profile {{ _llm_campaign_selected_serving_profile }} must be an enabled profile
+      for artifact {{ artifact_id }} and engine {{ engine }}.
+    quiet: true
+
+- name: Save the explicit campaign profile limits
+  ansible.builtin.set_fact:
+    _llm_campaign_selected_serving_profile_data:
+      engine: "{{ vllm_serving_profiles[_llm_campaign_selected_serving_profile].engine }}"
+      max_model_len: "{{ vllm_serving_profiles[_llm_campaign_selected_serving_profile].max_model_len }}"
+      max_num_seqs: "{{ vllm_serving_profiles[_llm_campaign_selected_serving_profile].max_num_seqs }}"

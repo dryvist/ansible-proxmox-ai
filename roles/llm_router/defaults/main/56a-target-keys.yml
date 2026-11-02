@@ -44,7 +44,7 @@ _llm_router_target_virtual_keys:
     enabled: "{{ (bao_apps_secrets | default({})).get('judge_llm_router_key', '') | string | length > 0 }}"
     allowed_classes: "{{ _llm_router_consumer_classes_zdr }}"
     models: "{{ ([llm_router_small_model, llm_router_small_capability_name, 'judge']
-                 + llm_router_d1_zdr_ladder_groups) | unique | list }}"
+                 + llm_router_d1_zdr_key_groups) | unique | list }}"
     models_authoritative: true
     tags: ['&zdr', '!free', '!retains']
     router_settings:
@@ -56,6 +56,20 @@ _llm_router_target_virtual_keys:
     models: "{{ [llm_router_small_model, llm_router_small_capability_name,
                  'recorder'] | unique | list }}"
     models_authoritative: true
+    tags: ['&zdr', '!free', '!retains', '&local']
+    router_settings:
+      enable_tag_filtering: true
+  - alias: dify-eval
+    value: "{{ (bao_apps_secrets | default({})).get('dify_eval_llm_router_key', '') }}"
+    enabled: >-
+      {{ (bao_apps_secrets | default({})).get('dify_eval_llm_router_key', '')
+         | string | length > 0 }}
+    # Same local-only eval profile as hermes-eval: one local review alias, default MCP permission, capped rate.
+    allowed_classes: [local]
+    models: "{{ [llm_router_review_aliases.local] }}"
+    models_authoritative: true
+    object_permission: "{{ llm_router_mcp_default_object_permission }}"
+    rpm_limit: 30
     tags: ['&zdr', '!free', '!retains', '&local']
     router_settings:
       enable_tag_filtering: true
@@ -153,8 +167,15 @@ _llm_router_target_virtual_keys:
     enabled: "{{ (bao_apps_secrets | default({})).get('claude_ocg_router_key', '') | string | length > 0 }}"
     allowed_classes: [sub]
     models: >-
-      {{ llm_router_opencode_models
-         | map(attribute='client_model_id') | list }}
+      {%- set ns = namespace(names=[]) -%}
+      {%- for m in llm_router_opencode_models -%}
+      {%- set _name = m.route_group | default(m.client_model_id) -%}
+      {%- if 'sandbox-only' not in (m.tags | default([]))
+            and _name in llm_router_d1_zdr_rungs_by_class['sub'] -%}
+      {%- set ns.names = ns.names + [_name] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.names | unique | list }}
     models_authoritative: true
     tags: ['&zdr', '!free', '!retains']
     router_settings:
@@ -167,9 +188,13 @@ _llm_router_target_virtual_keys:
     allowed_classes: "{{ _llm_router_consumer_classes_all }}"
     models: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model]
                  + (llm_router_d1_all_key_groups
-                    | difference(_llm_router_sandbox_agent_excluded_groups)) }}"
+                    | difference(_llm_router_sandbox_agent_excluded_groups))
+                 + llm_router_sandbox_only_model_ids }}"
     models_authoritative: true
-    tags: ['!sub', '!paid-zdr', '!free', '!retains']
+    # agent-dispatch.sh refuses non-public repos, so this key reaches public
+    # subscription and data-retaining routes only.
+    sensitivity_tag: '&sensitivity:public'
+    tags: ['!paid-zdr', '!free']
     router_settings:
       enable_tag_filtering: true
     daily_budget: 1.0

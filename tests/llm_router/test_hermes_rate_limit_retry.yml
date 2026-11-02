@@ -3,7 +3,7 @@
 # agents call (llm_router_rate_limit_retry_names, defaults/main/38-zero-retry-
 # groups.yml) retry a 429 llm_router_hermes_rate_limit_retries times, each
 # retry sleeping the upstream's Retry-After; every other name hands a busy
-# slot over at once, except the multi-member cloud groups that retry onto
+# slot over at once, except credentialed multi-member groups that retry onto
 # their next member. tasks/assert-admission-budget.yml holds that line at
 # converge time; the third play proves it refuses each way of breaking it.
 #
@@ -66,10 +66,11 @@
             llm_router_rate_limit_retry_names | map('extract', _policy)
             | map(attribute='RateLimitErrorRetries') | unique | list
             == [llm_router_hermes_rate_limit_retries | int]
-          # Nothing else retries but the multi-member cloud groups.
+          # Other than named Hermes entry points, only credentialed groups with
+          # another deployment retry onto that next member.
           - >-
             _retrying | sort
-            == (llm_router_rate_limit_retry_names + llm_router_multi_member_cloud_groups) | unique | sort
+            == (llm_router_rate_limit_retry_names + llm_router_multi_member_rate_limit_groups) | unique | sort
           # No other fail-fast role and no ladder role waits.
           - >-
             (llm_router_cross_modality_fail_fast_names + llm_router_local_only_fail_fast_names)
@@ -81,7 +82,7 @@
           (listed names {{ llm_router_rate_limit_retry_names }}, retrying {{ _retrying }}).
         success_msg: >-
           {{ llm_router_rate_limit_retry_names }} retry {{ llm_router_hermes_rate_limit_retries }}x;
-          no other group waits.
+          multi-member credentialed groups advance on a 429.
       vars:
         _policy: "{{ _config.router_settings.model_group_retry_policy }}"
         _rendered: >-

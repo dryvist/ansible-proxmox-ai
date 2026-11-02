@@ -15,12 +15,10 @@ the `default` profile is `{{ hermes_agent_hermes_home }}` itself.
 
 There is **one shared gateway, dispatcher, Kanban board, and Slack bot** for
 every profile — no per-profile gateway service exists. Cron is the one
-exception (native-cron reframe): `hermes cron`'s ticker runs in-process
-inside whichever gateway registered a job, and only the default profile's
-gateway is persistent, so a direct-cron job on a named profile
-(`hermes_home:` in `hermes_agent_direct_cron_jobs`) gets its own cron store
-AND its own periodic `hermes cron tick` trigger (`tasks/main.yml`) rather
-than sharing the default gateway's. See `hermes_agent_profiles` in
+exception (native-cron reframe): a direct-cron job on a named profile
+(`hermes_home:` in `hermes_agent_direct_cron_jobs`) gets its own cron store,
+which the persistent gateway ticks in that profile's scope and delivers through
+the primary's profile route. See `hermes_agent_profiles` in
 `defaults/main.yml` for the full design comment, the decision rule, and the
 isolation caveat (profile scoping is a config/tool-availability boundary, not
 an OS sandbox: every profile runs as the same `hermes` user in the same LXC).
@@ -42,8 +40,9 @@ agent bank. Different Hermes agents receive distinct banks. This is
 deliberate — it is what lets `daily-summary` on the `default` profile recall a
 card's findings after its `assignee` moves. The one exception is a profile
 entry that sets `memory_bank_id`: `splunk-admin` does, so every Splunk job
-shares one Splunk bank (`hermes_agent_splunk_memory_bank_id`). On the agent
-that owns the `splunk` system that bank is the agent bank itself. Within a
+shares one Splunk bank (`hermes_agent_splunk_memory_bank_id`). A profile with
+`memory_enabled: false` (`eval`) gets neither a bank nor a Hindsight config. On
+the agent that owns the `splunk` system that bank is the agent bank itself. Within a
 bank, a worker can `memory recall` anything another profile of that bank ever
 wrote. The "Must NOT have" column is a **tools/MCP/skills boundary only**; it
 is not a data boundary, and nothing written to memory by any profile should be
@@ -56,6 +55,7 @@ treated as private to it.
 | `homelab-admin` | Incidents + fabric health | Docs MCP, `zammad-incidents` skill | Splunk, Vikunja, GitHub, other MCP/skills |
 | `github-maint` | Read-only repo review + proposals | Docs MCP, `github-issues` skill, read-only token | GitHub writes, `docs-pr`, Splunk, Zammad, other |
 | `orchestrator` | Kanban decomposition and assignment | Vikunja + Docs MCP; follow-up card creation | Operational MCP servers and credentials |
+| `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |
 
 `github-maint` is the one profile whose headline constraint is enforced by a
 **credential** rather than by tool availability. It renders the read-only

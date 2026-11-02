@@ -3,9 +3,13 @@
   hosts: "{{ machine | default('localhost') }}"
   gather_facts: true
   any_errors_fatal: true
+  vars_files:
+    - vars/llm-model-campaign-latency.yml
   vars:
     _llm_campaign: "{{ hostvars['localhost']._llm_campaign_config }}"
     _llm_campaign_model: "{{ hostvars['localhost']._llm_campaign_model }}"
+    _llm_campaign_serving_profile: "{{ hostvars['localhost']._llm_campaign_serving_profile }}"
+    _llm_campaign_serving_profile_data: "{{ hostvars['localhost']._llm_campaign_serving_profile_data | default({}) }}"
     _llm_campaign_serving_model: "{{ hostvars['localhost']._llm_campaign_serving_model }}"
     _llm_campaign_uses_api_key: "{{ hostvars['localhost']._llm_campaign_uses_api_key }}"
     _llm_campaign_checkout: "{{ hostvars['localhost']._llm_campaign_checkout }}"
@@ -19,6 +23,7 @@
     _llm_campaign_paired_trial: "{{ hostvars['localhost']._llm_campaign_paired_trial | bool }}"
     _llm_campaign_output_dir: "{{ hostvars['localhost']._llm_campaign_output_dir | default('') }}"
     _llm_campaign_tolerance: "{{ hostvars['localhost']._llm_campaign_tolerance | default(2.0) }}"
+    llm_model_campaign_cell_timeout_seconds: 540
     llm_model_campaign_current_endpoint_root: "{{ _llm_campaign_endpoint_root }}"
     _llm_campaign_strata_batch_size: "{{ hostvars['localhost']._llm_campaign_strata_batch_size | default('') }}"
   pre_tasks:
@@ -34,6 +39,22 @@
           The selected inventory alias must resolve to one target with its
           benchmark endpoint and writable model cache parameters.
         quiet: true
+
+    - name: Require survey axes to fit explicit serving profile limits
+      ansible.builtin.assert:
+        that:
+          - >-
+            _llm_campaign_serving_profile_data.max_model_len | int
+            >= _llm_campaign_contexts | max
+               + (_llm_campaign.run | map(attribute='output_tokens') | map('int') | max)
+          - >-
+            _llm_campaign_concurrencies | max
+            <= _llm_campaign_serving_profile_data.max_num_seqs | int
+        fail_msg: >-
+          Campaign contexts or concurrency exceed the configured limits for
+          serving profile {{ _llm_campaign_serving_profile }}.
+        quiet: true
+      when: _llm_campaign_serving_profile_data | length > 0
 
     - name: Inspect the writable target model cache
       ansible.builtin.stat:
@@ -113,6 +134,15 @@
                  | map('trim') | list }}
           when: _llm_campaign_power_limit.rc == 0
 
+    - name: Record the selected serving profile systemd unit
+      ansible.builtin.set_fact:
+        _llm_campaign_serving_unit: >-
+          {{ _llm_campaign_role_defaults.llm_gpu_serving_unit_prefix
+             ~ '-' ~ _llm_campaign_serving_profile ~ '.service' }}
+      when:
+        - engine in ['vllm', 'llama_cpp']
+        - _llm_campaign_serving_profile | length > 0
+
     - name: Inspect the selected serving profile's rendered service command
       ansible.builtin.command:
         argv:
@@ -120,14 +150,12 @@
           - show
           - --property=ExecStart
           - --value
-          - >-
-            {{ _llm_campaign_role_defaults.llm_gpu_serving_unit_prefix
-               ~ '-' ~ _llm_campaign_model.serving_profile ~ '.service' }}
+          - "{{ _llm_campaign_serving_unit }}"
       register: _llm_campaign_service_command
       changed_when: false
       when:
         - engine in ['vllm', 'llama_cpp']
-        - _llm_campaign_model.serving_profile is defined
+        - _llm_campaign_serving_profile | length > 0
 
     - name: Require the selected engine and survey axes to match the live serving unit
       ansible.builtin.assert:
@@ -138,7 +166,14 @@
              and _llm_campaign_service_command.stdout
                  | regex_search('--max-model-len[ =]+([0-9]+)', '\\1') | first | int
                  >= _llm_campaign_contexts | max +
-                    (_llm_campaign.run | map(attribute='output_tokens') | map('int') | max))
+                    (_llm_campaign.run | map(attribute='output_tokens') | map('int') | max)
+             and (_llm_campaign_serving_profile_data | length == 0
+                  or (_llm_campaign_service_command.stdout
+                        | regex_search('--max-model-len[ =]+([0-9]+)', '\\1') | first | int
+                        == _llm_campaign_serving_profile_data.max_model_len | int
+                      and _llm_campaign_service_command.stdout
+                        | regex_search('--max-num-seqs[ =]+([0-9]+)', '\\1') | first | int
+                        == _llm_campaign_serving_profile_data.max_num_seqs | int)))
             or
             (engine == 'llama_cpp'
              and _llm_campaign_service_command.stdout is search('llama-server')
@@ -152,11 +187,23 @@
         quiet: true
       when:
         - engine in ['vllm', 'llama_cpp']
-        - _llm_campaign_model.serving_profile is defined
+        - _llm_campaign_serving_profile | length > 0
 
     - name: Preflight the selected Strata serving configuration
       ansible.builtin.include_tasks: tasks/llm-model-campaign-strata-preflight.yml
       when: engine == 'strata'
+
+    - name: Install lm-eval for selected vLLM benchmark-target recipes
+      ansible.builtin.include_role:
+        name: nvidia_gpu_guest
+        tasks_from: install-lm-eval.yml
+      when:
+        - engine == 'vllm'
+        - >-
+          _llm_campaign.run
+          | selectattr('executable', 'equalto', 'lm_eval')
+          | selectattr('run_on', 'equalto', 'benchmark_target')
+          | list | length > 0
 
     - name: Check every configured executable before cache changes or benchmarks
       ansible.builtin.include_tasks: tasks/llm-model-campaign-preflight-tool.yml
@@ -172,16 +219,34 @@
         loop_var: _llm_campaign_run
         label: "{{ _llm_campaign_run.name }}"
 
+    - name: Read the selected vLLM profile's current systemd invocation ID
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - --property
+          - InvocationID
+          - --value
+          - "{{ _llm_campaign_serving_unit }}"
+      register: _llm_campaign_vllm_invocation_id
+      changed_when: false
+      when: engine == 'vllm'
+
+    - name: Require the selected vLLM profile service to be running
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_vllm_invocation_id.stdout | trim | length > 0
+        fail_msg: >-
+          The selected vLLM profile service {{ _llm_campaign_serving_unit }} is
+          not running; its startup KV capacity cannot be read.
+        quiet: true
+      when: engine == 'vllm'
+
     - name: Read the selected vLLM profile startup log for live KV capacity
       ansible.builtin.command:
         argv:
           - journalctl
-          - --unit
-          - >-
-            {{ _llm_campaign_role_defaults.llm_gpu_serving_unit_prefix }}-
-            {{ _llm_campaign_model.serving_profile }}.service
-          - --since
-          - 6 hours ago
+          - "_SYSTEMD_INVOCATION_ID={{ _llm_campaign_vllm_invocation_id.stdout | trim }}"
           - --no-pager
           - --output
           - cat

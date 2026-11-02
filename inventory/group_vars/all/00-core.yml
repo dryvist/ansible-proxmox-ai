@@ -5,44 +5,6 @@
 ansible_become: true
 ansible_become_method: sudo
 
-# The published tofu inventory roster is the single source for agent identity
-# and ownership.
-ai_agents: "{{ (tofu_data | default({})).agents | default({}) }}"
-ai_agent_by_container: >-
-  {{ dict(ai_agents | dict2items | map(attribute='value.container')
-          | zip(ai_agents.keys())) }}
-ai_agent_owner: >-
-  {%- set owners = {} -%}
-  {%- for name, agent in ai_agents.items() -%}
-    {%- for slug in agent.owns | default([]) -%}
-      {%- set _ = owners.update({slug: name}) -%}
-    {%- endfor -%}
-  {%- endfor -%}
-  {{ owners }}
-# Every gateway caller identity -> {trust_tier}: the released harness registry
-# (agent_callers_registry, loaded by dryvist.homelab.agent_callers) plus the
-# roster. A roster agent without a trust_tier carries an empty tier, which
-# the Hindsight ACL treats as no bank. An id in both sources is a fault,
-# asserted in roles/agentgateway_docker/tasks/main.yml.
-ai_callers: >-
-  {%- set callers = {} -%}
-  {%- for name, caller in (agent_callers_registry | default({})).items() -%}
-    {%- set _ = callers.update({name: {'trust_tier': caller.trust_tier}}) -%}
-  {%- endfor -%}
-  {%- for name, agent in ai_agents.items() -%}
-    {%- set _ = callers.update({name: {'trust_tier': agent.get('trust_tier', '')}}) -%}
-  {%- endfor -%}
-  {{ callers }}
-# The ai_callers trust_tier allowed to call agents behind the gateway's A2A
-# routes (roles/agentgateway_docker). Read by the role, never re-typed there.
-agentgateway_docker_a2a_allowed_tier: trusted
-ai_agent_gateway_key_fields: >-
-  {%- set fields = {} -%}
-  {%- for name in ai_callers -%}
-    {%- set _ = fields.update({name: (name | replace('-', '_')) ~ '_agentgateway_key'}) -%}
-  {%- endfor -%}
-  {{ fields }}
-
 # Shared Cribl Stream OTLP/HTTP receiver — every OTEL-emitting component points
 # here, so this is global rather than scoped to ai_orchestration_group.yml
 # (roles outside that group, e.g. hermes_agent/open_webui, reference it too).
@@ -184,9 +146,9 @@ llm_router_oss_ci_key_enabled: true
 llm_router_recorder_key_enabled: false
 llm_router_judge_key_enabled: false
 
-# The Hermes orchestrator profile's key; the apps read policy grants its bucket.
-# hermes_agent converges need it on.
+# The Hermes orchestrator and eval profile keys; hermes_agent converges need them on.
 llm_router_hermes_orchestrator_key_enabled: true
+llm_router_hermes_eval_key_enabled: true
 
 # The docs site's router snapshot key; the apps read policy grants its bucket.
 llm_router_docs_router_snapshot_key_enabled: true

@@ -1,11 +1,11 @@
-"""Self-check for the Hermes per-job direct-cron routing, inertness, and
-literal-id contracts.
+"""Self-check for Hermes per-job direct-cron routing and profile homes.
 
 Split from test_alert_routing.py to stay under the token budget — see
 _alert_routing_shared.py for the shared resolve/deliver-target helpers,
-test_alert_routing_channels.py for the one-channel contract, and
-test_alert_routing_helper.py for the runtime cron-route helper this leaves
-behind.
+test_alert_routing_channels.py for the one-channel contract,
+test_alert_routing_profile_tokens.py for profile token isolation,
+test_alert_routing_guards.py for channel configuration guards, and
+test_alert_routing_helper.py for the runtime cron-route helper.
 
 Runs bare (`python3 tests/hermes_agent/test_alert_routing_jobs.py`) or under
 pytest.
@@ -13,25 +13,76 @@ pytest.
 
 from __future__ import annotations
 
-import re
-
-import yaml
+from jinja2 import Environment
 
 from _alert_routing_shared import (
     CONFIGURED,
     DEFAULTS,
-    DIRECT,
-    DIRECT_TASKS,
-    KANBAN,
     MAIN_TASKS,
     ROLE,
-    SPLUNK_STATUS,
-    TRIAGE,
-    _deliver_targets,
     _direct_deliver,
     _direct_job,
     _resolve,
 )
+from test_profile_contract import (
+    _RENDER_CONTEXT as _PROFILE_CONFIG_CONTEXT,
+    _defaults as _profile_defaults,
+    _jinja_env as _profile_jinja_env,
+    _profiles,
+)
+from test_profile_env_parity import _context as _profile_env_context
+from test_profile_env_parity import _env_values as _profile_env_values
+
+PROFILE_CHANNELS = {
+    "homelab-admin": "C_HOMELAB",
+    "splunk-admin": "C_SPLUNK",
+    "github-maint": "C_GITHUB",
+    "orchestrator": "C_ORCHESTRATOR",
+}
+
+PROFILE_ROUTED_JOBS = {
+    "homelab-admin": (
+        "hermes_agent_zammad_review_cron_name",
+        "hermes_agent_backlog_sweep_cron_name",
+    ),
+    "splunk-admin": (
+        "hermes_agent_splunk_triage_cron_name",
+        "hermes_agent_splunk_security_cron_name",
+        "hermes_agent_splunk_parsing_cron_name",
+        "hermes_agent_splunk_deepdive_cron_name",
+        "hermes_agent_splunk_health_cron_name",
+        "hermes_agent_router_capacity_digest_cron_name",
+        "hermes_agent_llm_stats_hourly_cron_name",
+    ),
+    "github-maint": (
+        "hermes_agent_github_maint_cron_name",
+        "hermes_agent_pricing_diff_cron_name",
+        "hermes_agent_github_cache_stats_cron_name",
+    ),
+    "orchestrator": (
+        "hermes_agent_kanban_reviewer_job",
+        "hermes_agent_fleet_health_cron_name",
+    ),
+}
+
+ROOT_HOME_JOBS = (
+    "hermes_agent_anomaly_hunt_cron_name",
+    "hermes_agent_ai_news_cron_name",
+    "hermes_agent_daily_innovation_cron_name",
+    "hermes_agent_docs_study_cron_name",
+    "hermes_agent_release_watch_cron_name",
+    "hermes_agent_daily_status_cron_name",
+)
+
+
+def _routed_context() -> dict[str, str]:
+    ctx = _resolve(CONFIGURED)
+    ctx["hermes_agent_slack_profile_channels"] = PROFILE_CHANNELS
+    ctx["hermes_agent_slack_profile_deliver_targets"] = {
+        profile: f"slack:{channel}" for profile, channel in PROFILE_CHANNELS.items()
+    }
+    ctx["hermes_agent_kanban_orchestrator_profile"] = "orchestrator"
+    return ctx
 
 
 # --- per-job routing: the recurring fleet is not one undifferentiated tier ----
@@ -90,15 +141,62 @@ def test_the_former_kanban_cards_report_to_the_home_channel() -> None:
 
 
 def test_splunk_findings_and_anomaly_hunt_route_by_reader() -> None:
-    """splunk-triage/security/parsing/deepdive and anomaly-hunt share the Splunk
-    digest domain with the script-fed splunk-status/error/security digests
-    (100-splunk.yml). The anomaly hunt is an operator-facing finding, so it
-    stays with the regular work reports."""
-    ctx = _resolve(CONFIGURED)
+    """Named Splunk findings use their routed profile channel; anomaly-hunt
+    stays in the root home and keeps its operator-facing home destination."""
+    ctx = _routed_context()
     for var in ("hermes_agent_splunk_triage_cron_name", "hermes_agent_splunk_security_cron_name",
                 "hermes_agent_splunk_parsing_cron_name", "hermes_agent_splunk_deepdive_cron_name"):
         assert _direct_deliver(var, ctx) == "slack:C_SPLUNK", var
     assert _direct_deliver("hermes_agent_anomaly_hunt_cron_name", ctx) == "slack:C_HOME"
+
+
+def test_profile_cron_homes_and_delivery_targets_match_the_decision() -> None:
+    ctx = _routed_context()
+    assert sum(map(len, PROFILE_ROUTED_JOBS.values())) == 14
+    assert len(ROOT_HOME_JOBS) == 6
+
+    for profile, cron_names in PROFILE_ROUTED_JOBS.items():
+        route_target = f"slack:{PROFILE_CHANNELS[profile]}"
+        route_key = (
+            "hermes_agent_kanban_orchestrator_profile" if profile == "orchestrator" else repr(profile)
+        )
+        for cron_name in cron_names:
+            job = _direct_job(cron_name)
+            assert "hermes_agent_slack_profile_deliver_targets" in str(job["deliver"]), cron_name
+            home = Environment().from_string(str(job["hermes_home"])).render(
+                hermes_agent_hermes_home="/hermes-home",
+                hermes_agent_kanban_orchestrator_profile="orchestrator",
+            )
+            assert home == f"/hermes-home/profiles/{profile}", cron_name
+            assert _direct_deliver(cron_name, ctx) == route_target, cron_name
+            if job.get("enabled") is not False:
+                assert f"{route_key} in hermes_agent_slack_profile_deliver_targets" in str(
+                    job["enabled"]
+                ), cron_name
+
+    for cron_name in ROOT_HOME_JOBS:
+        job = _direct_job(cron_name)
+        assert "hermes_home" not in job, cron_name
+        assert _direct_deliver(cron_name, ctx) == "slack:C_HOME", cron_name
+
+
+def test_github_maint_cron_stays_disabled_without_its_read_token() -> None:
+    job = _direct_job("hermes_agent_github_maint_cron_name")
+    context = {
+        "hermes_agent_github_maint_enabled": True,
+        "hermes_agent_github_identity_enabled": True,
+        "hermes_agent_github_read_token": "",
+        "hermes_agent_slack_bot_token": "xoxb-test",
+        "hermes_agent_slack_app_token": "xapp-test",
+        "hermes_agent_slack_profile_deliver_targets": {"github-maint": "slack:C_GITHUB"},
+    }
+    env = Environment()
+    env.filters["bool"] = bool
+    enabled = env.from_string(str(job["enabled"]))
+
+    assert enabled.render(**context).strip() == "False"
+    context["hermes_agent_github_read_token"] = "read-only-test-token"
+    assert enabled.render(**context).strip() == "True"
 
 
 def test_release_watch_uses_the_agent_home_channel() -> None:
@@ -139,81 +237,6 @@ def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> N
 
     # And it must actually reach the card: appended to the catalog body at load.
     assert "hermes_agent_daily_status_endpoints" in MAIN_TASKS
-
-
-# --- inertness: an unconfigured id must change nothing ------------------------
-
-def test_an_unset_home_channel_leaves_every_route_empty() -> None:
-    """No home channel means no Slack target anywhere, never a stray id."""
-    ctx = _resolve({})
-    assert _deliver_targets(SPLUNK_STATUS, ctx, MAIN_TASKS) == "slack:"
-    assert _deliver_targets(TRIAGE, ctx, MAIN_TASKS) == "slack:"
-    assert _deliver_targets(KANBAN, ctx, MAIN_TASKS) == "slack:"
-    match = re.search(DIRECT, DIRECT_TASKS)
-    assert match, "the direct-cron default deliver expression moved"
-    assert ctx[match.group(1)] == ""
-
-
-def test_an_unset_issues_channel_disables_the_board_split() -> None:
-    """Empty means "leave the failure lines inline", never "send them nowhere"."""
-    ctx = _resolve({})
-    assert ctx["hermes_agent_kanban_digest_issues_channel"] == ""
-
-
-# --- ids never enter git -----------------------------------------------------
-
-def test_every_channel_id_is_env_sourced_and_never_a_literal() -> None:
-    for name, tpl in DEFAULTS.items():
-        if "channel" not in name or not isinstance(tpl, str):
-            continue
-        assert not re.search(r"\bC0[A-Z0-9]{8,}\b", tpl), \
-            f"{name} carries a literal Slack channel id"
-    assert "lookup('env'" in str(DEFAULTS["hermes_agent_slack_home_channel"])
-    assert "hermes_agent_slack_home_channel" in str(DEFAULTS["hermes_agent_slack_noise_channel"])
-    assert "hermes_agent_slack_home_channel" in str(DEFAULTS["hermes_agent_slack_hermes_all_channel"])
-    assert "lookup('env'" in str(DEFAULTS["hermes_agent_slack_issues_channel"])
-    assert "lookup('env'" in str(DEFAULTS["hermes_agent_slack_splunk_channel"])
-
-
-def test_the_dead_composite_deliver_layer_is_gone() -> None:
-    """It resolved to nothing at runtime and hid the collapse behind apparent
-    sophistication. If one comes back, it must come back wired to a call site."""
-    for dead in ("hermes_agent_firehose_deliver",
-                 "hermes_agent_hermes_all_deliver_suffix",
-                 "hermes_agent_splunk_alert_deliver",
-                 "hermes_agent_splunk_digest_deliver",
-                 "hermes_agent_github_monitor_cron_deliver",
-                 "hermes_agent_bot_pr_triage_cron_deliver",
-                 "hermes_agent_docs_sync_cron_deliver",
-                 "hermes_agent_summary_cron_deliver",
-                 "hermes_agent_zammad_review_cron_deliver"):
-        assert dead not in DEFAULTS, f"{dead} is back but still reaches no call site"
-
-
-def test_every_channel_var_reaches_a_consumer() -> None:
-    """The same defect class as the block above, caught one layer earlier.
-
-    A channel var whose only readers are these tests routes nothing: it looks
-    like a configured surface, resolves to a real Slack id, and no emitter ever
-    posts to it. That is how the collapse hid — sophistication with no call
-    site. A var must be read by a task, a template, or another var.
-    """
-    consumers = "\n".join(
-        p.read_text()
-        for d in ("tasks", "templates", "handlers", "vars")
-        for p in sorted((ROLE / d).rglob("*"))
-        if p.is_file()
-    ) + "\n" + yaml.safe_dump(DEFAULTS)
-
-    for name in DEFAULTS:
-        if not (name.startswith("hermes_agent_slack_") and name.endswith("_channel")):
-            continue
-        # Its own definition is not a use, so require a second occurrence.
-        assert consumers.count(name) > 1, (
-            f"{name} is defined but nothing reads it — wire it to an emitter or "
-            f"drop it; a channel with no producer is indistinguishable from a "
-            f"broken one"
-        )
 
 
 if __name__ == "__main__":

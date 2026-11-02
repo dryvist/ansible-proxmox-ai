@@ -19,10 +19,18 @@
       or hermes_agent_slack_home_channel | length == 0
 
 - name: Read the installed cron jobs and desired-state markers once
-  ansible.builtin.include_tasks: cron_reconcile_direct_batch.yml
+  ansible.builtin.include_tasks:
+    file: cron_reconcile_direct_batch.yml
+    apply:
+      tags: "{{ hermes_agent_entry_point_task_tags['cron_reconcile_direct_batch.yml'] }}"
+  tags: "{{ hermes_agent_entry_point_task_tags['cron_reconcile_direct_batch.yml'] }}"
 
 - name: Reconcile the agentic direct-deliver digest crons
-  ansible.builtin.include_tasks: reconcile_direct_cron.yml
+  ansible.builtin.include_tasks:
+    file: reconcile_direct_cron.yml
+    apply:
+      tags: "{{ hermes_agent_entry_point_task_tags['reconcile_direct_cron.yml'] }}"
+  tags: "{{ hermes_agent_entry_point_task_tags['reconcile_direct_cron.yml'] }}"
   loop: "{{ hermes_agent_direct_cron_jobs }}"
   loop_control:
     label: "{{ item.name }}"
@@ -32,31 +40,16 @@
         and hermes_agent_slack_app_token | length > 0
         and hermes_agent_slack_home_channel | length > 0)
 
-# See hermes_agent_profile_cron_tick_timeout (defaults) for why this exists:
-# a job registered under a named profile's HERMES_HOME needs its OWN ticker,
-# since `hermes cron`'s ticker runs in-process inside whichever gateway
-# registered it and only the default profile's gateway is persistent.
-- name: Reconcile the profile cron tick trigger per profile
+# The gateway ticks every profile home in-process and sends a satellite's Slack
+# output through the primary's profile route. A standalone per-profile
+# `hermes cron tick` has no adapters, so it fired first and dropped each report
+# ("platform 'slack' not configured/enabled"). Remove those crontab entries.
+- name: Remove the retired per-profile cron tick triggers
   ansible.builtin.cron:
     name: "hermes-cron-tick-{{ item }}"
     user: "{{ hermes_agent_user }}"
-    job: >-
-      HERMES_HOME={{ hermes_agent_hermes_home }}/profiles/{{ item }}
-      timeout {{ hermes_agent_profile_cron_tick_timeout }}
-      {{ hermes_agent_bin }} cron tick
-      >> {{ hermes_agent_log_directory }}/cron-tick-{{ item }}.log 2>&1
-    minute: "*/5"
-    state: present
-  # Derived from hermes_agent_profiles, not hand-kept: a hardcoded list means
-  # a new profile's job is created under its own store and then never ticks —
-  # registered, scheduled, silent. The `when` below already skips a profile
-  # with no enabled job pointing at it, so deriving adds no stray cron entries.
+    state: absent
   loop: "{{ hermes_agent_profiles | map(attribute='name') | list }}"
-  when: >-
-    hermes_agent_direct_cron_jobs_owned
-    | selectattr('hermes_home', 'defined')
-    | selectattr('hermes_home', 'search', item)
-    | selectattr('enabled') | list | length > 0
 
 # No daily backfill safety net any more: it existed to re-create a slot-keyed
 # Kanban card a missed fire would otherwise drop forever. Recurring work is a
@@ -68,7 +61,11 @@
 # (real numbers the script gathered itself) is delivered verbatim to Slack. No
 # LLM in the fact path — nothing to poison. Replaces the LLM digest paths.
 - name: Reconcile the script-fed Splunk status-digest cron
-  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+  ansible.builtin.include_tasks:
+    file: reconcile_enqueuer_cron.yml
+    apply:
+      tags: "{{ hermes_agent_entry_point_task_tags['reconcile_enqueuer_cron.yml'] }}"
+  tags: "{{ hermes_agent_entry_point_task_tags['reconcile_enqueuer_cron.yml'] }}"
   vars:
     item:
       name: "{{ hermes_agent_splunk_status_digest_cron_name }}"
@@ -83,7 +80,11 @@
 # NOT added to hermes_agent_seeded_cron_names — brain-fleet reconciliation must
 # not pause the digest that reports a wedged board.
 - name: Reconcile the master Kanban digest cron
-  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+  ansible.builtin.include_tasks:
+    file: reconcile_enqueuer_cron.yml
+    apply:
+      tags: "{{ hermes_agent_entry_point_task_tags['reconcile_enqueuer_cron.yml'] }}"
+  tags: "{{ hermes_agent_entry_point_task_tags['reconcile_enqueuer_cron.yml'] }}"
   vars:
     item:
       name: "{{ hermes_agent_kanban_digest_cron_name }}"
@@ -97,13 +98,17 @@
 # Splunk triage, pr-reconcile and repo-crawl reconciles: split to their own
 # file (token budget).
 - name: Reconcile the Splunk-triage, PR-reconcile and repo-crawl crons
-  ansible.builtin.include_tasks: cron_reconcile_pr_repo_crawl.yml
+  ansible.builtin.include_tasks:
+    file: cron_reconcile_pr_repo_crawl.yml
+    apply:
+      tags: "{{ hermes_agent_entry_point_task_tags['cron_reconcile_pr_repo_crawl.yml'] }}"
+  tags: "{{ hermes_agent_entry_point_task_tags['cron_reconcile_pr_repo_crawl.yml'] }}"
 
 # Retire the hand-created LLM digest direct cron the script-fed digest replaces:
 # pause it (disable-don't-delete) so the two never double-post. `cron list` shows
 # only ENABLED jobs, so this is a clean no-op once the job is paused.
 - name: List active Hermes crons (to retire the superseded LLM digests)
-  ansible.builtin.command: "{{ hermes_agent_bin }} cron list"
+  ansible.builtin.command: "{{ hermes_agent_bin }} {{ hermes_agent_cli_profile_args | join(' ') }} cron list"
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   become: true
@@ -116,11 +121,17 @@
   # (zammad/github/summary) is unconditional, not a staged-rollout toggle.
 
 - name: Pause retired Hermes direct crons
-  ansible.builtin.include_tasks: cron_reconcile_retired_pauses.yml
+  ansible.builtin.include_tasks:
+    file: cron_reconcile_retired_pauses.yml
+    apply:
+      tags: "{{ hermes_agent_entry_point_task_tags['cron_reconcile_retired_pauses.yml'] }}"
+  tags: "{{ hermes_agent_entry_point_task_tags['cron_reconcile_retired_pauses.yml'] }}"
 
 # The 3 *-v2 crons the reframe duplicates under a bare name.
 - name: Pause the direct crons the reframe replaced 1-for-1
-  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ item }}"
+  ansible.builtin.command: >-
+    {{ hermes_agent_bin }} {{ hermes_agent_cli_profile_args | join(' ') }}
+    cron pause {{ item }}
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   become: true
@@ -133,7 +144,11 @@
   when: item in (hermes_agent_active_cron_list.stdout | default(''))
 
 - name: Pause the direct crons declared disabled
-  ansible.builtin.include_tasks: cron_pause_disabled.yml
+  ansible.builtin.include_tasks:
+    file: cron_pause_disabled.yml
+    apply:
+      tags: "{{ hermes_agent_entry_point_task_tags['cron_pause_disabled.yml'] }}"
+  tags: "{{ hermes_agent_entry_point_task_tags['cron_pause_disabled.yml'] }}"
   when: not ansible_check_mode
 
 # Wired-memory-ceiling trajectory watch (see defaults/main/102-wired-trajectory.yml
@@ -142,7 +157,11 @@
 # confirmation flag is flipped by hand — a disabled job here is skipped
 # entirely (no create, no remove), so this stays inert at converge until then.
 - name: Reconcile the wired-memory trajectory watch cron
-  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+  ansible.builtin.include_tasks:
+    file: reconcile_enqueuer_cron.yml
+    apply:
+      tags: "{{ hermes_agent_entry_point_task_tags['reconcile_enqueuer_cron.yml'] }}"
+  tags: "{{ hermes_agent_entry_point_task_tags['reconcile_enqueuer_cron.yml'] }}"
   vars:
     item:
       name: "{{ hermes_agent_wired_trajectory_cron_name }}"
@@ -155,7 +174,11 @@
 
 # Hourly failing-jobs rollup, delivered straight to the issues channel.
 - name: Reconcile the cron failure rollup cron
-  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+  ansible.builtin.include_tasks:
+    file: reconcile_enqueuer_cron.yml
+    apply:
+      tags: "{{ hermes_agent_entry_point_task_tags['reconcile_enqueuer_cron.yml'] }}"
+  tags: "{{ hermes_agent_entry_point_task_tags['reconcile_enqueuer_cron.yml'] }}"
   vars:
     item:
       name: "{{ hermes_agent_cron_failure_rollup_cron_name }}"

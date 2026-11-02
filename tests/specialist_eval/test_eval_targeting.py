@@ -178,6 +178,32 @@ def test_the_endpoint_play_reads_no_domain_and_targets_no_group() -> None:
     assert include["vars"]["openbao_secrets_fail_when_unavailable"] is True
 
 
+def test_only_the_dify_evaluation_play_reads_its_apps_key() -> None:
+    plays = _eval_plays()
+    dify = next(play for play in plays if play.get("hosts") == "dify_eval_group")
+    prefetch = next(
+        task for task in dify["pre_tasks"]
+        if task.get("name") == "Fetch only the Dify evaluation router-key path from OpenBao"
+    )
+    publish = next(
+        task for task in dify["pre_tasks"]
+        if task.get("name") == "Publish only the Dify evaluation OpenBao apps fields"
+    )
+    sim = next(play for play in plays if play.get("hosts") == "sim_eval_group")
+    langflow = next(play for play in plays if play.get("hosts") == "langflow_eval_group")
+
+    assert prefetch["ansible.builtin.include_role"]["name"] == "dryvist.homelab.openbao_secrets"
+    assert prefetch["vars"]["openbao_secrets_domains"] == [
+        {
+            "name": "apps",
+            "paths": [{"path": "{{ dify_docker_eval_router_key_path }}", "optional": True}],
+        }
+    ]
+    assert publish["no_log"] is True
+    assert "pre_tasks" not in sim
+    assert "pre_tasks" not in langflow
+
+
 def test_the_endpoint_comes_from_the_same_driver_site_yml_uses() -> None:
     assert "dryvist.homelab.openbao_secrets" in _playbook_text("site.yml")
     assert "dryvist.homelab.openbao_secrets" in _playbook_text("specialist-eval.yml")

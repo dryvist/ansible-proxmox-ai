@@ -1,0 +1,30 @@
+---
+- name: Load shared artifact cache settings and require the proxy
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/prepare.yml"
+
+- name: Install pinned lm-eval with the API backend as an isolated uv tool
+  ansible.builtin.command:
+    argv:
+      - "{{ nvidia_gpu_guest_uv_bin }}"
+      - tool
+      - install
+      - --python
+      - "{{ nvidia_gpu_guest_python }}"
+      - "lm-eval[api]=={{ nvidia_gpu_guest_lm_eval_version }}"
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  environment: "{{ nvidia_gpu_guest_uv_environment }}"
+  register: nvidia_gpu_guest_lm_eval_install
+  changed_when: >-
+    not ansible_check_mode and (
+      'Installed' in (nvidia_gpu_guest_lm_eval_install.stdout ~ nvidia_gpu_guest_lm_eval_install.stderr)
+      or 'Uninstalled' in (nvidia_gpu_guest_lm_eval_install.stdout ~ nvidia_gpu_guest_lm_eval_install.stderr)
+      or 'Prepared' in (nvidia_gpu_guest_lm_eval_install.stdout ~ nvidia_gpu_guest_lm_eval_install.stderr)
+    )
+
+- name: Put lm-eval on the default PATH
+  ansible.builtin.file:
+    src: "{{ nvidia_gpu_guest_uv_tool_bin_dir }}/lm_eval"
+    dest: /usr/local/bin/lm_eval
+    state: link
+  become: true

@@ -17,7 +17,7 @@ from conftest import (
     role_defaults,
 )
 from _cron_pool_ceiling_shared import wall_timeout_seconds
-from _role_files import template_text
+from _role_files import role_tasks, template_text
 
 
 def _helper_namespace() -> dict:
@@ -321,7 +321,7 @@ def test_integrated_monitor_returns_a_completed_future(monkeypatch) -> None:
 
 
 def test_wall_clock_patch_runs_before_source_verification() -> None:
-    main = (ROLE_ROOT / "tasks" / "main.yml").read_text()
-    assert main.index("patches_cron_wall_clock.yml") < main.index(
-        "patches_verify.yml"
+    names = [task.get("name") for task in role_tasks(ROLE_ROOT)]
+    assert names.index("Add aggregate cron wall-clock helpers") < names.index(
+        "Read installed Hermes pinned-source patches"
     )

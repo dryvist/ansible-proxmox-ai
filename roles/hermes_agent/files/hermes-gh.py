@@ -173,6 +173,8 @@ def decide(argv: list[str], env: dict, stdin: bytes, cfg: dict, origin: str | No
     kind = env.get("HERMES_GH_TOKEN_SET") or "review"
     if kind not in cfg["sets"]:
         raise Refuse("unknown-set", f"unknown HERMES_GH_TOKEN_SET {kind!r}")
+    if boundary not in cfg["sets"][kind]:
+        raise Refuse("unknown-set", f"token set {kind!r} is not configured for boundary {boundary!r}")
     text = outgoing_text(argv, stdin)
     write = is_write(argv, text)
     repo = target_repo(argv, text, origin)

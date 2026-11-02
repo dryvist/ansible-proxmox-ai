@@ -1,0 +1,164 @@
+---
+# Drain consumers, stop Weaviate, and cold-back it up when its backup module is absent.
+- name: Stop Dify ingress and scheduler before draining Celery workers
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - stop
+      - -t
+      - "{{ dify_docker_stop_timeout_seconds | string }}"
+      - "{{ item }}"
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  loop:
+    - worker_beat
+    - nginx
+    - web
+    - api
+  loop_control:
+    label: "{{ item }}"
+  changed_when: true
+  when: item in (dify_docker_deployed_services.stdout_lines | default([]))
+
+- name: Drain Dify workers gracefully before deploying the target version
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - stop
+      - -t
+      - "{{ dify_docker_stop_timeout_seconds | string }}"
+      - worker
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  changed_when: true
+  when: "'worker' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Stop old Dify worker dependencies after the drain
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - stop
+      - -t
+      - "{{ dify_docker_stop_timeout_seconds | string }}"
+      - "{{ item }}"
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  loop:
+    - agent_backend
+    - local_sandbox
+    - plugin_daemon
+    - sandbox
+    - ssrf_proxy
+    - agent_ssrf_proxy
+  loop_control:
+    label: "{{ item }}"
+  changed_when: true
+  when: item in (dify_docker_deployed_services.stdout_lines | default([]))
+
+- name: Stop Weaviate after all pre-upgrade backups are verified
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - stop
+      - -t
+      - "{{ dify_docker_stop_timeout_seconds | string }}"
+      - weaviate
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  changed_when: true
+
+- name: Create a cold Weaviate persistence backup after stopping Weaviate
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --create
+      - --gzip
+      - --numeric-owner
+      - --file
+      - "{{ dify_docker_weaviate_backup_path }}"
+      - --directory
+      - "{{ dify_docker_weaviate_persistence_path.stdout | trim }}"
+      - .
+  changed_when: true
+  when: not dify_docker_weaviate_backup_module_available | bool
+
+- name: Read the cold Weaviate pre-upgrade backup file
+  ansible.builtin.stat:
+    path: "{{ dify_docker_weaviate_backup_path }}"
+  register: dify_docker_cold_weaviate_backup_stat
+  when: not dify_docker_weaviate_backup_module_available | bool
+
+- name: Require a non-empty cold Weaviate pre-upgrade backup
+  ansible.builtin.assert:
+    that:
+      - dify_docker_cold_weaviate_backup_stat.stat.exists
+      - dify_docker_cold_weaviate_backup_stat.stat.size > 0
+    fail_msg: Cold Weaviate pre-upgrade backup is missing or empty.
+    quiet: true
+  when: not dify_docker_weaviate_backup_module_available | bool
+
+- name: Set restrictive permissions on the cold Weaviate backup
+  ansible.builtin.file:
+    path: "{{ dify_docker_weaviate_backup_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: not dify_docker_weaviate_backup_module_available | bool
+
+- name: Verify the cold Weaviate pre-upgrade archive integrity
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --list
+      - --gzip
+      - --file
+      - "{{ dify_docker_weaviate_backup_path }}"
+  changed_when: false
+  when: not dify_docker_weaviate_backup_module_available | bool
+
+- name: Find Dify backup artifacts after the new set is verified
+  ansible.builtin.find:
+    paths: "{{ dify_docker_upgrade_backup_dir }}"
+    patterns: "pre-upgrade-*"
+    file_type: any
+    recurse: false
+  register: dify_docker_upgrade_backup_artifacts
+
+- name: Set Dify backup set timestamps in chronological order
+  ansible.builtin.set_fact:
+    dify_docker_upgrade_backup_timestamps: >-
+      {{ dify_docker_upgrade_backup_artifacts.files
+         | map(attribute='path') | map('basename')
+         | map('regex_replace', '^pre-upgrade-([0-9]{8}T[0-9]{6})-.*$', '\\1')
+         | unique | sort | list }}
+
+- name: Select older Dify backup sets beyond the retention bound
+  ansible.builtin.set_fact:
+    dify_docker_upgrade_expired_backup_timestamps: >-
+      {{ dify_docker_upgrade_backup_timestamps[
+           0:(dify_docker_upgrade_backup_timestamps | length
+              - dify_docker_upgrade_backup_retention_count | int)]
+         if (dify_docker_upgrade_backup_timestamps | length)
+            > (dify_docker_upgrade_backup_retention_count | int)
+         else [] }}
+
+- name: Find artifacts belonging to expired Dify backup sets
+  ansible.builtin.find:
+    paths: "{{ dify_docker_upgrade_backup_dir }}"
+    patterns: "pre-upgrade-{{ item }}-*"
+    file_type: any
+    recurse: false
+  loop: "{{ dify_docker_upgrade_expired_backup_timestamps }}"
+  register: dify_docker_expired_backup_artifacts
+
+- name: Delete expired Dify backup sets after the new set is verified
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ dify_docker_expired_backup_artifacts.results
+       | map(attribute='files') | flatten | map(attribute='path') | list }}

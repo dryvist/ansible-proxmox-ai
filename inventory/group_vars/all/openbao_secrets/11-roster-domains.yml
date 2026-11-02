@@ -13,7 +13,21 @@ openbao_secrets_optional_domains: >-
   {%- if ai_callers | default({}) -%}
     {%- set _ = optional_domains.append('agentgateway-agent-keys') -%}
   {%- endif -%}
+  {%- for reader in openbao_app_agent_tier_reader_domains -%}
+    {%- set _ = optional_domains.append(reader.name) -%}
+  {%- endfor -%}
   {{ optional_domains }}
+
+# A roster agent's own domain is fetched only by the plays that read it: the
+# router converge, and the Hermes runtime when the agent has a guest. The
+# pre-fetch play passes its hosts' groups as openbao_secrets_active_groups.
+openbao_secrets_domain_groups: >-
+  {%- set by_domain = {} -%}
+  {%- for agent_name, agent in (ai_agents | default({})).items() -%}
+    {%- set _ = by_domain.update({agent_name: ['llm_router_group']
+          + (['hermes_agent_group'] if agent.container | default(none) else [])}) -%}
+  {%- endfor -%}
+  {{ by_domain }}
 
 # Remove owned MCP paths from static legacy domains before adding roster domains.
 openbao_secrets_domains: >-
@@ -31,17 +45,28 @@ openbao_secrets_domains: >-
     {%- set _ = legacy_domain.update({'paths': paths}) -%}
     {%- set _ = domains.append(legacy_domain) -%}
   {%- endfor -%}
+  {%- for reader in openbao_app_agent_tier_reader_domains -%}
+    {%- set _ = domains.append({'name': reader.name, 'paths': [
+        {'mount': openbao_agent_tier_mount, 'path': reader.path, 'optional': true}]}) -%}
+  {%- endfor -%}
   {%- set agents = ai_agents | default({}) -%}
   {%- set router_paths = [] -%}
   {%- set gateway_paths = [] -%}
   {%- for agent_name, agent in agents.items() -%}
-    {%- set paths = ['ai/' ~ agent_name, 'apps/' ~ agent_name] -%}
+    {#- Only a guest-backed agent's runtime reads ai/<agent> (hermes_agent_group settings). -#}
+    {%- set paths = (['ai/' ~ agent_name] if agent.container | default(none) else [])
+                    + ['apps/' ~ agent_name] -%}
     {%- set _ = paths.append({'path': 'apps/' ~ agent_name ~ '-gw', 'optional': true}) -%}
     {%- set _ = router_paths.append('apps/' ~ agent_name) -%}
     {%- for slug in agent.owns | default([]) -%}
       {%- set _ = paths.append('ai/mcp/' ~ slug) -%}
     {%- endfor -%}
-    {%- set _ = domains.append({'name': agent_name, 'paths': paths, 'required': true}) -%}
+    {#- A container-less agent that owns nothing has no consumer of its own domain: the router
+        reads apps/<agent> via llm-router-agent-keys and the gateway reads apps/<agent>-gw via
+        agentgateway-agent-keys, so it gets no required AppRole login of its own. -#}
+    {%- if agent.container | default(none) or agent.owns | default([]) -%}
+      {%- set _ = domains.append({'name': agent_name, 'paths': paths, 'required': true}) -%}
+    {%- endif -%}
   {%- endfor -%}
   {%- for caller_name in ai_callers | default({}) -%}
     {#- A registry caller's leaf may not be seeded yet: a 404 leaves it keyless, so it gets no bank. -#}

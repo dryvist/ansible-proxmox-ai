@@ -64,8 +64,8 @@ def build_search(harness: dict, watermark: float) -> str:
     )
 
 
-EXPORT_ATTEMPTS = 3
-EXPORT_RETRY_DELAYS = (5, 20)  # seconds slept after attempt 1 and after attempt 2
+EXPORT_ATTEMPTS = 6
+EXPORT_RETRY_DELAYS = (10, 30, 60, 120, 240)  # seconds slept after attempts 1 through 5
 
 
 def is_transient(exc: Exception) -> bool:
@@ -82,9 +82,20 @@ def open_export(request: urllib.request.Request):
         try:
             return urllib.request.urlopen(request, timeout=120)  # trusted config URL
         except (urllib.error.URLError, socket.timeout) as exc:
-            if attempt == EXPORT_ATTEMPTS - 1 or not is_transient(exc):
+            if not is_transient(exc):
                 raise
-            time.sleep(EXPORT_RETRY_DELAYS[attempt])
+            # Status and class only: the final error log reads the HTTP body.
+            status = f" status={exc.code}" if isinstance(exc, urllib.error.HTTPError) else ""
+            label = (
+                f"agent session export attempt {attempt + 1} of {EXPORT_ATTEMPTS} failed: "
+                f"{type(exc).__name__}{status}"
+            )
+            if attempt == EXPORT_ATTEMPTS - 1:
+                print(f"{label}, no attempts left", file=sys.stderr)
+                raise
+            delay = EXPORT_RETRY_DELAYS[attempt]
+            print(f"{label}, retrying in {delay}s", file=sys.stderr)
+            time.sleep(delay)
             attempt += 1
 
 

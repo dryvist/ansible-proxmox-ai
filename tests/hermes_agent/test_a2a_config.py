@@ -49,12 +49,8 @@ def _render_config_fragment(source: str, start: str, end: str, **context: object
 
 
 def _gateway_fragment(**context: object) -> str:
-    return _render_config_fragment(
-        CONFIG_TEMPLATE,
-        "{% set _api_server_on",
-        "# H-17 per-platform",
-        **context,
-    )
+    source = (ROLE_ROOT / "templates" / "config-gateway.yaml.j2").read_text()
+    return _environment().from_string(source).render(**context)
 
 
 def _peer_fragment(**context: object) -> str:

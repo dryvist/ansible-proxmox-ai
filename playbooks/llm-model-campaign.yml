@@ -6,12 +6,30 @@
   hosts: localhost
   gather_facts: false
   any_errors_fatal: true
+  vars_files:
+    - vars/llm-model-campaign-latency.yml
   vars:
     # The runner has no sudo; the controller play needs no privilege.
     ansible_become: false
-    # renovate: datasource=github-releases depName=dryvist/mlx-benchmarks currentValue=v0.64.0
-    _llm_campaign_benchmarks_ref: 4dc53a152e71c664f3c43b6e70e0adc445863e14
+    llm_model_campaign_serving_profile: ""
+    # renovate: datasource=github-releases depName=dryvist/mlx-benchmarks currentValue=v0.66.0
+    _llm_campaign_benchmarks_ref: c3d59075545700d1c547caed8aa861ffb5ce9a19
   tasks:
+    - name: Gate the campaign on interactive request latency
+      ansible.builtin.import_tasks: tasks/llm-model-campaign-latency-gate.yml
+
+    - name: Require one inventory alias when the medium vLLM campaign selector is used
+      ansible.builtin.assert:
+        that:
+          - >-
+            machine not in groups.get('llm_campaign_medium_vllm_target', [])
+            or groups['llm_campaign_medium_vllm_target'] | length == 1
+        fail_msg: >-
+          The medium vLLM campaign selector must resolve to exactly one inventory
+          alias; verify the selected vLLM guest and its configured profile.
+        quiet: true
+      when: machine is defined
+
     - name: Validate the required survey values and safe config name
       ansible.builtin.assert:
         that:
@@ -29,13 +47,20 @@
           - concurrency_list is defined
           - context_list is defined
           - power_cap_w | string is match('^[0-9]+([.][0-9]+)?$')
+          - >-
+            llm_model_campaign_sample_slice_index is not defined
+            or llm_model_campaign_sample_slice_index | string is match('^(0|[1-9][0-9]*)$')
+          - >-
+            llm_model_campaign_repetitions is not defined
+            or llm_model_campaign_repetitions | string is match('^[1-9][0-9]*$')
           - engine != 'strata' or strata_batch_size is defined
           - strata_batch_size is not defined or strata_batch_size | string is match('^(1|4|8)$')
         fail_msg: >-
           The campaign survey requires an inventory alias, a named config,
           a registry artifact id, supported engine/model size, positive context/concurrency lists,
-          an HTTPS endpoint origin, an existing target cache path, and a
-          non-negative numeric power cap in watts.
+          an HTTPS endpoint origin, an existing target cache path, a
+          non-negative numeric power cap, and canonical optional sample-slice
+          and positive repetition overrides.
         quiet: true
 
     - name: Require the baseline campaign endpoint to use HTTPS
@@ -124,6 +149,9 @@
       ansible.builtin.set_fact:
         _llm_campaign_config: >-
           {{ _llm_campaign_config_file.content | b64decode | community.general.from_toml }}
+
+    - name: Validate sample-slice recipe configuration and selected override
+      ansible.builtin.import_tasks: tasks/llm-model-campaign-sample-slice-validation.yml
 
     - name: Verify the envelope converter is available before target work
       ansible.builtin.command:
@@ -238,6 +266,18 @@
           when its registered size is large.
         quiet: true
 
+    - name: Resolve the campaign serving profile
+      ansible.builtin.set_fact:
+        _llm_campaign_selected_serving_profile: >-
+          {{ llm_model_campaign_serving_profile
+             | default('', true) | trim
+             | default(_llm_campaign_selected_artifacts[0].serving_profile | default(''), true) }}
+        _llm_campaign_selected_serving_profile_data: {}
+
+    - name: Resolve and validate an explicit campaign serving profile
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-serving-profile.yml
+      when: llm_model_campaign_serving_profile | default('', true) | trim | length > 0
+
     - name: Require runtime endpoint inputs for authenticated model recipes
       ansible.builtin.assert:
         that:
@@ -268,6 +308,8 @@
         _llm_campaign_config_ref: "{{ _llm_campaign_benchmarks_ref }}"
         _llm_campaign_workdir: "{{ _llm_campaign_workspace.path }}"
         _llm_campaign_model: "{{ _llm_campaign_selected_artifacts[0] }}"
+        _llm_campaign_serving_profile: "{{ _llm_campaign_selected_serving_profile }}"
+        _llm_campaign_serving_profile_data: "{{ _llm_campaign_selected_serving_profile_data }}"
         _llm_campaign_serving_model: "{{ serving_model | default(_llm_campaign_selected_artifacts[0].hf_repo) }}"
         _llm_campaign_uses_api_key: >-
           {{ _llm_campaign_config.run

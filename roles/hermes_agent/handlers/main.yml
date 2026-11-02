@@ -7,9 +7,14 @@
 # process so an abort cannot strand the fleet paused, and a play that fails
 # before its handler flush never quiesces anything in the first place.
 - name: Restart hermes-gateway
+  tags: always
   ansible.builtin.command: "{{ hermes_agent_cron_drain_restart_script }}"
   changed_when: true
   register: hermes_agent_drain_restart
+  when:
+    - hermes_agent_gateway_input_stats is defined
+    - (hermes_agent_gateway_input_stats.results | default([]) | length) > 2
+    - hermes_agent_gateway_input_stats.results[2].stat.exists | default(false)
 
 # ansible.builtin.command captures stdout instead of printing it, so at default
 # verbosity the wrapper's per-store pause decisions, its drain wait and its
@@ -19,6 +24,7 @@
 # notify: the topic fires from the same notifications the restart already
 # carries, so no caller has to know this exists.
 - name: Report the drain-before-restart decisions
+  tags: always
   listen: Restart hermes-gateway
   ansible.builtin.debug:
     var: hermes_agent_drain_restart.stdout_lines
@@ -27,6 +33,7 @@
 # The digest is set in finalize.yml, which a failed play skips before this
 # handler flushes. Skipping here only means the next converge restarts again.
 - name: Record the gateway restart
+  tags: always
   listen: Restart hermes-gateway
   ansible.builtin.copy:
     dest: "{{ hermes_agent_gateway_restart_marker }}"
@@ -34,11 +41,16 @@
     owner: root
     group: root
     mode: "0600"
-  when: hermes_agent_gateway_desired_digest is defined
+  when:
+    - hermes_agent_gateway_desired_digest is defined
+    - hermes_agent_gateway_input_stats is defined
+    - (hermes_agent_gateway_input_stats.results | default([]) | length) > 2
+    - hermes_agent_gateway_input_stats.results[2].stat.exists | default(false)
 
 # The public-review gateway runs no cron store, so a plain restart is enough.
 # The unit only exists while the public route is enabled.
 - name: Restart hermes-gateway-public
+  tags: always
   ansible.builtin.systemd:
     name: "{{ hermes_agent_github_public_gateway_service }}"
     state: restarted
@@ -46,30 +58,35 @@
   when: hermes_agent_github_route_public_enabled | bool
 
 - name: Restart hermes-dashboard
+  tags: always
   ansible.builtin.systemd:
     name: hermes-dashboard
     state: restarted
     daemon_reload: true
 
 - name: Restart hermes-webui
+  tags: always
   ansible.builtin.systemd:
     name: hermes-webui
     state: restarted
     daemon_reload: true
 
 - name: Restart hermes-studio
+  tags: always
   ansible.builtin.systemd:
     name: hermes-studio
     state: restarted
     daemon_reload: true
 
 - name: Restart hermes-browser-use-chromium
+  tags: always
   ansible.builtin.systemd:
     name: hermes-browser-use-chromium
     state: restarted
     daemon_reload: true
 
 - name: Restart sshd
+  tags: always
   ansible.builtin.systemd:
     name: ssh
     state: restarted
@@ -78,6 +95,7 @@
 # notify this handler, but the unit itself deploys only when the flag is on — so
 # on a disabled identity there is no unit to restart.
 - name: Restart hermes-vikunja-bridge
+  tags: always
   ansible.builtin.systemd:
     name: hermes-vikunja-bridge
     state: restarted
@@ -85,6 +103,7 @@
   when: hermes_agent_vikunja_bridge_enabled | bool
 
 - name: Restart hermes-event-relay
+  tags: always
   ansible.builtin.systemd:
     name: hermes-event-relay
     state: restarted
@@ -92,18 +111,21 @@
   when: hermes_agent_event_relay_enabled | bool
 
 - name: Restart hermes-brain-watchdog timer
+  tags: always
   ansible.builtin.systemd:
     name: hermes-brain-watchdog.timer
     state: restarted
     daemon_reload: true
 
 - name: Restart hermes-brain-sync timer
+  tags: always
   ansible.builtin.systemd:
     name: hermes-brain-sync.timer
     state: restarted
     daemon_reload: true
 
 - name: Restart rsyslog
+  tags: always
   ansible.builtin.systemd:
     name: rsyslog
     state: restarted

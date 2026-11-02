@@ -52,12 +52,16 @@ def test_sensitivity_guard_output(tmp_path, sensitivity_tag, expected_failure):
     }
     if sensitivity_tag is not None:
         key["sensitivity_tag"] = sensitivity_tag
+    value_free_key = {name: value for name, value in key.items() if name != "value"}
     playbook = tmp_path / "guard.yml"
     playbook.write_text(yaml.safe_dump([{
         "name": "Verify sensitivity admission",
         "hosts": "localhost",
         "gather_facts": False,
-        "vars": {"llm_router_virtual_keys": [key]},
+        "vars": {
+            "llm_router_virtual_keys": [key],
+            "_llm_router_virtual_keys_without_values": [value_free_key],
+        },
         "tasks": [guard],
     }], sort_keys=False), encoding="utf-8")
     result = subprocess.run(
@@ -71,4 +75,4 @@ def test_sensitivity_guard_output(tmp_path, sensitivity_tag, expected_failure):
     assert (result.returncode != 0) == expected_failure, result.stdout + result.stderr
     assert KEY_MARKER not in result.stdout + result.stderr
     if expected_failure:
-        assert "censored" in result.stdout
+        assert "must use a supported required sensitivity tag" in result.stdout

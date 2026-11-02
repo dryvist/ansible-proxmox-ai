@@ -8,6 +8,8 @@ from pathlib import Path
 import jinja2
 import yaml
 
+from _group_vars import load_group_vars_all
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PAUSE_VAR = "llm_gpu_serving_paused"
 ROLES = (
@@ -50,7 +52,7 @@ def _jinja() -> jinja2.Environment:
 
 
 def test_shared_pause_flag_defaults_to_false():
-    assert _load("inventory/group_vars/all/00-core.yml")[PAUSE_VAR] is False
+    assert load_group_vars_all()[PAUSE_VAR] is False
 
 
 def test_pause_stops_the_selected_unit_without_disabling_it():

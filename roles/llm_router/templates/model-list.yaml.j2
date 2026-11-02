@@ -220,12 +220,18 @@ model_list:
   # Hermes local GPU leg".
 {% for m in llm_router_vllm_models + llm_router_hermes_local_models %}
 {% if llm_router_llm_vllm_enabled %}
+{% set _agent_priority_twin = (
+     (m.provider == 'hosted_vllm' and m.tier in llm_router_local_registry_tiers)
+     or (m.provider == 'openai' and m.tier == 'vllm'))
+     and (m.route_group | default(m.client_model_id)) in (_llm_router_local_agent_groups | default([])) %}
+{% for _agent_priority in ([false, true] if _agent_priority_twin else [false]) %}
   - model_name: {{ m.route_group | default(m.client_model_id) }}
     litellm_params:
       model: {{ litellm_model(m) }}
-      tags: {{ deployment_tags(m) }}
+      tags: {{ deployment_tags(m, routing_tag='agent-priority' if _agent_priority else '') }}
       api_base: {{ llm_router_llm_vllm_base_url }}
       api_key: {{ llm_router_light_api_key }}
+{{ local_extra_body(m, _agent_priority) }}
       # /v1/responses -> /chat/completions bridge. None of these backends serve
       # a Responses endpoint, and without this a Responses-only client (Codex
       # and anything else speaking that wire protocol) reaches a 404 on an
@@ -267,6 +273,7 @@ model_list:
 {% endif %}
 {{- delegation_hints(m) }}
 {% endif %}
+{% endfor %}
 {% endif %}
 {% endfor %}
 {% include 'model-list-gpu.yaml.j2' %}

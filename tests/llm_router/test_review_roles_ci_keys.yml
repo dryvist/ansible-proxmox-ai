@@ -93,6 +93,12 @@
         _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
         _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
         _ci_settings: "{{ llm_router_review_key_router_settings }}"
+        _full_scope_keys: >-
+          {{ _llm_router_static_virtual_keys
+             | selectattr('alias', 'in', ['open-webui', 'langfuse', 'dify', 'cursor', 'raycast']) | list }}
+        _narrow_ci_keys: >-
+          {{ _llm_router_static_virtual_keys
+             | selectattr('alias', 'in', ['github-actions-ci-fix', 'github-actions-pr-review']) | list }}
 
     - name: The CI keys use capabilities and grant only their declared cloud groups
       ansible.builtin.assert:
@@ -116,6 +122,14 @@
           - llm_router_review_aliases.private not in _gha_oss.models
           - llm_router_review_aliases.local not in _gha_oss.models
           - llm_router_ci_luna_groups | intersect(_gha_oss.models) | length == 0
+          - llm_router_agent_only_groups | difference(_gha.models) | length == 0
+          - llm_router_agent_only_groups | difference(_gha_oss.models) | length == 0
+          - >-
+            llm_router_agent_only_groups
+            | intersect(_full_scope_keys | map(attribute='models') | flatten) | length == 0
+          - >-
+            llm_router_agent_only_groups
+            | intersect(_narrow_ci_keys | map(attribute='models') | flatten) | length == 0
           - _gha_oss.router_settings_ref == 'oss'
           - _ci_settings.oss.model_group_alias == llm_router_model_group_aliases
           - llm_router_review_private_chain | intersect(llm_router_external_paid_rungs) | length == 0

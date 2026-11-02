@@ -1,0 +1,63 @@
+---
+- name: Validate the interactive latency gate settings
+  ansible.builtin.assert:
+    that:
+      - llm_campaign_interactive_key_aliases is sequence
+      - llm_campaign_interactive_key_aliases is not string
+      - llm_campaign_interactive_key_aliases | length > 0
+      - >-
+        llm_campaign_interactive_key_aliases | map('string')
+        | select('match', '^[A-Za-z0-9_-]+$') | list | length
+        == llm_campaign_interactive_key_aliases | length
+      - llm_campaign_latency_max_ratio | float > 0
+    fail_msg: "The interactive latency gate requires aliases and a positive ratio threshold."
+    quiet: true
+  when: llm_campaign_latency_gate_enabled | bool
+
+- name: Query the interactive p95 latency ratio from Prometheus
+  ansible.builtin.uri:
+    url: >-
+      {{ _llm_campaign_latency_prometheus_url }}/api/v1/query?query={{ _llm_campaign_latency_query | urlencode }}
+    method: GET
+    return_content: true
+    status_code: [200]
+  register: _llm_campaign_latency_response
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  when: llm_campaign_latency_gate_enabled | bool
+
+- name: Fail closed on query errors or a regressed interactive p95
+  ansible.builtin.assert:
+    that:
+      - _llm_campaign_latency_response.status | default(0) | int == 200
+      - _llm_campaign_latency_response.json is mapping
+      - _llm_campaign_latency_response.json.status | default('') == 'success'
+      - _llm_campaign_latency_response.json.data is mapping
+      - _llm_campaign_latency_response.json.data.result is defined
+      - _llm_campaign_latency_response.json.data.result is sequence
+      - _llm_campaign_latency_response.json.data.result is not string
+      - _llm_campaign_latency_response.json.data.result is not mapping
+      - _llm_campaign_latency_response.json.data.result | length <= 1
+      - >-
+        _llm_campaign_latency_response.json.data.result | length == 0
+        or (
+          _llm_campaign_latency_response.json.data.result[0].value is defined
+          and _llm_campaign_latency_response.json.data.result[0].value is sequence
+          and _llm_campaign_latency_response.json.data.result[0].value | length == 2
+          and (
+            _llm_campaign_latency_response.json.data.result[0].value[1] == 'NaN'
+            or _llm_campaign_latency_response.json.data.result[0].value[1]
+               is match('^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$')
+          )
+        )
+      - >-
+        _llm_campaign_latency_response.json.data.result | length == 0
+        or _llm_campaign_latency_response.json.data.result[0].value[1] == 'NaN'
+        or (_llm_campaign_latency_response.json.data.result[0].value[1] | float)
+           <= (llm_campaign_latency_max_ratio | float)
+    fail_msg: >-
+      Prometheus did not return one valid interactive p95 ratio, or the current
+      30-minute p95 exceeds the configured threshold against the prior-week baseline.
+    quiet: true
+  when: llm_campaign_latency_gate_enabled | bool

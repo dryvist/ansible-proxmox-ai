@@ -1,0 +1,33 @@
+---
+# Guard every Dify component image, back up durable data while the stack serves,
+# then drain old consumers before config_and_deploy starts the target release.
+- name: Detect deployed Dify component image drift
+  ansible.builtin.include_tasks: upgrade_detect.yml
+
+- name: Back up and stop Dify before changing its release
+  when: dify_docker_upgrade_required | bool
+  block:
+    - name: Prepare the Dify backup set and verify available space
+      ansible.builtin.include_tasks: upgrade_backup_prepare.yml
+
+    - name: Back up PostgreSQL, uploads, and Agent storage before stopping
+      ansible.builtin.include_tasks: upgrade_backup_storage.yml
+
+    - name: Back up Weaviate while it is live
+      ansible.builtin.include_tasks: upgrade_backup_weaviate.yml
+
+    - name: Drain Dify and finish the Weaviate backup
+      ansible.builtin.include_tasks: upgrade_stop.yml
+  rescue:
+    - name: Restart the deployed Dify stack after an unsuccessful backup
+      community.docker.docker_compose_v2:
+        project_src: "{{ dify_docker_data_dir }}"
+        state: present
+      no_log: true
+
+    - name: Stop the upgrade after an unsuccessful pre-upgrade backup
+      ansible.builtin.fail:
+        msg: >-
+          Dify upgrade safety failed. The deployed Compose stack was restarted;
+          complete PostgreSQL, uploaded-file, Agent snapshot/workspace (when
+          configured), and Weaviate backups are required before continuing.
