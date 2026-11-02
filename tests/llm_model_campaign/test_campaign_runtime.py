@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from jinja2 import Template
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -93,6 +94,46 @@ def _named(tasks: list[dict[str, Any]], name: str) -> dict[str, Any]:
     matches = [task for task in tasks if task.get("name") == name]
     assert len(matches) == 1, name
     return matches[0]
+
+
+def test_vllm_kv_preflight_reads_the_current_serving_invocation():
+    target = yaml.safe_load(TARGET_PLAYBOOK.read_text(encoding="utf-8"))[0]
+    pre_tasks = target["pre_tasks"]
+    unit_task = _named(pre_tasks, "Record the selected serving profile systemd unit")
+    service_command = _named(pre_tasks, "Inspect the selected serving profile's rendered service command")
+    invocation_read = _named(pre_tasks, "Read the selected vLLM profile's current systemd invocation ID")
+    running_guard = _named(pre_tasks, "Require the selected vLLM profile service to be running")
+    journal_read = _named(pre_tasks, "Read the selected vLLM profile startup log for live KV capacity")
+    kv_preflight = _named(pre_tasks, "Require startup KV capacity and validate all vLLM reservations")
+
+    unit = Template(unit_task["ansible.builtin.set_fact"]["_llm_campaign_serving_unit"]).render(
+        _llm_campaign_role_defaults={"llm_gpu_serving_unit_prefix": "vllm-serving"},
+        _llm_campaign_model={"serving_profile": "large"},
+    )
+    assert unit == "vllm-serving-large.service"
+    assert not any(character.isspace() for character in unit)
+    assert service_command["ansible.builtin.command"]["argv"][-1] == "{{ _llm_campaign_serving_unit }}"
+    assert invocation_read["ansible.builtin.command"]["argv"] == [
+        "systemctl",
+        "show",
+        "--property",
+        "InvocationID",
+        "--value",
+        "{{ _llm_campaign_serving_unit }}",
+    ]
+
+    journal_argv = journal_read["ansible.builtin.command"]["argv"]
+    assert journal_argv[1] == "_SYSTEMD_INVOCATION_ID={{ _llm_campaign_vllm_invocation_id.stdout | trim }}"
+    assert "--since" not in journal_argv
+    assert "--unit" not in journal_argv
+
+    invocation_condition = running_guard["ansible.builtin.assert"]["that"][0]
+    rendered_condition = Template("{{ " + invocation_condition + " }}").render(
+        _llm_campaign_vllm_invocation_id={"stdout": ""}
+    )
+    assert rendered_condition == "False"
+    assert "not running" in running_guard["ansible.builtin.assert"]["fail_msg"]
+    assert pre_tasks.index(running_guard) < pre_tasks.index(journal_read) < pre_tasks.index(kv_preflight)
 
 
 def test_authenticated_recipes_require_runtime_alias_and_key():
