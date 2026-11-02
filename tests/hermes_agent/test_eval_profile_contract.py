@@ -37,8 +37,8 @@ def _render_config(profile: dict[str, Any], memory_provider: str) -> dict[str, A
     return yaml.safe_load(_jinja_env().from_string(src).render(hermes_agent_profile=profile, **context))
 
 
-def test_eval_profile_grants_no_env_mcp_or_skill() -> None:
-    assert EVAL_PROFILE["env"] == []
+def test_eval_profile_grants_only_its_api_server_env_and_no_mcp_or_skill() -> None:
+    assert EVAL_PROFILE["env"] == ["api_server"]
     assert EVAL_PROFILE["mcp"] == []
     assert EVAL_PROFILE["skills"] == []
     assert "soul_addendum_bundle" not in EVAL_PROFILE
