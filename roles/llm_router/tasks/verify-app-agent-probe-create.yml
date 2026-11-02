@@ -1,0 +1,182 @@
+---
+# The read-tier create probe and its always-run cleanup, imported by verify-app-agent-probe.yml.
+# Check mode skips it because the probe mutates Vikunja.
+- name: Probe read-tier task creation and always remove an unexpected task
+  # The create probe mutates Vikunja, so check mode skips it.
+  when:
+    - not ansible_check_mode
+    - "'vikunja-read' in _llm_router_app_probe_tiers"
+  tags: [llm_router_app_agent_probe]
+  no_log: true
+  block:
+    - name: Try a read-tier task create in an allowlisted project
+      ansible.builtin.uri:
+        url: "{{ _llm_router_app_probe_url }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _llm_router_app_probe_keys['vikunja-read'] }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          server_id: vikunja_read
+          name: vikunja_tasks
+          arguments:
+            subcommand: create
+            projectId: "{{ _llm_router_app_probe_read_projects[0].id }}"
+            title: "{{ _llm_router_app_probe_task_title }}"
+            description: Delete in the always path if the read tier can create tasks.
+        status_code: [200, 400, 401, 403, 404, 422, 500]
+        return_content: true
+        timeout: 20
+      register: _llm_router_app_probe_create
+      check_mode: false
+      vars:
+        _llm_router_app_probe_read_projects: >-
+          {{ (_llm_router_app_probe['read-lists-projects'].json.content[0].text | from_json).data.projects }}
+      no_log: true
+
+    - name: Require a specific authorization denial for the read-tier create probe
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _create.status == 403 or
+            (_create.status == 200 and (_create.json.isError | default(false)) and
+             ('forbidden' in _create_error or 'no access' in _create_error))
+        fail_msg: The read-tier create probe did not return an authorization denial.
+      vars:
+        _create: "{{ _llm_router_app_probe_create }}"
+        _create_error: >-
+          {{ _create.json.content | default([]) | map(attribute='text') | join(' ') | lower }}
+      no_log: true
+  always:
+    - name: Find tasks created by the read-tier probe, including after a timeout
+      ansible.builtin.uri:
+        url: "{{ _llm_router_app_probe_url }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _llm_router_app_probe_keys['vikunja-write'] }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          server_id: vikunja_write
+          name: vikunja_tasks
+          arguments:
+            subcommand: list
+            projectId: >-
+              {{ (_llm_router_app_probe['read-lists-projects'].json.content[0].text
+                  | from_json).data.projects[0].id }}
+            search: "{{ _llm_router_app_probe_task_title }}"
+        status_code: 200
+        return_content: true
+        timeout: 20
+      register: _llm_router_app_probe_cleanup_search
+      when: _llm_router_app_probe_create is defined
+      no_log: true
+
+    - name: Resolve every unexpected task created by the read-tier probe
+      ansible.builtin.set_fact:
+        _llm_router_app_probe_created_task_ids: >-
+          {%- set _ns = namespace(ids=[]) -%}
+          {%- set _create = _llm_router_app_probe_create | default({}, true) -%}
+          {%- set _create_json = _create.get('json', {}) -%}
+          {%- set _content = _create_json.get('content', []) -%}
+          {%- if _create.get('status', 0) == 200 and not _create_json.get('isError', false)
+                and _content | length > 0 -%}
+          {%- set _created = _content[0].text | from_json -%}
+          {%- set _created_data = _created.get('data', {}) -%}
+          {%- if _created_data is mapping -%}
+          {%- set _created_task = _created_data.get('task', _created_data) -%}
+          {%- set _created_id = _created_task.get('id', 0) | int -%}
+          {%- if _created_id > 0 -%}{%- set _ns.ids = _ns.ids + [_created_id] -%}{%- endif -%}
+          {%- endif -%}
+          {%- endif -%}
+          {%- set _search_json = _llm_router_app_probe_cleanup_search.json | default({}, true) -%}
+          {%- set _search_content = _search_json.get('content', []) -%}
+          {%- if _search_content | length > 0 -%}
+          {%- set _search = _search_content[0].text | from_json -%}
+          {%- set _data = _search.get('data', {}) -%}
+          {%- set _tasks = _data.get('tasks', _data) if _data is mapping else _data -%}
+          {%- for _task in _tasks if _task.get('title') == _llm_router_app_probe_task_title -%}
+          {%- set _task_id = _task.get('id', 0) | int -%}
+          {%- if _task_id > 0 -%}{%- set _ns.ids = _ns.ids + [_task_id] -%}{%- endif -%}
+          {%- endfor -%}
+          {%- endif -%}
+          {{ _ns.ids | unique | list }}
+      when: _llm_router_app_probe_create is defined
+      no_log: true
+
+    - name: Delete any task created by the read-tier probe with the write-tier token
+      ansible.builtin.uri:
+        url: "{{ _llm_router_app_probe_url }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _llm_router_app_probe_keys['vikunja-write'] }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          server_id: vikunja_write
+          name: vikunja_tasks
+          arguments:
+            subcommand: delete
+            id: "{{ item }}"
+        status_code: [200, 204]
+        return_content: true
+        timeout: 20
+      register: _llm_router_app_probe_cleanup
+      loop: "{{ _llm_router_app_probe_created_task_ids | default([]) }}"
+      loop_control:
+        label: "task {{ item }}"
+      when: _llm_router_app_probe_create is defined
+      no_log: true
+
+    - name: Search for the probe task after cleanup
+      ansible.builtin.uri:
+        url: "{{ _llm_router_app_probe_url }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _llm_router_app_probe_keys['vikunja-write'] }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          server_id: vikunja_write
+          name: vikunja_tasks
+          arguments:
+            subcommand: list
+            projectId: >-
+              {{ (_llm_router_app_probe['read-lists-projects'].json.content[0].text
+                  | from_json).data.projects[0].id }}
+            search: "{{ _llm_router_app_probe_task_title }}"
+        status_code: 200
+        return_content: true
+        timeout: 20
+      register: _llm_router_app_probe_cleanup_verify
+      when: _llm_router_app_probe_create is defined
+      no_log: true
+
+    - name: Require the probe task to be absent after cleanup
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _remaining_probe_tasks | length == 0
+        fail_msg: The read-tier authorization probe left its task behind after cleanup.
+      vars:
+        _search: "{{ _llm_router_app_probe_cleanup_verify.json.content[0].text | from_json }}"
+        _data: "{{ _search.data | default({}, true) }}"
+        _tasks: "{{ _data.tasks | default(_data, true) }}"
+        _remaining_probe_tasks: >-
+          {{ _tasks | selectattr('title', 'equalto', _llm_router_app_probe_task_title) | list }}
+      when: _llm_router_app_probe_create is defined
+      no_log: true
+
+    - name: Fail if an unexpectedly created task has no ID that can be deleted
+      ansible.builtin.fail:
+        msg: >-
+          The read-tier create probe succeeded but its unique task could not be
+          found from the response or task list for cleanup.
+      when:
+        - _llm_router_app_probe_create is defined
+        - _llm_router_app_probe_create.status | default(0) == 200
+        - not (_llm_router_app_probe_create.json.isError | default(false))
+        - _llm_router_app_probe_created_task_ids | default([]) | length == 0
+      no_log: true
