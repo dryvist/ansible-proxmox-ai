@@ -80,20 +80,30 @@
       vars:
         _standalone_opencode: >-
           {{ _config.model_list
-             | selectattr('model_name', 'in', llm_router_opencode_models
-                          | map(attribute='client_model_id') | list) | list }}
+             | selectattr('model_name', 'in', _opencode_route_names) | list }}
+        _opencode_route_names: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for m in llm_router_opencode_models -%}
+          {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
+        _go_route_names: >-
+          {{ llm_router_opencode_models | selectattr('route_group', 'defined')
+             | map(attribute='route_group') | unique | list }}
         _retired_free_routes: >-
           {{ _config.model_list | selectattr('model_name', 'in', ['free', 'free-zdrless']) | list }}
         _go_deployments: >-
           {{ _standalone_opencode
-             | selectattr('model_name', 'match', '^go-') | list }}
+             | selectattr('model_name', 'in', _go_route_names) | list }}
         _go_api_mismatches: >-
           {%- set ns = namespace(bad=[]) -%}
           {%- for d in _go_deployments -%}
           {%- set m = llm_router_opencode_models
-                | selectattr('client_model_id', 'equalto', d.model_name) | first -%}
+                | selectattr('upstream_model_id', 'equalto', d.litellm_params.model.split('/')[-1])
+                | first -%}
           {%- if d.litellm_params.api_base != llm_router_opencode_base_url
                 or d.litellm_params.model != (m.provider ~ '/' ~ m.upstream_model_id)
+                or (m.route_group | default(m.client_model_id)) != d.model_name
                 or not (d.litellm_params.use_chat_completions_api | bool) -%}
           {%- set ns.bad = ns.bad + [d.model_name] -%}
           {%- endif -%}
@@ -117,14 +127,22 @@
       vars:
         _standalone_opencode: >-
           {{ _config.model_list
-             | selectattr('model_name', 'in', llm_router_opencode_models
-                          | map(attribute='client_model_id') | list) | list }}
+             | selectattr('model_name', 'in', _opencode_route_names) | list }}
+        _opencode_route_names: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for m in llm_router_opencode_models -%}
+          {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
         _header_mismatches: >-
           {%- set ns = namespace(bad=[]) -%}
           {%- for d in _standalone_opencode -%}
           {%- set _hdr = (d.litellm_params.extra_headers | default({})).get('x-opencode-session', '') -%}
+          {%- set m = llm_router_opencode_models
+                | selectattr('upstream_model_id', 'equalto', d.litellm_params.model.split('/')[-1])
+                | first -%}
           {%- set _expected = llm_router_opencode_session_prefix ~ '-'
-                ~ (d.model_name | regex_replace('/', '-')) -%}
+                ~ (m.client_model_id | regex_replace('/', '-')) -%}
           {%- if _hdr != _expected -%}
           {%- set ns.bad = ns.bad + [d.model_name] -%}
           {%- endif -%}
@@ -132,14 +150,19 @@
           {{ ns.bad }}
         _go_deployments: >-
           {{ _standalone_opencode
-             | selectattr('model_name', 'match', '^go-') | list }}
+             | selectattr('model_name', 'in', _go_route_names) | list }}
+        _go_route_names: >-
+          {{ llm_router_opencode_models | selectattr('route_group', 'defined')
+             | map(attribute='route_group') | unique | list }}
         _go_api_mismatches: >-
           {%- set ns = namespace(bad=[]) -%}
           {%- for d in _go_deployments -%}
           {%- set m = llm_router_opencode_models
-                | selectattr('client_model_id', 'equalto', d.model_name) | first -%}
+                | selectattr('upstream_model_id', 'equalto', d.litellm_params.model.split('/')[-1])
+                | first -%}
           {%- if d.litellm_params.api_base != llm_router_opencode_base_url
                 or d.litellm_params.model != (m.provider ~ '/' ~ m.upstream_model_id)
+                or (m.route_group | default(m.client_model_id)) != d.model_name
                 or not (d.litellm_params.use_chat_completions_api | bool) -%}
           {%- set ns.bad = ns.bad + [d.model_name] -%}
           {%- endif -%}

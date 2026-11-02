@@ -114,18 +114,36 @@
             purpose: Fixture standard agent
             owns: []
             router_key_class: standard
+          example-local:
+            container: example-local
+            hostname: example-local.example.com
+            display: Example local agent
+            purpose: Fixture local-only agent
+            owns: []
+            router_key_class: local
+          example-all:
+            container: example-all
+            hostname: example-all.example.com
+            display: Example all-class agent
+            purpose: Fixture all-class agent
+            owns: []
+            router_key_class: all
         ai_agent_owner: {splunk: example-owner}
         openbao_secrets_by_domain:
           llm-router-agent-keys:
             example_owner_llm_router_key: fixture-owner-key
             example_standard_llm_router_key: fixture-standard-key
+            example_local_llm_router_key: fixture-local-key
+            example_all_llm_router_key: fixture-all-key
       block:
         - name: Trust the ownership fixture callers over the shared fixture
           ansible.builtin.set_fact:
             ai_callers: >-
               {{ ai_callers | combine({
                    'example-owner': {'trust_tier': _llm_router_trusted_caller_tiers | first},
-                   'example-standard': {'trust_tier': _llm_router_trusted_caller_tiers | first}
+                   'example-standard': {'trust_tier': _llm_router_trusted_caller_tiers | first},
+                   'example-local': {'trust_tier': _llm_router_trusted_caller_tiers | first},
+                   'example-all': {'trust_tier': _llm_router_trusted_caller_tiers | first}
                  }) }}
 
         - name: Refresh the router projections for the ownership fixture
@@ -161,9 +179,54 @@
           ansible.builtin.assert:
             quiet: true
             that:
-              - _roster_agent_keys | map(attribute='alias') | list == ['example-owner', 'example-standard']
+              - >-
+                _roster_agent_keys | map(attribute='alias') | list
+                == ['example-owner', 'example-standard', 'example-local', 'example-all']
               - _owner.allowed_classes == ['local', 'sub', 'paid-zdr']
               - _standard.allowed_classes == ['local', 'sub', 'paid-zdr', 'free']
+              - _local.allowed_classes == _llm_router_consumer_classes_local
+              - _local.models == _expected_local_models
+              - _expected_local_models | length == 4
+              - _local.models | intersect(_non_local_registry_names) | length == 0
+              - _local.metadata.router_key_class == 'agent'
+              - _local.metadata.tags == ['agent-priority']
+              - _local.router_settings.enable_tag_filtering | bool
+              - _standard.metadata.tags is not defined
+              - _all_agent.metadata.tags is not defined
+              - _all_agent.allowed_classes == ['local', 'sub', 'paid-zdr', 'free', 'retains']
+              - >-
+                _roster_virtual_keys | selectattr('alias', 'in', _roster_agent_keys | map(attribute='alias') | list)
+                | selectattr('metadata.router_key_class', 'equalto', 'agent') | list | length == 4
+              - _agent_key_projections | length >= 4
+              - >-
+                _agent_key_projections | map(attribute='models') | flatten
+                | intersect(_agent_forbidden_registry_names) | length == 0
+              - >-
+                _agent_forbidden_registry_names | difference(_llm_router_agent_excluded_groups)
+                | length == 0
+              - >-
+                _llm_router_agent_excluded_groups | difference(_agent_forbidden_registry_names)
+                | length == 0
+              - >-
+                _roster_virtual_keys | selectattr('alias', 'in', _roster_agent_keys | map(attribute='alias') | list)
+                | selectattr('metadata.tags', 'defined') | list | length == 1
+              - >-
+                _workstation_keys | selectattr('metadata.tags', 'defined')
+                | list | length == 0
+              - >-
+                _agent_twins
+                | selectattr('litellm_params.extra_body.priority', 'equalto', 10)
+                | list | length == _agent_twins | length
+              - _agent_twins | selectattr('litellm_params.tags', 'contains', 'default') | list | length == 0
+              - _interactive_defaults | length > 0
+              - _interactive_defaults | selectattr('litellm_params.extra_body.priority', 'defined') | list | length == 0
+              - llm_router_agent_only_groups | length > 0
+              - llm_router_agent_only_groups | difference(_owner.models) | length == 0
+              - llm_router_agent_only_groups | difference(_standard.models) | length == 0
+              - llm_router_agent_only_groups | difference(_all_agent.models) | length == 0
+              - >-
+                llm_router_agent_only_groups
+                | intersect(_workstation_keys | map(attribute='models') | flatten) | length == 0
               - _owner.daily_budget == _llm_router_hermes_profile_daily_budget
               - _standard.daily_budget == _llm_router_hermes_profile_daily_budget
               - _owner.tags == ['&zdr', '!free', '!retains']
@@ -183,6 +246,20 @@
                 _roster_virtual_keys | selectattr('alias', 'match', '^hermes-')
                 | map(attribute='object_permission.mcp_servers') | flatten
                 | select('equalto', 'splunk') | list | length == 0
+              - _hermes_profile_keys | length > 0
+              - >-
+                _hermes_profile_keys
+                | selectattr('metadata.router_key_class', 'equalto', 'agent')
+                | list | length == _hermes_profile_keys | length
+              - >-
+                _hermes_profile_keys
+                | selectattr('metadata.tags', 'equalto', ['agent-priority'])
+                | list | length == _hermes_profile_keys | length
+              - >-
+                _hermes_profile_keys
+                | selectattr('router_settings.enable_tag_filtering', 'defined')
+                | selectattr('router_settings.enable_tag_filtering', 'equalto', true)
+                | list | length == _hermes_profile_keys | length
               - >-
                 _workstation_keys | map(attribute='alias') | sort
                 == ['agy', 'claude-code', 'codex', 'litellm-local-workstation']
@@ -191,7 +268,10 @@
                 (_workstation_keys | selectattr('alias', 'equalto', 'litellm-local-workstation')
                  | first).object_permission.mcp_servers == ['splunk']
               - _roster_virtual_keys | selectattr('owner_filter', 'defined') | list | length == 0
-            fail_msg: "Roster ownership was not applied in the shared key projection."
+            fail_msg: >-
+              Roster ownership was not applied in the shared key projection:
+              local groups={{ _expected_local_models }};
+              agent-only groups={{ llm_router_agent_only_groups }}.
           vars:
             _expected_hub_servers:
               - context7
@@ -216,10 +296,58 @@
               - zammad
             _owner: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-owner') | first }}"
             _standard: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-standard') | first }}"
+            _local: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-local') | first }}"
+            _all_agent: "{{ _roster_virtual_keys | selectattr('alias', 'equalto', 'example-all') | first }}"
+            _expected_local_models: >-
+              {{ ([llm_router_small_capability_name, llm_router_primary_model]
+                  + llm_router_agent_only_groups + [llm_router_embedding_model])
+                 | unique | list }}
+            _agent_key_projections: >-
+              {{ _roster_virtual_keys
+                 | selectattr('metadata.router_key_class', 'defined')
+                 | selectattr('metadata.router_key_class', 'equalto', 'agent') | list }}
+            _hermes_profile_keys: >-
+              {{ _roster_virtual_keys
+                 | selectattr('alias', 'in', _llm_router_hermes_profile_names
+                   | map('regex_replace', '^', 'hermes-') | list) | list }}
+            _agent_forbidden_registry_names: >-
+              {%- set ns = namespace(names=[]) -%}
+              {%- for m in llm_router_registry_enabled
+                    if (m.subscription | default(false) | bool)
+                       or (m.price_class | default('') == 'subscription')
+                       or m.client_model_id.split('/')[-1].startswith(('codex-', 'claude-'))
+                       or (m.route_group | default('')).startswith(('codex-', 'claude-'))
+                       or (m.fallback_group | default('')).startswith(('codex-', 'claude-'))
+                       or (m.stable_aliases | default([])
+                           | select('match', '^(codex|claude)-') | list | length > 0) -%}
+              {%- set ns.names = ns.names + [m.client_model_id]
+                    + ([m.route_group] if m.route_group is defined else [])
+                    + ([m.fallback_group] if m.fallback_group is defined else [])
+                    + (m.stable_aliases | default([])) -%}
+              {%- endfor -%}
+              {{ ns.names | unique | list }}
+            _non_local_registry_names: >-
+              {%- set ns = namespace(names=[]) -%}
+              {%- for m in llm_router_model_registry
+                    if m.tier not in llm_router_local_registry_tiers -%}
+              {%- set ns.names = ns.names + [m.client_model_id]
+                    + ([m.route_group] if m.route_group is defined else [])
+                    + ([m.fallback_group] if m.fallback_group is defined else [])
+                    + (m.stable_aliases | default([])) -%}
+              {%- endfor -%}
+              {{ ns.names | unique | list }}
             _workstation_keys: >-
               {{ _roster_virtual_keys
                  | selectattr('alias', 'in', ['claude-code', 'codex', 'agy',
                                                'litellm-local-workstation']) | list }}
+            _agent_twins: >-
+              {{ _config.model_list
+                 | selectattr('model_name', 'in', _local.models)
+                 | selectattr('litellm_params.tags', 'contains', _local.metadata.tags[0]) | list }}
+            _interactive_defaults: >-
+              {{ _config.model_list
+                 | selectattr('model_name', 'in', _local.models)
+                 | selectattr('litellm_params.tags', 'contains', 'default') | list }}
             _cli_keys: >-
               {{ _roster_virtual_keys
                  | selectattr('alias', 'in', ['claude-code', 'codex', 'agy']) | list }}

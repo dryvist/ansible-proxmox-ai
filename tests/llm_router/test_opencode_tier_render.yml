@@ -105,7 +105,19 @@
           # nothing while still reporting green.
           - llm_router_opencode_models | length > 0
           - _rendered_shape == _registry_shape
+          - _rendered_output_limits == _registry_output_limits
           - _rendered_limits == _registry_limits
+          - _disabled_opencode_models | length > 0
+          - >-
+            _disabled_opencode_models | map(attribute='client_model_id') | list
+            | intersect(_rendered_model_names) | length == 0
+          - _config.router_settings.enable_pre_call_checks | bool
+          - >-
+            llm_router_opencode_fallback_groups | difference(_medium_context_targets)
+            | length == 0
+          - >-
+            llm_router_opencode_fallback_groups | difference(_rendered_model_names)
+            | length == 0
           # The hints projection is checked against entries that declare hints;
           # models without a metered sibling do not get inferred hints.
           - _hinted | length == _registry_hinted
@@ -122,16 +134,33 @@
           registry entry, each at order {{ llm_router_opencode_default_order }}
           and its registered window.
       vars:
-        # Select the tier's own client names so another provider entry at the
+        # Select the tier's own rendered model groups so another provider entry at the
         # same api_base cannot affect the deployment count.
+        _opencode_model_names: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for m in llm_router_opencode_models -%}
+          {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
         _opencode_deployments: >-
           {{ _config.model_list
              | selectattr('litellm_params.api_base', 'defined')
              | selectattr('litellm_params.api_base', 'equalto',
                           llm_router_opencode_base_url)
              | selectattr('model_name', 'in',
-                          llm_router_opencode_models | map(attribute='client_model_id') | list)
+                          _opencode_model_names)
              | list }}
+        _rendered_model_names: >-
+          {{ _config.model_list | map(attribute='model_name') | unique | list }}
+        _disabled_opencode_models: >-
+          {{ llm_router_model_registry
+             | selectattr('tier', 'equalto', 'opencode')
+             | rejectattr('enabled') | list }}
+        _medium_context_targets: >-
+          {{ _config.router_settings.context_window_fallbacks
+             | map('dict2items') | flatten
+             | selectattr('key', 'equalto', hermes_brain_model)
+             | map(attribute='value') | first }}
         # One [name, order, window] row per rendered deployment against one per
         # registry entry. Sorted, NOT deduplicated: a second deployment under an
         # id already rendered is the banned duplicate this comparison exists to
@@ -150,9 +179,22 @@
         _registry_shape: >-
           {%- set ns = namespace(rows=[]) -%}
           {%- for m in llm_router_opencode_models -%}
-          {%- set ns.rows = ns.rows + [[m.client_model_id,
-                llm_router_opencode_default_order | int,
+          {%- set ns.rows = ns.rows + [[m.route_group | default(m.client_model_id),
+                m.order | default(llm_router_opencode_default_order) | int,
                 m.context_window | int]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
+        _rendered_output_limits: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _opencode_deployments -%}
+          {%- set ns.rows = ns.rows + [[d.model_name, d.model_info.max_tokens | int]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
+        _registry_output_limits: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for m in llm_router_opencode_models -%}
+          {%- set ns.rows = ns.rows + [[m.route_group | default(m.client_model_id),
+                m.max_output_tokens | int]] -%}
           {%- endfor -%}
           {{ ns.rows | sort }}
         _registry_limits: >-
@@ -235,19 +277,31 @@
           - "'zdr' in _deepseek_before.litellm_params.tags"
           - "'zdr' not in _deepseek_after.litellm_params.tags"
           - "'retains' in _deepseek_after.litellm_params.tags"
-          - _expiring_model.client_model_id in _zdr_groups_before_expiry
-          - _expiring_model.client_model_id not in llm_router_d1_zdr_key_groups
+          - >-
+            (_expiring_model.route_group | default(_expiring_model.client_model_id))
+            in _zdr_groups_before_expiry
+          - >-
+            (_expiring_model.route_group | default(_expiring_model.client_model_id))
+            not in llm_router_d1_zdr_key_groups
       vars:
         _expiring_model: >-
           {{ llm_router_opencode_models
              | selectattr('zero_data_retention_expires', 'defined') | first }}
         _deepseek_before: >-
           {{ _config_before_expiry.model_list
-             | selectattr('model_name', 'equalto', _expiring_model.client_model_id)
+             | selectattr('model_name', 'equalto',
+                          _expiring_model.route_group | default(_expiring_model.client_model_id))
+             | selectattr('litellm_params.model', 'equalto',
+                 _expiring_model.litellm_model_name
+                 | default(_expiring_model.provider ~ '/' ~ _expiring_model.upstream_model_id))
              | first }}
         _deepseek_after: >-
           {{ _config_after_expiry.model_list
-             | selectattr('model_name', 'equalto', _expiring_model.client_model_id)
+             | selectattr('model_name', 'equalto',
+                          _expiring_model.route_group | default(_expiring_model.client_model_id))
+             | selectattr('litellm_params.model', 'equalto',
+                 _expiring_model.litellm_model_name
+                 | default(_expiring_model.provider ~ '/' ~ _expiring_model.upstream_model_id))
              | first }}
 
     - name: Render Responses-only OpenCode models without the chat bridge

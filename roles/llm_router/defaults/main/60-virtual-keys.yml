@@ -57,6 +57,8 @@ _llm_router_virtual_keys_source: >-
   {%- set _name_class = _group_class_by_name.get(_name) -%}
   {%- if (not _classes or _name_class is none or _name_class in _classes)
         and (not _trust_clamped or _classes | length > 0 or _name_class in _classes)
+        and (((_key.metadata | default({})).get('router_key_class') != 'agent')
+             or _name not in _llm_router_agent_excluded_groups)
         and (_key.alias == 'github-actions' or _name not in _ci_only_groups)
         and (not _zdr_only or _name not in _zdr_unasserted) -%}
   {%- set _discard = _filtered.append(_name) -%}
@@ -75,6 +77,16 @@ _llm_router_virtual_keys_source: >-
         'purpose', 'benchmark' if _key.alias == 'inference-direct-only' else 'live') -%}
   {%- set _permissions = _key.object_permission
         | default(llm_router_mcp_default_object_permission) -%}
+  {%- set _router_key_metadata = {} -%}
+  {%- if (_key.metadata | default({})).get('router_key_class') == 'agent' -%}
+  {%- set _key_metadata = _key.metadata | default({}) -%}
+  {%- set _router_key_metadata = {
+        'router_key_class': 'agent',
+      } -%}
+  {%- if _key_metadata.tags is defined -%}
+  {%- set _router_key_metadata = _router_key_metadata | combine({'tags': _key_metadata.tags}) -%}
+  {%- endif -%}
+  {%- endif -%}
   {%- if _permissions.mcp_servers is defined and _key.owner_filter | default(true) -%}
   {%- set _owned_elsewhere = ai_agent_owner | default({}) | dict2items
         | rejectattr('value', 'equalto', _key.alias) | map(attribute='key') | list -%}
@@ -98,7 +110,8 @@ _llm_router_virtual_keys_source: >-
           'environment': 'benchmark' if _purpose == 'benchmark' else llm_router_trace_environment,
           'release': _litellm_release,
         } | combine((_key.metadata | default({})).get('trace_defaults', {})),
-        'trace_required': llm_router_benchmark_trace_fields},
+        'trace_required': llm_router_benchmark_trace_fields}
+        | combine(_router_key_metadata, recursive=true),
       }, recursive=true)) -%}
   {%- endfor -%}
   {{ out }}

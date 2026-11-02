@@ -8,7 +8,7 @@ from test_engine_profiles import _artifacts, _vllm_profiles
 
 ROOT = Path(__file__).resolve().parents[2]
 VLLM_PROFILES = _vllm_profiles()
-GPU_MATRIX = yaml.safe_load((ROOT / "llm-models.d/61-gpu-matrix.yml").read_text())[
+GPU_MATRIX = yaml.safe_load((ROOT / "llm-models.d/62-gpu-matrix.yml").read_text())[
     "_llm_registry_gpu_matrix"
 ]
 

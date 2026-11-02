@@ -1,0 +1,157 @@
+---
+- name: Verify the sandbox-only OpenCode route groups
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the shared router fixture
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/ladder_keys_fixture.yml"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Add the fixture sandbox key and keep the large tier gated off
+      ansible.builtin.set_fact:
+        bao_apps_secrets: >-
+          {{ (bao_apps_secrets | default({})) | combine({
+            'sandbox_agent_router_llm_router_key': 'fixture-sandbox-agent'}) }}
+        llm_router_llm_vllm_enabled: false
+        llm_router_vllm_precheck_passed: false
+      no_log: true
+
+    - name: Refresh the router projections
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render router config
+      ansible.builtin.set_fact:
+        _render_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Derive sandbox OpenCode route groups from the registry
+      ansible.builtin.set_fact:
+        _sandbox_route_groups: >-
+          {%- set ns = namespace(groups=[]) -%}
+          {%- for model in llm_router_model_registry
+                if (model.tier | default('')) == 'opencode'
+                   and 'sandbox-only' in (model.tags | default([]))
+                   and model.route_group is defined -%}
+          {%- set ns.groups = ns.groups + [model.route_group] -%}
+          {%- endfor -%}
+          {{ ns.groups | unique | list }}
+
+    - name: Check the sandbox route is isolated from class and other key scopes
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _sandbox_route_groups | length > 0
+          - _sandbox_route_groups | difference(_sandbox_only_names) | length == 0
+          - _sandbox_route_groups | difference(_sandbox_key.models) | length == 0
+          - _other_keys_with_route | length == 0
+          - _class_scopes_with_route | length == 0
+        fail_msg: >-
+          sandbox groups={{ _sandbox_route_groups }}, sandbox key={{ _sandbox_key.models }},
+          other keys={{ _other_keys_with_route }}, class scopes={{ _class_scopes_with_route }}.
+        success_msg: >-
+          Registry-derived sandbox route groups are granted only to sandbox-agent,
+          outside all, standard, ZDR, and local class scopes.
+      vars:
+        _sandbox_only_names: "{{ llm_router_sandbox_only_aliases }}"
+        _sandbox_key: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'equalto', 'sandbox-agent') | first }}
+        _other_keys_with_route: >-
+          {%- set ns = namespace(keys=[]) -%}
+          {%- for key in _llm_router_declared_virtual_keys
+                if key.alias != 'sandbox-agent'
+                   and (key.models | intersect(_sandbox_route_groups) | length > 0) -%}
+          {%- set ns.keys = ns.keys + [key.alias] -%}
+          {%- endfor -%}
+          {{ ns.keys }}
+        _class_scopes: >-
+          {{ {
+            'all': llm_router_d1_all_key_groups,
+            'standard': llm_router_d1_standard_key_groups,
+            'zdr': llm_router_d1_zdr_key_groups,
+            'local': _llm_router_local_agent_groups,
+          } }}
+        _class_scopes_with_route: >-
+          {%- set ns = namespace(scopes=[]) -%}
+          {%- for scope in _class_scopes | dict2items -%}
+          {%- if scope.value | intersect(_sandbox_route_groups) | length > 0 -%}
+          {%- set ns.scopes = ns.scopes + [scope.key] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.scopes }}
+
+    - name: Check the rendered OpenCode deployments and retired alias
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _go_entries | length > 0
+          - _go_entries | selectattr('tags', 'contains', 'sandbox-only') | list | length == _go_entries | length
+          - _go_entries | map(attribute='order') | map('int') | sort | list == [1, 2]
+          - _target_rows | length == _go_entries | length
+          - _rendered_order_rows == _registry_order_rows
+          - >-
+            _target_rows | selectattr('litellm_params.tags', 'defined')
+            | selectattr('litellm_params.tags', 'contains', 'sensitivity:public')
+            | list | length == _target_rows | length
+          - _legacy_alias_token not in (_render_config | to_json)
+          - _disabled_opencode_models | length > 0
+          - >-
+            _disabled_opencode_models | map(attribute='client_model_id') | list
+            | intersect(_render_config.model_list | map(attribute='model_name') | list) | length == 0
+          - >-
+            _disabled_opencode_upstream_names | intersect(_render_config.model_list
+              | map(attribute='litellm_params.model') | list) | length == 0
+          - _retry_policy.RateLimitErrorRetries | int >= 1
+        fail_msg: >-
+          Go entries={{ _go_entries }}, rendered targets={{ _target_rows }},
+          retry={{ _retry_policy }}.
+        success_msg: >-
+          The sandbox route renders both ordered OpenCode Go deployments, and the
+          retired alias is absent from the rendered configuration.
+      vars:
+        _go_entries: >-
+          {{ llm_router_model_registry
+             | selectattr('tier', 'equalto', 'opencode')
+             | selectattr('route_group', 'defined')
+             | selectattr('route_group', 'in', _sandbox_route_groups)
+             | selectattr('enabled', 'truthy') | list }}
+        _target_rows: >-
+          {{ _render_config.model_list
+             | selectattr('model_name', 'in', _sandbox_route_groups) | list }}
+        _registry_order_rows: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for model in _go_entries -%}
+          {%- set ns.rows = ns.rows + [[model.order | int,
+                model.litellm_model_name | default(model.provider ~ '/' ~ model.upstream_model_id)]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
+        _rendered_order_rows: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for deployment in _target_rows -%}
+          {%- set ns.rows = ns.rows + [[deployment.litellm_params.order | int,
+                deployment.litellm_params.model]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
+        _legacy_alias_token: '"public-cheap"'
+        _disabled_opencode_models: >-
+          {{ llm_router_model_registry | selectattr('tier', 'equalto', 'opencode')
+             | rejectattr('enabled') | list }}
+        _disabled_opencode_upstream_names: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for model in _disabled_opencode_models -%}
+          {%- set ns.names = ns.names + [model.litellm_model_name
+                | default(model.provider ~ '/' ~ model.upstream_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names }}
+        _retry_policy: >-
+          {{ _render_config.router_settings.model_group_retry_policy[_sandbox_route_groups | first] }}

@@ -1,4 +1,4 @@
-"""Per-model limits belong to the shared catalog, not llm-models.d slices."""
+"""Per-model limits belong to the catalog unless the registry marks an override."""
 
 from __future__ import annotations
 
@@ -31,10 +31,15 @@ def test_registry_slices_do_not_duplicate_catalog_numeric_limits() -> None:
             for entry in entries:
                 if not isinstance(entry, dict) or entry.get("enabled") is False:
                     continue
-                repeated = MODEL_LIMIT_FIELDS.intersection(entry)
-                if repeated:
+                overrides = set(entry.get("catalog_limit_overrides", []))
+                invalid_overrides = overrides.difference(MODEL_LIMIT_FIELDS)
+                missing_overrides = overrides.difference(entry)
+                repeated = MODEL_LIMIT_FIELDS.intersection(entry).difference(overrides)
+                if invalid_overrides or missing_overrides or repeated:
                     duplicates.append(
                         f"{path.relative_to(REPO_ROOT)}:{entry['client_model_id']}: "
-                        f"{', '.join(sorted(repeated))}"
+                        f"repeated={', '.join(sorted(repeated))}; "
+                        f"invalid overrides={', '.join(sorted(invalid_overrides))}; "
+                        f"missing overrides={', '.join(sorted(missing_overrides))}"
                     )
-    assert not duplicates, "Per-model catalog limits were duplicated in llm-models.d: " + "; ".join(duplicates)
+    assert not duplicates, "Per-model catalog limits need explicit valid overrides: " + "; ".join(duplicates)

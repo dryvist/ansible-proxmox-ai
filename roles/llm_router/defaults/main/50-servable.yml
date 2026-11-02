@@ -36,7 +36,8 @@ _llm_router_capability_names_source: >-
   {{ llm_router_model_registry
      | selectattr('tier', 'in', llm_router_local_registry_tiers)
      | selectattr('route_group', 'defined')
-     | map(attribute='route_group') | unique | list }}
+     | map(attribute='route_group')
+     | difference(llm_router_agent_only_groups) | unique | list }}
 llm_router_capability_names: "{{ _llm_router_m_capability_names }}"
 llm_router_primary_large_model: >-
   {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
@@ -83,11 +84,19 @@ _llm_router_gpu_servable_models_source: >-
   {{ llm_router_gpu_models | selectattr('servable', 'defined')
      | selectattr('servable') | map(attribute='route_group') | unique | list }}
 llm_router_gpu_servable_models: "{{ _llm_router_m_gpu_servable_models }}"
+llm_router_opencode_stable_alias_entries: >-
+  {{ (llm_router_opencode_models | selectattr('stable_aliases', 'defined') | list)
+     if (_llm_router_m_resolved_credentials.get('OPENCODE_API_KEY', '')
+         | string | length > 0) else [] }}
+llm_router_opencode_stable_alias_targets: >-
+  {{ llm_router_opencode_stable_alias_entries
+     | map(attribute='client_model_id') | list }}
 llm_router_gpu_co_resident_models: >-
   {{ llm_router_gpu_models
      | selectattr('profile', 'in', llm_router_gpu_co_resident_profiles) | list }}
 _llm_router_all_servable_models_source: >-
-  {{ (llm_router_servable_route_groups + llm_router_gpu_servable_models) | unique
+  {{ (llm_router_servable_route_groups + llm_router_gpu_servable_models
+      + llm_router_opencode_stable_alias_targets) | unique
      | reject('equalto', none) | list }}
 llm_router_all_servable_models: "{{ _llm_router_m_all_servable_models }}"
 
@@ -140,7 +149,9 @@ llm_router_long_context_alias_ids: "{{ _llm_router_m_long_context_alias_ids }}"
 # selected to serve it. Keep enabled local declarations in the projection even
 # when their inventory-backed endpoint is absent; the target below resolves to
 # an active member of the same group, or the existing local fallback. Other
-# tiers still contribute only while the registry loader admits them.
+# tiers still contribute only while the registry loader admits them. OpenCode
+# Go is directly rendered as a credential-gated standalone tier, so its
+# enabled registry entries may also own stable aliases without `servable`.
 llm_router_alias_pairs: >-
   {%- set ns = namespace(pairs=[]) -%}
   {%- set _local_entries = (llm_router_model_registry
@@ -151,6 +162,7 @@ llm_router_alias_pairs: >-
        | rejectattr('tier', 'in', llm_router_local_registry_tiers)
        | selectattr('servable', 'defined') | selectattr('servable') | list) -%}
   {%- set _entries = (_local_entries + _other_entries
+       + llm_router_opencode_stable_alias_entries
        + (llm_router_registry_enabled
           | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) | list))
        | unique(attribute='client_model_id') | list -%}

@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_k2_horizon_trial_uses_its_pinned_catalogued_artifact() -> None:
-    registry = yaml.safe_load((REPO_ROOT / "llm-models.d/61-gpu-matrix.yml").read_text())
+    registry = yaml.safe_load((REPO_ROOT / "llm-models.d/62-gpu-matrix.yml").read_text())
     profiles = registry["_llm_registry_gpu_matrix"]
     entry = next(item for item in profiles if item["profile"] == "small-k2-horizon")
     artifacts = yaml.safe_load(

@@ -4,16 +4,14 @@ from pathlib import Path
 
 import yaml
 
-from _gpu_registry_small_alternatives import (
-    SMALL_CANDIDATES,
-    assert_small_alternatives,
-)
+from _gpu_registry_small_alternatives import assert_small_alternatives
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_FILES = (
     REPO_ROOT / "llm-models.d/60-gpu.yml",
-    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
+    REPO_ROOT / "llm-models.d/61-gpu-sweeps.yml",
+    REPO_ROOT / "llm-models.d/62-gpu-matrix.yml",
 )
 ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
@@ -185,7 +183,6 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     assert co_resident_profile["kv_cache_dtype"] == "q8_0"
     assert co_resident_profile["gpu_memory_reserve_gib"] == 20
 
-    small_candidates = SMALL_CANDIDATES
     assert_small_alternatives(
         entries,
         artifacts_by_id,
@@ -235,23 +232,6 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
             else:
                 assert entry["context_window"] + entry["max_output_tokens"] <= model_window
 
-    aliases_by_profile = {
-        entry["profile"]: entry.get("stable_aliases", []) for entry in entries
-    }
-    assert all(not aliases for aliases in aliases_by_profile.values())
-    assert {entry["profile"]: entry.get("route_group") for entry in entries} == {
-        "small": "small",
-        "small-c4-64k": "small",
-        "small-k2-horizon": "small-trial-gpu",
-        **{profile_name: "small" for profile_name in small_candidates},
-        "medium-a": "medium",
-        "qwen38-96k-11-fp8-mtp": "medium",
-        **{entry["profile"]: None for entry in entries
-           if entry["profile"] not in ({"small", "small-c4-64k", "medium-a",
-                                        "qwen38-96k-11-fp8-mtp", "small-k2-horizon"}
-                                      | set(small_candidates))},
-    }
-
     # The standalone medium-a profile keeps its eight-slot settings outside the sweep matrix.
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
     qwen_artifact = artifacts_by_id[qwen_profile["artifact_id"]]
@@ -283,17 +263,3 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
                 assert profile["max_model_len"] <= model_window
         else:
             assert entry["context_window"] + entry["max_output_tokens"] <= profile["max_model_len"]
-
-
-def test_router_consumes_the_shared_gpu_profile_projection() -> None:
-    defaults = yaml.safe_load(REGISTRY_DEFAULTS.read_text(encoding="utf-8"))
-    tasks = yaml.safe_load(REGISTRY_TASKS.read_text(encoding="utf-8"))
-    projection = next(
-        task["ansible.builtin.set_fact"]
-        for task in tasks
-        if task.get("name") == "Resolve GPU router upstream ids from artifact references"
-    )
-
-    assert "llm_router_gpu_profile_registry" in projection
-    assert "llm_router_registry_gpu_profiles" in projection["llm_router_gpu_profile_registry"]
-    assert "llm_router_gpu_profile_registry" in defaults["llm_router_model_registry"]

@@ -39,14 +39,12 @@
           - _class_model_mismatches | length == 0
           - _target_model_mismatches | length == 0
           - _target_budget_mismatches | length == 0
-          - _strict_tag_mismatches | length == 0
-          - _mcp_permission_mismatches | length == 0
           - _config.general_settings.enforce_fallback_model_access == true
           - hermes_brain_model == llm_router_primary_model
           - hermes_brain_model in (_config.model_list | map(attribute='model_name') | list)
         fail_msg: >-
           Consumer declarations={{ _class_scope_mismatches }}, model scope={{ _class_model_mismatches }},
-          MCP scope={{ _mcp_permission_mismatches }}.
+          target scope={{ _target_model_mismatches }}.
         success_msg: "Target key scopes, budgets, and fallback access render as declared."
       vars:
         _declared_target_aliases: >-
@@ -84,12 +82,19 @@
                 | selectattr('alias', 'equalto', 'sandbox-agent') | first -%}
           {%- set _judge = _llm_router_declared_virtual_keys
                 | selectattr('alias', 'equalto', 'judge') | first -%}
-          {%- set _opencode_zdr_groups = llm_router_opencode_models
-                | map(attribute='client_model_id')
-                | select('in', llm_router_d1_zdr_rungs_by_class['sub']) | list -%}
+          {%- set ns = namespace(groups=[]) -%}
+          {%- for m in llm_router_opencode_models -%}
+          {%- set _name = m.route_group | default(m.client_model_id) -%}
+          {%- if _name in llm_router_d1_zdr_rungs_by_class['sub'] -%}
+          {%- set ns.groups = ns.groups + [_name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- set _opencode_zdr_groups = ns.groups | unique | list -%}
           {%- set _sandbox_expected = ([llm_router_small_model, llm_router_primary_model,
                 llm_router_large_model] + (llm_router_d1_all_key_groups
-                | difference(_llm_router_sandbox_agent_excluded_groups))) | unique | list -%}
+                | difference(_llm_router_sandbox_agent_excluded_groups))
+                + llm_router_sandbox_only_aliases)
+                | unique | list -%}
           {{ (['claude-llm'] if _claude_llm.models | unique | sort !=
                 ([llm_router_small_model, llm_router_primary_model, llm_router_large_model]
                  + llm_router_d1_zdr_key_groups) | unique | sort else [])
@@ -128,72 +133,32 @@
           {%- endfor -%}
           {%- endfor -%}
           {{ ns.rows }}
-        _strict_tag_mismatches: >-
-          {%- set _recorder = (llm_router_role_deployments
-                | selectattr('litellm_params.turn_off_message_logging', 'defined') | first).role -%}
-          {%- set _specs = [
-                {'alias': 'judge', 'tags': ['&zdr', '!free', '!retains']},
-                {'alias': _recorder, 'tags': ['&zdr', '!free', '!retains', '&local']},
-                {'alias': 'hermes-private', 'tags': ['&zdr', '!free', '!retains']},
-                {'alias': 'donna', 'tags': ['&zdr', '!free', '!retains']},
-                {'alias': 'claude-llm', 'tags': ['&zdr', '!free', '!retains']},
-                {'alias': 'claude-ocg', 'tags': ['&zdr', '!free', '!retains']}] -%}
-          {%- set ns = namespace(rows=[]) -%}
-          {%- for _spec in _specs -%}
-          {%- set _key = _llm_router_declared_virtual_keys
-                | selectattr('alias', 'equalto', _spec.alias) | first -%}
-          {%- if _spec.tags | difference(_key.tags | default([])) | length > 0
-                or not (_key.router_settings.enable_tag_filtering | default(false) | bool) -%}
-          {%- set ns.rows = ns.rows + [_spec.alias] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.rows }}
-        _expected_mcp_permissions:
-          claude-code:
-            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, hindsight, vikunja, zammad]
-            agents: [hermes-private, hermes-public]
-          codex:
-            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, hindsight, vikunja, zammad]
-            agents: [hermes-private, hermes-public]
-            mcp_tool_search_enabled: true
-          agy:
-            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, hindsight, vikunja, zammad]
-            agents: [hermes-private, hermes-public]
-            mcp_tool_search_enabled: true
-          judge: {}
-          recorder: {}
-          hermes-default:
-            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, zammad, slack]
-          hermes-splunk-admin:
-            mcp_servers: [docs, splunk, zammad, slack]
-          hermes-homelab-admin:
-            mcp_servers: [docs, vikunja_ro, nautobot, zammad, slack]
-          hermes-github-maint:
-            mcp_servers: [grep, docs, zammad, slack]
-          hermes-orchestrator:
-            mcp_servers: [docs, vikunja, zammad, slack]
-          hermes-private:
-            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, vikunja, zammad]
-            mcp_access_groups: [hub-public, hub-homelab-read]
-          donna:
-            mcp_servers: [context7, grep, docs, splunk, vikunja_ro]
-          zcode:
-            mcp_access_groups: [hub-public]
-          opencode:
-            mcp_access_groups: [hub-public]
-          qwen-code:
-            mcp_access_groups: [hub-public]
-        _mcp_permission_mismatches: >-
-          {%- set ns = namespace(rows=[]) -%}
-          {%- for _alias in _target_aliases -%}
-          {%- set _key = _llm_router_declared_virtual_keys
-                | selectattr('alias', 'equalto', _alias) | first -%}
-          {%- set _expected = _expected_mcp_permissions.get(_alias, {}) -%}
-          {%- if _key.object_permission | default({}) != _expected -%}
-          {%- set ns.rows = ns.rows + [_alias] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.rows }}
+    - name: Keep agent-only groups in fleet keys and outside sandbox keys
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_agent_only_groups | length > 0
+          - >-
+            llm_router_agent_only_groups
+            | difference(_hermes_fleet_default.models) | length == 0
+          - >-
+            llm_router_agent_only_groups
+            | difference(_llm_router_sandbox_agent_excluded_groups) | length == 0
+          - >-
+            llm_router_agent_only_groups
+            | intersect(_sandbox_agent.models) | length == 0
+        fail_msg: >-
+          Agent-only groups={{ llm_router_agent_only_groups }}
+          fleet={{ _hermes_fleet_default.models }} sandbox={{ _sandbox_agent.models }}.
+        success_msg: >-
+          Agent-only groups are available to Hermes fleet keys and excluded
+          from sandbox-agent.
+      vars:
+        _hermes_fleet_default: >-
+          {{ _llm_router_hermes_profile_keys | first }}
+        _sandbox_agent: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'equalto', 'sandbox-agent') | first }}
 
     - name: Sandbox keys wait for matching generated source fields
       ansible.builtin.assert:

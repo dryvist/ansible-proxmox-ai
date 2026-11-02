@@ -15,7 +15,8 @@ LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 LEGACY_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
 REGISTRY_FILES = (
     REPO_ROOT / "llm-models.d/60-gpu.yml",
-    REPO_ROOT / "llm-models.d/61-gpu-matrix.yml",
+    REPO_ROOT / "llm-models.d/61-gpu-sweeps.yml",
+    REPO_ROOT / "llm-models.d/62-gpu-matrix.yml",
 )
 ARTIFACT_FILES = tuple(sorted((REPO_ROOT / "llm-models.d").glob("*artifacts*.yml")))
 

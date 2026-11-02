@@ -127,9 +127,12 @@
           {%- for m in llm_router_registry_enabled
                 if m.tier not in llm_router_local_registry_tiers
                 and llm_router_registry_zdr_by_model[m.client_model_id] -%}
-          {%- set ns.names = ns.names + [m.client_model_id]
-                + ([m.route_group] if m.route_group is defined else [])
-                + ([m.fallback_group] if m.fallback_group is defined else []) -%}
+          {%- set ns.names = ns.names
+                + ([m.client_model_id] if m.route_group is not defined else [])
+                + ([m.route_group] if m.route_group is defined
+                   and m.route_group in llm_router_zdr_asserted_group_names else [])
+                + ([m.fallback_group] if m.fallback_group is defined
+                   and m.fallback_group in llm_router_zdr_asserted_group_names else []) -%}
           {%- endfor -%}
           {{ ns.names | unique | list }}
 
@@ -138,7 +141,10 @@
         quiet: true
         that:
           - _public.models | intersect(_retaining_names) | length > 0
-          - _hermes_public_test_chain | difference(_public.models) | length == 0
+          - >-
+            (_hermes_public_test_chain
+             | reject('in', _llm_router_agent_excluded_groups) | list)
+            | difference(_public.models) | length == 0
         fail_msg: >-
           hermes-default models={{ _public.models }} chain={{ _hermes_public_test_chain }}
         success_msg: >-

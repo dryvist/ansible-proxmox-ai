@@ -230,6 +230,9 @@ def select(paths: list[str]) -> Selection:
                 else:
                     warn_unmapped(path)
                     route_full = True  # unmapped router playbook: run the full matrix
+            elif path.startswith("tests/llm_router/") and path.endswith(".py"):
+                # The generic pytest job excludes this scope; its job runs only with router shards selected.
+                role_scope("llm_router")
             elif Path(path).suffix == ".py" and Path(path).is_file():
                 pytest_targets.add(path)
             elif Path(path).suffix in {".yml", ".yaml"} and Path(path).is_file():

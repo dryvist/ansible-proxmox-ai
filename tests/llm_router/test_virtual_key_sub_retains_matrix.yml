@@ -1,0 +1,185 @@
+---
+# Every other key keeps its declared sub/retains tag policy. Sandbox-only
+# subscription/retaining routes are available to sandbox-agent alone.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_virtual_key_sub_retains_matrix.yml -i localhost, -c local
+- name: Verify the virtual-key sub and retains route matrix
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the router render fixture
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/ladder_keys_fixture.yml"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Give the policy fixtures their trusted caller tiers
+      ansible.builtin.import_tasks: tasks/trust_fixture_callers.yml
+
+    - name: Enable every declared virtual key for the policy matrix
+      ansible.builtin.set_fact:
+        _llm_router_declared_virtual_keys: >-
+          {{ _llm_router_declared_virtual_keys
+             | map('combine', {'enabled': true, 'value': 'fixture-router-key'}) | list }}
+      no_log: true
+
+    - name: Select the vLLM-off render
+      ansible.builtin.set_fact:
+        llm_router_llm_vllm_enabled: false
+        llm_router_vllm_precheck_passed: false
+
+    - name: Refresh the router projections
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render config and the effective key catalog
+      ansible.builtin.set_fact:
+        _render_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _render_keys: "{{ llm_router_virtual_keys }}"
+
+    - name: Derive sandbox-only route groups from the registry
+      ansible.builtin.set_fact:
+        _sandbox_route_groups: >-
+          {%- set ns = namespace(groups=[]) -%}
+          {%- for model in llm_router_registry_enabled
+                if 'sandbox-only' in (model.tags | default([]))
+                   and model.route_group is defined -%}
+          {%- set ns.groups = ns.groups + [model.route_group] -%}
+          {%- endfor -%}
+          {{ ns.groups | unique | list }}
+
+    - name: Trace all rendered keys through model and tag filters
+      ansible.builtin.set_fact:
+        _render_cases:
+          - name: all-keys
+            config: "{{ _render_config }}"
+            catalog: "{{ _render_keys }}"
+        _candidate_aliases: "{{ _render_keys | map(attribute='alias') | list }}"
+
+    - name: Trace fallback paths after key-model and sensitivity-tag gates
+      ansible.builtin.import_tasks: tasks/trace_tagged_hosted_reach.yml
+
+    - name: Resolve the effective sandbox key and other key tag policies
+      ansible.builtin.set_fact:
+        _sandbox_key: >-
+          {{ _render_keys | selectattr('alias', 'equalto', 'sandbox-agent') | first }}
+        _declared_key_aliases: >-
+          {{ _llm_router_declared_virtual_keys | map(attribute='alias') | list }}
+        _rendered_key_aliases: "{{ _render_keys | map(attribute='alias') | list }}"
+        _other_key_aliases: >-
+          {{ _render_keys | map(attribute='alias') | difference(['sandbox-agent']) | list }}
+        _prior_dual_exclusion_aliases: >-
+          {%- set ns = namespace(aliases=[]) -%}
+          {%- for key in _llm_router_declared_virtual_keys
+                if key.alias != 'sandbox-agent'
+                   and '!sub' in (key.tags | default([]))
+                   and '!retains' in (key.tags | default([])) -%}
+          {%- set ns.aliases = ns.aliases + [key.alias] -%}
+          {%- endfor -%}
+          {{ ns.aliases | unique | list }}
+        _other_tag_policy_mismatches: >-
+          {%- set ns = namespace(aliases=[]) -%}
+          {%- for key in _render_keys if key.alias != 'sandbox-agent' -%}
+          {%- set declared = _llm_router_declared_virtual_keys
+                | selectattr('alias', 'equalto', key.alias) | first -%}
+          {%- if (('!sub' in (declared.tags | default([])))
+                  != ('!sub' in (key.tags | default([]))))
+                or (('!retains' in (declared.tags | default([])))
+                    != ('!retains' in (key.tags | default([])))) -%}
+          {%- set ns.aliases = ns.aliases + [key.alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.aliases }}
+        _rendered_dual_exclusion_aliases: >-
+          {%- set ns = namespace(aliases=[]) -%}
+          {%- for key in _render_keys
+                if key.alias != 'sandbox-agent'
+                   and '!sub' in (key.tags | default([]))
+                   and '!retains' in (key.tags | default([])) -%}
+          {%- set ns.aliases = ns.aliases + [key.alias] -%}
+          {%- endfor -%}
+          {{ ns.aliases | unique | list }}
+        _other_keys_with_sandbox_route: >-
+          {%- set ns = namespace(aliases=[]) -%}
+          {%- for key in _render_keys
+                if key.alias != 'sandbox-agent'
+                   and (key.models | intersect(_sandbox_route_groups) | length > 0) -%}
+          {%- set ns.aliases = ns.aliases + [key.alias] -%}
+          {%- endfor -%}
+          {{ ns.aliases }}
+        _other_tagged_route_reaches: >-
+          {%- set ns = namespace(reaches=[]) -%}
+          {%- for reach in _tagged_hosted_reaches_by_render['all-keys'].reaches
+                if reach.key != 'sandbox-agent'
+                   and reach.group in _sandbox_route_groups
+                   and (['sub', 'retains'] | intersect(reach.deployment_tags | default([])) | length > 0) -%}
+          {%- set ns.reaches = ns.reaches + [reach.key ~ ':' ~ reach.group] -%}
+          {%- endfor -%}
+          {{ ns.reaches }}
+        _sandbox_route_rows: >-
+          {{ _render_config.model_list
+             | selectattr('model_name', 'in', _sandbox_route_groups) | list }}
+
+    - name: Sandbox-agent keeps the registry-derived sandbox route after key filtering
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _sandbox_route_groups | length > 0
+          - _sandbox_route_groups | difference(_sandbox_key.models) | length == 0
+          - _sandbox_route_rows | length > 0
+          - >-
+            _sandbox_route_rows
+            | selectattr('litellm_params.tags', 'defined') | list | length
+            == _sandbox_route_rows | length
+          - >-
+            _sandbox_route_rows
+            | selectattr('litellm_params.tags', 'contains', 'sub') | list | length
+            == _sandbox_route_rows | length
+          - "'!sub' not in (_sandbox_key.tags | default([]))"
+          - "'!retains' not in (_sandbox_key.tags | default([]))"
+          - "'!paid-zdr' in (_sandbox_key.tags | default([]))"
+          - "'!free' in (_sandbox_key.tags | default([]))"
+          - (_sandbox_key.router_settings | default({})).get('enable_tag_filtering', false) | bool
+        fail_msg: >-
+          sandbox groups={{ _sandbox_route_groups }}, key models={{ _sandbox_key.models }},
+          key tags={{ _sandbox_key.tags }}, route rows={{ _sandbox_route_rows }}.
+        success_msg: >-
+          sandbox-agent's model allowlist and tag policy admit its registry-derived sandbox route.
+
+    - name: No other key changes its declared sub or retains tag filters
+      ansible.builtin.assert:
+        that:
+          - _declared_key_aliases | difference(_rendered_key_aliases) | length == 0
+          - _rendered_key_aliases | difference(_declared_key_aliases) | length == 0
+          - _other_tag_policy_mismatches | length == 0
+          - >-
+            _prior_dual_exclusion_aliases | difference(_rendered_dual_exclusion_aliases)
+            | length == 0
+        fail_msg: >-
+          Other key policy mismatches={{ _other_tag_policy_mismatches }};
+          keys retaining both exclusions={{ _rendered_dual_exclusion_aliases }}.
+        success_msg: >-
+          All {{ _other_key_aliases | length }} other rendered keys retain their declared
+          sub/retains tag policy, including all {{ _prior_dual_exclusion_aliases | length }}
+          keys that exclude both classes.
+
+    - name: Only sandbox-agent can reach a sandbox-only subscription or retaining route
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _other_keys_with_sandbox_route | length == 0
+          - _other_tagged_route_reaches | length == 0
+        fail_msg: >-
+          Other sandbox route models={{ _other_keys_with_sandbox_route }};
+          tagged reaches={{ _other_tagged_route_reaches }}.
+        success_msg: >-
+          Only sandbox-agent can reach a sandbox-only subscription or retaining route.

@@ -1,5 +1,5 @@
 ---
-- name: Verify the Ada embed guest serves gpu-small on the GPU port beside its light lane
+- name: Verify the Ada embed guest serves its agent lane on the GPU port beside its light lane
   hosts: localhost
   gather_facts: false
   vars:
@@ -67,6 +67,10 @@
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
+    - name: Set the render fixture subdomain after loading role defaults
+      ansible.builtin.set_fact:
+        llm_router_subdomain: pve.example.test
+
     - name: Load the registry projections
       ansible.builtin.include_role:
         name: llm_router
@@ -83,20 +87,37 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: Assert Ada serves gpu-small on the GPU port, the light lane keeps 10434, and Pro6000 is unchanged
+    - name: Assert Ada serves the agent lane on the GPU port, the light lane keeps 10434, and Pro6000 is unchanged
       ansible.builtin.assert:
         quiet: true
         that:
           - groups['llm_gpu_group'] | sort == [_ada_host, _pro6000_host] | sort
           - _ct503040_host not in groups['llm_gpu_group']
-          - _gpu_small_deployments | length == 1
-          - _gpu_small_deployments[0].model_info.profile == 'small'
-          - _gpu_small_deployments[0].litellm_params.api_base == _ada_url
+          - _agent_long_context_deployments | length == 2
+          - _agent_long_context_deployments[0].model_info.profile == _ada_inventory.llm_active_profile
           - >-
-            llm_router_gpu_deployment_targets | selectattr('profile', 'equalto', 'small')
+            _agent_long_context_deployments
+            | selectattr('litellm_params.tags', 'contains', 'default') | list | length == 1
+          - >-
+            _agent_long_context_deployments
+            | selectattr('litellm_params.tags', 'contains', 'agent-priority') | list | length == 1
+          - _agent_long_context_deployments
+            | selectattr('litellm_params.extra_body.priority', 'defined')
+            | map(attribute='litellm_params.extra_body.priority') | list == [10]
+          - _agent_long_context_deployments[0].litellm_params.api_base == _ada_url
+          - _agent_long_context_deployments[0].litellm_params.order | int == 99
+          - _agent_long_context_deployments[0].litellm_params.max_parallel_requests | int == 1
+          - _gpu_small_deployments | length == 0
+          - >-
+            llm_router_agent_only_groups
+            | intersect(_config.router_settings.default_fallbacks | default([])) | length == 0
+          - >-
+            llm_router_agent_only_groups
+            | intersect(_config.router_settings.fallbacks | default([])
+                | map('dict2items') | flatten | map(attribute='value') | flatten) | length == 0
+          - >-
+            llm_router_gpu_deployment_targets | selectattr('profile', 'equalto', _ada_inventory.llm_active_profile)
             | map(attribute='api_base') | list == [_ada_url]
-          - _gpu_small_deployments[0].litellm_params.order | int == 2
-          - _gpu_small_deployments[0].litellm_params.max_parallel_requests | int == 4
           - _pro6000_deployments | length >= 1
           - _pro6000_deployments | map(attribute='litellm_params.api_base') | unique | list == [_pro6000_url]
           - llm_router_light_port | int == 10434
@@ -106,11 +127,14 @@
           - _small_cpu_deployments | length == 1
           - _small_cpu_deployments[0].litellm_params.order | int == 3
         fail_msg: >-
-          GPU small={{ _gpu_small_deployments }}, Pro6000={{ _pro6000_deployments }},
+          Agent lane={{ _agent_long_context_deployments }}, GPU small={{ _gpu_small_deployments }},
+          Pro6000={{ _pro6000_deployments }},
           CPU small={{ _small_cpu_deployments }}, GPU hosts={{ groups['llm_gpu_group'] }}
       vars:
         _ada_url: "{{ 'http://' ~ _ada_host ~ '.' ~ llm_router_apex_domain ~ ':10440/v1' }}"
         _pro6000_url: "{{ 'http://' ~ _pro6000_host ~ '.' ~ llm_router_apex_domain ~ ':10434/v1' }}"
+        _agent_long_context_deployments: >-
+          {{ _config.model_list | selectattr('model_name', 'in', llm_router_agent_only_groups) | list }}
         _gpu_small_deployments: >-
           {{ _config.model_list
              | selectattr('model_name', 'equalto', 'small')
