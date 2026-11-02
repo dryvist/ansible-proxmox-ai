@@ -287,7 +287,8 @@ def test_laya_starts_in_always_and_failures_are_reported_afterward() -> None:
     failure_name = "Report the fine-tuning failure without exposing dataset output"
     failure = next(task for task in tasks if task.get("name") == failure_name)
     assert failure["ansible.builtin.fail"]["msg"] == (
-        "Laya fine-tuning failed; service start was attempted where a unit was present."
+        "Laya fine-tuning failed ({{ laya_systemone_finetune_failure_class | default('unknown') }}); "
+        "service start and health were checked for Laya and any stopped GPU peer."
     )
 
 
