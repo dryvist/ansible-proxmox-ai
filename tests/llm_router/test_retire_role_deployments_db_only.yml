@@ -4,7 +4,8 @@
 # shadows a declared alias or a config deployment, or that no Git declaration
 # tracks, is reverted (an untracked row only when
 # llm_router_db_model_revert_untracked is on); a declared role is kept unless
-# its backend belongs to a disabled GPU profile; a config-declared row is never
+# its backend belongs to a disabled GPU profile or is an estate host no enabled
+# capability member renders (a cloud backend never is); a config-declared row is never
 # a delete candidate (it can't be deleted through the API, and the final
 # assert in retire-role-deployments.yml reports a config alias collision).
 # Also pins the /v2/model/info read: /model/info appends one synthetic row per
@@ -22,6 +23,11 @@
     llm_router_gpu_profiles_enabled: false
     llm_router_gpu_members:
       - {host: gpu, endpoint_host: gpu.example.test, port: 10434, active: medium, co_resident: []}
+    llm_router_apex_domain: example.test
+    # One rendered estate backend, and a cloud member with no api_base.
+    _llm_router_capability_member_params:
+      - {entry: {}, params: {api_base: "http://cpu.example.test:8080/v1"}}
+      - {entry: {}, params: {model: openrouter/fixture}}
     llm_router_model_group_aliases:
       an-alias: catalog-model
       fast-role: auto-router
@@ -40,6 +46,16 @@
         model_info: {id: role-row, db_model: true}
       - {model_name: fast-role, model_info: {id: fast-row, db_model: true}}
       - {model_name: ui-added, model_info: {id: ui-row, db_model: true}}
+      # A role row left behind on an estate backend nothing renders any more.
+      - model_name: old-fast-gpu
+        litellm_params: {api_base: "http://old-gpu.example.test:8000/v1"}
+        model_info: {id: stale-local-row, db_model: true}
+      - model_name: ui-cloud
+        litellm_params: {api_base: "https://openrouter.ai/api/v1"}
+        model_info: {id: ui-cloud-row, db_model: true}
+      - model_name: ui-local
+        litellm_params: {api_base: "http://cpu.example.test:8080/v1"}
+        model_info: {id: ui-local-row, db_model: true}
   tasks:
     - name: Load the revert projection
       ansible.builtin.include_vars:
@@ -59,6 +75,9 @@
           - {id: role-row, model_name: medium, reason: uses a disabled GPU-profile backend}
           - {id: fast-row, model_name: fast-role, reason: shadows a declared alias}
           - {id: ui-row, model_name: ui-added, reason: is not tracked in Git}
+          - {id: stale-local-row, model_name: old-fast-gpu, reason: uses a backend no enabled registry entry renders}
+          - {id: ui-cloud-row, model_name: ui-cloud, reason: is not tracked in Git}
+          - {id: ui-local-row, model_name: ui-local, reason: is not tracked in Git}
 
     - name: Assert untracked rows are kept by default
       ansible.builtin.assert:
@@ -66,8 +85,8 @@
         that:
           - >-
             _llm_router_db_model_deletes | map(attribute='id') | list
-            == ['db-alias', 'db-shadow', 'role-row', 'fast-row']
-        fail_msg: "Expected the default delete set to skip ui-row, got {{ _llm_router_db_model_deletes }}"
+            == ['db-alias', 'db-shadow', 'role-row', 'fast-row', 'stale-local-row']
+        fail_msg: "Expected the default delete set to skip the untracked rows, got {{ _llm_router_db_model_deletes }}"
 
     # include_vars outranks task vars, so the switch is flipped with set_fact.
     - name: Turn on reverting untracked rows
@@ -80,7 +99,8 @@
         that:
           - >-
             _llm_router_db_model_deletes | map(attribute='id') | list
-            == ['db-alias', 'db-shadow', 'role-row', 'fast-row', 'ui-row']
+            == ['db-alias', 'db-shadow', 'role-row', 'fast-row', 'ui-row',
+                'stale-local-row', 'ui-cloud-row', 'ui-local-row']
         fail_msg: "Expected ui-row deleted with the switch on, got {{ _llm_router_db_model_deletes }}"
 
 - name: Nothing is reverted when every database row is a declared role
@@ -90,6 +110,10 @@
     llm_router_gpu_profiles_enabled: true
     llm_router_gpu_members:
       - {host: gpu, endpoint_host: gpu.example.test, port: 10434, active: medium, co_resident: []}
+    llm_router_apex_domain: example.test
+    # Enabled GPU profiles render the GPU backend, so its role row stays.
+    _llm_router_capability_member_params:
+      - {entry: {}, params: {api_base: "http://gpu.example.test:10434/v1"}}
     llm_router_model_group_aliases: {an-alias: catalog-model}
     llm_router_role_deployments:
       - {role: medium, model: catalog-model}
