@@ -108,7 +108,7 @@ def test_vllm_kv_preflight_reads_the_current_serving_invocation():
 
     unit = Template(unit_task["ansible.builtin.set_fact"]["_llm_campaign_serving_unit"]).render(
         _llm_campaign_role_defaults={"llm_gpu_serving_unit_prefix": "vllm-serving"},
-        _llm_campaign_model={"serving_profile": "large"},
+        _llm_campaign_serving_profile="large",
     )
     assert unit == "vllm-serving-large.service"
     assert not any(character.isspace() for character in unit)

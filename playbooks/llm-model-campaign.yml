@@ -11,6 +11,7 @@
   vars:
     # The runner has no sudo; the controller play needs no privilege.
     ansible_become: false
+    llm_model_campaign_serving_profile: ""
     # renovate: datasource=github-releases depName=dryvist/mlx-benchmarks currentValue=v0.66.0
     _llm_campaign_benchmarks_ref: c3d59075545700d1c547caed8aa861ffb5ce9a19
   tasks:
@@ -265,6 +266,18 @@
           when its registered size is large.
         quiet: true
 
+    - name: Resolve the campaign serving profile
+      ansible.builtin.set_fact:
+        _llm_campaign_selected_serving_profile: >-
+          {{ llm_model_campaign_serving_profile
+             | default('', true) | trim
+             | default(_llm_campaign_selected_artifacts[0].serving_profile | default(''), true) }}
+        _llm_campaign_selected_serving_profile_data: {}
+
+    - name: Resolve and validate an explicit campaign serving profile
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-serving-profile.yml
+      when: llm_model_campaign_serving_profile | default('', true) | trim | length > 0
+
     - name: Require runtime endpoint inputs for authenticated model recipes
       ansible.builtin.assert:
         that:
@@ -295,6 +308,8 @@
         _llm_campaign_config_ref: "{{ _llm_campaign_benchmarks_ref }}"
         _llm_campaign_workdir: "{{ _llm_campaign_workspace.path }}"
         _llm_campaign_model: "{{ _llm_campaign_selected_artifacts[0] }}"
+        _llm_campaign_serving_profile: "{{ _llm_campaign_selected_serving_profile }}"
+        _llm_campaign_serving_profile_data: "{{ _llm_campaign_selected_serving_profile_data }}"
         _llm_campaign_serving_model: "{{ serving_model | default(_llm_campaign_selected_artifacts[0].hf_repo) }}"
         _llm_campaign_uses_api_key: >-
           {{ _llm_campaign_config.run
