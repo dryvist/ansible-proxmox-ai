@@ -1,8 +1,7 @@
 ---
 # A Hermes brain model that is a group alias (the GPU profile aliases, or any
-# stable alias) must not leave the keys unable to call the aliased entry
-# point the shared ladder falls back to. Every Hermes key must hold the whole
-# chain its tags permit, by name.
+# stable alias) must not leave public keys unable to call the aliased entry
+# point. Local-only profiles keep exactly their derived local review chain.
 #
 # Run from the repository root:
 #   ansible-playbook tests/llm_router/test_hermes_public_key_alias_brain.yml -i localhost, -c local
@@ -27,6 +26,9 @@
       hermes_default_llm_router_key: sk-fixture-hermes-default
       hermes_private_llm_router_key: sk-fixture-hermes-private
       donna_llm_router_key: sk-fixture-donna
+      hermes_eval_llm_router_key: sk-test-000000000000
+    hermes_agent_profiles:
+      - name: eval
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
@@ -62,3 +64,45 @@
 
     - name: Run the profile-key chain contract against the rendered keys
       ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-hermes-profile-key-brain-model.yml"
+
+    - name: Confirm the local-only fixture is rendered and excluded from the value-free projection
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _hermes_eval_fixture.value == 'sk-test-000000000000'
+          - _hermes_eval_fixture.models == [llm_router_review_aliases.local]
+          - >-
+            (_llm_router_virtual_keys_without_values | to_json)
+            is not search('sk-test-')
+        fail_msg: The local-only Hermes fixture must render its derived local chain without exposing its value.
+      vars:
+        _hermes_eval_fixture: >-
+          {{ llm_router_virtual_keys
+             | selectattr('alias', 'equalto', 'hermes-eval') | first }}
+
+    - name: Replace the key fixture with an under-scoped Hermes key for the failure check
+      ansible.builtin.set_fact:
+        llm_router_virtual_keys:
+          - alias: hermes-invalid-fixture
+            value: sk-test-000000000000
+            tags: []
+            models: []
+      no_log: true
+
+    - name: Capture the expected chain assertion failure
+      block:
+        - name: Run the chain assertion against the under-scoped fixture
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-hermes-profile-key-brain-model.yml"
+      rescue:
+        - name: Register the failed assertion result for the secret scan
+          ansible.builtin.set_fact:
+            _hermes_assertion_failure_result: "{{ ansible_failed_result }}"
+          no_log: true
+
+    - name: Confirm a failed key assertion result contains no fixture value
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _hermes_assertion_failure_result is defined
+          - (_hermes_assertion_failure_result | to_json) is not search('sk-test-')
+        fail_msg: The failed Hermes assertion result contained the fixture key value.
