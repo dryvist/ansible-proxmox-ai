@@ -134,6 +134,34 @@
           {%- endfor -%}
           {%- endfor -%}
           {{ ns.rows }}
+
+    - name: Keep sandbox-only models in registry order at the end of the sandbox key
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_sandbox_only_model_ids == _sandbox_registry_order
+          - >-
+            _sandbox.models[-(llm_router_sandbox_only_model_ids | length):]
+            == llm_router_sandbox_only_model_ids
+        fail_msg: >-
+          Sandbox-only model ids={{ llm_router_sandbox_only_model_ids }} and
+          sandbox key tail={{ _sandbox.models[-(llm_router_sandbox_only_model_ids | length):] }}
+          must preserve registry order.
+        success_msg: >-
+          Sandbox-only model ids retain their registry order at the end of the
+          sandbox-agent key's model list.
+      vars:
+        _sandbox: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'equalto', 'sandbox-agent') | first }}
+        _sandbox_registry_order: >-
+          {%- set ns = namespace(ids=[]) -%}
+          {%- for entry in llm_router_registry_enabled
+                if 'sandbox-only' in (entry.tags | default([])) -%}
+          {%- set ns.ids = ns.ids + [entry.client_model_id] -%}
+          {%- endfor -%}
+          {{ ns.ids }}
+
     - name: Keep agent-only groups in fleet keys and outside sandbox keys
       ansible.builtin.assert:
         quiet: true
