@@ -6,7 +6,11 @@
     - ladder_keys_fixture.yml
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_subdomain: pve.example.test
   tasks:
+    - name: Reuse the pinned Vikunja MCP package version
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/load-app-agent-package-pin.yml"
+
     - name: Prepare role-backed rendered contract
       ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
 
@@ -351,3 +355,145 @@
             _cli_keys: >-
               {{ _roster_virtual_keys
                  | selectattr('alias', 'in', ['claude-code', 'codex', 'agy']) | list }}
+
+    - name: Set the app-agent roster, keys, and per-tier app credentials
+      ansible.builtin.set_fact:
+        ai_agents:
+          vikunja-read: {router_key_class: standard}
+          vikunja-write: {router_key_class: standard}
+          zammad-write: {router_key_class: standard}
+        ai_agent_owner:
+          vikunja-read: vikunja-read
+          vikunja-write: vikunja-write
+          zammad-write: zammad-write
+        openbao_secrets_by_domain:
+          llm-router-agent-keys:
+            vikunja_read_llm_router_key: fixture-vikunja-read-key
+            vikunja_write_llm_router_key: fixture-vikunja-write-key
+            zammad_write_llm_router_key: fixture-zammad-write-key
+        bao_local_llm_secrets: >-
+          {{ bao_local_llm_secrets | combine({
+            'VIKUNJA_MCP_URL': 'fixture-vikunja-url',
+            'VIKUNJA_AGENT_READ_TOKEN': 'fixture-vikunja-read-token',
+            'VIKUNJA_MCP_TOKEN_RW': 'fixture-vikunja-write-token',
+            'ZAMMAD_MCP_URL': 'fixture-zammad-url',
+            'ZAMMAD_AGENT_WRITE_TOKEN': 'fixture-zammad-write-token'
+          }) }}
+      no_log: true
+
+    - name: Refresh the key projection with the app-agent roster
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Materialize app-agent roster keys and the ownership-filtered virtual keys
+      ansible.builtin.set_fact:
+        _app_agent_roster_keys: "{{ _llm_router_agent_keys }}"
+        _app_agent_projected_keys: "{{ llm_router_virtual_keys }}"
+      no_log: true
+
+    - name: Keep each app-agent key on exactly its owned tier server
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _app_agent_roster_keys | map(attribute='alias') | sort
+            == (llm_router_app_agent_tiers | map(attribute='id') | list | sort)
+          - >-
+            _app_agent_projected_keys | selectattr('alias', 'equalto', 'vikunja-read')
+            | map(attribute='object_permission.mcp_servers') | first == ['vikunja_read']
+          - >-
+            _app_agent_projected_keys | selectattr('alias', 'equalto', 'vikunja-write')
+            | map(attribute='object_permission.mcp_servers') | first == ['vikunja_write']
+          - >-
+            _app_agent_projected_keys | selectattr('alias', 'equalto', 'zammad-write')
+            | map(attribute='object_permission.mcp_servers') | first == ['zammad_write']
+          - >-
+            _app_agent_projected_keys | selectattr('alias', 'in',
+              llm_router_app_agent_tiers | map(attribute='id') | list)
+            | map(attribute='object_permission.mcp_servers') | flatten
+            | intersect(_llm_router_trusted_hub_servers) | length == 0
+        fail_msg: The roster name or MCP ownership filter widened an app-agent grant.
+      no_log: true
+
+    - name: Refuse write-tier keys for untrusted roster entries
+      block:
+        - name: Run the app-agent gate with an untrusted write tier
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
+          vars:
+            llm_router_app_agent_probe_vikunja_forbidden_project_id: "43"
+            llm_router_app_agent_vikunja_read_allowlist: [Hermes]
+
+        - name: Fail if the gate admitted an untrusted write tier
+          ansible.builtin.fail:
+            msg: The app-agent gate issued a write-tier key to an untrusted roster entry.
+      rescue:
+        - name: Require the trust gate to be the refusal
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              # A looped assert reports each item's fail_msg under results.
+              - >-
+                'trust_tier trusted' in (ansible_failed_result.results | default([])
+                | map(attribute='msg') | select('string') | join(' '))
+            fail_msg: The app-agent gate failed for a reason other than the trust gate.
+
+    # A task var cannot reference its own name, so build the trusted roster once.
+    - name: Materialize the roster with both write tiers trusted
+      ansible.builtin.set_fact:
+        _app_agent_trusted_roster: >-
+          {{ ai_agents | combine({'vikunja-write': {'trust_tier': 'trusted'},
+             'zammad-write': {'trust_tier': 'trusted'}}, recursive=true) }}
+
+    - name: Refuse an enabled read tier without its required probe target
+      block:
+        - name: Run the app-agent gate with trusted tiers but no probe project
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
+          vars:
+            ai_agents: "{{ _app_agent_trusted_roster }}"
+            llm_router_app_agent_probe_vikunja_forbidden_project_id: ""
+            llm_router_app_agent_vikunja_read_allowlist: [Hermes]
+
+        - name: Fail if the read tier ran without a probe target
+          ansible.builtin.fail:
+            msg: The app-agent gate let the read tier run without its required probes.
+      rescue:
+        - name: Require the probe-target gate to be the refusal
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'probes are required' in ansible_failed_result.msg | default('')"
+            fail_msg: The app-agent gate failed for a reason other than the missing probe target.
+
+    - name: Admit trusted write tiers with a configured read-tier probe
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
+      vars:
+        ai_agents: "{{ _app_agent_trusted_roster }}"
+        llm_router_app_agent_probe_vikunja_forbidden_project_id: "43"
+        llm_router_app_agent_vikunja_read_allowlist: [Hermes]
+
+    - name: Remove only the Vikunja read app token from the fixture
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets: "{{ bao_local_llm_secrets | combine({'VIKUNJA_AGENT_READ_TOKEN': ''}) }}"
+      no_log: true
+
+    - name: Refresh key and server projections after the read app token disappears
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: Materialize the fail-closed key and generated server without its app token
+      ansible.builtin.set_fact:
+        _app_agent_missing_token_key: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'vikunja-read') | first }}
+        _app_agent_missing_token_servers: >-
+          {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/mcp-servers.yaml.j2')
+             | from_yaml }}
+      no_log: true
+
+    - name: Omit the server and default-deny the matching roster key without its app token
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _app_agent_missing_token_key.object_permission.mcp_servers == ['no-mcp-servers']
+          - "'vikunja_read' not in _app_agent_missing_token_servers.mcp_servers"
+        fail_msg: An absent Vikunja read token must remove its server and deny its roster key.
+      no_log: true
