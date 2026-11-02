@@ -1,0 +1,59 @@
+---
+- name: Query the interactive baseline p95 from Prometheus
+  ansible.builtin.uri:
+    url: >-
+      {{ _llm_campaign_latency_prometheus_url }}/api/v1/query?query={{
+        _llm_campaign_latency_baseline_query | urlencode }}
+    method: GET
+    return_content: true
+    status_code: [200]
+  register: _llm_campaign_latency_baseline_response
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+
+- name: Prepare baseline response classification
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_response: "{{ _llm_campaign_latency_baseline_response }}"
+    _llm_campaign_latency_classification_kind: baseline
+  changed_when: false
+
+- name: Classify the interactive baseline response
+  ansible.builtin.include_tasks: llm-model-campaign-latency-gate-classify-response.yml
+
+- name: Save the baseline observation and gate reason
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_baseline_observation: "{{ _llm_campaign_latency_classification_observation }}"
+    _llm_campaign_latency_reason: "{{ _llm_campaign_latency_classification_reason }}"
+  changed_when: false
+
+- name: Query the interactive p95 ratio from Prometheus
+  ansible.builtin.uri:
+    url: >-
+      {{ _llm_campaign_latency_prometheus_url }}/api/v1/query?query={{
+        _llm_campaign_latency_query | urlencode }}
+    method: GET
+    return_content: true
+    status_code: [200]
+  register: _llm_campaign_latency_ratio_response
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  when: _llm_campaign_latency_reason == 'pass'
+
+- name: Prepare ratio response classification
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_response: "{{ _llm_campaign_latency_ratio_response }}"
+    _llm_campaign_latency_classification_kind: ratio
+  changed_when: false
+  when: _llm_campaign_latency_reason == 'pass'
+
+- name: Classify the interactive ratio response
+  ansible.builtin.include_tasks: llm-model-campaign-latency-gate-classify-response.yml
+  when: _llm_campaign_latency_reason == 'pass'
+
+- name: Save the interactive ratio gate reason
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_reason: "{{ _llm_campaign_latency_classification_reason }}"
+  changed_when: false
+  when: _llm_campaign_latency_reason == 'pass'

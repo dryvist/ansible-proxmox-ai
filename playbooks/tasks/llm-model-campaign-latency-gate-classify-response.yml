@@ -1,0 +1,76 @@
+---
+- name: Capture the interactive Prometheus scalar response
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_classification_observation:
+      http_status: "{{ _llm_campaign_latency_response.status | default(0) | int }}"
+      prometheus_status: >-
+        {{ _llm_campaign_latency_response_json.get('status')
+           if _llm_campaign_latency_response_json is mapping else none }}
+      result_count: >-
+        {{ _llm_campaign_latency_response_result | length
+           if _llm_campaign_latency_response_result is sequence
+              and _llm_campaign_latency_response_result is not string
+              and _llm_campaign_latency_response_result is not mapping else none }}
+      raw_value: >-
+        {{ _llm_campaign_latency_response_result[0]['value'][1]
+           if _llm_campaign_latency_response_result is sequence
+              and _llm_campaign_latency_response_result is not string
+              and _llm_campaign_latency_response_result is not mapping
+              and _llm_campaign_latency_response_result | length == 1
+              and _llm_campaign_latency_response_result[0] is mapping
+              and _llm_campaign_latency_response_result[0].get('value') is sequence
+              and _llm_campaign_latency_response_result[0].get('value') | length == 2
+           else none }}
+      well_formed: >-
+        {{ _llm_campaign_latency_response_data is mapping
+           and 'result' in _llm_campaign_latency_response_data
+           and _llm_campaign_latency_response_result is sequence
+           and _llm_campaign_latency_response_result is not string
+           and _llm_campaign_latency_response_result is not mapping
+           and _llm_campaign_latency_response_result | length <= 1
+           and (
+             _llm_campaign_latency_response_result | length == 0
+             or (
+               _llm_campaign_latency_response_result[0] is mapping
+               and _llm_campaign_latency_response_result[0].get('value') is sequence
+               and _llm_campaign_latency_response_result[0].get('value') | length == 2
+               and _llm_campaign_latency_response_result[0]['value'][0] is number
+               and _llm_campaign_latency_response_result[0]['value'][1] is string
+               and (
+                 _llm_campaign_latency_response_result[0]['value'][1] == 'NaN'
+                 or _llm_campaign_latency_response_result[0]['value'][1]
+                    is match('^[+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$')
+               )
+             )
+           ) }}
+  vars:
+    _llm_campaign_latency_response_json: "{{ _llm_campaign_latency_response.json | default({}) }}"
+    _llm_campaign_latency_response_data: >-
+      {{ _llm_campaign_latency_response_json.get('data', {})
+         if _llm_campaign_latency_response_json is mapping else {} }}
+    _llm_campaign_latency_response_result: >-
+      {{ _llm_campaign_latency_response_data.get('result')
+         if _llm_campaign_latency_response_data is mapping else none }}
+  changed_when: false
+
+- name: Classify the interactive Prometheus scalar response
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_classification_reason: >-
+      {{ 'query/HTTP error'
+         if _llm_campaign_latency_classification_observation.http_status | int != 200
+         else 'malformed response'
+           if _llm_campaign_latency_classification_observation.prometheus_status is none
+         else 'query/HTTP error'
+           if _llm_campaign_latency_classification_observation.prometheus_status != 'success'
+         else 'malformed response'
+           if not _llm_campaign_latency_classification_observation.well_formed
+         else 'no data: ' ~ _llm_campaign_latency_classification_kind ~ ' result is empty'
+           if _llm_campaign_latency_classification_observation.result_count | int == 0
+         else 'NaN'
+           if _llm_campaign_latency_classification_observation.raw_value == 'NaN'
+         else 'ratio over max'
+           if _llm_campaign_latency_classification_kind == 'ratio'
+              and (_llm_campaign_latency_classification_observation.raw_value | float)
+                  > (llm_campaign_latency_max_ratio | float)
+         else 'pass' }}
+  changed_when: false

@@ -1,0 +1,137 @@
+---
+- name: Query interactive request counts across latency windows
+  ansible.builtin.uri:
+    url: >-
+      {{ _llm_campaign_latency_prometheus_url }}/api/v1/query?query={{ _llm_campaign_latency_count_query | urlencode }}
+    method: GET
+    return_content: true
+    status_code: [200]
+  register: _llm_campaign_latency_count_responses
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  loop: "{{ llm_campaign_latency_windows }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Capture interactive request counts for each latency window
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_window_counts: >-
+      {{ _llm_campaign_latency_window_counts + [{
+        'window': item.item,
+        'window_seconds': (item.item[:-1] | int)
+          * {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}[item.item[-1]],
+        'http_status': item.status | default(0) | int,
+        'prometheus_status': _llm_campaign_latency_count_json.get('status')
+          if _llm_campaign_latency_count_json is mapping else none,
+        'result_count': _llm_campaign_latency_count_result_count,
+        'sample_count': _llm_campaign_latency_count_sample,
+        'query_error': item.status | default(0) | int != 200
+          or (_llm_campaign_latency_count_status is not none
+              and _llm_campaign_latency_count_status != 'success'),
+        'malformed': _llm_campaign_latency_count_status is none
+          or (_llm_campaign_latency_count_status == 'success'
+              and not _llm_campaign_latency_count_well_formed)
+      }] }}
+  vars:
+    _llm_campaign_latency_count_json: "{{ item.json | default({}) }}"
+    _llm_campaign_latency_count_status: >-
+      {{ _llm_campaign_latency_count_json.get('status')
+         if _llm_campaign_latency_count_json is mapping else none }}
+    _llm_campaign_latency_count_data: >-
+      {{ _llm_campaign_latency_count_json.get('data', {})
+         if _llm_campaign_latency_count_json is mapping else {} }}
+    _llm_campaign_latency_count_result: >-
+      {{ _llm_campaign_latency_count_data.get('result')
+         if _llm_campaign_latency_count_data is mapping else none }}
+    _llm_campaign_latency_count_result_count: >-
+      {{ _llm_campaign_latency_count_result | length
+         if _llm_campaign_latency_count_result is sequence
+            and _llm_campaign_latency_count_result is not string
+            and _llm_campaign_latency_count_result is not mapping else none }}
+    # A successful empty result means no matching series in the window: zero requests.
+    _llm_campaign_latency_count_sample: >-
+      {{ '0'
+         if _llm_campaign_latency_count_status == 'success'
+            and _llm_campaign_latency_count_result is sequence
+            and _llm_campaign_latency_count_result is not string
+            and _llm_campaign_latency_count_result is not mapping
+            and _llm_campaign_latency_count_result | length == 0
+         else _llm_campaign_latency_count_result[0]['value'][1]
+         if _llm_campaign_latency_count_result is sequence
+            and _llm_campaign_latency_count_result is not string
+            and _llm_campaign_latency_count_result is not mapping
+            and _llm_campaign_latency_count_result | length == 1
+            and _llm_campaign_latency_count_result[0] is mapping
+            and _llm_campaign_latency_count_result[0].get('value') is sequence
+            and _llm_campaign_latency_count_result[0].get('value') | length == 2
+         else none }}
+    _llm_campaign_latency_count_well_formed: >-
+      {{ _llm_campaign_latency_count_data is mapping
+         and 'result' in _llm_campaign_latency_count_data
+         and _llm_campaign_latency_count_result is sequence
+         and _llm_campaign_latency_count_result is not string
+         and _llm_campaign_latency_count_result is not mapping
+         and _llm_campaign_latency_count_result | length <= 1
+         and (
+           _llm_campaign_latency_count_result | length == 0
+           or (
+             _llm_campaign_latency_count_result[0] is mapping
+             and _llm_campaign_latency_count_result[0].get('value') is sequence
+             and _llm_campaign_latency_count_result[0].get('value') | length == 2
+             and _llm_campaign_latency_count_result[0]['value'][0] is number
+             and _llm_campaign_latency_count_result[0]['value'][1] is string
+             and _llm_campaign_latency_count_result[0]['value'][1]
+                is match('^[+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$')
+           )
+         ) }}
+  changed_when: false
+  loop: "{{ _llm_campaign_latency_count_responses.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Classify count responses and identify the largest latency window
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_window_response_reason: >-
+      {{ 'query/HTTP error'
+         if _llm_campaign_latency_window_counts | selectattr('query_error') | list | length > 0
+         else 'malformed response'
+           if _llm_campaign_latency_window_counts | selectattr('malformed') | list | length > 0
+         else 'ready' }}
+    _llm_campaign_latency_largest_window: >-
+      {{ _llm_campaign_latency_window_counts | sort(attribute='window_seconds') | last }}
+  changed_when: false
+
+- name: Select the first window that meets the interactive sample threshold
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_selected_window: "{{ item }}"
+  changed_when: false
+  loop: "{{ _llm_campaign_latency_window_counts }}"
+  loop_control:
+    label: "{{ item.window }}"
+  when:
+    - _llm_campaign_latency_window_response_reason == 'ready'
+    - _llm_campaign_latency_selected_window is none
+    - item.sample_count is not none
+    - item.sample_count | float >= llm_campaign_latency_min_samples | float
+
+- name: Classify the interactive request count coverage
+  ansible.builtin.set_fact:
+    _llm_campaign_latency_reason: >-
+      {{ _llm_campaign_latency_window_response_reason
+         if _llm_campaign_latency_window_response_reason != 'ready'
+         else 'pass' if _llm_campaign_latency_selected_window is not none
+         else 'idle: nothing to protect'
+           if (
+             _llm_campaign_latency_window_counts
+               | selectattr('sample_count', 'none') | list | length == 0
+             and _llm_campaign_latency_window_counts
+               | map(attribute='sample_count') | map('float') | max == 0
+           )
+         else 'thin: minimum sample count not met'
+           if _llm_campaign_latency_largest_window.sample_count is not none
+              and (_llm_campaign_latency_largest_window.sample_count | float) > 0
+              and (_llm_campaign_latency_largest_window.sample_count | float)
+                  < (llm_campaign_latency_min_samples | float)
+         else 'no data: minimum sample count not met' }}
+  changed_when: false
