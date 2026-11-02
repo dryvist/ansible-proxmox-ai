@@ -1,4 +1,40 @@
 ---
+- name: Validate the held-out component time budget
+  ansible.builtin.assert:
+    that:
+      - laya_systemone_heldout_total_budget_seconds | int < 600
+      - laya_systemone_heldout_module_timeout_seconds | int >= 67
+      - laya_systemone_heldout_command_timeout_seconds | int >= 30
+      - laya_systemone_heldout_network_timeout_seconds | int >= 60
+      - laya_systemone_heldout_rustfs_request_timeout_seconds | int >= 30
+      - laya_systemone_heldout_awscli_install_timeout_seconds | int >= 60
+      - laya_systemone_heldout_health_timeout_seconds | int >= 30
+      - laya_systemone_health_task_timeout_seconds | int >= 30
+      - >-
+        (laya_systemone_heldout_run_budget_seconds | int)
+        == (laya_systemone_heldout_run_timeout_seconds | int)
+        + (laya_systemone_heldout_run_poll_seconds | int)
+      - >-
+        (laya_systemone_heldout_total_budget_seconds | int)
+        - (laya_systemone_heldout_run_budget_seconds | int) >= 120
+    fail_msg: >-
+      Held-out task guards must cover measured task times and leave at least 120
+      seconds inside the Semaphore rail.
+    quiet: true
+
+- name: Wait for Laya health before held-out evaluation
+  ansible.builtin.include_tasks:
+    file: health.yml
+    apply:
+      tags:
+        - laya_systemone_heldout
+  vars:
+    laya_systemone_health_retries: "{{ laya_systemone_heldout_health_retries }}"
+    laya_systemone_health_delay: "{{ laya_systemone_heldout_health_delay_seconds }}"
+    laya_systemone_health_timeout_seconds: "{{ laya_systemone_heldout_health_timeout_seconds }}"
+  tags:
+    - laya_systemone_heldout
+
 - name: Validate the held-out evaluation configuration
   ansible.builtin.assert:
     that:
@@ -20,6 +56,8 @@
   ansible.builtin.include_tasks: rustfs-credential.yml
   vars:
     laya_systemone_rustfs_kv_path: "{{ laya_systemone_finetune_bao_kv_path }}"
+    laya_systemone_rustfs_request_timeout_seconds: "{{ laya_systemone_heldout_rustfs_request_timeout_seconds }}"
+    laya_systemone_rustfs_awscli_install_timeout_seconds: "{{ laya_systemone_heldout_awscli_install_timeout_seconds }}"
 
 - name: Create private held-out evaluation directories
   ansible.builtin.file:
@@ -32,6 +70,7 @@
     - "{{ laya_systemone_finetune_root }}"
     - "{{ laya_systemone_finetune_dataset_dir }}"
     - "{{ laya_systemone_heldout_results_dir }}"
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
   become: true
 
 - name: Check the existing held-out CSV checksum before download
@@ -41,6 +80,7 @@
   register: laya_systemone_heldout_existing_stat
   become: true
   no_log: true
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
 
 - name: Download the held-out CSV when missing or corrupt
   ansible.builtin.command:
@@ -64,6 +104,7 @@
   become_user: "{{ laya_systemone_user }}"
   changed_when: true
   no_log: true
+  timeout: "{{ laya_systemone_heldout_network_timeout_seconds }}"
 
 - name: Check the downloaded held-out CSV checksum
   ansible.builtin.stat:
@@ -76,6 +117,7 @@
     != laya_systemone_heldout_sha256 | lower
   become: true
   no_log: true
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
 
 - name: Verify the downloaded held-out CSV checksum
   ansible.builtin.assert:
@@ -99,6 +141,7 @@
   become: true
   changed_when: true
   no_log: true
+  timeout: "{{ laya_systemone_heldout_command_timeout_seconds }}"
 
 - name: Set private ownership and permissions on the held-out CSV
   ansible.builtin.file:
@@ -109,6 +152,7 @@
     mode: "0600"
   become: true
   no_log: true
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
 
 - name: Read the held-out CSV checksum
   ansible.builtin.stat:
@@ -117,6 +161,7 @@
   register: laya_systemone_heldout_stat
   become: true
   no_log: true
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
 
 - name: Verify the held-out CSV checksum
   ansible.builtin.assert:
@@ -135,6 +180,7 @@
     group: root
     mode: "0755"
   become: true
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
 
 - name: Install the held-out evaluation script
   ansible.builtin.copy:
@@ -144,6 +190,7 @@
     group: root
     mode: "0755"
   become: true
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
 
 - name: Read the installed Laya version for held-out evaluation
   ansible.builtin.command:
@@ -154,6 +201,7 @@
   register: laya_systemone_heldout_laya_version
   changed_when: false
   check_mode: false
+  timeout: "{{ laya_systemone_heldout_command_timeout_seconds }}"
 
 - name: Read the fine-tune manifest for held-out identity
   ansible.builtin.slurp:
@@ -162,6 +210,7 @@
   when: laya_systemone_finetune_enabled | bool
   become: true
   no_log: true
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
 
 - name: Initialize the held-out manifest when fine-tuning is disabled
   ansible.builtin.set_fact:
@@ -197,31 +246,68 @@
     path: "{{ laya_systemone_heldout_result_path }}"
   register: laya_systemone_heldout_result_stat
   become: true
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
 
 - name: Report that an existing held-out result was reused
   ansible.builtin.debug:
     msg: "Skipping held-out scoring and upload because {{ laya_systemone_heldout_result_filename }} already exists."
   when: laya_systemone_heldout_result_stat.stat.exists
 
-- name: Run the held-out evaluation on the guest
-  ansible.builtin.command:
-    cmd: >-
-      python3 {{ laya_systemone_heldout_script_path | quote }}
-      --csv {{ laya_systemone_heldout_path | quote }}
-      {% if laya_systemone_finetune_enabled | bool %}
-      --train-csv {{ laya_systemone_finetune_train_path | quote }}
-      {% endif %}
-      --url {{ ('http://127.0.0.1:' ~ laya_systemone_port ~ '/v1/systemone/batch') | quote }}
-      {% for model in laya_systemone_heldout_models %}--model {{ model | quote }} {% endfor %}
-      --batch-size {{ laya_systemone_heldout_batch_size | quote }}
-      --out {{ laya_systemone_heldout_result_path | quote }}
-  environment:
-    LAYA_API_KEY: "{{ laya_systemone_api_key }}"
+- name: Remove a stale held-out evaluation error sidecar
+  ansible.builtin.file:
+    path: "{{ laya_systemone_heldout_error_path }}"
+    state: absent
+  when: not laya_systemone_heldout_result_stat.stat.exists
   become: true
   become_user: "{{ laya_systemone_user }}"
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
+
+- name: Run the held-out evaluation on the guest
   when: not laya_systemone_heldout_result_stat.stat.exists
-  changed_when: true
-  no_log: true
+  block:
+    - name: Run the held-out evaluation command
+      ansible.builtin.command:
+        cmd: >-
+          python3 {{ laya_systemone_heldout_script_path | quote }}
+          --csv {{ laya_systemone_heldout_path | quote }}
+          {% if laya_systemone_finetune_enabled | bool %}
+          --train-csv {{ laya_systemone_finetune_train_path | quote }}
+          {% endif %}
+          --url {{ ('http://127.0.0.1:' ~ laya_systemone_port ~ '/v1/systemone/batch') | quote }}
+          {% for model in laya_systemone_heldout_models %}--model {{ model | quote }} {% endfor %}
+          --batch-size {{ laya_systemone_heldout_batch_size | quote }}
+          --request-timeout {{ laya_systemone_heldout_request_timeout_seconds | quote }}
+          --out {{ laya_systemone_heldout_result_path | quote }}
+      environment:
+        LAYA_API_KEY: "{{ laya_systemone_api_key }}"
+      become: true
+      become_user: "{{ laya_systemone_user }}"
+      changed_when: true
+      async: "{{ laya_systemone_heldout_run_timeout_seconds }}"
+      poll: "{{ laya_systemone_heldout_run_poll_seconds }}"
+      timeout: "{{ laya_systemone_heldout_run_budget_seconds }}"
+      no_log: true
+  rescue:
+    - name: Check for the sanitized held-out evaluation error sidecar
+      ansible.builtin.stat:
+        path: "{{ laya_systemone_heldout_error_path }}"
+      register: laya_systemone_heldout_error_stat
+      become: true
+      timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
+
+    - name: Read the sanitized held-out evaluation error
+      ansible.builtin.slurp:
+        src: "{{ laya_systemone_heldout_error_path }}"
+      register: laya_systemone_heldout_error
+      when: laya_systemone_heldout_error_stat.stat.exists
+      become: true
+      timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
+
+    - name: Fail with the sanitized held-out evaluation error
+      ansible.builtin.fail:
+        msg: >-
+          {{ laya_systemone_heldout_error.content | default('') | b64decode | trim
+             or 'Held-out evaluation failed without a sanitized error sidecar.' }}
 
 - name: Read the held-out evaluation aggregates
   ansible.builtin.slurp:
@@ -230,6 +316,7 @@
   when: not laya_systemone_heldout_result_stat.stat.exists
   become: true
   no_log: true
+  timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
 
 - name: Report held-out evaluation accuracy aggregates
   ansible.builtin.debug:
@@ -248,6 +335,9 @@
       ansible.builtin.include_tasks: rustfs-credential.yml
       vars:
         laya_systemone_rustfs_kv_path: "{{ laya_systemone_heldout_results_bao_kv_path }}"
+        laya_systemone_rustfs_request_timeout_seconds: "{{ laya_systemone_heldout_rustfs_request_timeout_seconds }}"
+        laya_systemone_rustfs_awscli_install_timeout_seconds: >-
+          {{ laya_systemone_heldout_awscli_install_timeout_seconds }}
 
     - name: Copy the held-out evaluation result to the bucket
       ansible.builtin.command:
@@ -269,12 +359,14 @@
       become_user: "{{ laya_systemone_user }}"
       changed_when: true
       no_log: true
+      timeout: "{{ laya_systemone_heldout_network_timeout_seconds }}"
   rescue:
     - name: Remove the local held-out result so the next converge retries the upload
       ansible.builtin.file:
         path: "{{ laya_systemone_heldout_result_path }}"
         state: absent
       become: true
+      timeout: "{{ laya_systemone_heldout_module_timeout_seconds }}"
 
     - name: Fail the converge after a held-out result upload failure
       ansible.builtin.fail:

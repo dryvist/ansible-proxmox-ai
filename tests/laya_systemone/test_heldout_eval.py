@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -18,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles/laya_systemone"
 TASKS = ROLE / "tasks"
 SCRIPT = ROLE / "files/heldout_eval.py"
+PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 
 
 def _load_yaml(path: Path):
@@ -42,31 +44,55 @@ def _walk(tasks: list[dict]):
                 yield from _walk(nested)
 
 
-def test_heldout_defaults_are_opt_in_and_use_separate_read_and_write_paths() -> None:
+def test_heldout_defaults_use_separate_read_and_write_paths_and_bound_runtime() -> None:
     defaults = _load_yaml(ROLE / "defaults/main/30-heldout.yml")
     finetune_defaults = _load_yaml(ROLE / "defaults/main/20-finetune.yml")
 
-    assert defaults["laya_systemone_heldout_enabled"] is False
     assert defaults["laya_systemone_heldout_results_bao_kv_path"] == "rustfs/system1/rw"
     assert finetune_defaults["laya_systemone_finetune_bao_kv_path"] == "rustfs/system1/ro"
     assert defaults["laya_systemone_heldout_batch_size"] == 16
+    assert defaults["laya_systemone_heldout_request_timeout_seconds"] == 60
+    assert defaults["laya_systemone_heldout_run_timeout_seconds"] == 360
+    assert defaults["laya_systemone_heldout_total_budget_seconds"] == 540
 
 
-def test_heldout_include_follows_health_and_is_opt_in() -> None:
-    main = list(_walk(_load_yaml(TASKS / "main.yml")))
-    health_index = next(
-        index for index, task in enumerate(main) if task.get("name") == "Wait for Laya health to return successfully"
+def test_serving_tag_does_not_select_the_heldout_component() -> None:
+    plays = _load_yaml(PLAYBOOK)
+    serving_play = next(play for play in plays if play.get("name") == "Configure the Laya classifier guest")
+    heldout_play = next(play for play in plays if play.get("name") == "Score Laya models on held-out data")
+
+    assert "laya_systemone" in serving_play["tags"]
+    assert heldout_play["tags"] == ["never", "laya_systemone_heldout"]
+    assert "laya_systemone" not in heldout_play["tags"]
+    assert not any(
+        task.get("ansible.builtin.include_tasks") == "heldout-eval.yml"
+        for task in _walk(_load_yaml(TASKS / "main.yml"))
     )
-    heldout_index = next(
-        index for index, task in enumerate(main) if task.get("name") == "Optionally score Laya models on held-out data"
-    )
-    include = main[heldout_index]
+    evaluation_entry = heldout_play["tasks"][0]
+    assert evaluation_entry["ansible.builtin.include_role"]["tasks_from"] == "heldout-eval.yml"
+    assert "laya_systemone_heldout" in evaluation_entry["ansible.builtin.include_role"]["apply"]["tags"]
+    assert evaluation_entry["timeout"] == 30
+    defaults_entry = heldout_play["pre_tasks"][0]
+    assert defaults_entry["timeout"] == 30
 
-    assert heldout_index == health_index + 1
-    assert _included_file(include) == "heldout-eval.yml"
-    assert include["when"] == ["laya_systemone_heldout_enabled | bool", "not ansible_check_mode"]
-    assert "laya_systemone_heldout" in include["tags"]
-    assert "laya_systemone_heldout" in include["ansible.builtin.include_tasks"]["apply"]["tags"]
+
+def test_heldout_component_checks_health_and_csv_checksum_before_scoring() -> None:
+    tasks = _load_yaml(TASKS / "heldout-eval.yml")
+    health_index = next(index for index, task in enumerate(tasks) if "health.yml" in json.dumps(task))
+    checksum_index = next(
+        index for index, task in enumerate(tasks) if task.get("name") == "Verify the held-out CSV checksum"
+    )
+    command_index = next(
+        index for index, task in enumerate(tasks) if task.get("name") == "Run the held-out evaluation on the guest"
+    )
+    health = _load_yaml(TASKS / "health.yml")[0]
+
+    assert health_index == 1
+    assert tasks[0]["name"] == "Validate the held-out component time budget"
+    assert health["ansible.builtin.uri"]["url"].endswith("/health")
+    assert health["ansible.builtin.uri"]["timeout"] == "{{ laya_systemone_health_timeout_seconds }}"
+    assert health["timeout"] == "{{ laya_systemone_health_task_timeout_seconds }}"
+    assert checksum_index < command_index
 
 
 def test_failed_result_upload_removes_the_local_skip_marker() -> None:
@@ -76,6 +102,35 @@ def test_failed_result_upload_removes_the_local_skip_marker() -> None:
     remove, fail = upload["rescue"]
     assert remove["ansible.builtin.file"] == {"path": "{{ laya_systemone_heldout_result_path }}", "state": "absent"}
     assert "ansible.builtin.fail" in fail
+
+
+def test_bearer_credential_is_hidden_and_eval_command_has_a_total_timeout() -> None:
+    task_files = list(TASKS.glob("*.yml"))
+    credential_tasks = [
+        task
+        for path in task_files
+        for task in _walk(_load_yaml(path))
+        if "block" not in task and "laya_systemone_api_key" in json.dumps(task)
+    ]
+    command = next(
+        task
+        for task in _walk(_load_yaml(TASKS / "heldout-eval.yml"))
+        if task.get("name") == "Run the held-out evaluation command"
+    )
+
+    assert credential_tasks
+    assert all(task.get("no_log") is True for task in credential_tasks)
+    assert command["async"] == "{{ laya_systemone_heldout_run_timeout_seconds }}"
+    assert command["environment"]["LAYA_API_KEY"] == "{{ laya_systemone_api_key }}"
+    assert command["become_user"] == "{{ laya_systemone_user }}"
+    assert command["no_log"] is True
+
+
+def test_standalone_nvidia_defaults_entry_does_not_converge_the_guest() -> None:
+    defaults_entry = _load_yaml(ROLE.parent / "nvidia_gpu_guest/tasks/defaults-only.yml")
+
+    assert len(defaults_entry) == 1
+    assert defaults_entry[0]["ansible.builtin.meta"] == "noop"
 
 
 def test_shared_rustfs_credential_tasks_are_included_and_secret_output_is_hidden() -> None:
@@ -220,3 +275,72 @@ def test_heldout_script_scores_batches_without_writing_row_text(tmp_path: Path) 
     assert '"text"' not in result_text
     assert all(text not in result_text for text in fixture_texts)
     assert stat.S_IMODE(output_path.stat().st_mode) == 0o600
+
+
+def test_heldout_timeout_writes_only_a_private_sanitized_error_line(tmp_path: Path) -> None:
+    heldout_csv = tmp_path / "heldout.csv"
+    output_path = tmp_path / "result.json"
+    secret_key = "test-heldout-key"
+    private_row = "private timeout fixture row"
+    heldout_csv.write_text(f"text,label\n{private_row},ant\nsecond row,zebra\n", encoding="utf-8")
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers["Content-Length"]))
+            requests.append(True)
+            time.sleep(0.2)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"results": []}')
+            except OSError:
+                pass
+
+        def log_message(self, format: str, *args: object) -> None:
+            del format, args
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        env = {**os.environ, "LAYA_API_KEY": secret_key}
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--csv",
+                str(heldout_csv),
+                "--url",
+                f"http://127.0.0.1:{server.server_port}/v1/systemone/batch",
+                "--model",
+                "english",
+                "--request-timeout",
+                "0.05",
+                "--out",
+                str(output_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    error_path = Path(f"{output_path}.error")
+    error_text = error_path.read_text(encoding="utf-8")
+    assert completed.returncode == 1
+    assert len(requests) == 1
+    assert completed.stderr == "held-out evaluation failed: Laya batch request timed out\n"
+    assert error_text == completed.stderr
+    assert len(error_text.splitlines()) == 1
+    assert secret_key not in error_text
+    assert private_row not in error_text
+    assert stat.S_IMODE(error_path.stat().st_mode) == 0o600
+    assert error_path.stat().st_uid == os.geteuid()
+    assert not output_path.exists()

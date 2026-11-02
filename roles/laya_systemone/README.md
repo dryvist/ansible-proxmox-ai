@@ -1,4 +1,23 @@
-# Laya fine-tuning
+# Laya Systemone
+
+## Serving and held-out evaluation
+
+Converge the serving role and verify that Laya is healthy:
+
+```sh
+ansible-playbook playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.yml \
+  --tags laya_systemone --limit <one host>
+```
+
+Run held-out evaluation through the Semaphore template `ai-laya-heldout`, one
+classifier host at a time. Its job rail must equal
+`laya_systemone_heldout_total_budget_seconds` (540 seconds by default); task
+timeouts guard individual Ansible steps and do not bound the whole component.
+Use `playbooks/site.yml`, limit `llm_classify`, and tag
+`laya_systemone_heldout` so the inventory loader and always-tagged secret
+prefetch run before scoring.
+
+## Fine-tuning
 
 Fine-tuning is an opt-in, two-run workflow. The role must first be converged
 normally so the Laya virtual environment, service unit, and pinned `laya-train`
