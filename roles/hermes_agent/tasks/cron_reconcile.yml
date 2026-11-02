@@ -88,7 +88,7 @@
 # pause it (disable-don't-delete) so the two never double-post. `cron list` shows
 # only ENABLED jobs, so this is a clean no-op once the job is paused.
 - name: List active Hermes crons (to retire the superseded LLM digests)
-  ansible.builtin.command: "{{ hermes_agent_bin }} cron list"
+  ansible.builtin.command: "{{ hermes_agent_bin }} {{ hermes_agent_cli_profile_args | join(' ') }} cron list"
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   become: true
@@ -105,7 +105,9 @@
 
 # The 3 *-v2 crons the reframe duplicates under a bare name.
 - name: Pause the direct crons the reframe replaced 1-for-1
-  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ item }}"
+  ansible.builtin.command: >-
+    {{ hermes_agent_bin }} {{ hermes_agent_cli_profile_args | join(' ') }}
+    cron pause {{ item }}
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   become: true
@@ -204,4 +206,10 @@
       it to this role's job definitions.
   when:
     - hermes_agent_cron_failure_deliver | length > 0
+    - not ansible_check_mode
+
+- name: Migrate the guarded homelab-admin satellite stray crons
+  ansible.builtin.include_tasks: cron_satellite_stray_migration.yml
+  when:
+    - hermes_agent_satellite_stray_migration_enabled | bool
     - not ansible_check_mode
