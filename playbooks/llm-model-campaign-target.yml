@@ -116,6 +116,15 @@
                  | map('trim') | list }}
           when: _llm_campaign_power_limit.rc == 0
 
+    - name: Record the selected serving profile systemd unit
+      ansible.builtin.set_fact:
+        _llm_campaign_serving_unit: >-
+          {{ _llm_campaign_role_defaults.llm_gpu_serving_unit_prefix
+             ~ '-' ~ _llm_campaign_model.serving_profile ~ '.service' }}
+      when:
+        - engine in ['vllm', 'llama_cpp']
+        - _llm_campaign_model.serving_profile is defined
+
     - name: Inspect the selected serving profile's rendered service command
       ansible.builtin.command:
         argv:
@@ -123,9 +132,7 @@
           - show
           - --property=ExecStart
           - --value
-          - >-
-            {{ _llm_campaign_role_defaults.llm_gpu_serving_unit_prefix
-               ~ '-' ~ _llm_campaign_model.serving_profile ~ '.service' }}
+          - "{{ _llm_campaign_serving_unit }}"
       register: _llm_campaign_service_command
       changed_when: false
       when:
@@ -187,16 +194,34 @@
         loop_var: _llm_campaign_run
         label: "{{ _llm_campaign_run.name }}"
 
+    - name: Read the selected vLLM profile's current systemd invocation ID
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - --property
+          - InvocationID
+          - --value
+          - "{{ _llm_campaign_serving_unit }}"
+      register: _llm_campaign_vllm_invocation_id
+      changed_when: false
+      when: engine == 'vllm'
+
+    - name: Require the selected vLLM profile service to be running
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_vllm_invocation_id.stdout | trim | length > 0
+        fail_msg: >-
+          The selected vLLM profile service {{ _llm_campaign_serving_unit }} is
+          not running; its startup KV capacity cannot be read.
+        quiet: true
+      when: engine == 'vllm'
+
     - name: Read the selected vLLM profile startup log for live KV capacity
       ansible.builtin.command:
         argv:
           - journalctl
-          - --unit
-          - >-
-            {{ _llm_campaign_role_defaults.llm_gpu_serving_unit_prefix }}-
-            {{ _llm_campaign_model.serving_profile }}.service
-          - --since
-          - 6 hours ago
+          - "_SYSTEMD_INVOCATION_ID={{ _llm_campaign_vllm_invocation_id.stdout | trim }}"
           - --no-pager
           - --output
           - cat
