@@ -46,13 +46,20 @@
           - concurrency_list is defined
           - context_list is defined
           - power_cap_w | string is match('^[0-9]+([.][0-9]+)?$')
+          - >-
+            llm_model_campaign_sample_slice_index is not defined
+            or llm_model_campaign_sample_slice_index | string is match('^(0|[1-9][0-9]*)$')
+          - >-
+            llm_model_campaign_repetitions is not defined
+            or llm_model_campaign_repetitions | string is match('^[1-9][0-9]*$')
           - engine != 'strata' or strata_batch_size is defined
           - strata_batch_size is not defined or strata_batch_size | string is match('^(1|4|8)$')
         fail_msg: >-
           The campaign survey requires an inventory alias, a named config,
           a registry artifact id, supported engine/model size, positive context/concurrency lists,
-          an HTTPS endpoint origin, an existing target cache path, and a
-          non-negative numeric power cap in watts.
+          an HTTPS endpoint origin, an existing target cache path, a
+          non-negative numeric power cap, and canonical optional sample-slice
+          and positive repetition overrides.
         quiet: true
 
     - name: Require the baseline campaign endpoint to use HTTPS
@@ -141,6 +148,63 @@
       ansible.builtin.set_fact:
         _llm_campaign_config: >-
           {{ _llm_campaign_config_file.content | b64decode | community.general.from_toml }}
+
+    - name: Validate sample-slice rows from the selected recipe
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_recipe_run.sample_task is defined
+          - _llm_campaign_recipe_run.sample_task | string | length > 0
+          - _llm_campaign_recipe_run.sample_indices is sequence
+          - _llm_campaign_recipe_run.sample_indices is not string
+          - _llm_campaign_recipe_run.sample_indices | length > 0
+          - >-
+            _llm_campaign_recipe_run.sample_indices
+            | select('integer') | list | length
+            == _llm_campaign_recipe_run.sample_indices | length
+          - _llm_campaign_recipe_run.sample_indices | min >= 0
+          - >-
+            _llm_campaign_recipe_run.sample_indices | unique | length
+            == _llm_campaign_recipe_run.sample_indices | length
+          - _llm_campaign_recipe_run.slice_size | string is match('^[1-9][0-9]*$')
+          - _llm_campaign_recipe_run.sample_task in _llm_campaign_recipe_run.argv
+        fail_msg: >-
+          Sample-slice rows require one task, a unique non-negative sample-index
+          list, and a positive slice_size.
+        quiet: true
+      loop: "{{ _llm_campaign_config.run }}"
+      loop_control:
+        loop_var: _llm_campaign_recipe_run
+        label: "{{ _llm_campaign_recipe_run.name }}"
+      when: "'sample_slice_list' in _llm_campaign_recipe_run.dimensions"
+
+    - name: Require a selected-slice override to target a sliceable recipe
+      ansible.builtin.assert:
+        that:
+          - >-
+            llm_model_campaign_sample_slice_index is not defined
+            or _llm_campaign_config.run
+               | selectattr('dimensions', 'contains', 'sample_slice_list')
+               | list | length > 0
+        fail_msg: A sample_slice_index override requires a recipe with sample_slice_list.
+        quiet: true
+
+    - name: Validate the selected sample-slice index against each sliceable row
+      ansible.builtin.assert:
+        that:
+          - >-
+            (llm_model_campaign_sample_slice_index | int)
+            < ((_llm_campaign_recipe_run.sample_indices | length
+                + _llm_campaign_recipe_run.slice_size | int - 1)
+               // (_llm_campaign_recipe_run.slice_size | int))
+        fail_msg: The selected sample_slice_index is outside the recipe's sample slices.
+        quiet: true
+      loop: "{{ _llm_campaign_config.run }}"
+      loop_control:
+        loop_var: _llm_campaign_recipe_run
+        label: "{{ _llm_campaign_recipe_run.name }}"
+      when:
+        - llm_model_campaign_sample_slice_index is defined
+        - "'sample_slice_list' in _llm_campaign_recipe_run.dimensions"
 
     - name: Verify the envelope converter is available before target work
       ansible.builtin.command:
