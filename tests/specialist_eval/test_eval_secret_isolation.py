@@ -129,18 +129,17 @@ def test_dify_credential_control_selects_production_without_the_override(
     assert render("{{ " + variable + " }}", context) == PRODUCTION
 
 
-def test_dify_model_key_resolves_to_its_evaluation_router_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DIFY_EVAL_MODEL_API_KEY", EVALUATION)
+def test_dify_model_key_resolves_from_the_evaluation_openbao_field() -> None:
     context = host_context("dify_docker", "dify_eval_group", PRODUCTION_PREFETCH)
+    context["bao_apps_secrets"] = {"dify_eval_llm_router_key": EVALUATION}
 
     assert render("{{ dify_docker_model_api_key }}", context) == EVALUATION
 
 
-def test_dify_model_key_fails_closed_without_an_evaluation_router_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("DIFY_EVAL_MODEL_API_KEY", raising=False)
+def test_dify_model_key_fails_closed_without_the_evaluation_openbao_field() -> None:
     context = host_context("dify_docker", "dify_eval_group", PRODUCTION_PREFETCH)
 
-    with pytest.raises(AnsibleUndefinedVariable):
+    with pytest.raises(AnsibleUndefinedVariable, match="apps/dify/eval"):
         render("{{ dify_docker_model_api_key }}", context)
 
 
@@ -204,8 +203,8 @@ def test_every_env_backed_dify_variable_is_a_listed_credential_with_an_evaluatio
     assert set(DIFY_IDS) <= env_backed
     assert env_backed <= set(DIFY_IDS) | role_scoped_eval
     assert (env_backed - role_scoped_eval) <= overrides
-    assert bao_backed <= overrides
-    assert group_sourced <= overrides
+    assert bao_backed <= overrides | {"dify_docker_model_api_key"}
+    assert group_sourced <= overrides | {"dify_docker_model_api_key"}
     for variable in role_scoped_eval:
         assert "DIFY_EVAL_AGENT_" in defaults[variable]
         assert "dify_eval_group" in defaults[variable]
@@ -217,9 +216,9 @@ def test_dify_evaluation_overrides_read_only_evaluation_names_and_no_production_
 
     expected_eval_names = {
         evaluation_env for _, _, evaluation_env in DIFY_ENV_CREDENTIALS
-    } | {"DIFY_EVAL_MODEL_API_KEY"}
+    }
     production_names = {production_env for _, production_env, _ in DIFY_ENV_CREDENTIALS}
-    assert expected_eval_names <= env_names
+    assert expected_eval_names == env_names
     assert env_names.isdisjoint(production_names)
     agent_eval_names = set().union(*(
         _env_names(value)
@@ -227,9 +226,13 @@ def test_dify_evaluation_overrides_read_only_evaluation_names_and_no_production_
         if "DIFY_EVAL_AGENT_" in str(value)
     ))
     assert agent_eval_names <= set().union(*(_env_names(value) for value in role_defaults("dify_docker").values()))
-    for value in overrides.values():
-        assert "bao_local_llm_secrets" not in str(value)
-        assert "bao_apps_secrets" not in str(value)
+    for variable, value in overrides.items():
+        if variable == "dify_docker_model_api_key":
+            assert "bao_apps_secrets.dify_eval_llm_router_key" in str(value)
+        else:
+            assert "bao_local_llm_secrets" not in str(value)
+            assert "bao_apps_secrets" not in str(value)
+
 
 def test_every_production_sourced_langflow_variable_has_an_evaluation_override() -> None:
     defaults = role_defaults("langflow_docker")
