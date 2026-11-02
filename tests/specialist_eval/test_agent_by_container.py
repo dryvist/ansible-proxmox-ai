@@ -15,16 +15,15 @@ EXPECTED = {"hermes-agent": "hermes", "hermes-donna": "donna"}
 
 
 def _inventory_expression() -> str:
-    tasks = load_yaml(ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
-    task = next(t for t in tasks if t.get("name") == "Add AI LXC containers to inventory (proxmox_pct_remote connection)")
-    return task["vars"]["_ai_agent_by_container"]
+    (task,) = load_yaml(ROOT / "inventory/load_tofu/derive_agent_map.yml")
+    return task["ansible.builtin.set_fact"]["_ai_agent_by_container"]
 
 
 @pytest.mark.parametrize(
     ("expression", "variables"),
     [
         pytest.param(
-            load_yaml(GROUP_VARS / "all/00-core.yml")["ai_agent_by_container"],
+            load_yaml(GROUP_VARS / "all/01-agent-roster.yml")["ai_agent_by_container"],
             {"ai_agents": ROSTER},
             id="group-vars",
         ),
