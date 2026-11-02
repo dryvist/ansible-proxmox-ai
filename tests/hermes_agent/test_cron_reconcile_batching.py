@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 
 import yaml
+
+from _role_files import include_file
 from jinja2 import Environment
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
@@ -171,7 +173,7 @@ def test_jobs_never_run_cron_list_and_the_batch_runs_it_per_home():
     reconcile = _load("cron_reconcile.yml")
     batch_include = next(
         i for i, task in enumerate(reconcile)
-        if task.get("ansible.builtin.include_tasks") == "cron_reconcile_direct_batch.yml"
+        if include_file(task) == "cron_reconcile_direct_batch.yml"
     )
     direct_loop = next(
         i for i, task in enumerate(reconcile)

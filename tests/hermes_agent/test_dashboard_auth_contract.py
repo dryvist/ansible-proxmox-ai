@@ -16,7 +16,7 @@ import pytest
 import yaml
 from jinja2 import Environment
 
-from _role_files import role_defaults, role_tasks
+from _role_files import include_file, role_defaults, role_tasks
 from conftest import ROLE_ROOT
 from test_context_limits import _render, _sample_limits
 
@@ -131,7 +131,7 @@ def test_verify_includes_the_dashboard_gates_inside_its_shared_rescue_block() ->
     verify = yaml.safe_load(text)
     block = next(task for task in verify if task.get("name") == "Post-converge verification gate")
     assert any(
-        task.get("ansible.builtin.include_tasks") == "verify_dashboard.yml" for task in block["block"]
+        include_file(task) == "verify_dashboard.yml" for task in block["block"]
     )
     assert "rescue" in block
     # The gates exist once, in the included file.

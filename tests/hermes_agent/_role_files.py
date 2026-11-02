@@ -75,10 +75,10 @@ def render_hermes_runtime_unit(consumer_role: Path, template_name: str) -> str:
     include_task = next(
         task
         for task in yaml.safe_load((consumer_role / "tasks" / "main.yml").read_text())
-        if isinstance(task.get("ansible.builtin.include_role"), dict)
-        and task["ansible.builtin.include_role"].get("name")
+        if isinstance(task.get("ansible.builtin.import_role"), dict)
+        and task["ansible.builtin.import_role"].get("name")
         == "dryvist.ai_agents.hermes_runtime"
-        and task["ansible.builtin.include_role"].get("tasks_from") == "units"
+        and task["ansible.builtin.import_role"].get("tasks_from") == "units"
     )
     context = role_defaults(consumer_role)
     context.update(hermes_agent_uid=1001, hermes_agent_dashboard_port=8080)
@@ -128,6 +128,12 @@ def template_text(role_root: Path, name: str) -> str:
 _INCLUDE_KEYS = ("ansible.builtin.include_tasks", "ansible.builtin.import_tasks")
 
 
+def include_file(task: dict, key: str = "ansible.builtin.include_tasks") -> str | None:
+    """Return an include/import target from either Ansible YAML form."""
+    target = task.get(key)
+    return target.get("file") if isinstance(target, dict) else target
+
+
 def role_tasks(role_root: Path, entry: str = "main.yml") -> list:
     """Resolve tasks/<entry> into the flat task list Ansible would actually
     run, in REAL execution order — not alphabetical file order.
@@ -143,8 +149,9 @@ def role_tasks(role_root: Path, entry: str = "main.yml") -> list:
     for item in raw:
         target = None
         for key in _INCLUDE_KEYS:
-            if key in item and isinstance(item[key], str) and item[key].endswith(".yml"):
-                target = item[key]
+            include_target = include_file(item, key)
+            if isinstance(include_target, str) and include_target.endswith(".yml"):
+                target = include_target
                 break
         if target:
             flat.extend(role_tasks(role_root, target))
@@ -193,8 +200,9 @@ def role_tasks_text(role_root: Path, entry: str = "main.yml") -> str:
     for item, chunk in zip(raw, chunks):
         target = None
         for key in _INCLUDE_KEYS:
-            if key in item and isinstance(item[key], str) and item[key].endswith(".yml"):
-                target = item[key]
+            include_target = include_file(item, key)
+            if isinstance(include_target, str) and include_target.endswith(".yml"):
+                target = include_target
                 break
         # Keep the include/import task's OWN text (its name is a position
         # marker some tests search for — "task A runs before task B") AND
