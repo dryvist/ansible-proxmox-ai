@@ -85,18 +85,33 @@
   changed_when: false
 
 - name: Run the tool-native command from the selected recipe row
-  ansible.builtin.command:
-    argv: "{{ _llm_campaign_rendered_argv }}"
-    chdir: "{{ _llm_campaign_checkout if _llm_campaign_run.run_on == 'controller' else omit }}"
-  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
-  vars:
-    ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
-  environment:
-    OPENAI_API_KEY: "{{ lookup('env', 'OPENAI_API_KEY') if _llm_campaign_run.api_key_env is defined else omit }}"
-    HF_ALLOW_CODE_EVAL: "{{ '1' if _llm_campaign_run.code_eval | default(false) else omit }}"
-  register: _llm_campaign_command_result
-  changed_when: true
-  no_log: "{{ _llm_campaign_run.api_key_env is defined }}"
+  block:
+    - name: Execute the selected recipe command
+      ansible.builtin.command:
+        argv: "{{ _llm_campaign_rendered_argv }}"
+        chdir: "{{ _llm_campaign_checkout if _llm_campaign_run.run_on == 'controller' else omit }}"
+      delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+      vars:
+        ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
+      environment:
+        OPENAI_API_KEY: "{{ lookup('env', 'OPENAI_API_KEY') if _llm_campaign_run.api_key_env is defined else omit }}"
+        HF_ALLOW_CODE_EVAL: "{{ '1' if _llm_campaign_run.code_eval | default(false) else omit }}"
+      async: "{{ llm_model_campaign_cell_timeout_seconds }}"
+      poll: 1
+      register: _llm_campaign_command_result
+      changed_when: true
+      no_log: "{{ _llm_campaign_run.api_key_env is defined }}"
+  rescue:
+    - name: Report the failed model campaign cell command
+      ansible.builtin.fail:
+        msg: >-
+          {{ ('Model campaign cell command exceeded its '
+              ~ (llm_model_campaign_cell_timeout_seconds | string)
+              ~ '-second timeout.')
+             if ((ansible_failed_result.msg | default('')) is search('Timeout exceeded|did not complete'))
+             else ('Model campaign cell command failed: '
+                   ~ (ansible_failed_result.msg | default('unknown error'))) }}
+      no_log: "{{ _llm_campaign_run.api_key_env is defined }}"
 
 - name: Record the cell finish in UTC
   ansible.builtin.command:
