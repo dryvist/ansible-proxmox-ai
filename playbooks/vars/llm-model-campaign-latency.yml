@@ -2,10 +2,21 @@
 llm_campaign_latency_gate_enabled: true
 llm_campaign_interactive_key_aliases:
   - hermes-default
-  - litellm-local-workstation
+# Router metric labels that select the GPU-served (vLLM) backends; no model id is named.
+llm_campaign_interactive_scope_labels:
+  tag_telemetry_tier_gpu: "true"
+  api_provider: hosted_vllm
 llm_campaign_latency_max_ratio: 1.2
+llm_campaign_latency_min_samples: 20
+llm_campaign_latency_windows:
+  - 30m
+  - 2h
+  - 6h
 _llm_campaign_latency_alias_regex: >-
   {{ llm_campaign_interactive_key_aliases | join('|') }}
+_llm_campaign_latency_bucket_selector: >-
+  api_key_alias=~"{{ _llm_campaign_latency_alias_regex }}"{% for label, value in
+  llm_campaign_interactive_scope_labels | dictsort %},{{ label }}="{{ value }}"{% endfor %}
 _llm_campaign_latency_prometheus_host: >-
   {{ (hostvars['localhost']['tofu_data']['containers'] | default({}) | dict2items
       | selectattr('value.tags', 'defined')
@@ -19,13 +30,21 @@ _llm_campaign_latency_prometheus_url: >-
   {{ ('http://' ~ (_llm_campaign_latency_prometheus_host | trim) ~ ':'
       ~ (_llm_campaign_latency_prometheus_port | string | trim))
      if (_llm_campaign_latency_prometheus_host | trim | length > 0) else '' }}
+_llm_campaign_latency_count_query: >-
+  sum(increase(litellm_request_total_latency_metric_bucket{
+    {{ _llm_campaign_latency_bucket_selector }},le="+Inf"}[{{ item }}]))
+_llm_campaign_latency_baseline_query: >-
+  histogram_quantile(0.95, sum by (le) (
+    rate(litellm_request_total_latency_metric_bucket{
+      {{ _llm_campaign_latency_bucket_selector }}}[7d] offset 1d)
+  ))
 _llm_campaign_latency_query: >-
   histogram_quantile(0.95, sum by (le) (
     rate(litellm_request_total_latency_metric_bucket{
-      api_key_alias=~"{{ _llm_campaign_latency_alias_regex }}"}[30m])
+      {{ _llm_campaign_latency_bucket_selector }}}[{{ _llm_campaign_latency_selected_window.window }}])
   ))
   /
   histogram_quantile(0.95, sum by (le) (
     rate(litellm_request_total_latency_metric_bucket{
-      api_key_alias=~"{{ _llm_campaign_latency_alias_regex }}"}[7d] offset 1d)
+      {{ _llm_campaign_latency_bucket_selector }}}[7d] offset 1d)
   ))
