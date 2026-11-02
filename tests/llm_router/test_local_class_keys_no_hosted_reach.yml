@@ -15,6 +15,7 @@
     _expected_local_or_zdr_aliases:
       - github-actions-ci-fix
       - github-actions-pr-review
+      - dify-eval
       - glance
       - hindsight
       - langgraph
@@ -39,10 +40,21 @@
       ansible.builtin.include_vars:
         file: "{{ playbook_dir }}/ladder_keys_fixture.yml"
 
+    - name: Seed the Dify evaluation key fixture
+      ansible.builtin.set_fact:
+        bao_apps_secrets: >-
+          {{ (bao_apps_secrets | default({}))
+             | combine({'dify_eval_llm_router_key': 'sk-dify-eval-router-fixture'}) }}
+
     - name: Load the model registry through the role
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
+
+    - name: Give the local-scope check one local ladder member
+      ansible.builtin.set_fact:
+        llm_router_hermes_local_wide_groups: ["{{ llm_router_primary_model }}"]
+        llm_router_hermes_local_narrow_groups: []
 
     - name: Select the vLLM-off render
       ansible.builtin.set_fact:
@@ -79,6 +91,42 @@
           - name: vLLM on
             config: "{{ _config_vllm_on }}"
             catalog: "{{ _keys_vllm_on }}"
+
+    - name: The Dify evaluation key uses its seeded value and local class models only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _key | length == 1
+          - _key[0].value == 'sk-dify-eval-router-fixture'
+          - _key[0].allowed_classes == ['local']
+          - _key[0].models | length > 0
+          - _key[0].models | difference(_local_model_names) | length == 0
+          - _key[0].tags == ['&zdr', '!free', '!retains', '&local']
+          - _key[0].router_settings.enable_tag_filtering | bool
+        fail_msg: "Dify eval scope={{ _key }}; allowed local models={{ _local_model_names }}"
+      vars:
+        _key: "{{ item.catalog | selectattr('alias', 'equalto', 'dify-eval') | list }}"
+        _local_model_names: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | selectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
+      loop: "{{ _render_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Clear the optional Dify evaluation key fixture
+      ansible.builtin.set_fact:
+        bao_apps_secrets: "{{ bao_apps_secrets | combine({'dify_eval_llm_router_key': ''}) }}"
+
+    - name: Rebuild the virtual keys without the optional Dify evaluation key
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Confirm an empty Dify evaluation key is never registered
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'dify-eval' in llm_router_disabled_virtual_keys"
+          - llm_router_virtual_keys | selectattr('alias', 'equalto', 'dify-eval') | list | length == 0
+        fail_msg: "An absent Dify eval field must stay disabled, got {{ llm_router_virtual_keys }}"
 
     - name: Trace fallback paths after key-model and sensitivity-tag gates
       ansible.builtin.import_tasks: tasks/trace_tagged_hosted_reach.yml

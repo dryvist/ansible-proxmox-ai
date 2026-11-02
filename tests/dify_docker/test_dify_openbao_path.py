@@ -15,6 +15,7 @@ TASKS = ROOT / "roles/dify_docker/tasks/storage_and_secret.yml"
 CONFIG_TASKS = ROOT / "roles/dify_docker/tasks/config_and_deploy.yml"
 COMPOSE = ROOT / "roles/dify_docker/templates/docker-compose.yml.j2"
 SEED_TASK = "Seed the Dify SECRET_KEY through the shared seed_generated task"
+EVAL_ROUTER_SEED_TASK = "Seed the evaluation Dify router key through the shared seed_generated task"
 RESOLVE_EVAL_TASK = "Resolve evaluation Dify secrets from OpenBao"
 EVAL_GROUP = ROOT / "inventory/group_vars/dify_eval_group.yml"
 ENV_LOOKUP = re.compile(r"lookup\('env', '([A-Z0-9_]+)'\)")
@@ -65,6 +66,33 @@ def test_seed_task_reads_the_path_variable():
     seed_vars = seed["block"][0]["vars"]
 
     assert seed_vars["openbao_secrets_seed_path"] == "{{ dify_docker_openbao_path }}"
+
+
+def test_eval_router_key_uses_the_shared_prefixed_seed_only_for_eval_hosts():
+    tasks = yaml.safe_load(TASKS.read_text(encoding="utf-8"))
+    seed = next(task for task in tasks if task.get("name") == EVAL_ROUTER_SEED_TASK)
+    seed_vars = seed["block"][0]["vars"]
+    dify_seed = next(task for task in tasks if task.get("name") == SEED_TASK)
+    dify_vars = dify_seed["block"][0]["vars"]
+
+    assert seed["when"] == "'dify_eval_group' in (group_names | default([]))"
+    assert seed["block"][0]["ansible.builtin.include_role"] == dify_seed["block"][0][
+        "ansible.builtin.include_role"
+    ]
+    assert seed["block"][0]["ansible.builtin.include_role"]["tasks_from"] == "seed_generated"
+    assert seed_vars["openbao_secrets_seed_path"] == "apps/dify/eval"
+    assert seed_vars["openbao_secrets_seed_fields"] == [
+        {"name": "dify_eval_llm_router_key", "length": 32, "charset": "alnum", "prefix": "sk-"}
+    ]
+    for argument in (
+        "openbao_secrets_seed_addr",
+        "openbao_secrets_seed_mount",
+        "openbao_secrets_seed_token",
+        "openbao_secrets_seed_expected_writer_policy",
+        "openbao_secrets_seed_check_capabilities",
+        "openbao_secrets_seed_revoke_token",
+    ):
+        assert seed_vars[argument] == dify_vars[argument]
 
 
 def test_eval_path_keeps_seeded_secrets_under_the_eval_namespace():
@@ -140,7 +168,6 @@ def test_eval_seeded_secrets_render_from_the_eval_path_and_stored_values(monkeyp
     ):
         monkeypatch.setenv(env_name, "evaluation-agent-marker")
     monkeypatch.setenv("DIFY_EVAL_ADMIN_EMAIL", "eval-admin@example.invalid")
-    monkeypatch.setenv("DIFY_EVAL_MODEL_API_KEY", "evaluation-model-marker")
     monkeypatch.setenv("PROXMOX_SUBDOMAIN", "pve.example.test")
 
     variables = {
@@ -163,6 +190,9 @@ def test_eval_seeded_secrets_render_from_the_eval_path_and_stored_values(monkeyp
 
     stored = {field["name"]: "openbao-" + field["name"].lower() for field in fields}
     variables["dify_docker_seed_result"] = stored
+    variables["dify_docker_eval_router_seed_result"] = {
+        "dify_eval_llm_router_key": "sk-stored-evaluation-router-key"
+    }
     resolve = next(task for task in tasks if task.get("name") == RESOLVE_EVAL_TASK)
     for variable_name, expression in resolve["ansible.builtin.set_fact"].items():
         variables[variable_name] = render(expression, variables)
@@ -182,6 +212,7 @@ def test_eval_seeded_secrets_render_from_the_eval_path_and_stored_values(monkeyp
             "dify_docker_model_endpoint_url": "http://llm.example.invalid/v1",
         }
     )
+    assert variables["dify_docker_model_api_key"] == "sk-stored-evaluation-router-key"
     rendered = render(COMPOSE.read_text(encoding="utf-8"), variables)
     compose = yaml.safe_load(rendered)
 

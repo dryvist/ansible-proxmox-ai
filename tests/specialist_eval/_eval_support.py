@@ -25,6 +25,7 @@ EVALUATION = "evaluation-marker"
 GUEST = "guest-marker"
 
 DIFY_EVAL_PATH = "ai/eval/specialist-platform/dify"
+DIFY_EVAL_ROUTER_PATH = "apps/dify/eval"
 LANGFLOW_EVAL_PATH = "ai/eval/specialist-platform/langflow"
 
 # What the Phase 0 prefetch publishes into bao_* facts, with production markers. An evaluation
