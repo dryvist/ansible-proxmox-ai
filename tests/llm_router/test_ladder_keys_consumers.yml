@@ -85,7 +85,8 @@
           {%- set ns = namespace(groups=[]) -%}
           {%- for m in llm_router_opencode_models -%}
           {%- set _name = m.route_group | default(m.client_model_id) -%}
-          {%- if _name in llm_router_d1_zdr_rungs_by_class['sub'] -%}
+          {%- if 'sandbox-only' not in (m.tags | default([]))
+                and _name in llm_router_d1_zdr_rungs_by_class['sub'] -%}
           {%- set ns.groups = ns.groups + [_name] -%}
           {%- endif -%}
           {%- endfor -%}
@@ -93,7 +94,7 @@
           {%- set _sandbox_expected = ([llm_router_small_model, llm_router_primary_model,
                 llm_router_large_model] + (llm_router_d1_all_key_groups
                 | difference(_llm_router_sandbox_agent_excluded_groups))
-                + llm_router_sandbox_only_aliases)
+                + llm_router_sandbox_only_model_ids)
                 | unique | list -%}
           {{ (['claude-llm'] if _claude_llm.models | unique | sort !=
                 ([llm_router_small_model, llm_router_primary_model, llm_router_large_model]
@@ -102,7 +103,7 @@
                 or _claude_ocg_effective.models | sort != _opencode_zdr_groups | sort else [])
              + (['judge'] if _judge.models | unique | sort !=
                 ([llm_router_small_model, llm_router_small_capability_name, 'judge']
-                 + llm_router_d1_zdr_ladder_groups) | unique | sort else [])
+                 + llm_router_d1_zdr_key_groups) | unique | sort else [])
              + (['sandbox-agent'] if _sandbox.models | unique | sort != _sandbox_expected | sort
                 or (_sandbox.models | intersect(_llm_router_sandbox_agent_excluded_groups) | length > 0)
                 else []) }}
@@ -133,6 +134,35 @@
           {%- endfor -%}
           {%- endfor -%}
           {{ ns.rows }}
+
+    - name: Keep sandbox-only models in registry order at the end of the sandbox key
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # Derived, not literal: the registry single-source scan bans re-typed model ids in this zone.
+          - llm_router_sandbox_only_model_ids == _sandbox_registry_order
+          - >-
+            _sandbox.models[-(llm_router_sandbox_only_model_ids | length):]
+            == llm_router_sandbox_only_model_ids
+        fail_msg: >-
+          Sandbox-only model ids={{ llm_router_sandbox_only_model_ids }} and
+          sandbox key tail={{ _sandbox.models[-(llm_router_sandbox_only_model_ids | length) :] }}
+          must preserve registry order.
+        success_msg: >-
+          Sandbox-only model ids retain their registry order at the end of the
+          sandbox-agent key's model list.
+      vars:
+        _sandbox: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'equalto', 'sandbox-agent') | first }}
+        _sandbox_registry_order: >-
+          {%- set ns = namespace(ids=[]) -%}
+          {%- for entry in llm_router_registry_enabled
+                if 'sandbox-only' in (entry.tags | default([])) -%}
+          {%- set ns.ids = ns.ids + [entry.client_model_id] -%}
+          {%- endfor -%}
+          {{ ns.ids }}
+
     - name: Keep agent-only groups in fleet keys and outside sandbox keys
       ansible.builtin.assert:
         quiet: true
