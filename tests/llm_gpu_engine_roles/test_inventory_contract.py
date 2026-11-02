@@ -227,6 +227,32 @@ def test_inventory_loader_assigns_selected_router_membership_and_retains_engine_
     assert "llm_gpu_group" in groups
 
 
+def test_medium_vllm_campaign_selector_uses_the_profile_and_requires_one_alias():
+    campaign = _load(REPO_ROOT / "playbooks/llm-model-campaign.yml")
+    host_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
+    add_host = next(
+        task["ansible.builtin.add_host"]
+        for task in _walk(host_tasks)
+        if "ansible.builtin.add_host" in task
+    )
+    groups = add_host["groups"]
+    target_assert = next(
+        task["ansible.builtin.assert"]
+        for task in campaign[0]["tasks"]
+        if task.get("name") == "Require one inventory alias when the medium vLLM campaign selector is used"
+    )
+
+    assert "llm_campaign_medium_vllm_target" in groups
+    assert "load_tofu_gpu_engine_selector == 'vllm'" in groups
+    assert "item.value.llm_gpu_engine_identity | default('') == 'vllm'" in groups
+    assert "item.value.started | default(false) | bool" in groups
+    assert "llm_gpu_active_profiles_by_engine.get('vllm', '') is match('^medium')" in groups
+    assert "groups['llm_campaign_medium_vllm_target'] | length == 1" in target_assert["that"][0]
+    assert "exactly one inventory" in target_assert["fail_msg"]
+    loader_text = (REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml").read_text()
+    assert "llm_campaign_medium_vllm_target" not in loader_text
+
+
 def test_qwen131k_routes_only_unassigned_vllm_tagged_guests_to_llama_cpp_profile():
     profile_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_profile_guest_groups.yml")
     add_host = next(
