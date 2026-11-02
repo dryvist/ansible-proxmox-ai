@@ -414,6 +414,62 @@
         fail_msg: The roster name or MCP ownership filter widened an app-agent grant.
       no_log: true
 
+    - name: Refuse write-tier keys for untrusted roster entries
+      block:
+        - name: Run the app-agent gate with an untrusted write tier
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
+          vars:
+            llm_router_app_agent_probe_vikunja_forbidden_project_id: "43"
+            llm_router_app_agent_vikunja_read_allowlist: [Hermes]
+
+        - name: Fail if the gate admitted an untrusted write tier
+          ansible.builtin.fail:
+            msg: The app-agent gate issued a write-tier key to an untrusted roster entry.
+      rescue:
+        - name: Require the trust gate to be the refusal
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              # A looped assert reports each item's fail_msg under results.
+              - >-
+                'trust_tier trusted' in (ansible_failed_result.results | default([])
+                | map(attribute='msg') | select('string') | join(' '))
+            fail_msg: The app-agent gate failed for a reason other than the trust gate.
+
+    # A task var cannot reference its own name, so build the trusted roster once.
+    - name: Materialize the roster with both write tiers trusted
+      ansible.builtin.set_fact:
+        _app_agent_trusted_roster: >-
+          {{ ai_agents | combine({'vikunja-write': {'trust_tier': 'trusted'},
+             'zammad-write': {'trust_tier': 'trusted'}}, recursive=true) }}
+
+    - name: Refuse an enabled read tier without its required probe target
+      block:
+        - name: Run the app-agent gate with trusted tiers but no probe project
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
+          vars:
+            ai_agents: "{{ _app_agent_trusted_roster }}"
+            llm_router_app_agent_probe_vikunja_forbidden_project_id: ""
+            llm_router_app_agent_vikunja_read_allowlist: [Hermes]
+
+        - name: Fail if the read tier ran without a probe target
+          ansible.builtin.fail:
+            msg: The app-agent gate let the read tier run without its required probes.
+      rescue:
+        - name: Require the probe-target gate to be the refusal
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'probes are required' in ansible_failed_result.msg | default('')"
+            fail_msg: The app-agent gate failed for a reason other than the missing probe target.
+
+    - name: Admit trusted write tiers with a configured read-tier probe
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
+      vars:
+        ai_agents: "{{ _app_agent_trusted_roster }}"
+        llm_router_app_agent_probe_vikunja_forbidden_project_id: "43"
+        llm_router_app_agent_vikunja_read_allowlist: [Hermes]
+
     - name: Remove only the Vikunja read app token from the fixture
       ansible.builtin.set_fact:
         bao_local_llm_secrets: "{{ bao_local_llm_secrets | combine({'VIKUNJA_AGENT_READ_TOKEN': ''}) }}"
@@ -438,6 +494,6 @@
         quiet: true
         that:
           - _app_agent_missing_token_key.object_permission.mcp_servers == ['no-mcp-servers']
-          - "'vikunja-read' not in _app_agent_missing_token_servers.mcp_servers"
+          - "'vikunja_read' not in _app_agent_missing_token_servers.mcp_servers"
         fail_msg: An absent Vikunja read token must remove its server and deny its roster key.
       no_log: true
