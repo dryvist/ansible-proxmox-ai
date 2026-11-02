@@ -202,3 +202,15 @@ def test_sample_timestamps_must_be_finite_and_positive():
     assert _well_formed(1793660000.123) == ("True", "True")
     for bad in (float("nan"), float("inf"), float("-inf"), 0, -5, True):
         assert _well_formed(bad) == ("False", "False"), bad
+
+
+def test_count_stage_failure_headline_points_at_window_counts():
+    expression = _named(REPORT, "Assemble interactive latency gate report values")[
+        "ansible.builtin.set_fact"
+    ]["_llm_campaign_latency_observation"]["http_status"]
+    assert _render(expression, _llm_campaign_latency_classification_observation={}) == (
+        "n/a (count stage, see window counts)"
+    )
+    assert _render(
+        expression, _llm_campaign_latency_classification_observation={"http_status": 200}
+    ) == "200"
