@@ -1,31 +1,12 @@
 """Self-check for the event relay's pure logic (files/hermes-event-relay.py)."""
-import base64
 import hashlib
 import hmac
 import json
-import runpy
 import subprocess
-import types
-from pathlib import Path
 
 import pytest
 
-ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
-MOD = types.SimpleNamespace(**runpy.run_path(str(ROLE / "files" / "hermes-event-relay.py"), run_name="relay"))
-
-RAW = b'{"action":"opened","repository":{"private":false}}\n'
-CFG = {
-    "RELAY_TARGET_BASE": "http://127.0.0.1:1/webhooks/",
-    "RELAY_ROUTE_PUBLIC": "github-public",
-    "RELAY_ROUTE_PRIVATE": "github-private",
-    "RELAY_WEBHOOK_SECRET": "s3cret",
-}
-
-
-def envelope(**over):
-    env = {"event": "pull_request", "delivery": "d-1", "headers": {}, "body_b64": base64.b64encode(RAW).decode()}
-    env.update(over)
-    return json.dumps(env)
+from _event_relay_shared import CFG, MOD, RAW, envelope
 
 
 def test_parse_is_byte_exact():

@@ -40,3 +40,55 @@ hermes_agent_event_relay_route_private: github-private
 hermes_agent_event_relay_venv: /opt/hermes-event-relay
 hermes_agent_event_relay_script_path: /usr/local/libexec/hermes-event-relay.py
 hermes_agent_event_relay_env_path: /etc/hermes-event-relay.env
+# Dify workflow routes, checked before the default route above. A route starts
+# one streaming run of a Dify workflow app with its per-app key (sent as a
+# Bearer header, never logged) and logs the run id. The base URL and app keys
+# come from the environment; a route with an empty base or key is dropped by
+# the relay at start. The first matching route wins. Dify input names are the
+# keys of `inputs`; each value is a dotted path into the GitHub payload.
+hermes_agent_event_relay_dify_base: >-
+  {{ lookup('env', 'HERMES_EVENT_RELAY_DIFY_BASE') | default('', true) }}
+hermes_agent_event_relay_dify_keys:
+  RELAY_DIFY_KEY_CI_FIXER: >-
+    {{ lookup('env', 'HERMES_EVENT_RELAY_DIFY_KEY_CI_FIXER') | default('', true) }}
+  RELAY_DIFY_KEY_CODE_SIMPLIFIER: >-
+    {{ lookup('env', 'HERMES_EVENT_RELAY_DIFY_KEY_CODE_SIMPLIFIER') | default('', true) }}
+  RELAY_DIFY_KEY_DOCS_UPDATER: >-
+    {{ lookup('env', 'HERMES_EVENT_RELAY_DIFY_KEY_DOCS_UPDATER') | default('', true) }}
+hermes_agent_event_relay_routes:
+  - name: ci-fixer
+    base: "{{ hermes_agent_event_relay_dify_base }}"
+    app_key_env: RELAY_DIFY_KEY_CI_FIXER
+    timeout: 30
+    match:
+      event: check_run
+      action: completed
+      where: {check_run.conclusion: failure}
+    inputs:
+      repo: repository.full_name
+      check_name: check_run.name
+      head_sha: check_run.head_sha
+      html_url: check_run.html_url
+  - name: code-simplifier
+    base: "{{ hermes_agent_event_relay_dify_base }}"
+    app_key_env: RELAY_DIFY_KEY_CODE_SIMPLIFIER
+    timeout: 30
+    match:
+      event: pull_request
+      action: [opened, ready_for_review]
+    inputs:
+      repo: repository.full_name
+      pr: pull_request.number
+      head_sha: pull_request.head.sha
+  - name: docs-updater
+    base: "{{ hermes_agent_event_relay_dify_base }}"
+    app_key_env: RELAY_DIFY_KEY_DOCS_UPDATER
+    timeout: 30
+    match:
+      event: pull_request
+      action: closed
+      where: {pull_request.merged: true}
+    inputs:
+      repo: repository.full_name
+      pr: pull_request.number
+      merge_sha: pull_request.merge_commit_sha
