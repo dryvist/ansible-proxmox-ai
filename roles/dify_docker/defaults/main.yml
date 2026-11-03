@@ -13,10 +13,10 @@
 # Image tags — single source of truth, Renovate-trackable. Bump here.
 dify_docker_api_image: "langgenius/dify-api:1.18.0"
 dify_docker_web_image: "langgenius/dify-web:1.18.0"
-dify_docker_plugin_daemon_image: "langgenius/dify-plugin-daemon:0.6.10-local"
+dify_docker_plugin_daemon_image: "langgenius/dify-plugin-daemon:0.6.12-local"
 dify_docker_sandbox_image: "langgenius/dify-sandbox:0.2.15"
-# Keep deployed 1.40.1; Dify 1.18.0 upstream's 1.39.13 would downgrade the vector store.
-dify_docker_weaviate_image: "cr.weaviate.io/semitechnologies/weaviate:1.40.1"
+# Keep deployed 1.40.3; Dify 1.18.0 upstream's 1.39.13 would downgrade the vector store.
+dify_docker_weaviate_image: "cr.weaviate.io/semitechnologies/weaviate:1.40.3"
 dify_docker_agent_backend_image: "langgenius/dify-agent-backend:1.18.0"
 dify_docker_local_sandbox_image: "langgenius/dify-agent-local-sandbox:1.18.0"
 dify_docker_postgres_image: "postgres:15-alpine@sha256:a8e042598834300dfaa17a54f695b87b7f25d3490433bbbe2ef3bffbb9747f24"
@@ -161,6 +161,10 @@ dify_docker_public_url: >-
   or undef('PROXMOX_SUBDOMAIN required') }}
 # Internal API base for web server-side calls on the Compose network.
 dify_docker_server_console_api_url: "http://api:{{ dify_docker_api_port }}"
+# The guest-local console API base (used by the setup-state probe and the
+# setup/login calls) has no default: each Dify host sets
+# dify_docker_console_api_base in its inventory file to the console address
+# reachable from the guest itself. The storage task file asserts it.
 
 # Model-provider provisioning. Dify 1.x model providers are plugins; the
 # legacy OPENAI_API_BASE env var alone does not configure usable models.
@@ -199,13 +203,20 @@ dify_docker_llm_models:
     context_size: "32768"
 
 # Headless first-run setup (POST /console/api/setup creates the admin and
-# finishes installation), so the UI never shows the /install wizard.
+# finishes installation), so the UI never shows the /install wizard. The
+# instance's OpenBao leaf is authoritative — storage_and_secret.yml seeds the
+# fields and reads the stored values back, so login_with_reset.yml re-asserts
+# them on every converge — and the environment is the caller fallback. On a
+# production host whose leaf lacks DIFY_ADMIN_EMAIL, the role discovers the
+# existing owner account's email on the guest before the seed (same task
+# file); a fresh install with no owner yet falls back to the caller value.
 dify_docker_admin_email: >-
-  {{ lookup('env', 'DIFY_ADMIN_EMAIL')
-     or undef('DIFY_ADMIN_EMAIL must be set (Doppler)') }}
+  {{ (bao_local_llm_secrets | default({}, true)).get('DIFY_ADMIN_EMAIL', '')
+     or lookup('env', 'DIFY_ADMIN_EMAIL')
+     or (dify_docker_admin_email_discovered | default('')) }}
 dify_docker_admin_password: >-
-  {{ lookup('env', 'DIFY_ADMIN_PASSWORD')
-     or undef('DIFY_ADMIN_PASSWORD must be set (Doppler; openssl rand -base64 24)') }}
+  {{ (bao_local_llm_secrets | default({}, true)).get('DIFY_ADMIN_PASSWORD', '')
+     or lookup('env', 'DIFY_ADMIN_PASSWORD') }}
 
 # Seed a minimal chat app on first run so there is something to open immediately.
 # Best-effort + idempotent (skipped if an app of this name already exists) and

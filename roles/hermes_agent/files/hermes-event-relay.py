@@ -8,7 +8,14 @@ POSTs them to <base>/<route> with X-GitHub-Event, X-GitHub-Delivery and
 X-Hub-Signature-256. The route is RELAY_ROUTE_PRIVATE (base RELAY_TARGET_BASE)
 when the payload's repository.private is true, RELAY_ROUTE_PUBLIC (base
 RELAY_TARGET_BASE_PUBLIC, defaulting to RELAY_TARGET_BASE) when false; a payload
-without that boolean is treated as malformed. A message is deleted only after a 2xx
+without that boolean is treated as malformed. RELAY_ROUTES_JSON (optional) is
+a list of routes checked first: each matching route starts a Dify workflow run
+instead, with that route's app key, and the default route above applies when
+no route matches. A route with no app key in the environment is dropped at start.
+For Dify routes each dispatch is final: a failed run is logged with the delivery id
+and not re-queued, and the message is deleted after every matched route has been
+tried; a crash mid-loop redelivers it, so routes that already fired can fire again.
+A message is deleted only after a 2xx
 response (which includes the receiver's `duplicate` answer); anything else,
 including a malformed envelope, is left for the queue's redrive policy. One
 JSON log line per message, plus a periodic stats line and an optional dead-man
@@ -30,10 +37,18 @@ import os
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Callable
+
+from hermes_event_relay_dify import (
+    checked_url,
+    dify_inputs,
+    forward_dify,
+    load_routes,
+    log,
+    match_routes,
+    send_request,
+)
 
 REQUIRED = (
     "RELAY_QUEUE_SERVICE",
@@ -48,17 +63,6 @@ REQUIRED = (
     "RELAY_ROUTE_PUBLIC",
     "RELAY_ROUTE_PRIVATE",
 )
-
-
-LOOPBACK = {"127.0.0.1", "localhost", "::1"}
-
-
-def checked_url(url: str) -> str:
-    """Allow https anywhere and http only to the loopback receiver."""
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOOPBACK):
-        return url
-    raise ValueError(f"refusing URL scheme/host: {parts.scheme}://{parts.hostname}")
 
 
 def _field(env: dict, name: str) -> str:
@@ -116,13 +120,7 @@ def forward(url: str, secret: str, event: str, delivery: str, raw: bytes) -> tup
     req.add_header("X-GitHub-Event", event)
     req.add_header("X-GitHub-Delivery", delivery)
     req.add_header("X-Hub-Signature-256", sign(secret, raw))
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, resp.read(200).decode(errors="replace")
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read(200).decode(errors="replace")
-    except OSError as exc:
-        return None, type(exc).__name__
+    return send_request(req, 30)
 
 
 def bao_post(url: str, body: dict | None, token: str | None = None) -> dict:
@@ -189,19 +187,36 @@ class StsCredentials:
         return self.creds
 
 
-def log(**fields) -> None:
-    print(json.dumps({"ts": int(time.time()), **fields}, sort_keys=True), flush=True)
-
-
-def handle(msg: dict, cfg: dict, post=forward) -> bool:
+def handle(msg: dict, cfg: dict, post=forward, dify_post=forward_dify) -> bool:
     """Process one queue message; return True when it should be deleted."""
     receives = msg.get("Attributes", {}).get("ApproximateReceiveCount")
     try:
         event, delivery, raw = parse_envelope(msg.get("Body", ""))
-        url = target_url(raw, cfg)
-    except ValueError as exc:
+        routes = match_routes(event, raw, cfg.get("ROUTES", []))
+        url = None if routes else target_url(raw, cfg)
+    except (ValueError, RecursionError) as exc:  # deeply nested JSON raises RecursionError, not ValueError
         log(msg="poison", id=msg.get("MessageId"), error=str(exc), receives=receives)
         return False
+    if routes:
+        for route in routes:  # every matching route fires; one failing route does not stop the others
+            try:
+                inputs = dify_inputs(event, raw, route.get("inputs", {}), route.get("text_inputs", ()),
+                                     route.get("const"))
+                # A run whose required input is empty would fail in Dify, so the route is skipped instead.
+                missing = [name for name in route.get("required", []) if inputs.get(name) in ("", None)]
+                if missing:
+                    log(msg="route_skipped", route=route["name"], event=event, delivery=delivery,
+                        missing=missing, receives=receives)
+                    continue
+                status, run_id, detail = dify_post(route["base"], route["app_key"], inputs,
+                                                   float(route.get("timeout", 30)))
+            except Exception as exc:  # any dispatch failure must leave the relay loop running
+                status, run_id, detail = None, None, type(exc).__name__
+            log(msg="dispatched" if run_id else "dispatch_failed", route=route["name"], event=event,
+                delivery=delivery, status=status, workflow_run_id=run_id, detail=detail or None, deleted=True,
+                receives=receives)
+        # A dispatch is final: a failed run is logged and never re-queued, so the message is deleted either way.
+        return True
     status, detail = post(url, cfg["RELAY_WEBHOOK_SECRET"], event, delivery, raw)
     delete = should_delete(status)
     log(msg="relayed", route=url.rsplit("/", 1)[1], event=event, delivery=delivery, status=status, deleted=delete,
@@ -232,6 +247,7 @@ def main() -> int:
         return 2
     cfg = {k: os.environ[k] for k in REQUIRED}
     cfg["RELAY_TARGET_BASE_PUBLIC"] = os.environ.get("RELAY_TARGET_BASE_PUBLIC", "")
+    cfg["ROUTES"] = load_routes(os.environ.get("RELAY_ROUTES_JSON", ""), os.environ)
     dlq_url = os.environ.get("RELAY_DLQ_URL", "")
     hc_url = os.environ.get("RELAY_HEALTHCHECK_URL", "")
     stats_every = int(os.environ.get("RELAY_STATS_SECONDS", "300"))

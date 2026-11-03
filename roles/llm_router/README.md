@@ -226,8 +226,9 @@ boundary are documented in
 `codex-subscription` (`chatgpt/<llm_router_chatgpt_model>`, the ChatGPT
 subscription over OAuth, `reasoning_effort: xhigh`) sits after the local rungs
 in `review-private` and after the free external rungs in the other chat
-ladders, always before any metered rung; `codex-api` (the same model
-on the provider API key) is the metered rung behind it. The login is a
+ladders, always before any metered rung. `codex-api` (the same model on the
+provider API key) is disabled in the registry, so it renders no rung; the paid
+cloud rungs now end on `hermes-cloud-openrouter`. The login is a
 per-node file, `<llm_router_config_dir>/chatgpt/auth.json`, that the proxy
 owns and rewrites on every refresh; the converge creates the directory and
 never the file. Login once per router node: when a node needs one, the proxy

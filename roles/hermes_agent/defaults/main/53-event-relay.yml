@@ -40,3 +40,95 @@ hermes_agent_event_relay_route_private: github-private
 hermes_agent_event_relay_venv: /opt/hermes-event-relay
 hermes_agent_event_relay_script_path: /usr/local/libexec/hermes-event-relay.py
 hermes_agent_event_relay_env_path: /etc/hermes-event-relay.env
+# Dify workflow routes, checked before the default route above. A route starts
+# one streaming run of a Dify workflow app with its per-app key (sent as a
+# Bearer header, never logged) and logs the run id. The base URL and app keys
+# come from the environment; a route with an empty base or key is dropped by
+# the relay at start. Every matching route fires, in config order. Dify input
+# names are the keys of `inputs`; each value is a dotted path into the GitHub payload.
+hermes_agent_event_relay_dify_base: >-
+  {{ lookup('env', 'HERMES_EVENT_RELAY_DIFY_BASE') | default('', true) }}
+hermes_agent_event_relay_dify_keys:
+  RELAY_DIFY_KEY_CI_FIXER: >-
+    {{ lookup('env', 'HERMES_EVENT_RELAY_DIFY_KEY_CI_FIXER') | default('', true) }}
+  RELAY_DIFY_KEY_CODE_SIMPLIFIER: >-
+    {{ lookup('env', 'HERMES_EVENT_RELAY_DIFY_KEY_CODE_SIMPLIFIER') | default('', true) }}
+  RELAY_DIFY_KEY_DOCS_UPDATER: >-
+    {{ lookup('env', 'HERMES_EVENT_RELAY_DIFY_KEY_DOCS_UPDATER') | default('', true) }}
+  RELAY_DIFY_KEY_DOC_CONTRADICTION_FINDER: >-
+    {{ lookup('env', 'HERMES_EVENT_RELAY_DIFY_KEY_DOC_CONTRADICTION_FINDER') | default('', true) }}
+hermes_agent_event_relay_routes:
+  - name: ci-fixer
+    base: "{{ hermes_agent_event_relay_dify_base }}"
+    app_key_env: RELAY_DIFY_KEY_CI_FIXER
+    timeout: 30
+    match:
+      event: check_run
+      action: completed
+      where: {check_run.conclusion: failure}
+    # Start variables and required list copied from ai-llm-prompts 31eed96, agents/dify/ci-fixer.dsl.yml.
+    # Webhooks are never an operator mandate, so strength is inferred and mode is shadow.
+    required: [repo, ref, head_sha, actor, event, strength, mode, check_run_id]
+    const:
+      strength: inferred
+      mode: shadow
+    inputs:
+      repo: repository.full_name
+      ref: check_run.check_suite.head_branch
+      head_sha: check_run.head_sha
+      actor: sender.login
+      check_run_id: check_run.id
+  - name: code-simplifier
+    base: "{{ hermes_agent_event_relay_dify_base }}"
+    app_key_env: RELAY_DIFY_KEY_CODE_SIMPLIFIER
+    timeout: 30
+    match:
+      event: pull_request
+      action: [opened, ready_for_review]
+    # Start variables and required list copied from ai-llm-prompts 31eed96, agents/dify/code-simplifier.dsl.yml.
+    required: [repo, ref, head_sha, actor, event, strength, mode, pr_number]
+    const:
+      strength: inferred
+      mode: shadow
+    inputs:
+      repo: repository.full_name
+      ref: pull_request.head.ref
+      head_sha: pull_request.head.sha
+      actor: sender.login
+      pr_number: pull_request.number
+  - name: docs-updater
+    base: "{{ hermes_agent_event_relay_dify_base }}"
+    app_key_env: RELAY_DIFY_KEY_DOCS_UPDATER
+    timeout: 30
+    match:
+      event: pull_request
+      action: closed
+      where: {pull_request.merged: true}
+    # Start variables and required list copied from ai-llm-prompts 31eed96, agents/dify/docs-updater.dsl.yml.
+    required: [repo]
+    text_inputs: [merged]
+    inputs:
+      repo: repository.full_name
+      pr_number: pull_request.number
+      action: action
+      merged: pull_request.merged
+      org: repository.owner.login
+  # Disabled until its app key exists: an empty key drops the route at start.
+  - name: doc-contradiction-finder
+    base: "{{ hermes_agent_event_relay_dify_base }}"
+    app_key_env: RELAY_DIFY_KEY_DOC_CONTRADICTION_FINDER
+    timeout: 30
+    match:
+      event: pull_request
+      action: closed
+      where: {pull_request.merged: true}
+    # merged is a Dify text input, so its boolean value is sent as "true" or "false".
+    # Required list copied from ai-llm-prompts 31eed96, agents/dify/doc-contradiction-finder.dsl.yml.
+    required: [event, action, merged, org, repo, pr_number]
+    text_inputs: [merged]
+    inputs:
+      action: action
+      merged: pull_request.merged
+      org: repository.owner.login
+      repo: repository.name
+      pr_number: pull_request.number

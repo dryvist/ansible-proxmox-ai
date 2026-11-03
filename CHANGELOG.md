@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.14.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.13.1...v2.14.0) (2026-11-03)
+
+
+### Features
+
+* **llm-router:** stage gpt-oss-120b as a disabled large-tier entry ([#1931](https://github.com/dryvist/ansible-proxmox-ai/issues/1931)) ([910a5b8](https://github.com/dryvist/ansible-proxmox-ai/commit/910a5b846d0700681d664eae9449d3bc3dd92b1b))
+
 ## [2.13.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.13.0...v2.13.1) (2026-11-03)
 
 
