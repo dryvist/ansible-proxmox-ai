@@ -179,7 +179,7 @@ def _render_model_list(entries: list[dict], rates: dict) -> list[dict]:
 
 
 def test_pinned_fixture_contains_only_current_rate_map_rows_needed_by_registry():
-    entries = _registry_entries()
+    entries = _registry_entries(include_disabled=True)
     fixture = _fixture()
     rates, keys_by_entry = _resolve_rates(fixture, entries)
     assert len(fixture) == 7
@@ -188,10 +188,11 @@ def test_pinned_fixture_contains_only_current_rate_map_rows_needed_by_registry()
     assert all(rate["input"] > 0 and rate["output"] > 0 for rate in rates.values())
 
 
-def test_registered_gemini_openrouter_and_openai_routes_render_fixture_rates():
+def test_enabled_routes_render_fixture_rates():
     entries = _registry_entries()
     fixture = _fixture()
     rates, keys_by_entry = _resolve_rates(fixture, entries)
+    assert rates, "no enabled registry route matched a pinned rate row"
     model_list = _render_model_list(entries, rates)
 
     for entry in entries:
