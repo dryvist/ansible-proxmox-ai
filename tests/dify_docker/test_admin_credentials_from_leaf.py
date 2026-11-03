@@ -20,8 +20,9 @@ TASKS = ROOT / "roles/dify_docker/tasks/storage_and_secret.yml"
 EVAL_GROUP = ROOT / "inventory/group_vars/dify_eval_group.yml"
 SEED_TASK = "Seed the Dify SECRET_KEY through the shared seed_generated task"
 DISCOVER_TASK = "Discover the Dify owner email on the guest when the leaf has none"
-SETUP_CHECK_TASK = "Check whether the Dify setup is finished when no owner was found"
-FAIL_CLOSED_TASK = "Require an owner email when the Dify setup is already finished"
+SETUP_CHECK_TASK = "Check whether the Dify setup is finished when no owner email was found"
+FAIL_CLOSED_TASK = "Require a confirmed fresh setup when no owner email was found"
+EMAIL_ASSERT_TASK = "Require a non-empty Dify admin email on a not-yet-set-up instance"
 ADOPT_TASK = "Adopt the discovered owner email as the Dify admin email"
 READ_BACK_TASK = "Resolve the Dify admin credentials from the secret store"
 EVAL_RESOLVE_TASK = "Resolve evaluation Dify secrets from OpenBao"
@@ -74,6 +75,33 @@ def seed_fields(group_names, extra_variables):
         field["name"]: field
         for field in render(seed_vars["openbao_secrets_seed_fields"], context)
     }
+
+
+# A discovery query whose exec failed (stack not up yet) with failed_when:
+# false, and one that succeeded but found no owner: neither leaves an email.
+FAILED_LOOKUP = {"rc": 1, "stdout": ""}
+EMPTY_RESULT = {"rc": 0, "stdout": ""}
+# The setup-state probe: answered not_started, answered finished, or never
+# answered (no json — stack down or connection refused).
+NOT_STARTED_SETUP = {"json": {"step": "not_started"}}
+FINISHED_SETUP = {"json": {"step": "finished"}}
+UNANSWERED_SETUP = {"status": -1}
+
+
+def email_gate_context(monkeypatch, query, setup_state):
+    defaults = load_yaml(DEFAULTS)
+    monkeypatch.delenv("DIFY_ADMIN_EMAIL", raising=False)
+    return {
+        **defaults,
+        "bao_local_llm_secrets": {},
+        "group_names": [],
+        "dify_docker_owner_email_query": query,
+        "dify_docker_owner_setup_state": setup_state,
+    }
+
+
+def render_all(clauses, variables):
+    return [render("{{ " + clause + " }}", variables) for clause in clauses]
 
 
 def test_production_admin_credentials_resolve_from_the_leaf(monkeypatch):
@@ -238,23 +266,89 @@ def test_adopted_owner_email_is_no_log_and_only_from_a_successful_query():
     assert any("trim | length > 0" in clause for clause in when)
 
 
-def test_setup_finished_without_an_owner_fails_closed():
-    tasks = load_yaml(TASKS)
-    names = [task.get("name") for task in tasks]
-    discovery_index = names.index(DISCOVER_TASK)
-    setup_check_index = names.index(SETUP_CHECK_TASK)
-    fail_closed = task_named(FAIL_CLOSED_TASK)
-    fail_closed_index = names.index(FAIL_CLOSED_TASK)
+def test_setup_check_runs_whenever_no_email_was_found(monkeypatch):
+    task = task_named(SETUP_CHECK_TASK)
 
-    assert discovery_index < setup_check_index < fail_closed_index < names.index(SEED_TASK)
+    assert task["failed_when"] is False
+    assert "dify_docker_console_api_base" in task["ansible.builtin.uri"]["url"]
+    assert "127.0.0.1" not in task["ansible.builtin.uri"]["url"]
+    for query in (FAILED_LOOKUP, EMPTY_RESULT):
+        variables = email_gate_context(monkeypatch, query, {})
+        assert all(render_all(task["when"], variables))
+
+
+def test_setup_check_does_not_run_when_an_email_was_found(monkeypatch):
+    task = task_named(SETUP_CHECK_TASK)
+    defaults = load_yaml(DEFAULTS)
+
+    monkeypatch.setenv("DIFY_ADMIN_EMAIL", OWNER_EMAIL)
+    with_env = {
+        **defaults,
+        "bao_local_llm_secrets": {},
+        "group_names": [],
+        "dify_docker_owner_email_query": EMPTY_RESULT,
+    }
+    assert not all(render_all(task["when"], with_env))
+
+    with_leaf = {
+        **defaults,
+        "bao_local_llm_secrets": {"DIFY_ADMIN_EMAIL": LEAF_EMAIL},
+        "group_names": [],
+        "dify_docker_owner_email_query": FAILED_LOOKUP,
+    }
+    assert not all(render_all(task["when"], with_leaf))
+
+
+def test_setup_finished_without_an_owner_fails_closed(monkeypatch):
+    # Both an empty discovery result and a failed discovery on a finished
+    # setup must reach the assert and stop the converge.
+    names = [task.get("name") for task in load_yaml(TASKS)]
+    assert names.index(DISCOVER_TASK) < names.index(SETUP_CHECK_TASK)
+    assert names.index(SETUP_CHECK_TASK) < names.index(FAIL_CLOSED_TASK)
+    assert names.index(FAIL_CLOSED_TASK) < names.index(EMAIL_ASSERT_TASK)
+    assert names.index(EMAIL_ASSERT_TASK) < names.index(SEED_TASK)
+
+    fail_closed = task_named(FAIL_CLOSED_TASK)
     assert fail_closed["no_log"] is True
     assert fail_closed["ansible.builtin.assert"]["quiet"] is True
     assert "DIFY_ADMIN_EMAIL" in fail_closed["ansible.builtin.assert"]["fail_msg"]
-    that = fail_closed["ansible.builtin.assert"]["that"]
-    assert any("step" in clause and "not_started" in clause for clause in that)
-    when = fail_closed["when"]
-    assert any("rc | default(-1) | int == 0" in clause for clause in when)
-    assert any("trim | length == 0" in clause for clause in when)
+
+    for query in (EMPTY_RESULT, FAILED_LOOKUP):
+        variables = email_gate_context(monkeypatch, query, FINISHED_SETUP)
+        assert all(render_all(fail_closed["when"], variables))
+        assert not all(
+            render_all(fail_closed["ansible.builtin.assert"]["that"], variables)
+        )
+
+
+def test_unanswered_setup_check_without_an_owner_fails_closed(monkeypatch):
+    variables = email_gate_context(monkeypatch, FAILED_LOOKUP, UNANSWERED_SETUP)
+    fail_closed = task_named(FAIL_CLOSED_TASK)
+
+    assert all(render_all(fail_closed["when"], variables))
+    assert not all(
+        render_all(fail_closed["ansible.builtin.assert"]["that"], variables)
+    )
+
+
+def test_not_started_setup_requires_a_non_empty_admin_email(monkeypatch):
+    task = task_named(EMAIL_ASSERT_TASK)
+    assert task["ansible.builtin.assert"]["quiet"] is True
+    assert "DIFY_ADMIN_EMAIL" in task["ansible.builtin.assert"]["fail_msg"]
+
+    empty_email = email_gate_context(monkeypatch, FAILED_LOOKUP, NOT_STARTED_SETUP)
+    assert all(render_all(task["when"], empty_email))
+    assert not all(
+        render_all(task["ansible.builtin.assert"]["that"], empty_email)
+    )
+
+    discovered_email = email_gate_context(
+        monkeypatch, FAILED_LOOKUP, NOT_STARTED_SETUP
+    )
+    discovered_email["dify_docker_admin_email_discovered"] = OWNER_EMAIL
+    assert all(
+        render_all(task["ansible.builtin.assert"]["that"], discovered_email)
+    )
 
 
 def test_seed_read_back_resolves_the_admin_credentials_for_every_host():
@@ -291,14 +385,22 @@ def test_the_evaluation_resolve_no_longer_duplicates_the_admin_password():
     ]
 
 
-def test_fresh_install_without_an_owner_falls_back_instead_of_failing(monkeypatch):
-    defaults = load_yaml(DEFAULTS)
-    monkeypatch.delenv("DIFY_ADMIN_EMAIL", raising=False)
-
+def test_fresh_install_without_an_owner_email_fails_closed(monkeypatch):
     # A stack that is not up yet (first run) makes the discovery query fail
-    # (rc != 0), so neither the setup check nor the fail-closed assert runs,
-    # and the default falls back to the caller value without raising.
-    fail_closed_when = task_named(FAIL_CLOSED_TASK)["when"]
-    assert any("rc | default(-1) | int == 0" in clause for clause in fail_closed_when)
-    variables = {**defaults, "bao_local_llm_secrets": {}}
+    # (rc != 0) and leaves the setup-state probe unanswered. The probe still
+    # runs (no email was found anywhere) and its failed_when keeps the play
+    # alive until the fail-closed assert decides; with no configured email
+    # anywhere the converge must stop instead of seeding or posting an empty
+    # admin email.
+    variables = email_gate_context(monkeypatch, FAILED_LOOKUP, UNANSWERED_SETUP)
     assert render("{{ dify_docker_admin_email }}", variables) == ""
+
+    setup_check = task_named(SETUP_CHECK_TASK)
+    assert all(render_all(setup_check["when"], variables))
+    assert setup_check["failed_when"] is False
+
+    fail_closed = task_named(FAIL_CLOSED_TASK)
+    assert all(render_all(fail_closed["when"], variables))
+    assert not all(
+        render_all(fail_closed["ansible.builtin.assert"]["that"], variables)
+    )
