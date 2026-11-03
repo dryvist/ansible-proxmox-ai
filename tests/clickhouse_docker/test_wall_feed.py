@@ -7,49 +7,69 @@ from pathlib import Path
 import jinja2
 import yaml
 
+from _wall_sql import (
+    RECENT,
+    ROLE,
+    ROOT,
+    WALL_MODES,
+    WALL_TABLES,
+    WORD_CLOUD,
+    _defaults,
+    _render,
+    _statement,
+    _statements,
+)
 
-ROOT = Path(__file__).resolve().parents[2]
-ROLE = ROOT / "roles/clickhouse_docker"
-WALL_TABLES = ["claude", "codex", "antigravity", "gemini", "zcode", "opencode"]
+
+WALL_SHAPES = {
+    "claude": "claude",
+    "codex": "codex",
+    "antigravity": "antigravity",
+    "gemini": "gemini",
+    "zcode": "chat",
+    "opencode": "chat",
+}
 YAML_11_SCALARS = ["n", "no", "null", "off", "on", "y", "yes"]
-
-
-def _defaults() -> dict:
-    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text(encoding="utf-8"))
-    # tasks/wall_feed.yml passes the stopword file in as this list; mirror that here.
-    stopwords = (ROLE / "files" / defaults["clickhouse_docker_stopwords_file"]).read_text(encoding="utf-8")
-    defaults["clickhouse_docker_stopwords"] = [w.strip() for w in stopwords.splitlines() if w.strip()]
-    return defaults
-
-
-def _render(template: str) -> str:
-    return jinja2.Template((ROLE / "templates" / template).read_text(encoding="utf-8")).render(
-        **_defaults()
-    )
-
-
-def _statements(sql: str) -> list[str]:
-    return [part.strip() for part in sql.strip().rstrip(";").split(";\n") if part.strip()]
-
-
-def _statement(prefix: str) -> str:
-    return next(s for s in _statements(_render("llm_wall.sql.j2")) if s.startswith(prefix))
+STOPWORDS_TASK = "Rebuild the wall stopwords table"
+FINGERPRINT_TASK = "Fingerprint the wall view definitions"
+COUNT_TASK = "Check which wall view definition is in place"
+VALIDATE_TASK = "Check the wall view SELECT bodies against the live server"
+DROP_TASK = "Drop the wall views when their definition changed"
+CREATE_TASK = "Create the wall refreshable views"
+GRANTS_TASK = "Provision the wall read-only ClickHouse user"
 
 
 def _without_literals(sql: str) -> str:
     return re.sub(r"'(?:\\.|[^'\\])*'", "''", sql)
 
 
-def test_wall_sources_are_llm_tables_and_cover_every_harness():
+def _wall_tasks() -> list[dict]:
+    return yaml.safe_load((ROLE / "tasks/wall_feed.yml").read_text(encoding="utf-8"))
+
+
+def _task(name: str) -> dict:
+    return next(task for task in _wall_tasks() if task.get("name") == name)
+
+
+def _argv(name: str) -> list[str]:
+    return _task(name)["ansible.builtin.command"]["argv"]
+
+
+def _runs(task: dict, count_stdout: str) -> bool:
+    """Whether the task's `when` lets it run, given the stdout of the views count check."""
+    gate = jinja2.Environment().compile_expression(task["when"])
+    return bool(gate(clickhouse_docker_wall_views_in_place={"stdout": count_stdout}))
+
+
+def test_wall_sources_are_llm_tables_and_name_their_json_shape():
     defaults = _defaults()
     sources = defaults["clickhouse_docker_wall_sources"]
 
     assert [source["table"] for source in sources] == WALL_TABLES
     assert set(WALL_TABLES) <= set(defaults["clickhouse_docker_llm_tables"])
+    assert {source["table"]: source["shape"] for source in sources} == WALL_SHAPES
     for source in sources:
-        assert source["content"] in ("text", "blocks")
-        assert source["output_roles"]
-        assert "user" not in source["output_roles"]
+        assert set(source) == {"table", "shape"}
 
 
 def test_stopwords_are_strings_and_include_yaml_11_keywords():
@@ -65,19 +85,45 @@ def test_stopwords_are_strings_and_include_yaml_11_keywords():
     )
 
 
-def test_rendered_wall_sql_has_three_statements_with_balanced_quotes_and_parens():
-    statements = _statements(_render("llm_wall.sql.j2"))
+def test_every_mode_renders_balanced_sql_with_no_template_left_over():
+    for mode in WALL_MODES:
+        for statement in _statements(_render("llm_wall.sql.j2", clickhouse_docker_wall_mode=mode)):
+            bare = _without_literals(statement)
+            assert "'" not in bare.replace("''", "")
+            assert bare.count("(") == bare.count(")")
+            assert "{{" not in statement and "{%" not in statement
 
-    assert [s.split("\n")[0] for s in statements] == [
-        "CREATE OR REPLACE TABLE llm.stopwords",
-        "CREATE MATERIALIZED VIEW IF NOT EXISTS llm.word_cloud",
-        "CREATE MATERIALIZED VIEW IF NOT EXISTS llm.recent_activity",
+
+def test_modes_render_the_statements_they_are_for_and_the_default_is_the_views():
+    heads = {
+        mode: [s.split("\n")[0] for s in _statements(_render("llm_wall.sql.j2", clickhouse_docker_wall_mode=mode))]
+        for mode in WALL_MODES
+    }
+
+    assert heads == {
+        "stopwords": ["CREATE OR REPLACE TABLE llm.stopwords"],
+        "views": [
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS llm.word_cloud",
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS llm.recent_activity",
+        ],
+        "explain": ["EXPLAIN PLAN SELECT", "EXPLAIN PLAN SELECT"],
+    }
+    assert _statements(_render("llm_wall.sql.j2")) == _statements(
+        _render("llm_wall.sql.j2", clickhouse_docker_wall_mode="views")
+    )
+
+
+def test_explain_mode_checks_exactly_the_select_bodies_the_views_are_created_from():
+    checks = _statements(_render("llm_wall.sql.j2", clickhouse_docker_wall_mode="explain"))
+    views = [
+        s for s in _statements(_render("llm_wall.sql.j2", clickhouse_docker_wall_mode="views"))
+        if s.startswith("CREATE MATERIALIZED VIEW")
     ]
-    for statement in statements:
-        bare = _without_literals(statement)
-        assert "'" not in bare.replace("''", "")
-        assert bare.count("(") == bare.count(")")
-        assert "{{" not in statement and "{%" not in statement
+
+    assert len(checks) == len(views) == 2
+    for check, view in zip(checks, views):
+        body = view.split("\nAS ", 1)[1].rsplit("\nCOMMENT ", 1)[0]
+        assert check == "EXPLAIN PLAN " + body
 
 
 def test_stopwords_table_is_rebuilt_from_every_default_word_through_the_tokeniser():
@@ -92,37 +138,41 @@ def test_stopwords_table_is_rebuilt_from_every_default_word_through_the_tokenise
 
 
 def test_word_cloud_refreshes_hourly_over_every_harness_and_keeps_top_words_per_source():
-    statement = _statement("CREATE MATERIALIZED VIEW IF NOT EXISTS llm.word_cloud")
+    statement = _statement(WORD_CLOUD)
 
     assert "REFRESH EVERY 1 HOUR\n(\n    source String,\n    word String,\n    n UInt64\n)" in statement
     assert statement.count("UNION ALL") == len(WALL_TABLES) - 1
     for table in WALL_TABLES:
         assert f"FROM llm.{table} FINAL" in statement
-        assert f"if(role = 'user', 'user', '{table}') AS source" in statement
+        assert f"if(msg_role = 'user', 'user', '{table}') AS source" in statement
     assert "ARRAY JOIN splitByNonAlpha(lower(body)) AS word" in statement
     assert "lengthUTF8(word) BETWEEN 3 AND 24" in statement
     # splitByNonAlpha keeps digits and non-ASCII bytes inside tokens; only ASCII letters pass.
     assert "AND match(word, '^[a-z]+$')" in statement
     assert "word NOT IN (SELECT word FROM llm.stopwords)" in statement
-    assert statement.endswith("LIMIT 200 BY source")
+    assert statement.endswith("LIMIT 200 BY source\nCOMMENT ''")
 
 
-def test_word_cloud_reads_only_text_blocks_and_each_harness_output_role():
-    statement = _statement("CREATE MATERIALIZED VIEW IF NOT EXISTS llm.word_cloud")
-    branches = statement.split("UNION ALL")
+def test_injected_prompts_are_dropped_per_part_from_user_rows_only():
+    statement = _statement(WORD_CLOUD)
 
-    claude, codex, gemini = branches[0], branches[1], branches[3]
-    assert "JSONExtractString(b, 'type') IN ('', 'text')" in claude
-    assert "NOT JSONExtractBool(b, 'thought')" in claude
-    assert "JSONExtractArrayRaw(content)" in claude
-    assert "WHERE role IN ('user', 'assistant')" in claude
-    assert "JSONExtractArrayRaw" not in codex
-    assert "WHERE role IN ('user', 'gemini', 'model')" in gemini
-    assert "match(content, '^[[:space:]]*(<[a-z_-]+>|# AGENTS\\\\.md instructions|" in codex
+    assert statement.count("arrayFilter(part -> NOT (msg_role = 'user' AND match(part, '") == len(WALL_TABLES)
+    assert "match(part, '^[[:space:]]*(<[a-z_-]+>|# AGENTS\\\\.md instructions|" in statement
+
+
+def test_every_injected_prompt_pattern_is_in_the_rendered_clause():
+    patterns = _defaults()["clickhouse_docker_wall_injected_prompt_patterns"]
+    clause = re.search(r"match\(part, '(\^.*?)'\)", _statement(WORD_CLOUD)).group(1)
+
+    assert "This session is being continued from a previous conversation" in patterns
+    for pattern in patterns:
+        re.compile(pattern)
+        # The SQL literal escapes backslashes and quotes, as the template does.
+        assert pattern.replace("\\", "\\\\").replace("'", "\\'") in clause
 
 
 def test_recent_activity_refreshes_every_minute_and_never_returns_content():
-    statement = _statement("CREATE MATERIALIZED VIEW IF NOT EXISTS llm.recent_activity")
+    statement = _statement(RECENT)
     outer = statement.split("FROM\n(")[0]
 
     assert (
@@ -130,11 +180,52 @@ def test_recent_activity_refreshes_every_minute_and_never_returns_content():
         "    role String,\n    chars UInt32\n)"
     ) in statement
     assert "content" not in outer
-    assert "toUInt32(lengthUTF8(content)) AS chars" in statement
+    assert "AS SELECT\n    ts,\n    source,\n    model,\n    message_role AS role,\n    chars\nFROM\n(" in statement
+    assert "toUInt32(lengthUTF8(arrayStringConcat(msg_parts, ' '))) AS chars" in statement
+    assert "lengthUTF8(content)" not in statement
     assert statement.count("UNION ALL") == len(WALL_TABLES) - 1
     for table in WALL_TABLES:
         assert f"FROM llm.{table} FINAL" in statement
-    assert statement.endswith("ORDER BY ts DESC\nLIMIT 40")
+    assert statement.endswith("ORDER BY ts DESC\nLIMIT 40\nCOMMENT ''")
+
+
+def test_wall_views_carry_the_definition_fingerprint_as_their_comment():
+    statements = _statements(_render("llm_wall.sql.j2", clickhouse_docker_wall_fingerprint="0a1b"))
+    views = [s for s in statements if s.startswith("CREATE MATERIALIZED VIEW")]
+
+    assert [s.split("\n")[-1] for s in views] == ["COMMENT '0a1b'", "COMMENT '0a1b'"]
+    assert "COMMENT ''" in _render("llm_wall.sql.j2").split("CREATE MATERIALIZED VIEW")[1]
+
+
+def test_wall_tasks_run_in_order_and_validate_the_selects_before_any_drop():
+    names = [task.get("name") for task in _wall_tasks()]
+    order = [STOPWORDS_TASK, FINGERPRINT_TASK, COUNT_TASK, VALIDATE_TASK, DROP_TASK, CREATE_TASK, GRANTS_TASK]
+    positions = [names.index(name) for name in order]
+
+    assert positions == sorted(positions)
+    assert len(set(positions)) == len(order)
+
+
+def test_each_wall_task_renders_its_mode_on_the_same_client_and_credential_path():
+    modes = {STOPWORDS_TASK: "stopwords", FINGERPRINT_TASK: "views", VALIDATE_TASK: "explain", CREATE_TASK: "views"}
+    for name, mode in modes.items():
+        assert _task(name)["vars"]["clickhouse_docker_wall_mode"] == mode
+
+    client = _argv(STOPWORDS_TASK)[:-1]
+    for name in (VALIDATE_TASK, DROP_TASK, CREATE_TASK):
+        assert _argv(name)[:-1] == client
+    for name in (VALIDATE_TASK, DROP_TASK, CREATE_TASK, STOPWORDS_TASK):
+        assert _task(name)["no_log"] is True
+
+
+def test_drop_gate_drops_only_when_the_count_check_is_not_two():
+    assert _task(VALIDATE_TASK)["when"] == _task(DROP_TASK)["when"]
+    for name in (VALIDATE_TASK, DROP_TASK):
+        task = _task(name)
+        assert not _runs(task, "2")
+        assert not _runs(task, "2\n")
+        assert _runs(task, "1")
+        assert _runs(task, "0")
 
 
 def test_wall_handlers_serve_two_fixed_get_queries_and_keep_the_defaults():
