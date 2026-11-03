@@ -18,12 +18,14 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 TASKS = ROOT / "roles/dify_docker/tasks/storage_and_secret.yml"
 EVAL_GROUP = ROOT / "inventory/group_vars/dify_eval_group.yml"
+GROUP_VARS = ROOT / "inventory/group_vars/dify_group.yml"
 SEED_TASK = "Seed the Dify SECRET_KEY through the shared seed_generated task"
 DISCOVER_TASK = "Discover the Dify owner email on the guest when the leaf has none"
 SETUP_CHECK_TASK = "Check whether the Dify setup is finished when no owner email was found"
 FAIL_CLOSED_TASK = "Require a confirmed fresh setup when no owner email was found"
 EMAIL_ASSERT_TASK = "Require a non-empty Dify admin email on a not-yet-set-up instance"
 ADOPT_TASK = "Adopt the discovered owner email as the Dify admin email"
+CONSOLE_BASE_ASSERT_TASK = "Require the Dify console API base to be set"
 READ_BACK_TASK = "Resolve the Dify admin credentials from the secret store"
 EVAL_RESOLVE_TASK = "Resolve evaluation Dify secrets from OpenBao"
 
@@ -324,6 +326,50 @@ def test_setup_check_does_not_run_when_an_email_was_found(monkeypatch):
         "dify_docker_owner_email_query": FAILED_LOOKUP,
     }
     assert not all(render_all(task["when"], with_leaf))
+
+
+def test_console_api_base_assert_requires_a_non_empty_value():
+    task = task_named(CONSOLE_BASE_ASSERT_TASK)
+
+    context = {
+        **load_yaml(DEFAULTS),
+        "bao_local_llm_secrets": {},
+        "group_names": [],
+    }
+
+    unset = dict(context)
+    assert not all(render_all(task["ansible.builtin.assert"]["that"], unset))
+
+    empty = {**context, "dify_docker_console_api_base": ""}
+    assert not all(render_all(task["ansible.builtin.assert"]["that"], empty))
+
+    set_value = {
+        **context,
+        "dify_docker_console_api_base": "http://dify.example.test:38080/console/api",
+    }
+    assert all(render_all(task["ansible.builtin.assert"]["that"], set_value))
+
+
+def console_base_context(group_vars, container_ip):
+    return {
+        **load_yaml(DEFAULTS),
+        **load_yaml(group_vars),
+        "container_ip": container_ip,
+        "hostvars": {
+            "localhost": {
+                "tofu_data": {"constants": {"service_ports": {"dify_web": "38080"}}}
+            }
+        },
+    }
+
+
+def test_group_vars_console_api_base_renders_the_container_address_and_web_port():
+    container_ip = "dify.example.test"
+
+    assert render(
+        "{{ dify_docker_console_api_base }}",
+        console_base_context(GROUP_VARS, container_ip),
+    ) == f"http://{container_ip}:38080/console/api"
 
 
 def test_setup_finished_without_an_owner_fails_closed(monkeypatch):
