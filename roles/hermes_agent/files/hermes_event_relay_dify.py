@@ -56,6 +56,12 @@ def _route_problem(route) -> str | None:
     text_inputs = route.get("text_inputs", [])
     if not isinstance(text_inputs, list) or not all(isinstance(name, str) for name in text_inputs):
         return "text_inputs must be a list of input names"
+    const = route.get("const", {})
+    if not isinstance(const, dict) or not all(isinstance(v, str) for v in const.values()):
+        return "const must map input names to strings"
+    required = route.get("required", [])
+    if not isinstance(required, list) or not all(isinstance(name, str) for name in required):
+        return "required must be a list of input names"
     timeout = route.get("timeout", 30)
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
         return "timeout must be a number"
@@ -118,14 +124,15 @@ def match_routes(event: str, raw: bytes, routes: list[dict]) -> list[dict]:
     return matched
 
 
-def dify_inputs(event: str, raw: bytes, mapping: dict, text_inputs=()) -> dict:
+def dify_inputs(event: str, raw: bytes, mapping: dict, text_inputs=(), const=None) -> dict:
     """Map payload fields (dotted paths) to a Dify workflow's inputs. Missing fields become ''.
 
     Booleans become "true" or "false" only for the names in text_inputs, which the route
-    declares as Dify text inputs. Other booleans pass through unchanged.
+    declares as Dify text inputs. Other booleans pass through unchanged. Constants from the
+    route (const) are added as fixed inputs, and event is always set from the envelope.
     """
     payload = json.loads(raw)
-    inputs = {"event": event}
+    inputs = {"event": event, **(const or {})}
     for name, dotted in mapping.items():
         value = _path(payload, dotted)
         if name in text_inputs and isinstance(value, bool):

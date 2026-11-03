@@ -178,6 +178,36 @@ def test_handle_no_match_fires_no_route_and_takes_default(capsys):
     assert default_calls == ["http://127.0.0.1:1/webhooks/github-public"]
 
 
+def test_dify_inputs_adds_route_constants():
+    mapping = {"repo": "repository.full_name"}
+    assert MOD.dify_inputs("check_run", RAW_CHECK_FAILED, mapping, const={"strength": "inferred", "mode": "shadow"}) == {
+        "event": "check_run", "repo": "o/r", "strength": "inferred", "mode": "shadow",
+    }
+
+
+def test_handle_skips_route_with_empty_required_input(capsys):
+    # RAW_CHECK_FAILED has no check_suite, so the ref input is empty and the run must not start.
+    route = dict(ROUTE_DEFS[0], required=["repo", "ref"], inputs={"repo": "repository.full_name",
+                                                                   "ref": "check_run.check_suite.head_branch"})
+    cfg = dict(CFG, ROUTES=MOD.load_routes(json.dumps([route]), {"KEY_CI": "k1"}))
+    calls = []
+    failed = {"Body": envelope(event="check_run", body_b64=base64.b64encode(RAW_CHECK_FAILED).decode(), delivery="d-9")}
+    assert MOD.handle(failed, cfg, dify_post=lambda *a: calls.append(a) or (200, "run", "")) is True
+    assert calls == []
+    lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert [(x["msg"], x["route"], x["missing"], x["delivery"]) for x in lines] == [
+        ("route_skipped", "ci-fixer", ["ref"], "d-9")]
+
+
+def test_route_with_malformed_required_or_const_is_dropped(capsys):
+    bad_required = dict(ROUTE_DEFS[0], name="a", app_key_env="KEY_CI", required="ref")
+    bad_const = dict(ROUTE_DEFS[0], name="b", app_key_env="KEY_CI", const={"mode": 1})
+    assert MOD.load_routes(json.dumps([bad_required, bad_const]), {"KEY_CI": "k1"}) == []
+    out = capsys.readouterr().out
+    assert "required must be a list of input names" in out
+    assert "const must map input names to strings" in out
+
+
 def test_forward_dify_streams_until_workflow_started():
     import http.server
     import threading

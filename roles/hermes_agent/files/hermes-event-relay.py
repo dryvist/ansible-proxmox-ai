@@ -200,9 +200,15 @@ def handle(msg: dict, cfg: dict, post=forward, dify_post=forward_dify) -> bool:
     if routes:
         for route in routes:  # every matching route fires; one failing route does not stop the others
             try:
-                status, run_id, detail = dify_post(route["base"], route["app_key"],
-                                                   dify_inputs(event, raw, route.get("inputs", {}),
-                                                               route.get("text_inputs", ())),
+                inputs = dify_inputs(event, raw, route.get("inputs", {}), route.get("text_inputs", ()),
+                                     route.get("const"))
+                # A run whose required input is empty would fail in Dify, so the route is skipped instead.
+                missing = [name for name in route.get("required", []) if inputs.get(name) in ("", None)]
+                if missing:
+                    log(msg="route_skipped", route=route["name"], event=event, delivery=delivery,
+                        missing=missing, receives=receives)
+                    continue
+                status, run_id, detail = dify_post(route["base"], route["app_key"], inputs,
                                                    float(route.get("timeout", 30)))
             except Exception as exc:  # any dispatch failure must leave the relay loop running
                 status, run_id, detail = None, None, type(exc).__name__
