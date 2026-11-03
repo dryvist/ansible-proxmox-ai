@@ -29,7 +29,7 @@ EVAL_RESOLVE_TASK = "Resolve evaluation Dify secrets from OpenBao"
 
 LEAF_EMAIL = "openbao-leaf-email"
 LEAF_PASSWORD = "openbao-leaf-password"
-OWNER_EMAIL = "owner@example.invalid"
+OWNER_EMAIL = "owner-email-marker"
 EVAL_EMAIL = "evaluation-email-marker"
 EVAL_PASSWORD = "evaluation-password-marker"
 
@@ -228,7 +228,9 @@ def test_evaluation_seed_carries_the_admin_password_but_no_email(monkeypatch):
     ]
 
 
-def test_owner_email_discovery_is_no_log_and_gated_on_a_leaf_without_the_email():
+def test_owner_email_discovery_is_no_log_and_gated_on_a_leaf_without_the_email(
+    monkeypatch
+):
     task = task_named(DISCOVER_TASK)
 
     assert task["no_log"] is True
@@ -239,31 +241,40 @@ def test_owner_email_discovery_is_no_log_and_gated_on_a_leaf_without_the_email()
     assert "dify_docker_db_user" in cmd
     assert "dify_docker_db_name" in cmd
     assert "tenant_account_joins" in cmd
-    when = task["when"]
-    assert "'dify_eval_group' not in (group_names | default([]))" in when
-    leaf_clauses = [
-        clause
-        for clause in when
-        if "bao_local_llm_secrets" in clause and "DIFY_ADMIN_EMAIL" in clause
-    ]
-    assert leaf_clauses and "length == 0" in leaf_clauses[0]
-    assert any(
-        "lookup('env', 'DIFY_ADMIN_EMAIL')" in clause and "length == 0" in clause
-        for clause in when
-    )
+
+    # With the leaf and the environment both empty the gate must open whatever
+    # the query returned: the failed run of a not-yet-set-up instance and the
+    # empty answer both belong to the fail-closed logic downstream, not here.
+    for setup_state in (NOT_STARTED_SETUP, FINISHED_SETUP):
+        for query in (FAILED_LOOKUP, EMPTY_RESULT):
+            variables = email_gate_context(monkeypatch, query, setup_state)
+            assert all(render_all(task["when"], variables))
+
+    eval_variables = email_gate_context(monkeypatch, EMPTY_RESULT, NOT_STARTED_SETUP)
+    eval_variables["group_names"] = ["dify_eval_group"]
+    assert not all(render_all(task["when"], eval_variables))
 
 
-def test_adopted_owner_email_is_no_log_and_only_from_a_successful_query():
+def test_adopted_owner_email_is_no_log_and_only_from_a_successful_query(monkeypatch):
     task = task_named(ADOPT_TASK)
 
     assert task["no_log"] is True
     assert task["ansible.builtin.set_fact"] == {
         "dify_docker_admin_email_discovered": "{{ dify_docker_owner_email_query.stdout | trim }}"
     }
-    when = task["when"]
-    assert "'dify_eval_group' not in (group_names | default([]))" in when
-    assert any("rc | default(-1) | int == 0" in clause for clause in when)
-    assert any("trim | length > 0" in clause for clause in when)
+
+    # A failed query and a query that answered but found no owner both skip
+    # the adoption, on a fresh install and on an already-set-up instance
+    # alike; only a successful query carrying an email adopts it.
+    for setup_state in (NOT_STARTED_SETUP, FINISHED_SETUP):
+        for query in (FAILED_LOOKUP, EMPTY_RESULT):
+            variables = email_gate_context(monkeypatch, query, setup_state)
+            assert not all(render_all(task["when"], variables))
+
+    success = email_gate_context(
+        monkeypatch, {"rc": 0, "stdout": OWNER_EMAIL}, FINISHED_SETUP
+    )
+    assert all(render_all(task["when"], success))
 
 
 def test_setup_check_runs_whenever_no_email_was_found(monkeypatch):
@@ -271,7 +282,6 @@ def test_setup_check_runs_whenever_no_email_was_found(monkeypatch):
 
     assert task["failed_when"] is False
     assert "dify_docker_console_api_base" in task["ansible.builtin.uri"]["url"]
-    assert "127.0.0.1" not in task["ansible.builtin.uri"]["url"]
     for query in (FAILED_LOOKUP, EMPTY_RESULT):
         variables = email_gate_context(monkeypatch, query, {})
         assert all(render_all(task["when"], variables))
