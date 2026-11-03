@@ -85,6 +85,14 @@ def test_only_roster_domains_are_group_scoped():
     assert _domain_groups({}) == {"clickhouse-wall": ["clickhouse_group"]}
 
 
+def test_clickhouse_wall_domain_is_optional_until_its_approle_is_applied():
+    static_optional = yaml.safe_load(
+        (REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains.yml").read_text(encoding="utf-8")
+    )["_openbao_secrets_static_optional_domains"]
+
+    assert "clickhouse-wall" in static_optional
+
+
 def test_clickhouse_wall_domain_is_fetched_only_by_the_clickhouse_play():
     names = ["apps", "clickhouse", "clickhouse-wall"]
     groups = _domain_groups(ROSTER)
