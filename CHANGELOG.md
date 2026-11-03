@@ -1,13 +1,5 @@
 # Changelog
 
-## [2.13.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.13.0...v2.13.1) (2026-11-03)
-
-
-### Bug Fixes
-
-* **dify_docker:** define the model endpoint for the evaluation Dify group ([#1918](https://github.com/dryvist/ansible-proxmox-ai/issues/1918)) ([46c9c81](https://github.com/dryvist/ansible-proxmox-ai/commit/46c9c81326f95411fcb6bbfb564ad6df6f2f514d))
-* **llm_model_campaign:** latency gate rejects negative and untyped samples ([#1919](https://github.com/dryvist/ansible-proxmox-ai/issues/1919)) ([dfee2ea](https://github.com/dryvist/ansible-proxmox-ai/commit/dfee2eaab4db8f85f97f29f7e907551a2812078b))
-
 ## [2.13.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.12.0...v2.13.0) (2026-11-02)
 
 
