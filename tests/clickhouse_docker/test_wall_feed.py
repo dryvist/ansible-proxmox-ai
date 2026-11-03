@@ -173,7 +173,7 @@ def test_wall_handlers_are_deployed_and_mounted_read_only():
 def test_wall_reader_password_comes_only_from_openbao():
     password = _defaults()["clickhouse_docker_wall_reader_password"]
 
-    assert "bao_clickhouse_secrets" in password
+    assert "bao_clickhouse_wall_secrets" in password
     assert ".WALL_READER_PASSWORD" in password
     assert "mandatory(" in password
     assert "lookup(" not in password
