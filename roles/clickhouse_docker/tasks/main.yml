@@ -57,6 +57,15 @@
     mode: "0644"
   notify: Restart clickhouse
 
+- name: Deploy the wall feed HTTP handlers config
+  ansible.builtin.template:
+    src: config.d/wall-handlers.xml.j2
+    dest: "{{ clickhouse_docker_config_d_dir }}/wall_handlers.xml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart clickhouse
+
 # =============================================================================
 # Default-user lockdown
 # =============================================================================
@@ -256,6 +265,7 @@
       - clickhouse_docker_hyperdx_password
       - clickhouse_docker_splunk_password
       - clickhouse_docker_cribl_password
+      - clickhouse_docker_wall_reader_password
 
 # The LLM schema is rendered from templates/llm_schema.sql.j2 and passed as one
 # argv element, so no shell quoting touches the SQL. IF NOT EXISTS on both
@@ -281,6 +291,9 @@
   changed_when: false
   no_log: true
 
+- name: Create the wall feed objects and its read-only user
+  ansible.builtin.include_tasks: wall_feed.yml
+
 - name: Provision the read-only ClickHouse users
   ansible.builtin.command:
     cmd: >-
@@ -300,6 +313,7 @@
     label: "{{ item.key }}"
   changed_when: false
   no_log: true
+
 
 # Ingest-only: the cribl user can write rows into the LLM database and nothing
 # else. It has no grant on the default database and no SELECT on llm.*.
