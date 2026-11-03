@@ -372,6 +372,15 @@ def test_group_vars_console_api_base_renders_the_container_address_and_web_port(
     ) == f"http://{container_ip}:38080/console/api"
 
 
+def test_eval_group_console_api_base_renders_the_container_address_and_web_port():
+    container_ip = "dify-eval.example.test"
+
+    assert render(
+        "{{ dify_docker_console_api_base }}",
+        console_base_context(EVAL_GROUP, container_ip),
+    ) == f"http://{container_ip}:38080/console/api"
+
+
 def test_setup_finished_without_an_owner_fails_closed(monkeypatch):
     # Both an empty discovery result and a failed discovery on a finished
     # setup must reach the assert and stop the converge.
