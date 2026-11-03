@@ -5,8 +5,10 @@
    run: CREATE OR REPLACE fills a new table and swaps it in atomically, so a
    refresh never reads a half-loaded list. The two views are refreshable
    materialized views (refreshed once on creation, then on their schedule).
-   IF NOT EXISTS leaves an existing view as it is, so a changed view
-   definition only takes effect after that view is dropped.
+   IF NOT EXISTS leaves an existing view as it is, so each view's COMMENT
+   carries a fingerprint of this rendered definition. wall_feed.yml drops
+   both views when the fingerprint in place differs, and the next converge
+   creates them from the new definition.
 
    The ingest leaves role, content and model empty, so every source reads
    them from the JSON text in `raw`. A source's `shape` (defaults/main.yml)
@@ -18,6 +20,7 @@
 {%- set db = clickhouse_docker_llm_database -%}
 {%- set injected = ('^[[:space:]]*(' ~ (clickhouse_docker_wall_injected_prompt_patterns | join('|')) ~ ')')
     | replace('\\', '\\\\') | replace("'", "\\'") -%}
+{%- set fingerprint = clickhouse_docker_wall_fingerprint | default('') -%}
 {#- ClickHouse JSON function arguments for a key path inside raw: raw, 'a', 'b' -#}
 {%- macro json_args(path) -%}
 raw{% for key in path %}, '{{ key }}'{% endfor %}
@@ -156,7 +159,8 @@ WHERE lengthUTF8(word) BETWEEN {{ clickhouse_docker_wall_word_min_length }} AND 
     AND word NOT IN (SELECT word FROM {{ db }}.stopwords)
 GROUP BY source, word
 ORDER BY source ASC, n DESC, word ASC
-LIMIT {{ clickhouse_docker_wall_words_per_source }} BY source;
+LIMIT {{ clickhouse_docker_wall_words_per_source }} BY source
+COMMENT '{{ fingerprint }}';
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS {{ db }}.{{ clickhouse_docker_wall_recent_view }}
 REFRESH EVERY {{ clickhouse_docker_wall_recent_refresh }}
@@ -198,4 +202,5 @@ FROM
 {% endfor %}
 )
 ORDER BY ts DESC
-LIMIT {{ clickhouse_docker_wall_recent_rows }};
+LIMIT {{ clickhouse_docker_wall_recent_rows }}
+COMMENT '{{ fingerprint }}';

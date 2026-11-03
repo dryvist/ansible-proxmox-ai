@@ -32,9 +32,9 @@ def _defaults() -> dict:
     return defaults
 
 
-def _render(template: str) -> str:
+def _render(template: str, **variables) -> str:
     return jinja2.Template((ROLE / "templates" / template).read_text(encoding="utf-8")).render(
-        **_defaults()
+        **{**_defaults(), **variables}
     )
 
 
@@ -124,7 +124,7 @@ def test_word_cloud_refreshes_hourly_over_every_harness_and_keeps_top_words_per_
     # splitByNonAlpha keeps digits and non-ASCII bytes inside tokens; only ASCII letters pass.
     assert "AND match(word, '^[a-z]+$')" in statement
     assert "word NOT IN (SELECT word FROM llm.stopwords)" in statement
-    assert statement.endswith("LIMIT 200 BY source")
+    assert statement.endswith("LIMIT 200 BY source\nCOMMENT ''")
 
 
 def test_injected_prompts_are_dropped_per_part_from_user_rows_only():
@@ -211,7 +211,7 @@ def test_recent_activity_refreshes_every_minute_and_never_returns_content():
     assert statement.count("UNION ALL") == len(WALL_TABLES) - 1
     for table in WALL_TABLES:
         assert f"FROM llm.{table} FINAL" in statement
-    assert statement.endswith("ORDER BY ts DESC\nLIMIT 40")
+    assert statement.endswith("ORDER BY ts DESC\nLIMIT 40\nCOMMENT ''")
 
 
 def test_wall_handlers_serve_two_fixed_get_queries_and_keep_the_defaults():
@@ -283,3 +283,34 @@ def test_wall_reader_is_readonly_limited_and_granted_only_the_two_views():
         "               TO {{ clickhouse_docker_wall_reader_user }};"
     ) in task
     assert "      - clickhouse_docker_wall_reader_password\n" in (ROLE / "tasks/main.yml").read_text(encoding="utf-8")
+
+
+def test_wall_views_carry_the_definition_fingerprint_as_their_comment():
+    statements = _statements(_render("llm_wall.sql.j2", clickhouse_docker_wall_fingerprint="0a1b"))
+    views = [s for s in statements if s.startswith("CREATE MATERIALIZED VIEW")]
+
+    assert [s.split("\n")[-1] for s in views] == ["COMMENT '0a1b'", "COMMENT '0a1b'"]
+    assert "COMMENT ''" in _render("llm_wall.sql.j2").split("CREATE MATERIALIZED VIEW")[1]
+
+
+def test_wall_views_are_dropped_only_when_the_fingerprint_in_place_differs():
+    tasks = (ROLE / "tasks/wall_feed.yml").read_text(encoding="utf-8")
+    order = [
+        "- name: Fingerprint the wall view definitions",
+        "- name: Check which wall view definition is in place",
+        "- name: Drop the wall views when their definition changed",
+        "- name: Create the wall stopwords table and refreshable views",
+        "- name: Provision the wall read-only ClickHouse user",
+    ]
+    positions = [tasks.index(name) for name in order]
+
+    assert positions == sorted(positions)
+    assert "hash('sha256')" in tasks
+    assert "AND comment = '{{ clickhouse_docker_wall_fingerprint }}'" in tasks
+    assert "when: clickhouse_docker_wall_views_in_place.stdout | trim != '2'" in tasks
+    assert (
+        "DROP VIEW IF EXISTS {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_words_view }};"
+    ) in tasks
+    assert (
+        "DROP VIEW IF EXISTS {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_recent_view }};"
+    ) in tasks
