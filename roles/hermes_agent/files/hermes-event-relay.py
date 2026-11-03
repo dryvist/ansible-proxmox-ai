@@ -29,6 +29,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import subprocess
@@ -133,6 +134,28 @@ def forward(url: str, secret: str, event: str, delivery: str, raw: bytes) -> tup
     return _send(req, 30)
 
 
+def _route_problem(route) -> str | None:
+    """Name what makes a route unusable at start, or return None when it is usable."""
+    if not isinstance(route, dict):
+        return "route entry is not a mapping"
+    for field in ("name", "base", "app_key_env"):
+        if not isinstance(route.get(field), str) or not route.get(field):
+            return f"{field} must be a non-empty string"
+    match = route.get("match")
+    if not isinstance(match, dict) or not isinstance(match.get("event"), str):
+        return "match.event must be a string"
+    if not isinstance(match.get("action", ""), (str, list)):
+        return "match.action must be a string or a list"
+    if not isinstance(match.get("where", {}), dict):
+        return "match.where must be a mapping"
+    if not isinstance(route.get("inputs", {}), dict):
+        return "inputs must be a mapping"
+    timeout = route.get("timeout", 30)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        return "timeout must be a number"
+    return None
+
+
 def load_routes(raw_json: str, env: dict) -> list[dict]:
     """Parse RELAY_ROUTES_JSON into active routes. A route whose app-key env var is
     unset is dropped and logged, so the relay keeps running on the default route."""
@@ -147,10 +170,9 @@ def load_routes(raw_json: str, env: dict) -> list[dict]:
         return []
     active = []
     for route in routes:
-        if not (isinstance(route, dict) and route.get("name") and route.get("base")
-                and route.get("app_key_env") and isinstance(route.get("match"), dict)):
-            log(msg="route_disabled", route=route.get("name") if isinstance(route, dict) else None,
-                reason="route entry is incomplete")
+        problem = _route_problem(route)
+        if problem:
+            log(msg="route_disabled", route=route.get("name") if isinstance(route, dict) else None, reason=problem)
             continue
         key = env.get(route["app_key_env"], "")
         if not key:
@@ -229,7 +251,7 @@ def forward_dify(base: str, app_key: str, inputs: dict, timeout: float) -> tuple
             return resp.status, None, "stream ended before workflow_started"
     except urllib.error.HTTPError as exc:
         return exc.code, None, exc.read(200).decode(errors="replace")
-    except OSError as exc:
+    except (http.client.HTTPException, OSError) as exc:
         return None, None, type(exc).__name__
 
 
@@ -312,9 +334,12 @@ def handle(msg: dict, cfg: dict, post=forward, dify_post=forward_dify) -> bool:
         log(msg="poison", id=msg.get("MessageId"), error=str(exc), receives=receives)
         return False
     if route:
-        status, run_id, detail = dify_post(route["base"], route["app_key"],
-                                           dify_inputs(event, raw, route.get("inputs", {})),
-                                           float(route.get("timeout", 30)))
+        try:
+            status, run_id, detail = dify_post(route["base"], route["app_key"],
+                                               dify_inputs(event, raw, route.get("inputs", {})),
+                                               float(route.get("timeout", 30)))
+        except Exception as exc:  # any dispatch failure must leave the relay loop running
+            status, run_id, detail = None, None, type(exc).__name__
         # A dispatch is final: a failed run is logged and never re-queued, so the message is deleted either way.
         log(msg="dispatched" if run_id else "dispatch_failed", route=route["name"], event=event, delivery=delivery,
             status=status, workflow_run_id=run_id, detail=detail or None, deleted=True, receives=receives)

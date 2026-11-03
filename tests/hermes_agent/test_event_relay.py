@@ -226,6 +226,58 @@ def test_forward_dify_streams_until_workflow_started():
     assert seen["body"] == {"inputs": {"event": "check_run"}, "response_mode": "streaming", "user": "github-event-relay"}
 
 
+def test_forward_dify_reports_malformed_response_without_raising():
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.wfile.write(b"not an http status line\r\n\r\n")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, run_id, detail = MOD.forward_dify(f"http://127.0.0.1:{server.server_port}/", "k1", {}, 5)
+    finally:
+        server.shutdown()
+    assert status is None and run_id is None and detail
+
+
+def test_handle_keeps_relay_running_when_dispatch_raises(capsys):
+    import http.client
+
+    cfg = dict(CFG, ROUTES=active_routes({"KEY_CI": "k1", "KEY_DOCS": "k2"}))
+    failed = {"Body": envelope(event="check_run", body_b64=base64.b64encode(RAW_CHECK_FAILED).decode())}
+
+    def boom(*args):
+        raise http.client.BadStatusLine("x")
+
+    assert MOD.handle(failed, cfg, dify_post=boom) is True
+    line = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert (line["msg"], line["detail"], line["deleted"]) == ("dispatch_failed", "BadStatusLine", True)
+
+
+def test_load_routes_drops_route_with_wrong_field_types(capsys):
+    bad = [
+        dict(ROUTE_DEFS[0], match={"event": "check_run", "action": {"x": 1}}),
+        dict(ROUTE_DEFS[0], name="timeout-bad", timeout="soon"),
+        dict(ROUTE_DEFS[1], name="inputs-bad", inputs=["repo"]),
+    ]
+    assert MOD.load_routes(json.dumps(bad), {"KEY_CI": "k", "KEY_DOCS": "k"}) == []
+    reasons = [json.loads(x)["reason"] for x in capsys.readouterr().out.splitlines()]
+    assert reasons == [
+        "match.action must be a string or a list",
+        "timeout must be a number",
+        "inputs must be a mapping",
+    ]
+
+
 def test_forward_dify_reports_error_event_without_run_id():
     import http.server
     import threading
