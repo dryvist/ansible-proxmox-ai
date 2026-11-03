@@ -199,13 +199,38 @@ def dify_inputs(event: str, raw: bytes, mapping: dict) -> dict:
     return inputs
 
 
-def forward_dify(base: str, app_key: str, inputs: dict, timeout: float) -> tuple[int | None, str]:
-    """Start one blocking run of a Dify workflow app. The app key is sent only in the header."""
-    body = json.dumps({"inputs": inputs, "response_mode": "blocking", "user": "github-event-relay"}).encode()
+def forward_dify(base: str, app_key: str, inputs: dict, timeout: float) -> tuple[int | None, str | None, str]:
+    """Start one streaming run of a Dify workflow app and return (status, workflow_run_id, detail).
+
+    Reads only until the workflow_started event, then closes the stream. Dify 1.18
+    runs the workflow in its own worker thread, and a closed listener does not stop
+    it; the only abort is its execution-time watchdog. The app key goes only in the header.
+    """
+    body = json.dumps({"inputs": inputs, "response_mode": "streaming", "user": "github-event-relay"}).encode()
     req = urllib.request.Request(checked_url(f"{base.rstrip('/')}/v1/workflows/run"), data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Authorization", f"Bearer {app_key}")
-    return _send(req, timeout)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            for line in resp:
+                text = line.decode(errors="replace").strip()
+                if not text.startswith("data:"):
+                    continue
+                try:
+                    event = json.loads(text[len("data:"):])
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("event") == "workflow_started":
+                    return resp.status, str(event.get("workflow_run_id") or ""), ""
+                if event.get("event") == "error":
+                    return resp.status, None, str(event.get("message") or "error")[:200]
+            return resp.status, None, "stream ended before workflow_started"
+    except urllib.error.HTTPError as exc:
+        return exc.code, None, exc.read(200).decode(errors="replace")
+    except OSError as exc:
+        return None, None, type(exc).__name__
 
 
 def bao_post(url: str, body: dict | None, token: str | None = None) -> dict:
@@ -287,14 +312,16 @@ def handle(msg: dict, cfg: dict, post=forward, dify_post=forward_dify) -> bool:
         log(msg="poison", id=msg.get("MessageId"), error=str(exc), receives=receives)
         return False
     if route:
-        status, detail = dify_post(route["base"], route["app_key"], dify_inputs(event, raw, route.get("inputs", {})),
-                                   float(route.get("timeout", 300)))
-        name = route["name"]
-    else:
-        status, detail = post(url, cfg["RELAY_WEBHOOK_SECRET"], event, delivery, raw)
-        name = url.rsplit("/", 1)[1]
+        status, run_id, detail = dify_post(route["base"], route["app_key"],
+                                           dify_inputs(event, raw, route.get("inputs", {})),
+                                           float(route.get("timeout", 30)))
+        # A dispatch is final: a failed run is logged and never re-queued, so the message is deleted either way.
+        log(msg="dispatched" if run_id else "dispatch_failed", route=route["name"], event=event, delivery=delivery,
+            status=status, workflow_run_id=run_id, detail=detail or None, deleted=True, receives=receives)
+        return True
+    status, detail = post(url, cfg["RELAY_WEBHOOK_SECRET"], event, delivery, raw)
     delete = should_delete(status)
-    log(msg="relayed", route=name, event=event, delivery=delivery, status=status, deleted=delete,
+    log(msg="relayed", route=url.rsplit("/", 1)[1], event=event, delivery=delivery, status=status, deleted=delete,
         receives=receives, detail=None if delete else detail)
     return delete
 
