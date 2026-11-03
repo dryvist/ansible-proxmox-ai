@@ -7,13 +7,13 @@ import pytest
 from _eval_support import GROUP_VARS, ROLES, host_context, load_yaml, render
 
 SIM_EVAL_PATH = load_yaml(ROLES / "sim_docker/defaults/main.yml")["sim_docker_openbao_path"]
-GRANTED_EVALUATION_LEAVES = {f"ai/eval/specialist-platform/{leaf}" for leaf in ("sim", "langflow", "dify", "hermes")}
+GRANTED_EVALUATION_LEAVES = {f"ai/eval/specialist-platform/{leaf}" for leaf in ("sim", "hermes")}
 
 
 def test_every_evaluation_path_is_a_leaf_the_policy_grants() -> None:
-    """The ASM converge policy grants exactly these four leaves. An evaluation path outside them is refused."""
+    """After the Dify and LangFlow removal, the ASM converge policy grants exactly two evaluation leaves: sim and hermes. An evaluation path outside them is refused."""
     assert {SIM_EVAL_PATH} <= GRANTED_EVALUATION_LEAVES
-    assert len(GRANTED_EVALUATION_LEAVES) == 4
+    assert len(GRANTED_EVALUATION_LEAVES) == 2
 
 
 def _domain_strings() -> set[str]:
