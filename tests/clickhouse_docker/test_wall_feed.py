@@ -194,6 +194,17 @@ def test_injected_prompts_are_dropped_per_part_from_user_rows_only():
     assert "match(part, '^[[:space:]]*(<[a-z_-]+>|# AGENTS\\\\.md instructions|" in statement
 
 
+def test_every_injected_prompt_pattern_is_in_the_rendered_clause():
+    patterns = _defaults()["clickhouse_docker_wall_injected_prompt_patterns"]
+    clause = re.search(r"match\(part, '(\^.*?)'\)", _statement(WORD_CLOUD)).group(1)
+
+    assert "This session is being continued from a previous conversation" in patterns
+    for pattern in patterns:
+        re.compile(pattern)
+        # The SQL literal escapes backslashes and quotes, as the template does.
+        assert pattern.replace("\\", "\\\\").replace("'", "\\'") in clause
+
+
 def test_claude_rows_take_role_and_model_from_the_message_json_and_text_from_text_blocks():
     branch = _branch(_statement(WORD_CLOUD), "claude")
 
