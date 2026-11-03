@@ -8,7 +8,11 @@ POSTs them to <base>/<route> with X-GitHub-Event, X-GitHub-Delivery and
 X-Hub-Signature-256. The route is RELAY_ROUTE_PRIVATE (base RELAY_TARGET_BASE)
 when the payload's repository.private is true, RELAY_ROUTE_PUBLIC (base
 RELAY_TARGET_BASE_PUBLIC, defaulting to RELAY_TARGET_BASE) when false; a payload
-without that boolean is treated as malformed. A message is deleted only after a 2xx
+without that boolean is treated as malformed. RELAY_ROUTES_JSON (optional) is
+a list of routes checked first: a matching route starts a Dify workflow run
+instead, with that route's app key, and the default route above applies when
+nothing matches. A route with no app key in the environment is dropped at start.
+A message is deleted only after a 2xx
 response (which includes the receiver's `duplicate` answer); anything else,
 including a malformed envelope, is left for the queue's redrive policy. One
 JSON log line per message, plus a periodic stats line and an optional dead-man
@@ -110,19 +114,98 @@ def should_delete(status: int | None) -> bool:
     return status is not None and 200 <= status < 300
 
 
+def _send(req: urllib.request.Request, timeout: float) -> tuple[int | None, str]:
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read(200).decode(errors="replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(200).decode(errors="replace")
+    except OSError as exc:
+        return None, type(exc).__name__
+
+
 def forward(url: str, secret: str, event: str, delivery: str, raw: bytes) -> tuple[int | None, str]:
     req = urllib.request.Request(checked_url(url), data=raw, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("X-GitHub-Event", event)
     req.add_header("X-GitHub-Delivery", delivery)
     req.add_header("X-Hub-Signature-256", sign(secret, raw))
+    return _send(req, 30)
+
+
+def load_routes(raw_json: str, env: dict) -> list[dict]:
+    """Parse RELAY_ROUTES_JSON into active routes. A route whose app-key env var is
+    unset is dropped and logged, so the relay keeps running on the default route."""
+    if not raw_json:
+        return []
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, resp.read(200).decode(errors="replace")
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read(200).decode(errors="replace")
-    except OSError as exc:
-        return None, type(exc).__name__
+        routes = json.loads(raw_json)
+        if not isinstance(routes, list):
+            raise ValueError("not a list")
+    except ValueError:
+        log(msg="route_config_invalid", error="RELAY_ROUTES_JSON is not a JSON list")
+        return []
+    active = []
+    for route in routes:
+        if not (isinstance(route, dict) and route.get("name") and route.get("base")
+                and route.get("app_key_env") and isinstance(route.get("match"), dict)):
+            log(msg="route_disabled", route=route.get("name") if isinstance(route, dict) else None,
+                reason="route entry is incomplete")
+            continue
+        key = env.get(route["app_key_env"], "")
+        if not key:
+            log(msg="route_disabled", route=route["name"], reason="app key env is unset")
+            continue
+        active.append({**route, "app_key": key})
+    return active
+
+
+def _path(payload, dotted: str):
+    cur = payload
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def match_route(event: str, raw: bytes, routes: list[dict]) -> dict | None:
+    """Return the first active route whose event, action and `where` values match."""
+    if not routes:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    for route in routes:
+        match = route["match"]
+        if match.get("event") != event:
+            continue
+        actions = match.get("action")
+        if actions is not None and _path(payload, "action") not in ([actions] if isinstance(actions, str) else actions):
+            continue
+        if all(_path(payload, key) == value for key, value in match.get("where", {}).items()):
+            return route
+    return None
+
+
+def dify_inputs(event: str, raw: bytes, mapping: dict) -> dict:
+    """Map payload fields (dotted paths) to a Dify workflow's inputs. Missing fields become ''."""
+    payload = json.loads(raw)
+    inputs = {"event": event}
+    for name, dotted in mapping.items():
+        value = _path(payload, dotted)
+        inputs[name] = "" if value is None else value
+    return inputs
+
+
+def forward_dify(base: str, app_key: str, inputs: dict, timeout: float) -> tuple[int | None, str]:
+    """Start one blocking run of a Dify workflow app. The app key is sent only in the header."""
+    body = json.dumps({"inputs": inputs, "response_mode": "blocking", "user": "github-event-relay"}).encode()
+    req = urllib.request.Request(checked_url(f"{base.rstrip('/')}/v1/workflows/run"), data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {app_key}")
+    return _send(req, timeout)
 
 
 def bao_post(url: str, body: dict | None, token: str | None = None) -> dict:
@@ -193,18 +276,25 @@ def log(**fields) -> None:
     print(json.dumps({"ts": int(time.time()), **fields}, sort_keys=True), flush=True)
 
 
-def handle(msg: dict, cfg: dict, post=forward) -> bool:
+def handle(msg: dict, cfg: dict, post=forward, dify_post=forward_dify) -> bool:
     """Process one queue message; return True when it should be deleted."""
     receives = msg.get("Attributes", {}).get("ApproximateReceiveCount")
     try:
         event, delivery, raw = parse_envelope(msg.get("Body", ""))
-        url = target_url(raw, cfg)
+        route = match_route(event, raw, cfg.get("ROUTES", []))
+        url = None if route else target_url(raw, cfg)
     except ValueError as exc:
         log(msg="poison", id=msg.get("MessageId"), error=str(exc), receives=receives)
         return False
-    status, detail = post(url, cfg["RELAY_WEBHOOK_SECRET"], event, delivery, raw)
+    if route:
+        status, detail = dify_post(route["base"], route["app_key"], dify_inputs(event, raw, route.get("inputs", {})),
+                                   float(route.get("timeout", 300)))
+        name = route["name"]
+    else:
+        status, detail = post(url, cfg["RELAY_WEBHOOK_SECRET"], event, delivery, raw)
+        name = url.rsplit("/", 1)[1]
     delete = should_delete(status)
-    log(msg="relayed", route=url.rsplit("/", 1)[1], event=event, delivery=delivery, status=status, deleted=delete,
+    log(msg="relayed", route=name, event=event, delivery=delivery, status=status, deleted=delete,
         receives=receives, detail=None if delete else detail)
     return delete
 
@@ -232,6 +322,7 @@ def main() -> int:
         return 2
     cfg = {k: os.environ[k] for k in REQUIRED}
     cfg["RELAY_TARGET_BASE_PUBLIC"] = os.environ.get("RELAY_TARGET_BASE_PUBLIC", "")
+    cfg["ROUTES"] = load_routes(os.environ.get("RELAY_ROUTES_JSON", ""), os.environ)
     dlq_url = os.environ.get("RELAY_DLQ_URL", "")
     hc_url = os.environ.get("RELAY_HEALTHCHECK_URL", "")
     stats_every = int(os.environ.get("RELAY_STATS_SECONDS", "300"))

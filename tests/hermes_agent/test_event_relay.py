@@ -101,6 +101,120 @@ def test_handle_keeps_on_error_and_poison(capsys):
     assert [x["msg"] for x in lines] == ["relayed", "poison"]
 
 
+# --- Dify workflow routes -----------------------------------------------------
+
+RAW_CHECK_FAILED = json.dumps({"action": "completed", "check_run": {"name": "ci", "conclusion": "failure"},
+                               "repository": {"private": False, "full_name": "o/r"}}).encode()
+RAW_CHECK_OK = json.dumps({"action": "completed", "check_run": {"name": "ci", "conclusion": "success"},
+                           "repository": {"private": False, "full_name": "o/r"}}).encode()
+RAW_MERGED = json.dumps({"action": "closed", "pull_request": {"merged": True, "number": 7},
+                         "repository": {"private": False}}).encode()
+RAW_CLOSED_UNMERGED = json.dumps({"action": "closed", "pull_request": {"merged": False, "number": 8},
+                                  "repository": {"private": False}}).encode()
+ROUTE_DEFS = [
+    {"name": "ci-fixer", "base": "https://dify.example/", "app_key_env": "KEY_CI",
+     "match": {"event": "check_run", "action": "completed", "where": {"check_run.conclusion": "failure"}},
+     "inputs": {"repo": "repository.full_name", "check_name": "check_run.name"}},
+    {"name": "docs-updater", "base": "https://dify.example", "app_key_env": "KEY_DOCS",
+     "match": {"event": "pull_request", "action": "closed", "where": {"pull_request.merged": True}},
+     "inputs": {"pr": "pull_request.number"}},
+]
+
+
+def active_routes(env):
+    return MOD.load_routes(json.dumps(ROUTE_DEFS), env)
+
+
+def test_match_route_by_event_action_and_where():
+    routes = active_routes({"KEY_CI": "k1", "KEY_DOCS": "k2"})
+    assert MOD.match_route("check_run", RAW_CHECK_FAILED, routes)["name"] == "ci-fixer"
+    assert MOD.match_route("check_run", RAW_CHECK_OK, routes) is None
+    assert MOD.match_route("pull_request", RAW_MERGED, routes)["name"] == "docs-updater"
+    assert MOD.match_route("pull_request", RAW_CLOSED_UNMERGED, routes) is None
+    assert MOD.match_route("push", RAW_MERGED, routes) is None
+    assert MOD.match_route("check_run", RAW_CHECK_FAILED, []) is None
+
+
+def test_load_routes_drops_route_without_app_key(capsys):
+    routes = active_routes({"KEY_CI": "k1"})
+    assert [r["name"] for r in routes] == ["ci-fixer"]
+    lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert [(x["msg"], x["route"]) for x in lines] == [("route_disabled", "docs-updater")]
+
+
+def test_load_routes_bad_json_keeps_default_route(capsys):
+    assert MOD.load_routes("{not json", {}) == []
+    assert MOD.load_routes('{"name": "x"}', {}) == []
+    assert "route_config_invalid" in capsys.readouterr().out
+
+
+def test_dify_inputs_maps_dotted_paths_and_blanks_missing():
+    mapping = {"repo": "repository.full_name", "check_name": "check_run.name", "missing": "pull_request.number"}
+    assert MOD.dify_inputs("check_run", RAW_CHECK_FAILED, mapping) == {
+        "event": "check_run", "repo": "o/r", "check_name": "ci", "missing": "",
+    }
+
+
+def test_handle_routes_matched_events_to_dify_and_others_to_default(capsys):
+    routes = active_routes({"KEY_CI": "k1", "KEY_DOCS": "k2"})
+    cfg = dict(CFG, ROUTES=routes)
+    dify_calls, default_calls = [], []
+
+    def dify(base, key, inputs, timeout):
+        dify_calls.append((base, key, inputs, timeout))
+        return 200, "{}"
+
+    def default_post(url, secret, event, delivery, raw):
+        default_calls.append(url)
+        return 200, "{}"
+
+    failed = {"Body": envelope(event="check_run", body_b64=base64.b64encode(RAW_CHECK_FAILED).decode())}
+    plain = {"Body": envelope()}
+    assert MOD.handle(failed, cfg, post=default_post, dify_post=dify) is True
+    assert MOD.handle(plain, cfg, post=default_post, dify_post=dify) is True
+    assert dify_calls == [("https://dify.example/", "k1", {"event": "check_run", "repo": "o/r", "check_name": "ci"}, 300)]
+    assert default_calls == ["http://127.0.0.1:1/webhooks/github-public"]
+    relayed = [json.loads(x) for x in capsys.readouterr().out.splitlines() if '"relayed"' in x]
+    assert [x["route"] for x in relayed] == ["ci-fixer", "github-public"]
+
+
+def test_handle_keeps_message_when_dify_run_fails():
+    cfg = dict(CFG, ROUTES=active_routes({"KEY_CI": "k1", "KEY_DOCS": "k2"}))
+    failed = {"Body": envelope(event="check_run", body_b64=base64.b64encode(RAW_CHECK_FAILED).decode())}
+    assert MOD.handle(failed, cfg, dify_post=lambda *a: (503, "busy")) is False
+
+
+def test_forward_dify_sends_key_in_header_and_inputs_in_body():
+    import http.server
+    import threading
+
+    seen = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen["path"] = self.path
+            seen["auth"] = self.headers.get("Authorization")
+            seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}/"
+        status, _ = MOD.forward_dify(base, "k1", {"event": "check_run"}, 5)
+    finally:
+        server.shutdown()
+    assert status == 200
+    assert seen["path"] == "/v1/workflows/run"
+    assert seen["auth"] == "Bearer k1"
+    assert seen["body"] == {"inputs": {"event": "check_run"}, "response_mode": "blocking", "user": "github-event-relay"}
+
+
 # --- short-lived queue credentials -------------------------------------------
 
 BAO_CFG = {"RELAY_BAO_ADDR": "https://bao.example.test/", "RELAY_BAO_ROLE_ID": "rid",
