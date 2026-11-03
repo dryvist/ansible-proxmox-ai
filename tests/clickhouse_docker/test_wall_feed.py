@@ -101,6 +101,8 @@ def test_word_cloud_refreshes_hourly_over_every_harness_and_keeps_top_words_per_
         assert f"if(role = 'user', 'user', '{table}') AS source" in statement
     assert "ARRAY JOIN splitByNonAlpha(lower(body)) AS word" in statement
     assert "lengthUTF8(word) BETWEEN 3 AND 24" in statement
+    # splitByNonAlpha keeps digits and non-ASCII bytes inside tokens; only ASCII letters pass.
+    assert "AND match(word, '^[a-z]+$')" in statement
     assert "word NOT IN (SELECT word FROM llm.stopwords)" in statement
     assert statement.endswith("LIMIT 200 BY source")
 
