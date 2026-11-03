@@ -208,7 +208,11 @@ def test_every_injected_prompt_pattern_is_in_the_rendered_clause():
 def test_claude_rows_take_role_and_model_from_the_message_json_and_text_from_text_blocks():
     branch = _branch(_statement(WORD_CLOUD), "claude")
 
-    assert "JSONExtractString(raw, 'type') AS msg_role" in branch
+    # Harness-injected context and the resumed-session summary are not messages.
+    assert (
+        "if(JSONExtractBool(raw, 'isMeta') OR JSONExtractBool(raw, 'isCompactSummary'), '', "
+        "JSONExtractString(raw, 'type')) AS msg_role"
+    ) in branch
     assert "JSONExtractString(raw, 'message', 'model') AS msg_model" in branch
     assert "JSONType(raw, 'message', 'content') = 'String'" in branch
     assert "[JSONExtractString(raw, 'message', 'content')]" in branch
