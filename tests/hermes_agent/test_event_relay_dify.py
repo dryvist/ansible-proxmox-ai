@@ -29,14 +29,14 @@ def active_routes(env):
     return MOD.load_routes(json.dumps(ROUTE_DEFS), env)
 
 
-def test_match_route_by_event_action_and_where():
+def test_match_routes_by_event_action_and_where():
     routes = active_routes({"KEY_CI": "k1", "KEY_DOCS": "k2"})
-    assert MOD.match_route("check_run", RAW_CHECK_FAILED, routes)["name"] == "ci-fixer"
-    assert MOD.match_route("check_run", RAW_CHECK_OK, routes) is None
-    assert MOD.match_route("pull_request", RAW_MERGED, routes)["name"] == "docs-updater"
-    assert MOD.match_route("pull_request", RAW_CLOSED_UNMERGED, routes) is None
-    assert MOD.match_route("push", RAW_MERGED, routes) is None
-    assert MOD.match_route("check_run", RAW_CHECK_FAILED, []) is None
+    assert [r["name"] for r in MOD.match_routes("check_run", RAW_CHECK_FAILED, routes)] == ["ci-fixer"]
+    assert MOD.match_routes("check_run", RAW_CHECK_OK, routes) == []
+    assert [r["name"] for r in MOD.match_routes("pull_request", RAW_MERGED, routes)] == ["docs-updater"]
+    assert MOD.match_routes("pull_request", RAW_CLOSED_UNMERGED, routes) == []
+    assert MOD.match_routes("push", RAW_MERGED, routes) == []
+    assert MOD.match_routes("check_run", RAW_CHECK_FAILED, []) == []
 
 
 def test_load_routes_drops_route_without_app_key(capsys):
@@ -90,6 +90,65 @@ def test_handle_deletes_failed_dispatch_without_retry(capsys):
     assert MOD.handle(failed, cfg, dify_post=lambda *a: (503, None, "busy")) is True
     line = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert (line["msg"], line["detail"], line["deleted"]) == ("dispatch_failed", "busy", True)
+
+
+def merged_pair(env):
+    # Two routes that both match a merged pull request, each with its own app key.
+    second = dict(ROUTE_DEFS[1], name="second", app_key_env="KEY_SECOND")
+    return MOD.load_routes(json.dumps([ROUTE_DEFS[1], second]), env)
+
+
+def merged_event(delivery):
+    return {"Body": envelope(event="pull_request", body_b64=base64.b64encode(RAW_MERGED).decode(), delivery=delivery)}
+
+
+def test_handle_fires_every_matching_route(capsys):
+    cfg = dict(CFG, ROUTES=merged_pair({"KEY_DOCS": "k2", "KEY_SECOND": "k3"}))
+    calls = []
+
+    def dify(base, key, inputs, timeout):
+        calls.append(key)
+        return 200, f"run-{key}", ""
+
+    assert MOD.handle(merged_event("d-7"), cfg, dify_post=dify) is True
+    assert calls == ["k2", "k3"]
+    lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert [(x["route"], x["msg"], x["delivery"]) for x in lines] == [
+        ("docs-updater", "dispatched", "d-7"), ("second", "dispatched", "d-7")]
+
+
+def test_handle_one_failing_route_does_not_stop_the_other(capsys):
+    cfg = dict(CFG, ROUTES=merged_pair({"KEY_DOCS": "k2", "KEY_SECOND": "k3"}))
+    calls = []
+
+    def dify(base, key, inputs, timeout):
+        calls.append(key)
+        if key == "k2":
+            raise OSError("connection reset")
+        return 200, "run-k3", ""
+
+    assert MOD.handle(merged_event("d-8"), cfg, dify_post=dify) is True
+    assert calls == ["k2", "k3"]
+    lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert [(x["route"], x["msg"], x["delivery"], x["detail"]) for x in lines] == [
+        ("docs-updater", "dispatch_failed", "d-8", "OSError"), ("second", "dispatched", "d-8", None)]
+
+
+def test_handle_no_match_fires_no_route_and_takes_default(capsys):
+    cfg = dict(CFG, ROUTES=merged_pair({"KEY_DOCS": "k2", "KEY_SECOND": "k3"}))
+    dify_calls, default_calls = [], []
+
+    def dify(base, key, inputs, timeout):
+        dify_calls.append(key)
+        return 200, "run", ""
+
+    def default_post(url, secret, event, delivery, raw):
+        default_calls.append(url)
+        return 200, "{}"
+
+    assert MOD.handle({"Body": envelope()}, cfg, post=default_post, dify_post=dify) is True
+    assert dify_calls == []
+    assert default_calls == ["http://127.0.0.1:1/webhooks/github-public"]
 
 
 def test_forward_dify_streams_until_workflow_started():
