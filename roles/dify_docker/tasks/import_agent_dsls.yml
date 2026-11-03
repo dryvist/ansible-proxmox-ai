@@ -1,0 +1,36 @@
+---
+# =============================================================================
+# Import the agent DSLs into the console (best-effort, idempotent, non-fatal).
+# Lists the existing apps once; each DSL is then handled by import_agent_dsl.yml,
+# which skips any app whose name already exists, so operator edits survive.
+# =============================================================================
+
+- name: List existing Dify apps (agent DSL import idempotency check)
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps?page=1&limit=100"
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_dsl_apps_list
+  # Read-only; a check run needs the current names to preview the import.
+  check_mode: false
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Import each agent DSL (non-fatal, skips existing app names)
+  ansible.builtin.include_tasks: import_agent_dsl.yml
+  loop: "{{ dify_docker_agent_dsls }}"
+  loop_control:
+    loop_var: dify_docker_agent_dsl
+    label: "{{ dify_docker_agent_dsl.name }}"
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+    - dify_docker_dsl_apps_list.status | default(0) == 200
