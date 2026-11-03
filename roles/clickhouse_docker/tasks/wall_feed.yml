@@ -2,24 +2,48 @@
 # Wall feed objects (llm_wall.sql.j2) and the gateway's read-only user. Runs after the LLM
 # database and per-source tables exist.
 
-# The views' definition fingerprint is the hash of the rendered template with an
-# empty COMMENT, so it changes exactly when the rendered definition does. The
+# The wall stopwords table, rebuilt from the role defaults on every converge.
+# Views read it at refresh time, so this never needs a view rebuild.
+- name: Rebuild the wall stopwords table
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ clickhouse_docker_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ clickhouse_docker_app_user }}"
+      - --password
+      - "{{ clickhouse_docker_app_password }}"
+      - --multiquery
+      - --query
+      - "{{ lookup('ansible.builtin.template', 'llm_wall.sql.j2') }}"
+  vars:
+    clickhouse_docker_wall_mode: stopwords
+    clickhouse_docker_stopwords: >-
+      {{ lookup('ansible.builtin.file', clickhouse_docker_stopwords_file).splitlines()
+         | map('trim') | reject('equalto', '') | list }}
+  changed_when: false
+  no_log: true
+
+# The views' definition fingerprint is the hash of the rendered view definitions
+# with an empty COMMENT, so it changes exactly when those definitions do. The
 # COMMENT is then written with it on creation.
 - name: Fingerprint the wall view definitions
   ansible.builtin.set_fact:
     clickhouse_docker_wall_fingerprint: >-
       {{ lookup('ansible.builtin.template', 'llm_wall.sql.j2') | hash('sha256') }}
   vars:
-    clickhouse_docker_stopwords: >-
-      {{ lookup('ansible.builtin.file', clickhouse_docker_stopwords_file).splitlines()
-         | map('trim') | reject('equalto', '') | list }}
+    clickhouse_docker_wall_mode: views
   no_log: true
 
 # CREATE MATERIALIZED VIEW IF NOT EXISTS keeps an existing view as it is, so the
 # views are dropped here when either one does not carry the current fingerprint.
-# The next task then creates both from the current definition. Both views are
-# dropped together because they are created together. The views hold no state
-# that is not rebuilt on creation, and the refresh runs straight after.
+# Both views are dropped together because they are created together.
 - name: Check which wall view definition is in place
   ansible.builtin.command:
     argv:
@@ -42,6 +66,34 @@
         AND name IN ('{{ clickhouse_docker_wall_words_view }}', '{{ clickhouse_docker_wall_recent_view }}')
         AND comment = '{{ clickhouse_docker_wall_fingerprint }}'
   register: clickhouse_docker_wall_views_in_place
+  changed_when: false
+  no_log: true
+
+# Before any drop, both SELECT bodies are checked against the live server with
+# EXPLAIN PLAN, which resolves tables, columns and types without running them. A
+# failed check fails the converge here, so the drop below never runs and the views
+# in place keep serving. Runs only when a drop is about to happen.
+- name: Check the wall view SELECT bodies against the live server
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ clickhouse_docker_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ clickhouse_docker_app_user }}"
+      - --password
+      - "{{ clickhouse_docker_app_password }}"
+      - --multiquery
+      - --query
+      - "{{ lookup('ansible.builtin.template', 'llm_wall.sql.j2') }}"
+  vars:
+    clickhouse_docker_wall_mode: explain
+  when: clickhouse_docker_wall_views_in_place.stdout | trim != '2'
   changed_when: false
   no_log: true
 
@@ -69,10 +121,9 @@
   changed_when: true
   no_log: true
 
-# Wall feed objects over the per-source tables, rendered from
-# templates/llm_wall.sql.j2 the same way: the stopwords table rebuilt from the
-# role defaults, and the word-cloud and recent-activity refreshable views.
-- name: Create the wall stopwords table and refreshable views
+# The two views, from the current definition. IF NOT EXISTS makes this a no-op
+# when the views were kept above.
+- name: Create the wall refreshable views
   ansible.builtin.command:
     argv:
       - docker
@@ -91,9 +142,7 @@
       - --query
       - "{{ lookup('ansible.builtin.template', 'llm_wall.sql.j2') }}"
   vars:
-    clickhouse_docker_stopwords: >-
-      {{ lookup('ansible.builtin.file', clickhouse_docker_stopwords_file).splitlines()
-         | map('trim') | reject('equalto', '') | list }}
+    clickhouse_docker_wall_mode: views
   changed_when: false
   no_log: true
 
@@ -101,6 +150,8 @@
 # GRANT ... WITH REPLACE OPTION drops any other privilege the user holds, so a
 # converge always leaves exactly these two grants. Its settings (readonly=1
 # and the result, time and memory limits) are re-applied with the password.
+# These run after the view creation above on every converge, so the grants hold
+# after a rebuild.
 - name: Provision the wall read-only ClickHouse user
   ansible.builtin.command:
     cmd: >-

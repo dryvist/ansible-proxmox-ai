@@ -1,14 +1,19 @@
 {#- Rendered by ansible-proxmox-ai/roles/clickhouse_docker — do not edit by hand.
 
    Wall feed objects in the LLM database, run on every converge after
-   llm_schema.sql.j2. llm.stopwords is rebuilt from the role defaults each
-   run: CREATE OR REPLACE fills a new table and swaps it in atomically, so a
-   refresh never reads a half-loaded list. The two views are refreshable
-   materialized views (refreshed once on creation, then on their schedule).
-   IF NOT EXISTS leaves an existing view as it is, so each view's COMMENT
-   carries a fingerprint of this rendered definition. wall_feed.yml drops
-   both views when the fingerprint in place differs, and the next converge
-   creates them from the new definition.
+   llm_schema.sql.j2. One template, three modes (clickhouse_docker_wall_mode):
+     stopwords  the llm.stopwords table, rebuilt from the role defaults each
+                run: CREATE OR REPLACE fills a new table and swaps it in
+                atomically, so a refresh never reads a half-loaded list.
+     explain    EXPLAIN PLAN of each view's SELECT, run against the live server
+                before any view is dropped, so a broken definition fails the
+                converge while the views in place keep serving.
+     views      the two refreshable materialized views (refreshed once on
+                creation, then on their schedule), the default. IF NOT EXISTS
+                leaves an existing view as it is, so each view's COMMENT carries
+                a fingerprint of this rendered definition. wall_feed.yml drops
+                both views when the fingerprint in place differs, and the next
+                converge creates them from the new definition.
 
    The ingest leaves role, content and model empty, so every source reads
    them from the JSON text in `raw`. A source's `shape` (defaults/main.yml)
@@ -18,6 +23,7 @@
    Neither view returns message content: word_cloud holds word counts,
    recent_activity holds metadata and the content length. -#}
 {%- set db = clickhouse_docker_llm_database -%}
+{%- set mode = clickhouse_docker_wall_mode | default('views') -%}
 {%- set injected = ('^[[:space:]]*(' ~ (clickhouse_docker_wall_injected_prompt_patterns | join('|')) ~ ')')
     | replace('\\', '\\\\') | replace("'", "\\'") -%}
 {%- set fingerprint = clickhouse_docker_wall_fingerprint | default('') -%}
@@ -111,28 +117,10 @@ FROM
 )
 WHERE msg_role IN ('user', 'assistant')
 {%- endmacro -%}
-CREATE OR REPLACE TABLE {{ db }}.stopwords
-(
-    word String
-)
-ENGINE = MergeTree
-ORDER BY word
-AS SELECT DISTINCT arrayJoin(arrayFlatten(arrayMap(w -> splitByNonAlpha(lower(w)), [
-{% for word in clickhouse_docker_stopwords + clickhouse_docker_stopwords_extra %}
-    '{{ word | replace('\\', '\\\\') | replace("'", "\\'") }}'{{ ',' if not loop.last }}
-{% endfor %}
-]))) AS word;
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS {{ db }}.{{ clickhouse_docker_wall_words_view }}
-REFRESH EVERY {{ clickhouse_docker_wall_words_refresh }}
-(
-    source String,
-    word String,
-    n UInt64
-)
-ENGINE = MergeTree
-ORDER BY (source, word)
-AS SELECT
+{#- The SELECT bodies. The views and the EXPLAIN PLAN checks both render these,
+    so the check runs the same query the view is created from. -#}
+{%- set word_select -%}
+SELECT
     source,
     word,
     count() AS n
@@ -160,20 +148,9 @@ WHERE lengthUTF8(word) BETWEEN {{ clickhouse_docker_wall_word_min_length }} AND 
 GROUP BY source, word
 ORDER BY source ASC, n DESC, word ASC
 LIMIT {{ clickhouse_docker_wall_words_per_source }} BY source
-COMMENT '{{ fingerprint }}';
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS {{ db }}.{{ clickhouse_docker_wall_recent_view }}
-REFRESH EVERY {{ clickhouse_docker_wall_recent_refresh }}
-(
-    ts DateTime,
-    source String,
-    model String,
-    role String,
-    chars UInt32
-)
-ENGINE = MergeTree
-ORDER BY ts
-AS SELECT
+{%- endset -%}
+{%- set recent_select -%}
+SELECT
     ts,
     source,
     model,
@@ -204,4 +181,47 @@ FROM
 )
 ORDER BY ts DESC
 LIMIT {{ clickhouse_docker_wall_recent_rows }}
+{%- endset -%}
+{%- if mode == 'stopwords' %}
+CREATE OR REPLACE TABLE {{ db }}.stopwords
+(
+    word String
+)
+ENGINE = MergeTree
+ORDER BY word
+AS SELECT DISTINCT arrayJoin(arrayFlatten(arrayMap(w -> splitByNonAlpha(lower(w)), [
+{% for word in clickhouse_docker_stopwords + clickhouse_docker_stopwords_extra %}
+    '{{ word | replace('\\', '\\\\') | replace("'", "\\'") }}'{{ ',' if not loop.last }}
+{% endfor %}
+]))) AS word;
+{%- elif mode == 'explain' %}
+EXPLAIN PLAN {{ word_select }};
+
+EXPLAIN PLAN {{ recent_select }};
+{%- else %}
+CREATE MATERIALIZED VIEW IF NOT EXISTS {{ db }}.{{ clickhouse_docker_wall_words_view }}
+REFRESH EVERY {{ clickhouse_docker_wall_words_refresh }}
+(
+    source String,
+    word String,
+    n UInt64
+)
+ENGINE = MergeTree
+ORDER BY (source, word)
+AS {{ word_select }}
 COMMENT '{{ fingerprint }}';
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS {{ db }}.{{ clickhouse_docker_wall_recent_view }}
+REFRESH EVERY {{ clickhouse_docker_wall_recent_refresh }}
+(
+    ts DateTime,
+    source String,
+    model String,
+    role String,
+    chars UInt32
+)
+ENGINE = MergeTree
+ORDER BY ts
+AS {{ recent_select }}
+COMMENT '{{ fingerprint }}';
+{%- endif %}
