@@ -489,3 +489,7 @@ def test_fresh_install_without_an_owner_email_fails_closed(monkeypatch):
     assert not all(
         render_all(fail_closed["ansible.builtin.assert"]["that"], variables)
     )
+
+
+def test_seed_task_sets_no_log():
+    assert task_named(SEED_TASK).get("no_log") is True
