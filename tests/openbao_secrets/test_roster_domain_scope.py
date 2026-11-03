@@ -12,6 +12,7 @@ ROSTER = {"hermes-x": {"container": "hermes-x", "owns": []}, "ci-fixer": {"owns"
 HOSTVARS = {
     "hermes-x": {"group_names": ["hermes_agent_group", "managed_secrets_group"]},
     "llm-router-1": {"group_names": ["llm_router_group", "managed_secrets_group"]},
+    "clickhouse": {"group_names": ["clickhouse_group", "managed_secrets_group"]},
 }
 
 
@@ -81,4 +82,24 @@ def test_only_roster_domains_are_group_scoped():
     assert "hermes_agent_group" not in groups["ci-fixer"]
     assert "hermes_agent_group" in groups["hermes-x"]
     assert "apps" not in groups
-    assert _domain_groups({}) == {}
+    assert _domain_groups({}) == {"clickhouse-wall": ["clickhouse_group"]}
+
+
+def test_clickhouse_wall_domain_is_optional_until_its_approle_is_applied():
+    static_optional = yaml.safe_load(
+        (REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains.yml").read_text(encoding="utf-8")
+    )["_openbao_secrets_static_optional_domains"]
+
+    assert "clickhouse-wall" in static_optional
+
+
+def test_clickhouse_wall_domain_is_fetched_only_by_the_clickhouse_play():
+    names = ["apps", "clickhouse", "clickhouse-wall"]
+    groups = _domain_groups(ROSTER)
+
+    router_play = _selected(names, groups, _active_groups(["llm-router-1"]))
+    clickhouse_play = _selected(names, groups, _active_groups(["clickhouse"]))
+
+    assert "clickhouse-wall" not in router_play
+    assert "clickhouse" in router_play
+    assert "clickhouse-wall" in clickhouse_play
