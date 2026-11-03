@@ -15,7 +15,11 @@ YAML_11_SCALARS = ["n", "no", "null", "off", "on", "y", "yes"]
 
 
 def _defaults() -> dict:
-    return yaml.safe_load((ROLE / "defaults/main.yml").read_text(encoding="utf-8"))
+    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text(encoding="utf-8"))
+    # tasks/wall_feed.yml passes the stopword file in as this list; mirror that here.
+    stopwords = (ROLE / "files" / defaults["clickhouse_docker_stopwords_file"]).read_text(encoding="utf-8")
+    defaults["clickhouse_docker_stopwords"] = [w.strip() for w in stopwords.splitlines() if w.strip()]
+    return defaults
 
 
 def _render(template: str) -> str:
@@ -159,7 +163,9 @@ def test_wall_handlers_are_deployed_and_mounted_read_only():
         "{{ clickhouse_docker_config_d_dir }}/wall_handlers.xml"
         ":/etc/clickhouse-server/config.d/wall_handlers.xml:ro"
     ) in compose
-    assert "lookup('ansible.builtin.template', 'llm_wall.sql.j2')" in tasks
+    wall_tasks = (ROLE / "tasks/wall_feed.yml").read_text(encoding="utf-8")
+    assert "ansible.builtin.include_tasks: wall_feed.yml" in tasks
+    assert "lookup('ansible.builtin.template', 'llm_wall.sql.j2')" in wall_tasks
 
 
 def test_wall_reader_password_comes_only_from_openbao():
@@ -177,7 +183,7 @@ def test_wall_reader_password_comes_only_from_openbao():
 
 def test_wall_reader_is_readonly_limited_and_granted_only_the_two_views():
     defaults = _defaults()
-    tasks = (ROLE / "tasks/main.yml").read_text(encoding="utf-8")
+    tasks = (ROLE / "tasks/wall_feed.yml").read_text(encoding="utf-8")
     task = tasks.split("- name: Provision the wall read-only ClickHouse user")[1].split("- name:")[0]
     settings = jinja2.Template(
         "{{ clickhouse_docker_wall_reader_settings.items() | map('join', ' = ') | join(', ') }}"
@@ -197,4 +203,4 @@ def test_wall_reader_is_readonly_limited_and_granted_only_the_two_views():
         "GRANT SELECT ON {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_recent_view }}\n"
         "               TO {{ clickhouse_docker_wall_reader_user }};"
     ) in task
-    assert "      - clickhouse_docker_wall_reader_password\n" in tasks
+    assert "      - clickhouse_docker_wall_reader_password\n" in (ROLE / "tasks/main.yml").read_text(encoding="utf-8")

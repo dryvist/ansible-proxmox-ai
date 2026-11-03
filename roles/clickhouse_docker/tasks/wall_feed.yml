@@ -1,0 +1,55 @@
+---
+# Wall feed objects (llm_wall.sql.j2) and the gateway's read-only user. Runs after the LLM
+# database and per-source tables exist.
+
+# Wall feed objects over the per-source tables, rendered from
+# templates/llm_wall.sql.j2 the same way: the stopwords table rebuilt from the
+# role defaults, and the word-cloud and recent-activity refreshable views.
+- name: Create the wall stopwords table and refreshable views
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ clickhouse_docker_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ clickhouse_docker_app_user }}"
+      - --password
+      - "{{ clickhouse_docker_app_password }}"
+      - --multiquery
+      - --query
+      - "{{ lookup('ansible.builtin.template', 'llm_wall.sql.j2') }}"
+  vars:
+    clickhouse_docker_stopwords: >-
+      {{ lookup('ansible.builtin.file', clickhouse_docker_stopwords_file).splitlines()
+         | map('trim') | reject('equalto', '') | list }}
+  changed_when: false
+  no_log: true
+
+# The wall gateway's user reads the two wall views and nothing else. The first
+# GRANT ... WITH REPLACE OPTION drops any other privilege the user holds, so a
+# converge always leaves exactly these two grants. Its settings (readonly=1
+# and the result, time and memory limits) are re-applied with the password.
+- name: Provision the wall read-only ClickHouse user
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ clickhouse_docker_data_dir }}/docker-compose.yml
+      exec -T {{ clickhouse_docker_service }}
+      clickhouse-client --user {{ clickhouse_docker_app_user }}
+      --password {{ clickhouse_docker_app_password }}
+      --multiquery
+      --query "CREATE USER IF NOT EXISTS {{ clickhouse_docker_wall_reader_user }}
+               IDENTIFIED WITH sha256_password BY '{{ clickhouse_docker_wall_reader_password }}';
+               ALTER USER {{ clickhouse_docker_wall_reader_user }}
+               IDENTIFIED WITH sha256_password BY '{{ clickhouse_docker_wall_reader_password }}'
+               SETTINGS {{ clickhouse_docker_wall_reader_settings.items() | map('join', ' = ') | join(', ') }};
+               GRANT SELECT ON {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_words_view }}
+               TO {{ clickhouse_docker_wall_reader_user }} WITH REPLACE OPTION;
+               GRANT SELECT ON {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_recent_view }}
+               TO {{ clickhouse_docker_wall_reader_user }};"
+  changed_when: false
+  no_log: true
