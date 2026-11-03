@@ -157,13 +157,12 @@
           - _chatgpt[0].litellm_params.budget_duration == _chatgpt_entry.budget_duration
           - _chatgpt_entry.budget_duration == '1d'
           - "'codex-subscription' in llm_router_hermes_cloud_budgeted_groups"
-          - _openai | length == 1
-          - _openai[0].litellm_params.model == 'openai/' ~ llm_router_chatgpt_model
-          - _openai[0].litellm_params.api_key == 'os.environ/OPENAI_API_KEY'
-          - _openai[0].litellm_params.reasoning_effort == 'xhigh'
-          - _openai[0].litellm_params.stream_timeout | int < ai_ingress_response_header_timeout_seconds | int
-          - llm_router_external_terminal_rungs | last
-            == llm_router_hermes_cloud_api_key_groups | last
+          # codex-api is disabled in the registry: no api-key group, no OpenAI
+          # deployment, and the paid segment ends on its last paid cloud rung.
+          - llm_router_hermes_cloud_api_key_groups | length == 0
+          - _openai | length == 0
+          - "'codex-api' not in llm_router_external_terminal_rungs"
+          - llm_router_external_terminal_rungs | last == llm_router_external_paid_rungs | last
           - llm_router_external_subscription_rungs == ['codex-subscription']
           - >-
             llm_router_external_terminal_rungs.index('codex-subscription')
@@ -175,9 +174,7 @@
           {{ llm_router_registry_enabled
              | selectattr('provider', 'equalto', 'chatgpt') | first }}
         _openai: >-
-          {{ _config.model_list
-             | selectattr('model_name', 'equalto', llm_router_hermes_cloud_api_key_groups | last)
-             | selectattr('litellm_params.model', 'match', '^openai/gpt') | list }}
+          {{ _config.model_list | selectattr('model_name', 'equalto', 'codex-api') | list }}
 
     # The public key sits behind llm_router_oss_ci_key_enabled: with the
     # switch off (the shipped default) it renders empty and seed-keys registers
