@@ -8,6 +8,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
+AGENT_DSLS = ROOT / "roles/dify_docker/vars/agent_dsls.yml"
 PROD_GROUP = ROOT / "inventory/group_vars/dify_group.yml"
 EVAL_GROUP = ROOT / "inventory/group_vars/dify_eval_group.yml"
 TASKS = ROOT / "roles/dify_docker/tasks"
@@ -28,9 +29,9 @@ def _defaults():
 
 
 def test_seven_agent_dsls_pinned_to_commit_with_sha256():
-    defaults = _defaults()
-    assert re.fullmatch(r"[0-9a-f]{40}", defaults["dify_docker_agent_dsl_commit"])
-    dsls = defaults["dify_docker_agent_dsls"]
+    pins = yaml.safe_load(AGENT_DSLS.read_text(encoding="utf-8"))
+    assert re.fullmatch(r"[0-9a-f]{40}", pins["dify_docker_agent_dsl_commit"])
+    dsls = pins["dify_docker_agent_dsls"]
 
     assert [entry["name"] for entry in dsls] == EXPECTED_NAMES
     for entry in dsls:
@@ -42,7 +43,7 @@ def test_import_is_off_by_default_and_on_only_for_production():
     assert _defaults()["dify_docker_import_agent_dsls"] is False
     assert yaml.safe_load(PROD_GROUP.read_text(encoding="utf-8"))["dify_docker_import_agent_dsls"] is True
     eval_group = yaml.safe_load(EVAL_GROUP.read_text(encoding="utf-8")) or {}
-    assert "dify_docker_import_agent_dsls" not in eval_group
+    assert eval_group["dify_docker_import_agent_dsls"] is False
 
 
 def test_import_tasks_are_wired_and_never_overwrite():
