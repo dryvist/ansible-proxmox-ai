@@ -9,9 +9,9 @@ X-Hub-Signature-256. The route is RELAY_ROUTE_PRIVATE (base RELAY_TARGET_BASE)
 when the payload's repository.private is true, RELAY_ROUTE_PUBLIC (base
 RELAY_TARGET_BASE_PUBLIC, defaulting to RELAY_TARGET_BASE) when false; a payload
 without that boolean is treated as malformed. RELAY_ROUTES_JSON (optional) is
-a list of routes checked first: a matching route starts a Dify workflow run
+a list of routes checked first: each matching route starts a Dify workflow run
 instead, with that route's app key, and the default route above applies when
-nothing matches. A route with no app key in the environment is dropped at start.
+no route matches. A route with no app key in the environment is dropped at start.
 A message is deleted only after a 2xx
 response (which includes the receiver's `duplicate` answer); anything else,
 including a malformed envelope, is left for the queue's redrive policy. One
