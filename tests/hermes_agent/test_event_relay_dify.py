@@ -178,65 +178,40 @@ def test_handle_no_match_fires_no_route_and_takes_default(capsys):
     assert default_calls == ["http://127.0.0.1:1/webhooks/github-public"]
 
 
-def test_forward_dify_streams_until_workflow_started():
-    import http.server
-    import threading
-
-    seen = {}
-    events = [
-        b'data: {"event": "ping"}\n\n',
-        b'data: {"event": "workflow_started", "workflow_run_id": "run-9", "task_id": "t"}\n\n',
-    ]
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):
-            seen["path"] = self.path
-            seen["auth"] = self.headers.get("Authorization")
-            seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.end_headers()
-            for chunk in events:
-                self.wfile.write(chunk)
-                self.wfile.flush()
-
-        def log_message(self, *args):
-            pass
-
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        base = f"http://127.0.0.1:{server.server_port}/"
-        status, run_id, detail = MOD.forward_dify(base, "k1", {"event": "check_run"}, 5)
-    finally:
-        server.shutdown()
-    assert (status, run_id, detail) == (200, "run-9", "")
-    assert seen["path"] == "/v1/workflows/run"
-    assert seen["auth"] == "Bearer k1"
-    assert seen["body"] == {"inputs": {"event": "check_run"}, "response_mode": "streaming", "user": "github-event-relay"}
+def test_dify_inputs_adds_route_constants():
+    mapping = {"repo": "repository.full_name"}
+    assert MOD.dify_inputs("check_run", RAW_CHECK_FAILED, mapping, const={"strength": "inferred", "mode": "shadow"}) == {
+        "event": "check_run", "repo": "o/r", "strength": "inferred", "mode": "shadow",
+    }
 
 
-def test_forward_dify_reports_malformed_response_without_raising():
-    import http.server
-    import threading
+def test_handle_skips_route_with_empty_required_input(capsys):
+    # RAW_CHECK_FAILED has no check_suite, so the ref input is empty and the run must not start.
+    route = dict(ROUTE_DEFS[0], required=["repo", "ref"], inputs={"repo": "repository.full_name",
+                                                                   "ref": "check_run.check_suite.head_branch"})
+    cfg = dict(CFG, ROUTES=MOD.load_routes(json.dumps([route]), {"KEY_CI": "k1"}))
+    calls = []
+    failed = {"Body": envelope(event="check_run", body_b64=base64.b64encode(RAW_CHECK_FAILED).decode(), delivery="d-9")}
+    assert MOD.handle(failed, cfg, dify_post=lambda *a: calls.append(a) or (200, "run", "")) is True
+    assert calls == []
+    lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert [(x["msg"], x["route"], x["missing"], x["delivery"]) for x in lines] == [
+        ("route_skipped", "ci-fixer", ["ref"], "d-9")]
 
-    class Handler(http.server.BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.0"
 
-        def do_POST(self):
-            self.rfile.read(int(self.headers["Content-Length"]))
-            self.wfile.write(b"not an http status line\r\n\r\n")
+def test_route_with_malformed_required_or_const_is_dropped(capsys):
+    bad_required = dict(ROUTE_DEFS[0], name="a", app_key_env="KEY_CI", required="ref")
+    bad_const = dict(ROUTE_DEFS[0], name="b", app_key_env="KEY_CI", const={"mode": 1})
+    assert MOD.load_routes(json.dumps([bad_required, bad_const]), {"KEY_CI": "k1"}) == []
+    out = capsys.readouterr().out
+    assert "required must be a list of input names" in out
+    assert "const must map input names to strings" in out
 
-        def log_message(self, *args):
-            pass
 
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        status, run_id, detail = MOD.forward_dify(f"http://127.0.0.1:{server.server_port}/", "k1", {}, 5)
-    finally:
-        server.shutdown()
-    assert status is None and run_id is None and detail
+def test_const_repeating_an_input_name_drops_route(capsys):
+    bad = dict(ROUTE_DEFS[0], name="c", app_key_env="KEY_CI", const={"repo": "x"})  # ROUTE_DEFS[0] maps repo
+    assert MOD.load_routes(json.dumps([bad]), {"KEY_CI": "k1"}) == []
+    assert "const names must not repeat an input name or event" in capsys.readouterr().out
 
 
 def test_handle_treats_deeply_nested_body_as_poison(capsys):
@@ -275,26 +250,3 @@ def test_load_routes_drops_route_with_wrong_field_types(capsys):
         "timeout must be a number",
         "inputs must be a mapping",
     ]
-
-
-def test_forward_dify_reports_error_event_without_run_id():
-    import http.server
-    import threading
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):
-            self.rfile.read(int(self.headers["Content-Length"]))
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b'data: {"event": "error", "message": "app unavailable"}\n\n')
-
-        def log_message(self, *args):
-            pass
-
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        status, run_id, detail = MOD.forward_dify(f"http://127.0.0.1:{server.server_port}/", "k1", {}, 5)
-    finally:
-        server.shutdown()
-    assert (status, run_id, detail) == (200, None, "app unavailable")

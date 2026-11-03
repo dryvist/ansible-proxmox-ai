@@ -66,11 +66,18 @@ hermes_agent_event_relay_routes:
       event: check_run
       action: completed
       where: {check_run.conclusion: failure}
+    # Start variables and required list copied from ai-llm-prompts 31eed96, agents/dify/ci-fixer.dsl.yml.
+    # Webhooks are never an operator mandate, so strength is inferred and mode is shadow.
+    required: [repo, ref, head_sha, actor, event, strength, mode, check_run_id]
+    const:
+      strength: inferred
+      mode: shadow
     inputs:
       repo: repository.full_name
-      check_name: check_run.name
+      ref: check_run.check_suite.head_branch
       head_sha: check_run.head_sha
-      html_url: check_run.html_url
+      actor: sender.login
+      check_run_id: check_run.id
   - name: code-simplifier
     base: "{{ hermes_agent_event_relay_dify_base }}"
     app_key_env: RELAY_DIFY_KEY_CODE_SIMPLIFIER
@@ -78,10 +85,17 @@ hermes_agent_event_relay_routes:
     match:
       event: pull_request
       action: [opened, ready_for_review]
+    # Start variables and required list copied from ai-llm-prompts 31eed96, agents/dify/code-simplifier.dsl.yml.
+    required: [repo, ref, head_sha, actor, event, strength, mode, pr_number]
+    const:
+      strength: inferred
+      mode: shadow
     inputs:
       repo: repository.full_name
-      pr: pull_request.number
+      ref: pull_request.head.ref
       head_sha: pull_request.head.sha
+      actor: sender.login
+      pr_number: pull_request.number
   - name: docs-updater
     base: "{{ hermes_agent_event_relay_dify_base }}"
     app_key_env: RELAY_DIFY_KEY_DOCS_UPDATER
@@ -90,10 +104,15 @@ hermes_agent_event_relay_routes:
       event: pull_request
       action: closed
       where: {pull_request.merged: true}
+    # Start variables and required list copied from ai-llm-prompts 31eed96, agents/dify/docs-updater.dsl.yml.
+    required: [repo]
+    text_inputs: [merged]
     inputs:
       repo: repository.full_name
-      pr: pull_request.number
-      merge_sha: pull_request.merge_commit_sha
+      pr_number: pull_request.number
+      action: action
+      merged: pull_request.merged
+      org: repository.owner.login
   # Disabled until its app key exists: an empty key drops the route at start.
   - name: doc-contradiction-finder
     base: "{{ hermes_agent_event_relay_dify_base }}"
@@ -104,6 +123,8 @@ hermes_agent_event_relay_routes:
       action: closed
       where: {pull_request.merged: true}
     # merged is a Dify text input, so its boolean value is sent as "true" or "false".
+    # Required list copied from ai-llm-prompts 31eed96, agents/dify/doc-contradiction-finder.dsl.yml.
+    required: [event, action, merged, org, repo, pr_number]
     text_inputs: [merged]
     inputs:
       action: action
