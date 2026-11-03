@@ -208,6 +208,12 @@ def test_route_with_malformed_required_or_const_is_dropped(capsys):
     assert "const must map input names to strings" in out
 
 
+def test_const_repeating_an_input_name_drops_route(capsys):
+    bad = dict(ROUTE_DEFS[0], name="c", app_key_env="KEY_CI", const={"repo": "x"})  # ROUTE_DEFS[0] maps repo
+    assert MOD.load_routes(json.dumps([bad]), {"KEY_CI": "k1"}) == []
+    assert "const names must not repeat an input name or event" in capsys.readouterr().out
+
+
 def test_forward_dify_streams_until_workflow_started():
     import http.server
     import threading

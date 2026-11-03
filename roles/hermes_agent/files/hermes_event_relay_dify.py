@@ -59,6 +59,8 @@ def _route_problem(route) -> str | None:
     const = route.get("const", {})
     if not isinstance(const, dict) or not all(isinstance(v, str) for v in const.values()):
         return "const must map input names to strings"
+    if set(const) & (set(route.get("inputs", {})) | {"event"}):
+        return "const names must not repeat an input name or event"
     required = route.get("required", [])
     if not isinstance(required, list) or not all(isinstance(name, str) for name in required):
         return "required must be a list of input names"
@@ -132,7 +134,7 @@ def dify_inputs(event: str, raw: bytes, mapping: dict, text_inputs=(), const=Non
     route (const) are added as fixed inputs, and event is always set from the envelope.
     """
     payload = json.loads(raw)
-    inputs = {"event": event, **(const or {})}
+    inputs = {**(const or {}), "event": event}  # the envelope's event always wins over a constant
     for name, dotted in mapping.items():
         value = _path(payload, dotted)
         if name in text_inputs and isinstance(value, bool):

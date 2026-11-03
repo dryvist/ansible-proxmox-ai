@@ -46,6 +46,14 @@ def test_no_route_sends_explicit_strength_or_live_mode():
         const = route.get("const", {})
         assert "explicit" not in const.values(), name
         assert const.get("mode", "shadow") == "shadow", name
+        # strength and mode must never come from the payload either.
+        assert not {"strength", "mode"} & set(route.get("inputs", {})), name
+
+
+def test_const_cannot_override_the_envelope_event():
+    route = _routes()["ci-fixer"]
+    assert "event" not in route.get("const", {})
+    assert MOD.dify_inputs("check_run", b"{}", {}, const={"event": "forged"})["event"] == "check_run"
 
 
 def test_each_route_key_is_declared_in_dify_keys():
