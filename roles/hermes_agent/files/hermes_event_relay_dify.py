@@ -94,14 +94,15 @@ def _path(payload, dotted: str):
     return cur
 
 
-def match_route(event: str, raw: bytes, routes: list[dict]) -> dict | None:
-    """Return the first active route whose event, action and `where` values match."""
+def match_routes(event: str, raw: bytes, routes: list[dict]) -> list[dict]:
+    """Return every active route whose event, action and `where` values match, in config order."""
     if not routes:
-        return None
+        return []
     try:
         payload = json.loads(raw)
     except ValueError:
-        return None
+        return []
+    matched = []
     for route in routes:
         match = route["match"]
         if match.get("event") != event:
@@ -110,8 +111,8 @@ def match_route(event: str, raw: bytes, routes: list[dict]) -> dict | None:
         if actions is not None and _path(payload, "action") not in ([actions] if isinstance(actions, str) else actions):
             continue
         if all(_path(payload, key) == value for key, value in match.get("where", {}).items()):
-            return route
-    return None
+            matched.append(route)
+    return matched
 
 
 def dify_inputs(event: str, raw: bytes, mapping: dict) -> dict:

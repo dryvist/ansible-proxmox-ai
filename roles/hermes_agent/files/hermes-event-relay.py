@@ -43,7 +43,7 @@ from hermes_event_relay_dify import (
     forward_dify,
     load_routes,
     log,
-    match_route,
+    match_routes,
     send_request,
 )
 
@@ -189,21 +189,23 @@ def handle(msg: dict, cfg: dict, post=forward, dify_post=forward_dify) -> bool:
     receives = msg.get("Attributes", {}).get("ApproximateReceiveCount")
     try:
         event, delivery, raw = parse_envelope(msg.get("Body", ""))
-        route = match_route(event, raw, cfg.get("ROUTES", []))
-        url = None if route else target_url(raw, cfg)
+        routes = match_routes(event, raw, cfg.get("ROUTES", []))
+        url = None if routes else target_url(raw, cfg)
     except (ValueError, RecursionError) as exc:  # deeply nested JSON raises RecursionError, not ValueError
         log(msg="poison", id=msg.get("MessageId"), error=str(exc), receives=receives)
         return False
-    if route:
-        try:
-            status, run_id, detail = dify_post(route["base"], route["app_key"],
-                                               dify_inputs(event, raw, route.get("inputs", {})),
-                                               float(route.get("timeout", 30)))
-        except Exception as exc:  # any dispatch failure must leave the relay loop running
-            status, run_id, detail = None, None, type(exc).__name__
+    if routes:
+        for route in routes:  # every matching route fires; one failing route does not stop the others
+            try:
+                status, run_id, detail = dify_post(route["base"], route["app_key"],
+                                                   dify_inputs(event, raw, route.get("inputs", {})),
+                                                   float(route.get("timeout", 30)))
+            except Exception as exc:  # any dispatch failure must leave the relay loop running
+                status, run_id, detail = None, None, type(exc).__name__
+            log(msg="dispatched" if run_id else "dispatch_failed", route=route["name"], event=event,
+                delivery=delivery, status=status, workflow_run_id=run_id, detail=detail or None, deleted=True,
+                receives=receives)
         # A dispatch is final: a failed run is logged and never re-queued, so the message is deleted either way.
-        log(msg="dispatched" if run_id else "dispatch_failed", route=route["name"], event=event, delivery=delivery,
-            status=status, workflow_run_id=run_id, detail=detail or None, deleted=True, receives=receives)
         return True
     status, detail = post(url, cfg["RELAY_WEBHOOK_SECRET"], event, delivery, raw)
     delete = should_delete(status)
