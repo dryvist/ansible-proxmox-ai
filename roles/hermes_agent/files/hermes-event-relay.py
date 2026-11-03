@@ -330,7 +330,7 @@ def handle(msg: dict, cfg: dict, post=forward, dify_post=forward_dify) -> bool:
         event, delivery, raw = parse_envelope(msg.get("Body", ""))
         route = match_route(event, raw, cfg.get("ROUTES", []))
         url = None if route else target_url(raw, cfg)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:  # deeply nested JSON raises RecursionError, not ValueError
         log(msg="poison", id=msg.get("MessageId"), error=str(exc), receives=receives)
         return False
     if route:

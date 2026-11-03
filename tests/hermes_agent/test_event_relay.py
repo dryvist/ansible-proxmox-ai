@@ -249,6 +249,15 @@ def test_forward_dify_reports_malformed_response_without_raising():
     assert status is None and run_id is None and detail
 
 
+def test_handle_treats_deeply_nested_body_as_poison(capsys):
+    deep = base64.b64encode(b"[" * 200000 + b"]" * 200000).decode()
+    routes = active_routes({"KEY_CI": "k1", "KEY_DOCS": "k2"})
+    assert MOD.handle({"Body": envelope(body_b64=deep)}, dict(CFG, ROUTES=routes), dify_post=lambda *a: (200, "r", "")) is False
+    assert MOD.handle({"Body": envelope(body_b64=deep)}, CFG, post=lambda *a: (200, "{}")) is False
+    lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert [x["msg"] for x in lines] == ["poison", "poison"]
+
+
 def test_handle_keeps_relay_running_when_dispatch_raises(capsys):
     import http.client
 
