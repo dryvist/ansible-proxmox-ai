@@ -12,6 +12,9 @@ without that boolean is treated as malformed. RELAY_ROUTES_JSON (optional) is
 a list of routes checked first: each matching route starts a Dify workflow run
 instead, with that route's app key, and the default route above applies when
 no route matches. A route with no app key in the environment is dropped at start.
+Every matching route fires, and each dispatch is final: a failed run is logged and
+not retried. A crash mid-loop redelivers the message, so routes that already fired
+can fire again (at-least-once, as with one route).
 A message is deleted only after a 2xx
 response (which includes the receiver's `duplicate` answer); anything else,
 including a malformed envelope, is left for the queue's redrive policy. One
