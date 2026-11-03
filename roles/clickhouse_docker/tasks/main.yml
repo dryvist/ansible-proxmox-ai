@@ -57,6 +57,15 @@
     mode: "0644"
   notify: Restart clickhouse
 
+- name: Deploy the wall feed HTTP handlers config
+  ansible.builtin.template:
+    src: config.d/wall-handlers.xml.j2
+    dest: "{{ clickhouse_docker_config_d_dir }}/wall_handlers.xml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart clickhouse
+
 # =============================================================================
 # Default-user lockdown
 # =============================================================================
@@ -256,6 +265,7 @@
       - clickhouse_docker_hyperdx_password
       - clickhouse_docker_splunk_password
       - clickhouse_docker_cribl_password
+      - clickhouse_docker_wall_reader_password
 
 # The LLM schema is rendered from templates/llm_schema.sql.j2 and passed as one
 # argv element, so no shell quoting touches the SQL. IF NOT EXISTS on both
@@ -281,6 +291,30 @@
   changed_when: false
   no_log: true
 
+# Wall feed objects over the per-source tables, rendered from
+# templates/llm_wall.sql.j2 the same way: the stopwords table rebuilt from the
+# role defaults, and the word-cloud and recent-activity refreshable views.
+- name: Create the wall stopwords table and refreshable views
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ clickhouse_docker_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ clickhouse_docker_app_user }}"
+      - --password
+      - "{{ clickhouse_docker_app_password }}"
+      - --multiquery
+      - --query
+      - "{{ lookup('ansible.builtin.template', 'llm_wall.sql.j2') }}"
+  changed_when: false
+  no_log: true
+
 - name: Provision the read-only ClickHouse users
   ansible.builtin.command:
     cmd: >-
@@ -298,6 +332,30 @@
   loop: "{{ clickhouse_docker_readonly_credentials | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
+  changed_when: false
+  no_log: true
+
+# The wall gateway's user reads the two wall views and nothing else. The first
+# GRANT ... WITH REPLACE OPTION drops any other privilege the user holds, so a
+# converge always leaves exactly these two grants. Its settings (readonly=1
+# and the result, time and memory limits) are re-applied with the password.
+- name: Provision the wall read-only ClickHouse user
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ clickhouse_docker_data_dir }}/docker-compose.yml
+      exec -T {{ clickhouse_docker_service }}
+      clickhouse-client --user {{ clickhouse_docker_app_user }}
+      --password {{ clickhouse_docker_app_password }}
+      --multiquery
+      --query "CREATE USER IF NOT EXISTS {{ clickhouse_docker_wall_reader_user }}
+               IDENTIFIED WITH sha256_password BY '{{ clickhouse_docker_wall_reader_password }}';
+               ALTER USER {{ clickhouse_docker_wall_reader_user }}
+               IDENTIFIED WITH sha256_password BY '{{ clickhouse_docker_wall_reader_password }}'
+               SETTINGS {{ clickhouse_docker_wall_reader_settings.items() | map('join', ' = ') | join(', ') }};
+               GRANT SELECT ON {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_words_view }}
+               TO {{ clickhouse_docker_wall_reader_user }} WITH REPLACE OPTION;
+               GRANT SELECT ON {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_recent_view }}
+               TO {{ clickhouse_docker_wall_reader_user }};"
   changed_when: false
   no_log: true
 

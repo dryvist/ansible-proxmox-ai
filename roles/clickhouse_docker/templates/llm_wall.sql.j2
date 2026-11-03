@@ -1,0 +1,120 @@
+{#- Rendered by ansible-proxmox-ai/roles/clickhouse_docker — do not edit by hand.
+
+   Wall feed objects in the LLM database, run on every converge after
+   llm_schema.sql.j2. llm.stopwords is rebuilt from the role defaults each
+   run: CREATE OR REPLACE fills a new table and swaps it in atomically, so a
+   refresh never reads a half-loaded list. The two views are refreshable
+   materialized views (refreshed once on creation, then on their schedule).
+   IF NOT EXISTS leaves an existing view as it is, so a changed view
+   definition only takes effect after that view is dropped.
+
+   Neither view returns message content: word_cloud holds word counts,
+   recent_activity holds metadata and the content length. -#}
+{%- set db = clickhouse_docker_llm_database -%}
+{%- set injected = ('^[[:space:]]*(' ~ (clickhouse_docker_wall_injected_prompt_patterns | join('|')) ~ ')')
+    | replace('\\', '\\\\') | replace("'", "\\'") -%}
+{%- macro message_roles(source) -%}
+'user'{% for role in source.output_roles %}, '{{ role }}'{% endfor %}
+{%- endmacro -%}
+{%- macro message_text(source, injected) -%}
+{%- if source.content == 'blocks' -%}
+if(isValidJSON(content) AND JSONType(content) IN ('Array', 'Object'),
+            arrayStringConcat(
+                arrayMap(
+                    b -> JSONExtractString(b, 'text'),
+                    arrayFilter(
+                        b -> JSONExtractString(b, 'type') IN ('', 'text')
+                            AND NOT JSONExtractBool(b, 'thought')
+                            AND NOT (role = 'user' AND match(JSONExtractString(b, 'text'), '{{ injected }}')),
+                        if(JSONType(content) = 'Array', JSONExtractArrayRaw(content), [content]))),
+                ' '),
+            if(role = 'user' AND match(content, '{{ injected }}'), '', content))
+{%- else -%}
+if(role = 'user' AND match(content, '{{ injected }}'), '', content)
+{%- endif -%}
+{%- endmacro %}
+CREATE OR REPLACE TABLE {{ db }}.stopwords
+(
+    word String
+)
+ENGINE = MergeTree
+ORDER BY word
+AS SELECT DISTINCT arrayJoin(arrayFlatten(arrayMap(w -> splitByNonAlpha(lower(w)), [
+{% for word in clickhouse_docker_stopwords + clickhouse_docker_stopwords_extra %}
+    '{{ word | replace('\\', '\\\\') | replace("'", "\\'") }}'{{ ',' if not loop.last }}
+{% endfor %}
+]))) AS word;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS {{ db }}.{{ clickhouse_docker_wall_words_view }}
+REFRESH EVERY {{ clickhouse_docker_wall_words_refresh }}
+(
+    source String,
+    word String,
+    n UInt64
+)
+ENGINE = MergeTree
+ORDER BY (source, word)
+AS SELECT
+    source,
+    word,
+    count() AS n
+FROM
+(
+{% for source in clickhouse_docker_wall_sources %}
+    SELECT
+        if(role = 'user', 'user', '{{ source.table }}') AS source,
+        {{ message_text(source, injected) }} AS body
+    FROM {{ db }}.{{ source.table }} FINAL
+    WHERE role IN ({{ message_roles(source) }})
+{% if not loop.last %}
+    UNION ALL
+{% endif %}
+{% endfor %}
+)
+ARRAY JOIN splitByNonAlpha(lower(body)) AS word
+WHERE lengthUTF8(word) BETWEEN {{ clickhouse_docker_wall_word_min_length }} AND {{ clickhouse_docker_wall_word_max_length }}
+    AND NOT match(word, '^[0-9]+$')
+    AND word NOT IN (SELECT word FROM {{ db }}.stopwords)
+GROUP BY source, word
+ORDER BY source ASC, n DESC, word ASC
+LIMIT {{ clickhouse_docker_wall_words_per_source }} BY source;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS {{ db }}.{{ clickhouse_docker_wall_recent_view }}
+REFRESH EVERY {{ clickhouse_docker_wall_recent_refresh }}
+(
+    ts DateTime,
+    source String,
+    model String,
+    role String,
+    chars UInt32
+)
+ENGINE = MergeTree
+ORDER BY ts
+AS SELECT
+    ts,
+    source,
+    model,
+    message_role AS role,
+    chars
+FROM
+(
+{% for source in clickhouse_docker_wall_sources %}
+    (
+        SELECT
+            toDateTime(event_time) AS ts,
+            '{{ source.table }}' AS source,
+            model,
+            if(role = 'user', 'user', 'assistant') AS message_role,
+            toUInt32(lengthUTF8(content)) AS chars
+        FROM {{ db }}.{{ source.table }} FINAL
+        WHERE role IN ({{ message_roles(source) }})
+        ORDER BY event_time DESC
+        LIMIT {{ clickhouse_docker_wall_recent_rows }}
+    )
+{% if not loop.last %}
+    UNION ALL
+{% endif %}
+{% endfor %}
+)
+ORDER BY ts DESC
+LIMIT {{ clickhouse_docker_wall_recent_rows }};
