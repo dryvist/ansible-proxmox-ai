@@ -59,6 +59,25 @@ def test_dify_inputs_maps_dotted_paths_and_blanks_missing():
     }
 
 
+def test_dify_inputs_sends_booleans_as_strings():
+    mapping = {"merged": "pull_request.merged", "pr_number": "pull_request.number"}
+    assert MOD.dify_inputs("pull_request", RAW_MERGED, mapping) == {
+        "event": "pull_request", "merged": "true", "pr_number": 7,
+    }
+
+
+def test_finder_route_stays_off_without_its_key():
+    finder = {
+        "name": "doc-contradiction-finder", "base": "https://dify.example", "app_key_env": "KEY_FINDER", "timeout": 30,
+        "match": {"event": "pull_request", "action": "closed", "where": {"pull_request.merged": True}},
+        "inputs": {"action": "action", "merged": "pull_request.merged", "org": "repository.owner.login",
+                   "repo": "repository.name", "pr_number": "pull_request.number"},
+    }
+    assert MOD.load_routes(json.dumps([finder]), {}) == []
+    assert [r["name"] for r in MOD.load_routes(json.dumps([finder]), {"KEY_FINDER": "k4"})] == [
+        "doc-contradiction-finder"]
+
+
 def test_handle_routes_matched_events_to_dify_and_others_to_default(capsys):
     routes = active_routes({"KEY_CI": "k1", "KEY_DOCS": "k2"})
     cfg = dict(CFG, ROUTES=routes)

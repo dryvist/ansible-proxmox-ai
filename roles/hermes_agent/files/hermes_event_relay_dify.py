@@ -121,6 +121,8 @@ def dify_inputs(event: str, raw: bytes, mapping: dict) -> dict:
     inputs = {"event": event}
     for name, dotted in mapping.items():
         value = _path(payload, dotted)
+        if isinstance(value, bool):  # Dify text inputs take strings, not JSON booleans
+            value = "true" if value else "false"
         inputs[name] = "" if value is None else value
     return inputs
 
