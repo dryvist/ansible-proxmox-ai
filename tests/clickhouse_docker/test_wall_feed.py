@@ -7,10 +7,20 @@ from pathlib import Path
 import jinja2
 import yaml
 
+from _wall_sql import (
+    RECENT,
+    ROLE,
+    ROOT,
+    WALL_MODES,
+    WALL_TABLES,
+    WORD_CLOUD,
+    _defaults,
+    _render,
+    _statement,
+    _statements,
+)
 
-ROOT = Path(__file__).resolve().parents[2]
-ROLE = ROOT / "roles/clickhouse_docker"
-WALL_TABLES = ["claude", "codex", "antigravity", "gemini", "zcode", "opencode"]
+
 WALL_SHAPES = {
     "claude": "claude",
     "codex": "codex",
@@ -19,10 +29,7 @@ WALL_SHAPES = {
     "zcode": "chat",
     "opencode": "chat",
 }
-WALL_MODES = ("stopwords", "views", "explain")
 YAML_11_SCALARS = ["n", "no", "null", "off", "on", "y", "yes"]
-WORD_CLOUD = "CREATE MATERIALIZED VIEW IF NOT EXISTS llm.word_cloud"
-RECENT = "CREATE MATERIALIZED VIEW IF NOT EXISTS llm.recent_activity"
 STOPWORDS_TASK = "Rebuild the wall stopwords table"
 FINGERPRINT_TASK = "Fingerprint the wall view definitions"
 COUNT_TASK = "Check which wall view definition is in place"
@@ -30,47 +37,6 @@ VALIDATE_TASK = "Check the wall view SELECT bodies against the live server"
 DROP_TASK = "Drop the wall views when their definition changed"
 CREATE_TASK = "Create the wall refreshable views"
 GRANTS_TASK = "Provision the wall read-only ClickHouse user"
-
-
-def _defaults() -> dict:
-    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text(encoding="utf-8"))
-    # tasks/wall_feed.yml passes the stopword file in as this list; mirror that here.
-    stopwords = (ROLE / "files" / defaults["clickhouse_docker_stopwords_file"]).read_text(encoding="utf-8")
-    defaults["clickhouse_docker_stopwords"] = [w.strip() for w in stopwords.splitlines() if w.strip()]
-    return defaults
-
-
-def _render(template: str, **variables) -> str:
-    return jinja2.Template((ROLE / "templates" / template).read_text(encoding="utf-8")).render(
-        **{**_defaults(), **variables}
-    )
-
-
-def _statements(sql: str) -> list[str]:
-    return [part.strip() for part in sql.strip().rstrip(";").split(";\n") if part.strip()]
-
-
-def _all_statements() -> list[str]:
-    return [
-        statement
-        for mode in WALL_MODES
-        for statement in _statements(_render("llm_wall.sql.j2", clickhouse_docker_wall_mode=mode))
-    ]
-
-
-def _statement(prefix: str) -> str:
-    return next(s for s in _all_statements() if s.startswith(prefix))
-
-
-def _branch(statement: str, table: str) -> str:
-    # Each harness is one UNION ALL branch that reads its own table.
-    return next(b for b in statement.split("UNION ALL") if f"FROM llm.{table} FINAL" in b)
-
-
-def _message_rows(branch: str) -> str:
-    # The derivation shared by both views: the rows of one table, whitespace-normalised.
-    match = re.search(r"SELECT event_time, msg_role.*?msg_role IN \('user', 'assistant'\)", branch, re.S)
-    return " ".join(match.group(0).split())
 
 
 def _without_literals(sql: str) -> str:
@@ -203,74 +169,6 @@ def test_every_injected_prompt_pattern_is_in_the_rendered_clause():
         re.compile(pattern)
         # The SQL literal escapes backslashes and quotes, as the template does.
         assert pattern.replace("\\", "\\\\").replace("'", "\\'") in clause
-
-
-def test_claude_rows_take_role_and_model_from_the_message_json_and_text_from_text_blocks():
-    branch = _branch(_statement(WORD_CLOUD), "claude")
-
-    # Harness-injected context and the resumed-session summary are not messages.
-    assert (
-        "if(JSONExtractBool(raw, 'isMeta') OR JSONExtractBool(raw, 'isCompactSummary'), '', "
-        "JSONExtractString(raw, 'type')) AS msg_role"
-    ) in branch
-    assert "JSONExtractString(raw, 'message', 'model') AS msg_model" in branch
-    assert "JSONType(raw, 'message', 'content') = 'String'" in branch
-    assert "[JSONExtractString(raw, 'message', 'content')]" in branch
-    assert "JSONExtractArrayRaw(raw, 'message', 'content')" in branch
-    assert "JSONExtractString(b, 'type') = 'text'" in branch
-    assert "WHERE msg_role IN ('user', 'assistant')" in branch
-
-
-def test_codex_rows_are_response_messages_with_payload_role_and_typed_text():
-    branch = _branch(_statement(WORD_CLOUD), "codex")
-
-    assert "JSONExtractString(raw, 'payload', 'type') = 'message'" in branch
-    assert "JSONExtractString(raw, 'payload', 'role'), '') AS msg_role" in branch
-    assert "JSONExtractString(raw, 'payload', 'role') = 'user', 'input_text', 'output_text'" in branch
-    assert "JSONExtractArrayRaw(raw, 'payload', 'content')" in branch
-    assert "input_image" not in branch
-    assert "'' AS msg_model" in branch
-
-
-def test_antigravity_rows_are_user_prompts_history_and_model_output_only():
-    branch = _branch(_statement(WORD_CLOUD), "antigravity")
-
-    assert "JSONExtractString(raw, 'type') = 'USER_INPUT'" in branch
-    assert "JSONExtractString(raw, 'source') = 'USER_EXPLICIT'" in branch
-    assert "(NOT JSONHas(raw, 'type'))" in branch
-    assert "JSONType(raw, 'display') = 'String'" in branch
-    assert "JSONExtractString(raw, 'source') = 'MODEL'" in branch
-    assert "IN ('PLANNER_RESPONSE', 'GENERIC')" in branch
-    assert "JSONType(raw, 'content') = 'String'" in branch
-    assert "JSONExtractString(raw, 'display'))] AS msg_parts" in branch
-
-
-def test_gemini_shape_reads_content_objects_and_skips_thought_parts():
-    branch = _branch(_statement(WORD_CLOUD), "gemini")
-
-    assert "JSONExtractString(raw, 'role') = 'model', 'assistant', ''" in branch
-    assert "JSONExtractArrayRaw(raw, 'parts')" in branch
-    assert "(NOT JSONExtractBool(b, 'thought'))" in branch
-
-
-def test_chat_shape_reads_top_level_role_content_and_model():
-    statement = _statement(WORD_CLOUD)
-
-    for table in ("zcode", "opencode"):
-        branch = _branch(statement, table)
-        assert "JSONExtractString(raw, 'role') AS msg_role" in branch
-        assert "JSONExtractString(raw, 'model') AS msg_model" in branch
-        assert "JSONType(raw, 'content') = 'String'" in branch
-        assert "JSONExtractArrayRaw(raw, 'content')" in branch
-        assert "JSONExtractString(b, 'type') = 'text'" in branch
-
-
-def test_both_views_read_each_table_through_the_same_message_rows():
-    word_cloud = _statement(WORD_CLOUD)
-    recent = _statement(RECENT)
-
-    for table in WALL_TABLES:
-        assert _message_rows(_branch(word_cloud, table)) == _message_rows(_branch(recent, table))
 
 
 def test_recent_activity_refreshes_every_minute_and_never_returns_content():
