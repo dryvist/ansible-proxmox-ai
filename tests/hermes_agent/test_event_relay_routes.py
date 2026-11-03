@@ -7,8 +7,10 @@ import yaml
 from _event_relay_shared import MOD, ROLE
 
 DEFAULTS = ROLE / "defaults" / "main" / "53-event-relay.yml"
+ENV = {"RELAY_DIFY_KEY_CI_FIXER": "k1"}
 
-# Required start variables from agents/dify/<name>.dsl.yml on ai-llm-prompts origin/main.
+# Required start variables copied from ai-llm-prompts 31eed96, agents/dify/<name>.dsl.yml.
+# The DSLs live in another repo, so these lists are hand-copied; drift is not checked here.
 DSL_REQUIRED = {
     "ci-fixer": ["repo", "ref", "head_sha", "actor", "event", "strength", "mode", "check_run_id"],
     "code-simplifier": ["repo", "ref", "head_sha", "actor", "event", "strength", "mode", "pr_number"],
@@ -54,6 +56,32 @@ def test_const_cannot_override_the_envelope_event():
     route = _routes()["ci-fixer"]
     assert "event" not in route.get("const", {})
     assert MOD.dify_inputs("check_run", b"{}", {}, const={"event": "forged"})["event"] == "check_run"
+
+
+def test_load_rejects_payload_mapped_strength_mode_or_event(capsys):
+    ci = _routes()["ci-fixer"]
+    patches = [{"strength": "check_run.conclusion"}, {"mode": "check_run.conclusion"}, {"event": "action"}]
+    routes = [dict(ci, inputs={**ci["inputs"], **patch}) for patch in patches]
+    assert MOD.load_routes(json.dumps(routes), ENV) == []
+    assert capsys.readouterr().out.count("inputs must not map event, strength or mode") == 3
+
+
+def test_load_rejects_explicit_strength_live_mode_and_overlapping_constants(capsys):
+    ci = _routes()["ci-fixer"]
+    bad_consts = [
+        {"strength": "explicit"}, {"mode": "live"}, {"event": "forged"}, {"repo": "other/repo"},
+    ]
+    for const in bad_consts:
+        assert MOD.load_routes(json.dumps([dict(ci, const={**ci["const"], **const})]), ENV) == [], const
+    out = capsys.readouterr().out
+    assert out.count("const strength must be inferred") == 1
+    assert out.count("const mode must be shadow") == 1
+    assert out.count("const names must not repeat an input name or event") == 2
+
+
+def test_ci_fixer_loads_from_defaults_with_its_key():
+    ci = _routes()["ci-fixer"]
+    assert [r["name"] for r in MOD.load_routes(json.dumps([ci]), ENV)] == ["ci-fixer"]
 
 
 def test_each_route_key_is_declared_in_dify_keys():

@@ -59,8 +59,16 @@ def _route_problem(route) -> str | None:
     const = route.get("const", {})
     if not isinstance(const, dict) or not all(isinstance(v, str) for v in const.values()):
         return "const must map input names to strings"
+    # The payload must never choose these: strength and mode come only from route constants.
+    if {"event", "strength", "mode"} & set(route.get("inputs", {})):
+        return "inputs must not map event, strength or mode"
     if set(const) & (set(route.get("inputs", {})) | {"event"}):
         return "const names must not repeat an input name or event"
+    # The relay never sends explicit strength (a push mandate) or live mode (pushes enabled).
+    if const.get("strength", "inferred") != "inferred":
+        return "const strength must be inferred"
+    if const.get("mode", "shadow") != "shadow":
+        return "const mode must be shadow"
     required = route.get("required", [])
     if not isinstance(required, list) or not all(isinstance(name, str) for name in required):
         return "required must be a list of input names"
