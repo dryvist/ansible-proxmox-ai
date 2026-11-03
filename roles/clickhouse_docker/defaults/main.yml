@@ -205,37 +205,37 @@ clickhouse_docker_readonly_credentials:
 # the LLM conversation tables for the wall. Two predefined HTTP handlers
 # (templates/config.d/wall-handlers.xml.j2) serve them as fixed GET queries
 # to the wall_reader user, which reads nothing else. The word cloud has one
-# `user` source, built from the role='user' rows of every table below, plus
-# one source per table built from that harness's model output.
+# `user` source, built from the user rows of every table below, plus one
+# source per table built from that harness's model output.
 #
-# `content` is the shape of the content column, read from the Cribl pipeline
-# that fills the table (ansible-proxmox-apps llm_to_clickhouse_<table>):
-#   text   — plain text; the pipeline already joined the message's text parts.
-#   blocks — plain text, or a JSON-stringified block list (a single block
-#            object is accepted too). Only text blocks count: a typed block
-#            counts when its type is 'text', an untyped part (Gemini) when it
-#            carries `text` and is not a thought. tool_use, tool_result and
-#            thinking blocks never reach the word cloud.
-# `output_roles` are the role values the harness writes for model output.
+# The ingest leaves role, content and model empty: the message lives in the
+# JSON text of the `raw` column. `shape` is the JSON layout of that table's
+# rows, and the template reads role, text and model from it:
+#   claude       — top-level type user|assistant; message.content, message.model.
+#   codex        — response_item rows with a message payload; payload.role,
+#                  payload.content[] (input_text | output_text).
+#   antigravity  — USER_INPUT/USER_EXPLICIT prompts and display-only history
+#                  rows (user); MODEL PLANNER_RESPONSE/GENERIC output
+#                  (assistant). No model field.
+#   gemini       — assumed, no rows yet: Gemini content objects, role
+#                  user|model, text in parts[] (thought parts skipped).
+#   chat         — assumed, no rows yet: top-level role user|assistant, content
+#                  as a string or text blocks, model at top level.
+# Only text blocks count: tool_use, tool_result, thinking and image blocks
+# never reach the word cloud.
 clickhouse_docker_wall_sources:
   - table: claude
-    content: blocks
-    output_roles: [assistant]
+    shape: claude
   - table: codex
-    content: text
-    output_roles: [assistant]
+    shape: codex
   - table: antigravity
-    content: blocks
-    output_roles: [assistant, model]
+    shape: antigravity
   - table: gemini
-    content: blocks
-    output_roles: [gemini, model]
+    shape: gemini
   - table: zcode
-    content: blocks
-    output_roles: [assistant]
+    shape: chat
   - table: opencode
-    content: blocks
-    output_roles: [assistant]
+    shape: chat
 
 clickhouse_docker_wall_words_view: word_cloud
 clickhouse_docker_wall_words_refresh: 1 HOUR

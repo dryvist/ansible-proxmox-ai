@@ -11,7 +11,17 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 ROLE = ROOT / "roles/clickhouse_docker"
 WALL_TABLES = ["claude", "codex", "antigravity", "gemini", "zcode", "opencode"]
+WALL_SHAPES = {
+    "claude": "claude",
+    "codex": "codex",
+    "antigravity": "antigravity",
+    "gemini": "gemini",
+    "zcode": "chat",
+    "opencode": "chat",
+}
 YAML_11_SCALARS = ["n", "no", "null", "off", "on", "y", "yes"]
+WORD_CLOUD = "CREATE MATERIALIZED VIEW IF NOT EXISTS llm.word_cloud"
+RECENT = "CREATE MATERIALIZED VIEW IF NOT EXISTS llm.recent_activity"
 
 
 def _defaults() -> dict:
@@ -36,20 +46,30 @@ def _statement(prefix: str) -> str:
     return next(s for s in _statements(_render("llm_wall.sql.j2")) if s.startswith(prefix))
 
 
+def _branch(statement: str, table: str) -> str:
+    # Each harness is one UNION ALL branch that reads its own table.
+    return next(b for b in statement.split("UNION ALL") if f"FROM llm.{table} FINAL" in b)
+
+
+def _message_rows(branch: str) -> str:
+    # The derivation shared by both views: the rows of one table, whitespace-normalised.
+    match = re.search(r"SELECT event_time, msg_role.*?msg_role IN \('user', 'assistant'\)", branch, re.S)
+    return " ".join(match.group(0).split())
+
+
 def _without_literals(sql: str) -> str:
     return re.sub(r"'(?:\\.|[^'\\])*'", "''", sql)
 
 
-def test_wall_sources_are_llm_tables_and_cover_every_harness():
+def test_wall_sources_are_llm_tables_and_name_their_json_shape():
     defaults = _defaults()
     sources = defaults["clickhouse_docker_wall_sources"]
 
     assert [source["table"] for source in sources] == WALL_TABLES
     assert set(WALL_TABLES) <= set(defaults["clickhouse_docker_llm_tables"])
+    assert {source["table"]: source["shape"] for source in sources} == WALL_SHAPES
     for source in sources:
-        assert source["content"] in ("text", "blocks")
-        assert source["output_roles"]
-        assert "user" not in source["output_roles"]
+        assert set(source) == {"table", "shape"}
 
 
 def test_stopwords_are_strings_and_include_yaml_11_keywords():
@@ -92,13 +112,13 @@ def test_stopwords_table_is_rebuilt_from_every_default_word_through_the_tokenise
 
 
 def test_word_cloud_refreshes_hourly_over_every_harness_and_keeps_top_words_per_source():
-    statement = _statement("CREATE MATERIALIZED VIEW IF NOT EXISTS llm.word_cloud")
+    statement = _statement(WORD_CLOUD)
 
     assert "REFRESH EVERY 1 HOUR\n(\n    source String,\n    word String,\n    n UInt64\n)" in statement
     assert statement.count("UNION ALL") == len(WALL_TABLES) - 1
     for table in WALL_TABLES:
         assert f"FROM llm.{table} FINAL" in statement
-        assert f"if(role = 'user', 'user', '{table}') AS source" in statement
+        assert f"if(msg_role = 'user', 'user', '{table}') AS source" in statement
     assert "ARRAY JOIN splitByNonAlpha(lower(body)) AS word" in statement
     assert "lengthUTF8(word) BETWEEN 3 AND 24" in statement
     # splitByNonAlpha keeps digits and non-ASCII bytes inside tokens; only ASCII letters pass.
@@ -107,22 +127,78 @@ def test_word_cloud_refreshes_hourly_over_every_harness_and_keeps_top_words_per_
     assert statement.endswith("LIMIT 200 BY source")
 
 
-def test_word_cloud_reads_only_text_blocks_and_each_harness_output_role():
-    statement = _statement("CREATE MATERIALIZED VIEW IF NOT EXISTS llm.word_cloud")
-    branches = statement.split("UNION ALL")
+def test_injected_prompts_are_dropped_per_part_from_user_rows_only():
+    statement = _statement(WORD_CLOUD)
 
-    claude, codex, gemini = branches[0], branches[1], branches[3]
-    assert "JSONExtractString(b, 'type') IN ('', 'text')" in claude
-    assert "NOT JSONExtractBool(b, 'thought')" in claude
-    assert "JSONExtractArrayRaw(content)" in claude
-    assert "WHERE role IN ('user', 'assistant')" in claude
-    assert "JSONExtractArrayRaw" not in codex
-    assert "WHERE role IN ('user', 'gemini', 'model')" in gemini
-    assert "match(content, '^[[:space:]]*(<[a-z_-]+>|# AGENTS\\\\.md instructions|" in codex
+    assert statement.count("arrayFilter(part -> NOT (msg_role = 'user' AND match(part, '") == len(WALL_TABLES)
+    assert "match(part, '^[[:space:]]*(<[a-z_-]+>|# AGENTS\\\\.md instructions|" in statement
+
+
+def test_claude_rows_take_role_and_model_from_the_message_json_and_text_from_text_blocks():
+    branch = _branch(_statement(WORD_CLOUD), "claude")
+
+    assert "JSONExtractString(raw, 'type') AS msg_role" in branch
+    assert "JSONExtractString(raw, 'message', 'model') AS msg_model" in branch
+    assert "JSONType(raw, 'message', 'content') = 'String'" in branch
+    assert "[JSONExtractString(raw, 'message', 'content')]" in branch
+    assert "JSONExtractArrayRaw(raw, 'message', 'content')" in branch
+    assert "JSONExtractString(b, 'type') = 'text'" in branch
+    assert "WHERE msg_role IN ('user', 'assistant')" in branch
+
+
+def test_codex_rows_are_response_messages_with_payload_role_and_typed_text():
+    branch = _branch(_statement(WORD_CLOUD), "codex")
+
+    assert "JSONExtractString(raw, 'payload', 'type') = 'message'" in branch
+    assert "JSONExtractString(raw, 'payload', 'role'), '') AS msg_role" in branch
+    assert "JSONExtractString(raw, 'payload', 'role') = 'user', 'input_text', 'output_text'" in branch
+    assert "JSONExtractArrayRaw(raw, 'payload', 'content')" in branch
+    assert "input_image" not in branch
+    assert "'' AS msg_model" in branch
+
+
+def test_antigravity_rows_are_user_prompts_history_and_model_output_only():
+    branch = _branch(_statement(WORD_CLOUD), "antigravity")
+
+    assert "JSONExtractString(raw, 'type') = 'USER_INPUT'" in branch
+    assert "JSONExtractString(raw, 'source') = 'USER_EXPLICIT'" in branch
+    assert "(NOT JSONHas(raw, 'type'))" in branch
+    assert "JSONType(raw, 'display') = 'String'" in branch
+    assert "JSONExtractString(raw, 'source') = 'MODEL'" in branch
+    assert "IN ('PLANNER_RESPONSE', 'GENERIC')" in branch
+    assert "JSONType(raw, 'content') = 'String'" in branch
+    assert "JSONExtractString(raw, 'display'))] AS msg_parts" in branch
+
+
+def test_gemini_shape_reads_content_objects_and_skips_thought_parts():
+    branch = _branch(_statement(WORD_CLOUD), "gemini")
+
+    assert "JSONExtractString(raw, 'role') = 'model', 'assistant', ''" in branch
+    assert "JSONExtractArrayRaw(raw, 'parts')" in branch
+    assert "(NOT JSONExtractBool(b, 'thought'))" in branch
+
+
+def test_chat_shape_reads_top_level_role_content_and_model():
+    statement = _statement(WORD_CLOUD)
+
+    for table in ("zcode", "opencode"):
+        branch = _branch(statement, table)
+        assert "JSONExtractString(raw, 'role') AS msg_role" in branch
+        assert "JSONExtractString(raw, 'model') AS msg_model" in branch
+        assert "JSONType(raw, 'content') = 'String'" in branch
+        assert "JSONExtractArrayRaw(raw, 'content')" in branch
+
+
+def test_both_views_read_each_table_through_the_same_message_rows():
+    word_cloud = _statement(WORD_CLOUD)
+    recent = _statement(RECENT)
+
+    for table in WALL_TABLES:
+        assert _message_rows(_branch(word_cloud, table)) == _message_rows(_branch(recent, table))
 
 
 def test_recent_activity_refreshes_every_minute_and_never_returns_content():
-    statement = _statement("CREATE MATERIALIZED VIEW IF NOT EXISTS llm.recent_activity")
+    statement = _statement(RECENT)
     outer = statement.split("FROM\n(")[0]
 
     assert (
@@ -130,7 +206,8 @@ def test_recent_activity_refreshes_every_minute_and_never_returns_content():
         "    role String,\n    chars UInt32\n)"
     ) in statement
     assert "content" not in outer
-    assert "toUInt32(lengthUTF8(content)) AS chars" in statement
+    assert "toUInt32(lengthUTF8(arrayStringConcat(msg_parts, ' '))) AS chars" in statement
+    assert "lengthUTF8(content)" not in statement
     assert statement.count("UNION ALL") == len(WALL_TABLES) - 1
     for table in WALL_TABLES:
         assert f"FROM llm.{table} FINAL" in statement
