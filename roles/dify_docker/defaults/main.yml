@@ -199,13 +199,20 @@ dify_docker_llm_models:
     context_size: "32768"
 
 # Headless first-run setup (POST /console/api/setup creates the admin and
-# finishes installation), so the UI never shows the /install wizard.
+# finishes installation), so the UI never shows the /install wizard. The
+# instance's OpenBao leaf is authoritative — storage_and_secret.yml seeds the
+# fields and reads the stored values back, so login_with_reset.yml re-asserts
+# them on every converge — and the environment is the caller fallback. On a
+# production host whose leaf lacks DIFY_ADMIN_EMAIL, the role discovers the
+# existing owner account's email on the guest before the seed (same task
+# file); a fresh install with no owner yet falls back to the caller value.
 dify_docker_admin_email: >-
-  {{ lookup('env', 'DIFY_ADMIN_EMAIL')
-     or undef('DIFY_ADMIN_EMAIL must be set (Doppler)') }}
+  {{ (bao_local_llm_secrets | default({}, true)).get('DIFY_ADMIN_EMAIL', '')
+     or lookup('env', 'DIFY_ADMIN_EMAIL')
+     or (dify_docker_admin_email_discovered | default('')) }}
 dify_docker_admin_password: >-
-  {{ lookup('env', 'DIFY_ADMIN_PASSWORD')
-     or undef('DIFY_ADMIN_PASSWORD must be set (Doppler; openssl rand -base64 24)') }}
+  {{ (bao_local_llm_secrets | default({}, true)).get('DIFY_ADMIN_PASSWORD', '')
+     or lookup('env', 'DIFY_ADMIN_PASSWORD') }}
 
 # Seed a minimal chat app on first run so there is something to open immediately.
 # Best-effort + idempotent (skipped if an app of this name already exists) and
