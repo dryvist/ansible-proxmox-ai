@@ -258,6 +258,7 @@ def test_chat_shape_reads_top_level_role_content_and_model():
         assert "JSONExtractString(raw, 'model') AS msg_model" in branch
         assert "JSONType(raw, 'content') = 'String'" in branch
         assert "JSONExtractArrayRaw(raw, 'content')" in branch
+        assert "JSONExtractString(b, 'type') = 'text'" in branch
 
 
 def test_both_views_read_each_table_through_the_same_message_rows():
@@ -277,6 +278,7 @@ def test_recent_activity_refreshes_every_minute_and_never_returns_content():
         "    role String,\n    chars UInt32\n)"
     ) in statement
     assert "content" not in outer
+    assert "AS SELECT\n    ts,\n    source,\n    model,\n    message_role AS role,\n    chars\nFROM\n(" in statement
     assert "toUInt32(lengthUTF8(arrayStringConcat(msg_parts, ' '))) AS chars" in statement
     assert "lengthUTF8(content)" not in statement
     assert statement.count("UNION ALL") == len(WALL_TABLES) - 1
