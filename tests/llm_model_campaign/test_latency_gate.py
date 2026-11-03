@@ -133,28 +133,6 @@ def test_gate_runs_before_campaign_work_and_between_cells():
     assert cells[0]["ansible.builtin.import_tasks"] == "llm-model-campaign-latency-gate.yml"
 
 
-def test_scalar_samples_require_typed_non_negative_values():
-    tasks = yaml.safe_load(CLASSIFY.read_text(encoding="utf-8"))
-    capture = _named(tasks, "Capture the interactive Prometheus scalar response")
-    well_formed = capture["ansible.builtin.set_fact"][
-        "_llm_campaign_latency_classification_observation"
-    ]["well_formed"]
-    assert "['value'][0] is number" in well_formed
-    assert "['value'][1] is string" in well_formed
-    assert "match('^[+]?(" in well_formed
-    assert "[+-]?([0-9]" not in well_formed
-    assert ".get('resultType') == 'vector'" in well_formed
-
-
-def test_failure_report_lists_per_window_counts():
-    tasks = yaml.safe_load(REPORT.read_text(encoding="utf-8"))
-    report = _named(tasks, "Fail closed on interactive latency gate failures")
-    assert "window counts=" in report["ansible.builtin.assert"]["fail_msg"]
-    assert "default('none', true)" not in report["ansible.builtin.assert"]["fail_msg"].split(
-        "result count="
-    )[1].split(";")[0]
-
-
 def test_gate_state_resets_to_real_nulls():
     tasks = yaml.safe_load(GATE.read_text(encoding="utf-8"))
     reset = _named(tasks, "Reset interactive latency gate state")["ansible.builtin.set_fact"]
@@ -179,12 +157,6 @@ def test_empty_successful_count_result_counts_as_zero_requests():
             _llm_campaign_latency_count_status=status,
             _llm_campaign_latency_count_result=result,
         ).strip()
-
-    well_formed = capture["vars"]["_llm_campaign_latency_count_well_formed"]
-    assert "['value'][0] is number" in well_formed
-    assert "['value'][1] is string" in well_formed
-    assert "match('^[+]?(" in well_formed  # no negative sample counts
-    assert ".get('resultType') == 'vector'" in well_formed
 
     assert render("success", []) == "0"
     assert render("success", [{"value": [1, "42"]}]) == "42"

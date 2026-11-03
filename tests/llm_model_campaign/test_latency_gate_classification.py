@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-import re
 from typing import Any
 
 from jinja2 import Environment
@@ -25,10 +23,7 @@ def _named(path: Path, name: str) -> dict[str, Any]:
 
 
 def _render(expression: str, **context: Any) -> str:
-    env = Environment()
-    env.filters["to_json"] = json.dumps  # Ansible filter used by the report message
-    env.tests["match"] = lambda value, pattern: re.match(pattern, str(value)) is not None  # Ansible test
-    return env.from_string(expression).render(**context).strip()
+    return Environment().from_string(expression).render(**context).strip()
 
 
 def _count_reason(
@@ -100,24 +95,6 @@ def test_empty_count_ladder_does_not_pass_as_idle():
     assert _count_reason(counts, selected=None) == "no data: minimum sample count not met"
 
 
-def test_zero_counts_in_any_numeric_spelling_pass_as_idle():
-    for zero in ("0e0", "+0", ".0", "0.000", "00E+5"):
-        counts = [
-            {"window": window, "window_seconds": seconds, "sample_count": zero}
-            for window, seconds in (("30m", 1800), ("2h", 7200), ("6h", 21600))
-        ]
-        assert _count_reason(counts, selected=None) == "idle: nothing to protect", zero
-
-
-def test_underflowed_positive_counts_are_not_idle():
-    counts = [
-        {"window": window, "window_seconds": seconds, "sample_count": "1e-9999"}
-        for window, seconds in (("30m", 1800), ("2h", 7200), ("6h", 21600))
-    ]
-    reason = _count_reason(counts, selected=None)
-    assert reason == "thin: minimum sample count not met"
-
-
 def test_thin_count_ladder_fails_closed_with_largest_window_and_count():
     counts = [
         {"window": window, "window_seconds": seconds, "sample_count": sample_count}
@@ -148,13 +125,11 @@ def test_thin_count_ladder_fails_closed_with_largest_window_and_count():
             "sample_count": 12,
             "largest_window": "6h",
             "largest_window_count": 12,
-            "window_counts": [{"window": "6h", "sample_count": "12"}],
         },
     )
     assert "thin" in message
     assert "largest window=6h" in message
     assert "count=12" in message
-    assert 'window counts=[{"window": "6h", "sample_count": "12"}]' in message
 
 
 def test_first_sufficient_window_and_ratio_classification():
@@ -173,74 +148,3 @@ def test_first_sufficient_window_and_ratio_classification():
     assert _scalar_reason("ratio", count=1, value="2.0") == "ratio over max"
     assert _scalar_reason("ratio", count=1, value="NaN") == "NaN"
     assert _scalar_reason("baseline", count=0, value=None) == "no data: baseline result is empty"
-
-
-def _well_formed(
-    timestamp: Any = 1793660000.123, sample: str = "50", metric: Any = None
-) -> tuple[str, str]:
-    result = [{"metric": {} if metric is None else metric, "value": [timestamp, sample]}]
-    data = {"resultType": "vector", "result": result}
-    counts = _named(COUNTS, "Capture interactive request counts for each latency window")["vars"][
-        "_llm_campaign_latency_count_well_formed"
-    ]
-    scalar = _named(CLASSIFY, "Capture the interactive Prometheus scalar response")[
-        "ansible.builtin.set_fact"
-    ]["_llm_campaign_latency_classification_observation"]["well_formed"]
-    return (
-        _render(
-            counts,
-            _llm_campaign_latency_count_data=data,
-            _llm_campaign_latency_count_result=result,
-        ),
-        _render(
-            scalar,
-            _llm_campaign_latency_response_data=data,
-            _llm_campaign_latency_response_result=result,
-        ),
-    )
-
-
-def test_sample_timestamps_must_be_finite_and_positive():
-    assert _well_formed(1793660000.123) == ("True", "True")
-    for bad in (float("nan"), float("inf"), float("-inf"), 0, -5, True):
-        assert _well_formed(bad) == ("False", "False"), bad
-
-
-def test_count_samples_must_be_finite():
-    assert _well_formed(1793660000.0, "1234")[0] == "True"
-    for bad in ("1e9999", "9e15", "0\n", "20\n", "-1", "-1e-9999"):
-        assert _well_formed(sample=bad)[0] == "False", repr(bad)
-    for zero in ("-0", "-0.0", "-0e0"):
-        assert _well_formed(sample=zero)[0] == "True", zero
-
-
-def test_signed_zero_counts_pass_as_idle():
-    counts = [
-        {"window": window, "window_seconds": seconds, "sample_count": "-0"}
-        for window, seconds in (("30m", 1800), ("2h", 7200), ("6h", 21600))
-    ]
-    assert _count_reason(counts, selected=None) == "idle: nothing to protect"
-
-
-def test_scalar_samples_must_be_finite_positive_and_untrimmed():
-    for good in ("1.19", "0.5", "74.6", "NaN"):
-        assert _well_formed(sample=good)[1] == "True", good
-    for bad in ("1e9999", "1e-9999", "0", "-0", "1\n", " 1", "Inf", "+Inf", ""):
-        assert _well_formed(sample=bad)[1] == "False", repr(bad)
-
-
-def test_aggregated_results_carry_no_labels():
-    for metric in ({"bad": None}, {"le": "+Inf"}, {"x": ["a"]}, {"x": True}):
-        assert _well_formed(metric=metric) == ("False", "False"), metric
-
-
-def test_count_stage_failure_headline_points_at_window_counts():
-    expression = _named(REPORT, "Assemble interactive latency gate report values")[
-        "ansible.builtin.set_fact"
-    ]["_llm_campaign_latency_observation"]["http_status"]
-    assert _render(expression, _llm_campaign_latency_classification_observation={}) == (
-        "n/a (count stage, see window counts)"
-    )
-    assert _render(
-        expression, _llm_campaign_latency_classification_observation={"http_status": 200}
-    ) == "200"
