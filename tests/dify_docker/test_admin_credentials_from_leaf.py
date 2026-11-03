@@ -181,6 +181,23 @@ def test_production_seed_keeps_the_stored_leaf_values(monkeypatch):
     assert fields["DIFY_ADMIN_EMAIL"]["value"] == LEAF_EMAIL
 
 
+def test_production_seed_without_any_email_has_no_admin_email_field(monkeypatch):
+    # No leaf email, no environment email and no discovered email: the seed
+    # conditional must leave DIFY_ADMIN_EMAIL out of the seed fields entirely
+    # instead of seeding an empty value.
+    defaults = load_yaml(DEFAULTS)
+    monkeypatch.delenv("DIFY_ADMIN_EMAIL", raising=False)
+    variables = {
+        **defaults,
+        "bao_local_llm_secrets": {},
+        "dify_docker_admin_email_discovered": "",
+    }
+
+    fields = seed_fields([], variables)
+
+    assert "DIFY_ADMIN_EMAIL" not in fields
+
+
 def test_evaluation_group_reads_only_its_own_names(monkeypatch):
     defaults = load_yaml(DEFAULTS)
     eval_group = load_yaml(EVAL_GROUP)
@@ -319,7 +336,9 @@ def test_setup_finished_without_an_owner_fails_closed(monkeypatch):
     assert names.index(EMAIL_ASSERT_TASK) < names.index(SEED_TASK)
 
     fail_closed = task_named(FAIL_CLOSED_TASK)
-    assert fail_closed["no_log"] is True
+    # The assert's that expression and fail_msg carry no secret-bearing
+    # variable, so its output is not redacted.
+    assert "no_log" not in fail_closed
     assert fail_closed["ansible.builtin.assert"]["quiet"] is True
     assert "DIFY_ADMIN_EMAIL" in fail_closed["ansible.builtin.assert"]["fail_msg"]
 
