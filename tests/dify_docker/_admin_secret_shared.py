@@ -14,7 +14,6 @@ from ansible.template import Templar, trust_as_template
 ROOT =Path(__file__).resolve().parents[2]
 DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 TASKS = ROOT / "roles/dify_docker/tasks/storage_and_secret.yml"
-EVAL_GROUP = ROOT / "inventory/group_vars/dify_eval_group.yml"
 GROUP_VARS = ROOT / "inventory/group_vars/dify_group.yml"
 SEED_TASK = "Seed the Dify SECRET_KEY through the shared seed_generated task"
 DISCOVER_TASK = "Discover the Dify owner email on the guest when the leaf has none"
@@ -24,25 +23,10 @@ EMAIL_ASSERT_TASK = "Require a non-empty Dify admin email on a not-yet-set-up in
 ADOPT_TASK = "Adopt the discovered owner email as the Dify admin email"
 CONSOLE_BASE_ASSERT_TASK = "Require the Dify console API base to be set"
 READ_BACK_TASK = "Resolve the Dify admin credentials from the secret store"
-EVAL_RESOLVE_TASK = "Resolve evaluation Dify secrets from OpenBao"
 
 LEAF_EMAIL = "openbao-leaf-email"
 LEAF_PASSWORD = "openbao-leaf-password"
 OWNER_EMAIL = "owner-email-marker"
-EVAL_EMAIL = "evaluation-email-marker"
-EVAL_PASSWORD = "evaluation-password-marker"
-
-DIFY_EVAL_ENVS = [
-    "DIFY_EVAL_DB_PASSWORD",
-    "DIFY_EVAL_REDIS_PASSWORD",
-    "DIFY_EVAL_SANDBOX_API_KEY",
-    "DIFY_EVAL_WEAVIATE_API_KEY",
-    "DIFY_EVAL_PLUGIN_DAEMON_KEY",
-    "DIFY_EVAL_INNER_API_KEY",
-    "DIFY_EVAL_AGENT_API_TOKEN",
-    "DIFY_EVAL_AGENT_SERVER_SECRET_KEY",
-    "DIFY_EVAL_AGENT_LOCAL_SANDBOX_AUTH_TOKEN",
-]
 
 
 def load_yaml(path):

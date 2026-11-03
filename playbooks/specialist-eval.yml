@@ -1,7 +1,7 @@
 ---
 # Specialist evaluation instances. Not imported by site.yml: run it on its own with
-# `ansible-playbook playbooks/specialist-eval.yml`. Hosts come from the sim-eval, dify-eval and
-# langflow-eval inventory tags. The first play loads those groups, as site.yml does.
+# `ansible-playbook playbooks/specialist-eval.yml`. Hosts come from the sim-eval inventory tag.
+# The first play loads those groups, as site.yml does.
 
 - name: Load OpenTofu infrastructure inventory
   import_playbook: ../inventory/load_tofu.yml
@@ -43,69 +43,3 @@
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: sim_docker
-
-- name: Configure Dify LLMOps platform (isolated evaluation)
-  hosts: dify_eval_group
-  become: true
-  gather_facts: false
-  tags:
-    - dify_docker
-    - specialist-eval
-  pre_tasks:
-    - name: Fetch only the Dify evaluation router-key path from OpenBao
-      ansible.builtin.include_role:
-        name: dryvist.homelab.openbao_secrets
-      vars:
-        openbao_secrets_domains:
-          - name: apps
-            paths:
-              - path: "{{ dify_docker_eval_router_key_path }}"
-                optional: true
-        openbao_secrets_fail_on_missing_credentials: true
-        openbao_secrets_fail_when_unavailable: true
-        openbao_secrets_skip_cidr_refusals: false
-        openbao_secrets_isolate_optional_login_failures: false
-        openbao_secrets_strict_reads: true
-        openbao_secrets_isolate_optional_read_failures: false
-        openbao_secrets_active_groups: >-
-          {{ ansible_play_hosts_all | map('extract', hostvars, 'group_names') | flatten | unique }}
-    - name: Publish only the Dify evaluation OpenBao apps fields
-      ansible.builtin.set_fact:
-        bao_apps_secrets: >-
-          {{ (hostvars['localhost'].openbao_secrets_by_domain | default({}))
-             .get('apps', {}) }}
-      no_log: true
-  tasks:
-    - name: Converge dify_docker (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include dify_docker role
-          ansible.builtin.include_role:
-            name: dify_docker
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: dify_docker
-
-- name: Configure LangFlow visual flow-builder (isolated evaluation)
-  hosts: langflow_eval_group
-  become: true
-  gather_facts: false
-  tags:
-    - langflow_docker
-    - specialist-eval
-  tasks:
-    - name: Converge langflow_docker (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include langflow_docker role
-          ansible.builtin.include_role:
-            name: langflow_docker
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: langflow_docker

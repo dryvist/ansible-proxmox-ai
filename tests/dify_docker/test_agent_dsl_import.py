@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 AGENT_DSLS = ROOT / "roles/dify_docker/vars/agent_dsls.yml"
 PROD_GROUP = ROOT / "inventory/group_vars/dify_group.yml"
-EVAL_GROUP = ROOT / "inventory/group_vars/dify_eval_group.yml"
+EVAL_GROUP = ROOT / "inventory/group_vars/dify_eval_group.yml"  # removed with the evaluation instance
 TASKS = ROOT / "roles/dify_docker/tasks"
 
 EXPECTED_NAMES = [
@@ -42,8 +42,7 @@ def test_seven_agent_dsls_pinned_to_commit_with_sha256():
 def test_import_is_off_by_default_and_on_only_for_production():
     assert _defaults()["dify_docker_import_agent_dsls"] is False
     assert yaml.safe_load(PROD_GROUP.read_text(encoding="utf-8"))["dify_docker_import_agent_dsls"] is True
-    eval_group = yaml.safe_load(EVAL_GROUP.read_text(encoding="utf-8")) or {}
-    assert eval_group["dify_docker_import_agent_dsls"] is False
+    assert not EVAL_GROUP.exists()
 
 
 def test_import_tasks_are_wired_and_never_overwrite():

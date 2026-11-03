@@ -1,21 +1,15 @@
 """The Dify admin seed carries the password and email and keeps stored values.
 
-The seed fields are rendered from storage_and_secret.yml. Evaluation hosts seed
-only the password, never the admin email.
+The seed fields are rendered from storage_and_secret.yml.
 """
 
 from _admin_secret_shared import (
     DEFAULTS,
-    DIFY_EVAL_ENVS,
-    EVAL_EMAIL,
-    EVAL_GROUP,
-    EVAL_PASSWORD,
     LEAF_EMAIL,
     LEAF_PASSWORD,
     OWNER_EMAIL,
     SEED_TASK,
     load_yaml,
-    render,
     seed_fields,
     task_named,
 )
@@ -75,33 +69,6 @@ def test_production_seed_without_any_email_has_no_admin_email_field(monkeypatch)
     fields = seed_fields([], variables)
 
     assert "DIFY_ADMIN_EMAIL" not in fields
-
-
-def test_evaluation_seed_carries_the_admin_password_but_no_email(monkeypatch):
-    defaults = load_yaml(DEFAULTS)
-    eval_group = load_yaml(EVAL_GROUP)
-    for env_name in DIFY_EVAL_ENVS:
-        monkeypatch.setenv(env_name, EVAL_PASSWORD)
-    monkeypatch.setenv("DIFY_EVAL_ADMIN_EMAIL", EVAL_EMAIL)
-    monkeypatch.setenv("DIFY_EVAL_ADMIN_PASSWORD", EVAL_PASSWORD)
-    monkeypatch.setenv("DIFY_ADMIN_EMAIL", OWNER_EMAIL)
-    variables = {
-        **defaults,
-        "bao_local_llm_secrets": {
-            "DIFY_ADMIN_EMAIL": LEAF_EMAIL,
-            "DIFY_ADMIN_PASSWORD": LEAF_PASSWORD,
-        },
-        **eval_group,
-    }
-
-    fields = seed_fields(["dify_eval_group"], variables)
-
-    assert fields["DIFY_ADMIN_PASSWORD"]["value"] == EVAL_PASSWORD
-    assert "DIFY_ADMIN_EMAIL" not in fields
-    seed_vars = task_named(SEED_TASK)["block"][0]["vars"]
-    assert render(seed_vars["openbao_secrets_seed_path"], variables) == eval_group[
-        "dify_docker_openbao_path"
-    ]
 
 
 def test_seed_task_sets_no_log():

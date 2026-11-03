@@ -15,7 +15,7 @@ GUARD_FILE = "refuse_eval_tag_conflicts.yml"
 GUARD_NAME = "Refuse an evaluation guest that also carries a production or secret-reading tag"
 GUARD = next(task for task in load_yaml(ROOT / "inventory/load_tofu" / GUARD_FILE) if task.get("name") == GUARD_NAME)
 FORBIDDEN = {"managed-secrets", "clickhouse", "ai-proxied", "dify", "langflow", "sim", "llm-gpu-classify", "hermes-agent", "hermes-donna"}
-EVAL_TAGS = ["dify-eval", "langflow-eval", "sim-eval", "future-eval"]
+EVAL_TAGS = ["sim-eval", "future-eval"]
 
 
 def passes(tags: list[str]) -> bool:
@@ -55,7 +55,7 @@ def test_the_refusal_does_not_depend_on_tag_order(eval_tag: str, forbidden: str)
 
 @pytest.mark.parametrize("forbidden", sorted(FORBIDDEN))
 def test_a_forbidden_tag_is_refused_alongside_other_tags(forbidden: str) -> None:
-    assert passes(["dify-eval", "ollama", forbidden]) is False
+    assert passes(["sim-eval", "ollama", forbidden]) is False
 
 
 @pytest.mark.parametrize(
@@ -68,12 +68,10 @@ def test_a_forbidden_tag_is_refused_alongside_other_tags(forbidden: str) -> None
         pytest.param(["managed-secrets"], id="managed-secrets-production"),
         pytest.param(["clickhouse"], id="clickhouse-production"),
         pytest.param(["ai-proxied"], id="ai-proxied-production"),
-        pytest.param(["dify-eval"], id="dify-eval-alone"),
-        pytest.param(["langflow-eval"], id="langflow-eval-alone"),
         pytest.param(["sim-eval"], id="sim-eval-alone"),
         pytest.param(["future-eval"], id="future-eval-alone"),
-        pytest.param(["dify-eval", "langflow-eval"], id="two-eval-tags"),
-        pytest.param(["dify-eval", "ollama"], id="eval-with-unrelated-tag"),
+        pytest.param(["sim-eval", "future-eval"], id="two-eval-tags"),
+        pytest.param(["sim-eval", "ollama"], id="eval-with-unrelated-tag"),
     ],
 )
 def test_allowed_tag_sets_are_accepted(tags: list[str]) -> None:
