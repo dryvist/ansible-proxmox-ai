@@ -59,11 +59,19 @@ def test_dify_inputs_maps_dotted_paths_and_blanks_missing():
     }
 
 
-def test_dify_inputs_sends_booleans_as_strings():
-    mapping = {"merged": "pull_request.merged", "pr_number": "pull_request.number"}
-    assert MOD.dify_inputs("pull_request", RAW_MERGED, mapping) == {
-        "event": "pull_request", "merged": "true", "pr_number": 7,
+def test_dify_inputs_sends_only_declared_text_booleans_as_strings():
+    # A boolean into a non-text Dify input (number, checkbox) must stay a boolean.
+    mapping = {"merged": "pull_request.merged", "flag": "pull_request.merged", "pr_number": "pull_request.number"}
+    assert MOD.dify_inputs("pull_request", RAW_MERGED, mapping, text_inputs=["merged"]) == {
+        "event": "pull_request", "merged": "true", "flag": True, "pr_number": 7,
     }
+    assert MOD.dify_inputs("pull_request", RAW_MERGED, {"flag": "pull_request.merged"})["flag"] is True
+
+
+def test_route_with_malformed_text_inputs_is_dropped(capsys):
+    bad = dict(ROUTE_DEFS[1], name="bad", app_key_env="KEY_DOCS", text_inputs="merged")
+    assert MOD.load_routes(json.dumps([bad]), {"KEY_DOCS": "k2"}) == []
+    assert "text_inputs must be a list of input names" in capsys.readouterr().out
 
 
 def test_finder_route_stays_off_without_its_key():

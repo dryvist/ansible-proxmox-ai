@@ -53,6 +53,9 @@ def _route_problem(route) -> str | None:
         return "match.where must be a mapping"
     if not isinstance(route.get("inputs", {}), dict):
         return "inputs must be a mapping"
+    text_inputs = route.get("text_inputs", [])
+    if not isinstance(text_inputs, list) or not all(isinstance(name, str) for name in text_inputs):
+        return "text_inputs must be a list of input names"
     timeout = route.get("timeout", 30)
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
         return "timeout must be a number"
@@ -115,13 +118,17 @@ def match_routes(event: str, raw: bytes, routes: list[dict]) -> list[dict]:
     return matched
 
 
-def dify_inputs(event: str, raw: bytes, mapping: dict) -> dict:
-    """Map payload fields (dotted paths) to a Dify workflow's inputs. Missing fields become ''."""
+def dify_inputs(event: str, raw: bytes, mapping: dict, text_inputs=()) -> dict:
+    """Map payload fields (dotted paths) to a Dify workflow's inputs. Missing fields become ''.
+
+    Booleans become "true" or "false" only for the names in text_inputs, which the route
+    declares as Dify text inputs. Other booleans pass through unchanged.
+    """
     payload = json.loads(raw)
     inputs = {"event": event}
     for name, dotted in mapping.items():
         value = _path(payload, dotted)
-        if isinstance(value, bool):  # Dify text inputs take strings, not JSON booleans
+        if name in text_inputs and isinstance(value, bool):
             value = "true" if value else "false"
         inputs[name] = "" if value is None else value
     return inputs

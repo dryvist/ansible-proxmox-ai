@@ -201,7 +201,8 @@ def handle(msg: dict, cfg: dict, post=forward, dify_post=forward_dify) -> bool:
         for route in routes:  # every matching route fires; one failing route does not stop the others
             try:
                 status, run_id, detail = dify_post(route["base"], route["app_key"],
-                                                   dify_inputs(event, raw, route.get("inputs", {})),
+                                                   dify_inputs(event, raw, route.get("inputs", {}),
+                                                               route.get("text_inputs", ())),
                                                    float(route.get("timeout", 30)))
             except Exception as exc:  # any dispatch failure must leave the relay loop running
                 status, run_id, detail = None, None, type(exc).__name__
