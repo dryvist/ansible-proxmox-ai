@@ -1,0 +1,229 @@
+{#- Rendered by ansible-proxmox-ai/roles/clickhouse_docker — do not edit by hand.
+
+   Wall feed objects in the LLM database, run on every converge after
+   llm_schema.sql.j2. One template, three modes (clickhouse_docker_wall_mode):
+     stopwords  the llm.stopwords table, rebuilt from the role defaults each
+                run: CREATE OR REPLACE fills a new table and swaps it in
+                atomically, so a refresh never reads a half-loaded list.
+     explain    EXPLAIN PLAN of each view's SELECT, run against the live server
+                before any view is dropped, so a broken definition fails the
+                converge while the views in place keep serving.
+     views      the two refreshable materialized views (refreshed once on
+                creation, then on their schedule), the default. IF NOT EXISTS
+                leaves an existing view as it is, so each view's COMMENT carries
+                a fingerprint of this rendered definition. wall_feed.yml drops
+                both views when the fingerprint in place differs, and the next
+                converge creates them from the new definition.
+
+   The ingest leaves role, content and model empty, so every source reads
+   them from the JSON text in `raw`. A source's `shape` (defaults/main.yml)
+   names the JSON layout of its rows: the shape decides which rows are
+   messages and where each one's role, text and model are.
+
+   Neither view returns message content: word_cloud holds word counts,
+   recent_activity holds metadata and the content length. -#}
+{%- set db = clickhouse_docker_llm_database -%}
+{%- set mode = clickhouse_docker_wall_mode | default('views') -%}
+{%- set injected = ('^[[:space:]]*(' ~ (clickhouse_docker_wall_injected_prompt_patterns | join('|')) ~ ')')
+    | replace('\\', '\\\\') | replace("'", "\\'") -%}
+{%- set fingerprint = clickhouse_docker_wall_fingerprint | default('') -%}
+{#- ClickHouse JSON function arguments for a key path inside raw: raw, 'a', 'b' -#}
+{%- macro json_args(path) -%}
+raw{% for key in path %}, '{{ key }}'{% endfor %}
+{%- endmacro -%}
+{#- Text of a content value: a JSON string, or an array of blocks of which only
+    the text blocks count. One array element per part, so the injected-prompt
+    filter applies to each block as it did before. -#}
+{%- macro content_parts(path) -%}
+if(JSONType({{ json_args(path) }}) = 'String',
+        [JSONExtractString({{ json_args(path) }})],
+        arrayMap(b -> JSONExtractString(b, 'text'),
+            arrayFilter(b -> JSONExtractString(b, 'type') = 'text',
+                JSONExtractArrayRaw({{ json_args(path) }}))))
+{%- endmacro -%}
+{#- Role of each row: 'user', 'assistant', or '' for a row that is not a message.
+    claude: one row per turn, top-level type is the role. Rows the harness
+      marks isMeta (injected context) or isCompactSummary (the resumed-session
+      summary) are not messages.
+    codex: response_item rows whose payload is a message, role in payload.role.
+    antigravity: user prompts are USER_INPUT rows from USER_EXPLICIT (text in
+      content), and history rows have a display string and no type (text in
+      display). Model output is MODEL rows of type PLANNER_RESPONSE or GENERIC
+      with a string content.
+    gemini (assumed, no rows yet): Gemini content objects, role user or model,
+      text in parts.
+    chat (assumed, no rows yet): top-level role user or assistant, content as a
+      string or text blocks, model at top level. -#}
+{%- macro role_expr(source) -%}
+{%- if source.shape == 'claude' -%}
+if(JSONExtractBool(raw, 'isMeta') OR JSONExtractBool(raw, 'isCompactSummary'), '', JSONExtractString(raw, 'type'))
+{%- elif source.shape == 'codex' -%}
+if(JSONExtractString(raw, 'type') = 'response_item' AND JSONExtractString(raw, 'payload', 'type') = 'message',
+        JSONExtractString(raw, 'payload', 'role'), '')
+{%- elif source.shape == 'antigravity' -%}
+multiIf(
+        ((JSONExtractString(raw, 'type') = 'USER_INPUT' AND JSONExtractString(raw, 'source') = 'USER_EXPLICIT'
+            AND JSONType(raw, 'content') = 'String')
+            OR ((NOT JSONHas(raw, 'type')) AND JSONType(raw, 'display') = 'String')), 'user',
+        (JSONExtractString(raw, 'source') = 'MODEL'
+            AND JSONExtractString(raw, 'type') IN ('PLANNER_RESPONSE', 'GENERIC')
+            AND JSONType(raw, 'content') = 'String'), 'assistant',
+        '')
+{%- elif source.shape == 'gemini' -%}
+multiIf(JSONExtractString(raw, 'role') = 'user', 'user', JSONExtractString(raw, 'role') = 'model', 'assistant', '')
+{%- elif source.shape == 'chat' -%}
+JSONExtractString(raw, 'role')
+{%- endif -%}
+{%- endmacro -%}
+{#- Text of each row as an Array(String) of parts. -#}
+{%- macro parts_expr(source) -%}
+{%- if source.shape == 'claude' -%}
+{{ content_parts(['message', 'content']) }}
+{%- elif source.shape == 'chat' -%}
+{{ content_parts(['content']) }}
+{%- elif source.shape == 'codex' -%}
+arrayMap(b -> JSONExtractString(b, 'text'),
+            arrayFilter(b -> JSONExtractString(b, 'type')
+                    = if(JSONExtractString(raw, 'payload', 'role') = 'user', 'input_text', 'output_text'),
+                JSONExtractArrayRaw(raw, 'payload', 'content')))
+{%- elif source.shape == 'antigravity' -%}
+[if(JSONHas(raw, 'type'), JSONExtractString(raw, 'content'), JSONExtractString(raw, 'display'))]
+{%- elif source.shape == 'gemini' -%}
+arrayMap(b -> JSONExtractString(b, 'text'),
+            arrayFilter(b -> JSONHas(b, 'text') AND (NOT JSONExtractBool(b, 'thought')),
+                JSONExtractArrayRaw(raw, 'parts')))
+{%- endif -%}
+{%- endmacro -%}
+{#- Model of each row, '' where the shape carries none. -#}
+{%- macro model_expr(source) -%}
+{%- if source.shape == 'claude' -%}
+JSONExtractString(raw, 'message', 'model')
+{%- elif source.shape == 'chat' -%}
+JSONExtractString(raw, 'model')
+{%- else -%}
+''
+{%- endif -%}
+{%- endmacro -%}
+{#- The messages of one source table: event_time, msg_role, msg_model and
+    msg_parts for every row whose derived role is user or assistant. -#}
+{%- macro wall_rows(source, db) -%}
+SELECT event_time, msg_role, msg_model, msg_parts
+FROM
+(
+    SELECT
+        event_time,
+        {{ role_expr(source) }} AS msg_role,
+        {{ model_expr(source) }} AS msg_model,
+        {{ parts_expr(source) }} AS msg_parts
+    FROM {{ db }}.{{ source.table }} FINAL
+)
+WHERE msg_role IN ('user', 'assistant')
+{%- endmacro -%}
+{#- The SELECT bodies. The views and the EXPLAIN PLAN checks both render these,
+    so the check runs the same query the view is created from. -#}
+{%- set word_select -%}
+SELECT
+    source,
+    word,
+    count() AS n
+FROM
+(
+{% for source in clickhouse_docker_wall_sources %}
+    SELECT
+        if(msg_role = 'user', 'user', '{{ source.name | default(source.table) }}') AS source,
+        arrayStringConcat(
+            arrayFilter(part -> NOT (msg_role = 'user' AND match(part, '{{ injected }}')), msg_parts),
+            ' ') AS body
+    FROM
+    (
+        {{ wall_rows(source, db) | indent(8) }}
+    )
+{% if not loop.last %}
+    UNION ALL
+{% endif %}
+{% endfor %}
+)
+ARRAY JOIN splitByNonAlpha(lower(body)) AS word
+WHERE lengthUTF8(word) BETWEEN {{ clickhouse_docker_wall_word_min_length }} AND {{ clickhouse_docker_wall_word_max_length }}
+    AND match(word, '^[a-z]+$')
+    AND word NOT IN (SELECT word FROM {{ db }}.stopwords)
+GROUP BY source, word
+ORDER BY source ASC, n DESC, word ASC
+LIMIT {{ clickhouse_docker_wall_words_per_source }} BY source
+{%- endset -%}
+{%- set recent_select -%}
+SELECT
+    ts,
+    source,
+    model,
+    message_role AS role,
+    chars
+FROM
+(
+{% for source in clickhouse_docker_wall_sources %}
+    (
+        SELECT
+            toDateTime(event_time) AS ts,
+            '{{ source.name | default(source.table) }}' AS source,
+            msg_model AS model,
+            if(msg_role = 'user', 'user', 'assistant') AS message_role,
+            toUInt32(lengthUTF8(arrayStringConcat(msg_parts, ' '))) AS chars
+        FROM
+        (
+            {{ wall_rows(source, db) | indent(12) }}
+        )
+        WHERE chars > 0
+        ORDER BY event_time DESC
+        LIMIT {{ clickhouse_docker_wall_recent_rows }}
+    )
+{% if not loop.last %}
+    UNION ALL
+{% endif %}
+{% endfor %}
+)
+ORDER BY ts DESC
+LIMIT {{ clickhouse_docker_wall_recent_rows }}
+{%- endset -%}
+{%- if mode == 'stopwords' %}
+CREATE OR REPLACE TABLE {{ db }}.stopwords
+(
+    word String
+)
+ENGINE = MergeTree
+ORDER BY word
+AS SELECT DISTINCT arrayJoin(arrayFlatten(arrayMap(w -> splitByNonAlpha(lower(w)), [
+{% for word in clickhouse_docker_stopwords + clickhouse_docker_stopwords_extra %}
+    '{{ word | replace('\\', '\\\\') | replace("'", "\\'") }}'{{ ',' if not loop.last }}
+{% endfor %}
+]))) AS word;
+{%- elif mode == 'explain' %}
+EXPLAIN PLAN {{ word_select }};
+
+EXPLAIN PLAN {{ recent_select }};
+{%- else %}
+CREATE MATERIALIZED VIEW IF NOT EXISTS {{ db }}.{{ clickhouse_docker_wall_words_view }}
+REFRESH EVERY {{ clickhouse_docker_wall_words_refresh }}
+(
+    source String,
+    word String,
+    n UInt64
+)
+ENGINE = MergeTree
+ORDER BY (source, word)
+AS {{ word_select }}
+COMMENT '{{ fingerprint }}';
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS {{ db }}.{{ clickhouse_docker_wall_recent_view }}
+REFRESH EVERY {{ clickhouse_docker_wall_recent_refresh }}
+(
+    ts DateTime,
+    source String,
+    model String,
+    role String,
+    chars UInt32
+)
+ENGINE = MergeTree
+ORDER BY ts
+AS {{ recent_select }}
+COMMENT '{{ fingerprint }}';
+{%- endif %}

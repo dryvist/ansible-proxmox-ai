@@ -1,0 +1,107 @@
+---
+# One agent DSL: fetch the pinned file with a sha256 check on its exact bytes,
+# skip an existing app name, import it, and confirm when Dify reports a DSL
+# version mismatch. Every step is non-fatal. Tasks that carry the DSL or the
+# console cookie are no_log.
+
+# Facts persist across loop iterations, so clear the previous DSL before fetching.
+- name: Clear the previous agent DSL before fetching
+  ansible.builtin.set_fact:
+    dify_docker_dsl_content: ""
+    dify_docker_dsl_name: ""
+  no_log: true
+
+# get_url verifies the checksum on the exact bytes; a mismatch fails the task.
+- name: Fetch the pinned agent DSL and verify its sha256
+  ansible.builtin.get_url:
+    url: "{{ dify_docker_agent_dsl.url }}"
+    dest: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
+    checksum: "sha256:{{ dify_docker_agent_dsl.sha256 }}"
+    mode: "0600"
+    force: true
+  register: dify_docker_dsl_fetch
+  ignore_errors: true
+  no_log: true
+
+- name: Read the verified agent DSL
+  ansible.builtin.slurp:
+    src: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
+  register: dify_docker_dsl_raw
+  when: dify_docker_dsl_fetch is not failed
+  no_log: true
+
+- name: Keep the DSL content and its app name
+  ansible.builtin.set_fact:
+    dify_docker_dsl_content: "{{ dify_docker_dsl_raw.content | b64decode }}"
+    dify_docker_dsl_name: "{{ (dify_docker_dsl_raw.content | b64decode | from_yaml).app.name }}"
+  when: dify_docker_dsl_raw is defined and dify_docker_dsl_raw.content is defined
+  no_log: true
+
+- name: Remove the fetched agent DSL copy
+  ansible.builtin.file:
+    path: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
+    state: absent
+  changed_when: false
+  no_log: true
+
+- name: Report a DSL that failed its pin or fetch
+  ansible.builtin.debug:
+    msg: "agent DSL {{ dify_docker_agent_dsl.name }}: fetch or sha256 check failed; not imported"
+  when: dify_docker_dsl_content | length == 0
+  changed_when: false
+  no_log: true
+
+- name: Import the agent DSL (skipped when its app name already exists)
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps/imports"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body:
+      mode: yaml-content
+      yaml_content: "{{ dify_docker_dsl_content }}"
+    # 200 completed, 202 pending a DSL version confirm; 400 is a failed import.
+    status_code: [200, 202, 400]
+    return_content: true
+  register: dify_docker_dsl_import
+  changed_when: >-
+    (dify_docker_dsl_import.json | default({})).status | default('')
+    in ['completed', 'completed-with-warnings']
+  failed_when: false
+  when:
+    - dify_docker_dsl_content | length > 0
+    - dify_docker_dsl_name not in (dify_docker_dsl_apps_list.json.data | default([]) | map(attribute='name') | list)
+  no_log: true
+
+- name: Confirm the agent DSL import (DSL version mismatch)
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps/imports/{{ dify_docker_dsl_import.json.id }}/confirm"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: [200, 400]
+    return_content: true
+  register: dify_docker_dsl_confirm
+  changed_when: >-
+    (dify_docker_dsl_confirm.json | default({})).status | default('')
+    in ['completed', 'completed-with-warnings']
+  failed_when: false
+  when: (dify_docker_dsl_import.json | default({})).status | default('') == 'pending'
+  no_log: true
+
+- name: Agent DSL import result
+  ansible.builtin.debug:
+    msg: >-
+      agent DSL {{ dify_docker_agent_dsl.name }}:
+      {{ (dify_docker_dsl_confirm.json | default(dify_docker_dsl_import.json | default({})))
+         .status | default('skipped: app exists or no import call') }}
+  changed_when: false
+  no_log: true
+
+- name: Ensure the agent app API key is stored in OpenBao
+  ansible.builtin.include_tasks: ensure_agent_app_api_key.yml
+  when: dify_docker_dsl_name | length > 0
+  no_log: true

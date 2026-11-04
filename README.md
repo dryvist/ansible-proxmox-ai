@@ -84,13 +84,12 @@ allows both to be skipped only on pushes and on pull requests into `develop`.
   MCP fabric + LLM front door from Hermes's own network path; alerts once per
   up/down transition to the shared ntfy alert hub.
 
-## Deploy orchestration (follow-up)
+## Deploy orchestration
 
-This repository currently ships **roles only** — there is no `site.yml` and no
-inventory-loading playbook yet. Deploy orchestration (the site playbook and
-the dynamic tofu-inventory loader) is a tracked follow-up, as is
-de-duplicating the local `docker_engine` bootstrap copy the Docker-based
-roles depend on (imported from `ansible-proxmox-apps`).
+`playbooks/site.yml` converges the fleet, and `inventory/load_tofu.yml` loads
+the dynamic tofu inventory. AGENTS.md (Deploy orchestration) has the commands.
+The Docker-based roles still depend on the local `docker_engine` bootstrap copy
+(imported from `ansible-proxmox-apps`).
 
 ## Contributing
 

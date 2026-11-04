@@ -1,0 +1,222 @@
+---
+# Wall feed objects (llm_wall.sql.j2) and the gateway's read-only user. Runs after the LLM
+# database and per-source tables exist.
+
+# The wall stopwords table, rebuilt from the role defaults on every converge.
+# Views read it at refresh time, so this never needs a view rebuild.
+- name: Rebuild the wall stopwords table
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ clickhouse_docker_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ clickhouse_docker_app_user }}"
+      - --password
+      - "{{ clickhouse_docker_app_password }}"
+      - --multiquery
+      - --query
+      - "{{ lookup('ansible.builtin.template', 'llm_wall.sql.j2') }}"
+  vars:
+    clickhouse_docker_wall_mode: stopwords
+    clickhouse_docker_stopwords: >-
+      {{ lookup('ansible.builtin.file', clickhouse_docker_stopwords_file).splitlines()
+         | map('trim') | reject('equalto', '') | list }}
+  changed_when: false
+  no_log: true
+
+# The views' definition fingerprint is the hash of the rendered view definitions
+# with an empty COMMENT, so it changes exactly when those definitions do. The
+# COMMENT is then written with it on creation.
+- name: Fingerprint the wall view definitions
+  ansible.builtin.set_fact:
+    clickhouse_docker_wall_fingerprint: >-
+      {{ lookup('ansible.builtin.template', 'llm_wall.sql.j2') | hash('sha256') }}
+  vars:
+    clickhouse_docker_wall_mode: views
+  no_log: true
+
+# CREATE MATERIALIZED VIEW IF NOT EXISTS keeps an existing view as it is, so the
+# views are dropped here when either one does not carry the current fingerprint.
+# Both views are dropped together because they are created together.
+- name: Check which wall view definition is in place
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ clickhouse_docker_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ clickhouse_docker_app_user }}"
+      - --password
+      - "{{ clickhouse_docker_app_password }}"
+      - --query
+      - >-
+        SELECT count() FROM system.tables
+        WHERE database = '{{ clickhouse_docker_llm_database }}'
+        AND name IN ('{{ clickhouse_docker_wall_words_view }}', '{{ clickhouse_docker_wall_recent_view }}')
+        AND comment = '{{ clickhouse_docker_wall_fingerprint }}'
+  register: clickhouse_docker_wall_views_in_place
+  changed_when: false
+  no_log: true
+
+# Before any drop, both SELECT bodies are checked against the live server with
+# EXPLAIN PLAN, which resolves tables, columns and types without running them. A
+# broken SELECT body fails the converge here, so the drop below never runs and the
+# views in place keep serving. The CREATE clauses around the bodies (REFRESH,
+# ENGINE, columns, COMMENT) are not checked: an error there leaves the views
+# dropped until a later converge succeeds. Runs only when a drop is about to happen.
+- name: Check the wall view SELECT bodies against the live server
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ clickhouse_docker_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ clickhouse_docker_app_user }}"
+      - --password
+      - "{{ clickhouse_docker_app_password }}"
+      - --multiquery
+      - --query
+      - "{{ lookup('ansible.builtin.template', 'llm_wall.sql.j2') }}"
+  vars:
+    clickhouse_docker_wall_mode: explain
+  when: clickhouse_docker_wall_views_in_place.stdout | trim != '2'
+  changed_when: false
+  no_log: true
+
+- name: Drop the wall views when their definition changed
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ clickhouse_docker_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ clickhouse_docker_app_user }}"
+      - --password
+      - "{{ clickhouse_docker_app_password }}"
+      - --multiquery
+      - --query
+      - >-
+        DROP VIEW IF EXISTS {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_words_view }};
+        DROP VIEW IF EXISTS {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_recent_view }};
+  when: clickhouse_docker_wall_views_in_place.stdout | trim != '2'
+  changed_when: true
+  no_log: true
+
+# The two views, from the current definition. IF NOT EXISTS makes this a no-op
+# when the views were kept above.
+- name: Create the wall refreshable views
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ clickhouse_docker_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ clickhouse_docker_app_user }}"
+      - --password
+      - "{{ clickhouse_docker_app_password }}"
+      - --multiquery
+      - --query
+      - "{{ lookup('ansible.builtin.template', 'llm_wall.sql.j2') }}"
+  vars:
+    clickhouse_docker_wall_mode: views
+  changed_when: false
+  no_log: true
+
+# Fail closed. A wall_reader left by an earlier converge may still accept any
+# host, so a bad or missing subnet locks it out (HOST NONE) before the converge
+# stops; it never keeps its old host list.
+- name: Check the wall gateway subnet, or lock wall_reader out
+  block:
+    - name: Assert the wall gateway subnet is a bounded IPv4 CIDR
+      ansible.builtin.assert:
+        that:
+          - clickhouse_docker_wall_gateway_cidr is string
+          - "'/' in clickhouse_docker_wall_gateway_cidr"
+          - clickhouse_docker_wall_gateway_cidr is ansible.utils.ipv4
+          - (clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) >= 16
+          - (clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) <= 30
+        fail_msg: >-
+          clickhouse_docker_wall_gateway_cidr must be an IPv4 subnet from /16
+          to /30 (from tofu_data.vlan_cidrs.apps).
+        quiet: true
+  rescue:
+    - name: Lock wall_reader out of every host
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - -f
+          - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+          - exec
+          - -T
+          - "{{ clickhouse_docker_service }}"
+          - clickhouse-client
+          - --user
+          - "{{ clickhouse_docker_app_user }}"
+          - --password
+          - "{{ clickhouse_docker_app_password }}"
+          - --query
+          - "ALTER USER IF EXISTS {{ clickhouse_docker_wall_reader_user }} HOST NONE"
+      changed_when: true
+      no_log: true
+
+    - name: Stop the converge without a wall gateway subnet
+      ansible.builtin.fail:
+        msg: >-
+          Locked wall_reader out (HOST NONE): clickhouse_docker_wall_gateway_cidr
+          is not an IPv4 subnet from /16 to /30. Publish tofu_data.vlan_cidrs.apps
+          and converge again.
+
+# The wall gateway's user reads the two wall views and nothing else. The first
+# GRANT ... WITH REPLACE OPTION drops any other privilege the user holds, so a
+# converge always leaves exactly these two grants. Its settings (readonly=1
+# and the result, time and memory limits) are re-applied with the password.
+# These run after the view creation above on every converge, so the grants hold
+# after a rebuild.
+- name: Provision the wall read-only ClickHouse user
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ clickhouse_docker_data_dir }}/docker-compose.yml
+      exec -T {{ clickhouse_docker_service }}
+      clickhouse-client --user {{ clickhouse_docker_app_user }}
+      --password {{ clickhouse_docker_app_password }}
+      --multiquery
+      --query "CREATE USER IF NOT EXISTS {{ clickhouse_docker_wall_reader_user }}
+               IDENTIFIED WITH sha256_password BY '{{ clickhouse_docker_wall_reader_password }}'
+               HOST IP '{{ clickhouse_docker_wall_gateway_cidr }}';
+               ALTER USER {{ clickhouse_docker_wall_reader_user }}
+               IDENTIFIED WITH sha256_password BY '{{ clickhouse_docker_wall_reader_password }}'
+               HOST IP '{{ clickhouse_docker_wall_gateway_cidr }}'
+               SETTINGS {{ clickhouse_docker_wall_reader_settings.items() | map('join', ' = ') | join(', ') }};
+               GRANT SELECT ON {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_words_view }}
+               TO {{ clickhouse_docker_wall_reader_user }} WITH REPLACE OPTION;
+               GRANT SELECT ON {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_recent_view }}
+               TO {{ clickhouse_docker_wall_reader_user }};"
+  changed_when: false
+  no_log: true

@@ -1,27 +1,47 @@
 ---
+# Output target for every job owned by the donna identity, including the
+# recurring ones in 46-*. `local` writes each run's output to the job's own
+# directory under the cron output store on the host. Set it to a `slack:<channel>`
+# target to deliver to Slack; that target runs only when the identity has a
+# connected Slack adapter.
+hermes_agent_donna_deliver: local
+# Failure-notice target for the same jobs. Stays local until the donna identity
+# has a connected Slack adapter; flip it with hermes_agent_donna_deliver.
+hermes_agent_donna_failure_deliver: local
+
 hermes_agent_direct_cron_jobs_assistant:
   # --- Assistant-identity duties ---------------------------------------------
   # Scoped by `identities` so the ops agent never picks them up, exactly as the
   # ops jobs below are never picked up by an assistant. Schedules are UTC
   # (hermes_agent_timezone is pinned).
   #
-  # FLEET-WIDE STAGGER NOTE (2026-08): every job below shares the gateway's
-  # serving tier with the ops-identity fleet in 43-direct-cron-jobs-core.yml
-  # and its siblings — the identity scope keeps CREDENTIALS separate, not
-  # compute. The tier admits exactly 2 concurrent requests; a single LLM call
-  # holds a slot for ~152s (median) to ~211s (max) measured on the serving
-  # host; the router absorbs a busy slot with 8 retries x 40s (~320s) before a
-  # caller gives up. A card runs 25-45 minutes wall-clock, issuing calls
-  # throughout (not continuously — it releases between tool calls), so two
-  # cards starting close together can still stack enough simultaneous calls to
-  # exhaust that budget. The rule applied across this fleet: no two agentic
-  # jobs share a start minute (enforced by
-  # tests/hermes_agent/test_cron_stagger.py, which this identity's jobs are
-  # NOT visible to — see that test's `_schedules()` docstring gap — so this
-  # comment is the record for these three), and no two `*/N`-periodic jobs
-  # share an hour-of-day phase. Not every pair fits: see the PR description
-  # for the residual clusters (all tied to fixed operator-facing hours) this
-  # pass could not fully clear.
+  # STAGGER: every job below shares the gateway's serving tier with the
+  # ops-identity fleet in 43-direct-cron-jobs-core.yml and its siblings. The
+  # identity scope keeps CREDENTIALS separate, not compute. The tier admits
+  # exactly 2 concurrent requests, and a card runs 25-45 minutes, so two cards
+  # starting in the same minute can exhaust the router's retry budget.
+  # tests/hermes_agent/test_cron_stagger.py resolves every enabled entry in
+  # hermes_agent_direct_cron_jobs, this identity's jobs included, and fails on
+  # a shared start minute or a recurring job on the board digest tick.
+  - name: assistant-pulse
+    # Hourly. Minute 45 starts no other guarded job in any hour.
+    schedule: "45 * * * *"
+    prompt_var: hermes_agent_assistant_pulse_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+    deliver: "{{ hermes_agent_donna_deliver }}"
+    failure_deliver: "{{ hermes_agent_donna_failure_deliver }}"
+  - name: assistant-inbox-groom
+    # Mornings, ahead of the 12:35 brief so the brief reads a groomed inbox.
+    # Minute 52 starts no other guarded job.
+    schedule: "52 10 * * *"
+    prompt_var: hermes_agent_assistant_inbox_groom_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+    deliver: "{{ hermes_agent_donna_deliver }}"
+    failure_deliver: "{{ hermes_agent_donna_failure_deliver }}"
   - name: assistant-daily-brief
     # 12:35, not the old 12:00 (2026-08 stagger pass): exact collision with
     # daily-summary (120-docs-and-review-crons.yml, also "0 12 * * *") — two
@@ -33,6 +53,8 @@ hermes_agent_direct_cron_jobs_assistant:
     skill: ""
     enabled: true
     identities: [donna]
+    deliver: "{{ hermes_agent_donna_deliver }}"
+    failure_deliver: "{{ hermes_agent_donna_failure_deliver }}"
   # Working hours only, and deliberately not hourly: a nudge that arrives
   # constantly is noise, and noise is how a blocker list gets ignored.
   - name: assistant-decision-nudge
@@ -41,9 +63,37 @@ hermes_agent_direct_cron_jobs_assistant:
     skill: ""
     enabled: true
     identities: [donna]
+    deliver: "{{ hermes_agent_donna_deliver }}"
+    failure_deliver: "{{ hermes_agent_donna_failure_deliver }}"
+  - name: assistant-evening-wrap
+    schedule: "10 23 * * *"
+    prompt_var: hermes_agent_assistant_evening_wrap_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+    deliver: "{{ hermes_agent_donna_deliver }}"
+    failure_deliver: "{{ hermes_agent_donna_failure_deliver }}"
+  - name: assistant-nightly-research
+    schedule: "40 2 * * *"
+    prompt_var: hermes_agent_assistant_research_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+    deliver: "{{ hermes_agent_donna_deliver }}"
+    failure_deliver: "{{ hermes_agent_donna_failure_deliver }}"
   - name: assistant-task-triage
     schedule: "55 14 * * 1"
     prompt_var: hermes_agent_assistant_task_triage_prompt
     skill: ""
     enabled: true
     identities: [donna]
+    deliver: "{{ hermes_agent_donna_deliver }}"
+    failure_deliver: "{{ hermes_agent_donna_failure_deliver }}"
+  - name: assistant-weekly-review
+    schedule: "30 15 * * 0"
+    prompt_var: hermes_agent_assistant_weekly_review_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+    deliver: "{{ hermes_agent_donna_deliver }}"
+    failure_deliver: "{{ hermes_agent_donna_failure_deliver }}"

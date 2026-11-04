@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.15.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.14.0...v2.15.0) (2026-11-03)
+
+
+### Features
+
+* **dify_docker:** read the production admin credentials from the OpenBao leaf ([#1924](https://github.com/dryvist/ansible-proxmox-ai/issues/1924)) ([cadde86](https://github.com/dryvist/ansible-proxmox-ai/commit/cadde86ee81d83ce2539188f53b5b53fb1fd6904))
+* **hermes-relay:** fire every matching Dify route ([#1936](https://github.com/dryvist/ansible-proxmox-ai/issues/1936)) ([93a652d](https://github.com/dryvist/ansible-proxmox-ai/commit/93a652d9db2bc0c5c97bf24c6750939739cb83f7))
+* **hermes-relay:** route matching events to Dify workflow runs ([#1930](https://github.com/dryvist/ansible-proxmox-ai/issues/1930)) ([31c6ba2](https://github.com/dryvist/ansible-proxmox-ai/commit/31c6ba2746b5fd6769a5621a5d7be90c2e8cfa8d))
+* **hermes-relay:** route merged PRs to the doc-contradiction finder ([#1937](https://github.com/dryvist/ansible-proxmox-ai/issues/1937)) ([61c39b3](https://github.com/dryvist/ansible-proxmox-ai/commit/61c39b3641d7f05dcbca1b08f5c62b4c1267b19c))
+* **llm_router:** register every OpenCode Go model ([#1950](https://github.com/dryvist/ansible-proxmox-ai/issues/1950)) ([f7cae14](https://github.com/dryvist/ansible-proxmox-ai/commit/f7cae142a7f9128849551fee4562e78a2ac92262))
+* **llm-router:** prefer local medium for complex and reasoning tiers ([#1928](https://github.com/dryvist/ansible-proxmox-ai/issues/1928)) ([b602a00](https://github.com/dryvist/ansible-proxmox-ai/commit/b602a0098ac7e7704154ab8d55edab6534378cd9))
+
+
+### Bug Fixes
+
+* **hermes-relay:** send each Dify route the start variables its workflow requires ([#1938](https://github.com/dryvist/ansible-proxmox-ai/issues/1938)) ([85dc848](https://github.com/dryvist/ansible-proxmox-ai/commit/85dc848c2fa8e860035acbae4566f0579342532a))
+* **llm_router:** disable the codex-api Hermes rung and align its pinned tests ([#1923](https://github.com/dryvist/ansible-proxmox-ai/issues/1923)) ([f05b187](https://github.com/dryvist/ansible-proxmox-ai/commit/f05b187396fe543534ccac8c919e5bfb94bd8e9c))
+* **llm-gpu-serving:** request priority scheduling for the vLLM unit ([#1939](https://github.com/dryvist/ansible-proxmox-ai/issues/1939)) ([1b74fcb](https://github.com/dryvist/ansible-proxmox-ai/commit/1b74fcbe04035ffa7c36df0a8c6f9d21ef978a80))
+
 ## [2.14.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.13.1...v2.14.0) (2026-11-03)
 
 
