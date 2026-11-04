@@ -46,7 +46,7 @@ def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> 
     defaults = role_defaults(REPO_ROOT / "roles" / "llm_router")
     # The public name reads the once-evaluated fact; the data is defined under the _source name.
     seeded = {entry["role"]: entry for entry in defaults["_llm_router_role_deployments_source"]}
-    assert set(seeded) == {"judge", "recorder"}
+    assert set(seeded) == {"judge", "recorder", "recorder-medium"}
     small_group = next(entry["route_group"] for entry in local_entries if entry["tier"] == "cpu-9b")
     assert aliases["fast"] == small_group
     assert aliases["cheap"] == small_group
@@ -55,6 +55,9 @@ def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> 
     assert seeded["judge"]["litellm_params"]["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
     assert seeded["recorder"]["model"] == "{{ llm_router_small_model }}"
     assert seeded["recorder"]["litellm_params"]["turn_off_message_logging"] is True
+    assert seeded["recorder-medium"]["model"] == "{{ llm_router_primary_model }}"
+    assert seeded["recorder-medium"]["fallbacks"] == []
+    assert seeded["recorder-medium"]["litellm_params"]["turn_off_message_logging"] is True
     assert small_group in capabilities
 
     config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
