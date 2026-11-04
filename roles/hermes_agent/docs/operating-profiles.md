@@ -39,8 +39,11 @@ static `bank_id` derives from `hermes_agent_id`, and no profile sets
 agent bank. Different Hermes agents receive distinct banks. This is
 deliberate — it is what lets `daily-summary` on the `default` profile recall a
 card's findings after its `assignee` moves. The one exception is a profile
-entry that sets `memory_bank_id`: `splunk-admin` does, so every Splunk job
-shares one Splunk bank (`hermes_agent_splunk_memory_bank_id`). A profile with
+entry that sets `memory_bank_id`. `splunk-admin` does, so every Splunk job
+shares one Splunk bank (`hermes_agent_splunk_memory_bank_id`). `homelab-admin`,
+`github-maint` and `orchestrator` each get their own `<agent>-<profile>` bank,
+so they do not read the agent bank. That shared-continuity path no longer
+covers these three profiles. A profile with
 `memory_enabled: false` (`eval`) gets neither a bank nor a Hindsight config. On
 the agent that owns the `splunk` system that bank is the agent bank itself. Within a
 bank, a worker can `memory recall` anything another profile of that bank ever
