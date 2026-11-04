@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.16.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.1...v2.16.2) (2026-11-04)
+
+
+### Bug Fixes
+
+* **hermes_agent:** default the event relay off ([#1984](https://github.com/dryvist/ansible-proxmox-ai/issues/1984)) ([f55022c](https://github.com/dryvist/ansible-proxmox-ai/commit/f55022c3d8ab9b97cae2cdd616495e44e06bef7a))
+
 ## [2.16.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.0...v2.16.1) (2026-11-04)
 
 
