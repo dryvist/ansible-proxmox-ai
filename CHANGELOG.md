@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.16.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.15.0...v2.16.0) (2026-11-04)
+
+
+### Features
+
+* **agent:** autonomous zcode run j-0bbdce7ae13a4aca ([#1971](https://github.com/dryvist/ansible-proxmox-ai/issues/1971)) ([ea08ef3](https://github.com/dryvist/ansible-proxmox-ai/commit/ea08ef3e5bd9dc90fe2e1d03124c4d8f3c37688f))
+* **agent:** zcode run j-0bbdce7ae13a4aca ([ea08ef3](https://github.com/dryvist/ansible-proxmox-ai/commit/ea08ef3e5bd9dc90fe2e1d03124c4d8f3c37688f))
+* **agent:** zcode run j-576f0bea2c7c5c87 ([9455019](https://github.com/dryvist/ansible-proxmox-ai/commit/9455019310d653e4d7991a5ce5228f4c29db1047))
+* **clickhouse_docker:** wall word-cloud and recent-activity feed ([#1934](https://github.com/dryvist/ansible-proxmox-ai/issues/1934)) ([b00a40f](https://github.com/dryvist/ansible-proxmox-ai/commit/b00a40f1291eb486816a2c2daf7ae7f6f72fbddc))
+* **dify_docker:** import the agent DSLs into the console ([#1955](https://github.com/dryvist/ansible-proxmox-ai/issues/1955)) ([a2390bf](https://github.com/dryvist/ansible-proxmox-ai/commit/a2390bfb49f2a19591fd524049d45527aa688f9d))
+* **dify-docker:** store a Dify app API key per agent app in OpenBao ([#1964](https://github.com/dryvist/ansible-proxmox-ai/issues/1964)) ([397b63e](https://github.com/dryvist/ansible-proxmox-ai/commit/397b63ea93c9448a66937748e061c64eb4ab4a98))
+* **hermes_agent:** enable the event relay ([#1963](https://github.com/dryvist/ansible-proxmox-ai/issues/1963)) ([958dac8](https://github.com/dryvist/ansible-proxmox-ai/commit/958dac827d94ba9426b23a51f72aa131697e03a3))
+* **hermes_agent:** enable the event relay ([#1965](https://github.com/dryvist/ansible-proxmox-ai/issues/1965)) ([30174d6](https://github.com/dryvist/ansible-proxmox-ai/commit/30174d68343cc304384e66778b225cb24277ea44))
+* **hermes_agent:** schedule eight donna jobs with local delivery ([#1969](https://github.com/dryvist/ansible-proxmox-ai/issues/1969)) ([d4664fd](https://github.com/dryvist/ansible-proxmox-ai/commit/d4664fdc0534a6116f9e6baf5730c1b9f4530493))
+* **openbao_secrets:** add one read path to an agent domain view ([#1952](https://github.com/dryvist/ansible-proxmox-ai/issues/1952)) ([2a8fc47](https://github.com/dryvist/ansible-proxmox-ai/commit/2a8fc47e11eb7364120adfc3757f28415046a783))
+
+
+### Bug Fixes
+
+* **clickhouse_docker:** derive wall feed from raw JSON, redefine changed views ([#1958](https://github.com/dryvist/ansible-proxmox-ai/issues/1958)) ([4a67729](https://github.com/dryvist/ansible-proxmox-ai/commit/4a677292bef42c5e10035b3a7128bb51e835e411))
+* **clickhouse_docker:** report llm.gemini rows as the antigravity wall source ([#1970](https://github.com/dryvist/ansible-proxmox-ai/issues/1970)) ([2ceb996](https://github.com/dryvist/ansible-proxmox-ai/commit/2ceb996dc6e092561eae75d75ad60468c4666fc7))
+* **clickhouse_docker:** restrict wall_reader to the wall VLAN subnet ([#1966](https://github.com/dryvist/ansible-proxmox-ai/issues/1966)) ([42cfc4d](https://github.com/dryvist/ansible-proxmox-ai/commit/42cfc4d0351796de841e4fff9da6d233166ae4d5))
+* **hermes_agent:** add a per-profile memory bank setting ([#1973](https://github.com/dryvist/ansible-proxmox-ai/issues/1973)) ([e45583e](https://github.com/dryvist/ansible-proxmox-ai/commit/e45583e0fc93b2e9436f22247ce02dd1aa18ea61))
+* **hermes_agent:** fail donna-owned jobs to the donna failure target ([#1975](https://github.com/dryvist/ansible-proxmox-ai/issues/1975)) ([3d0794d](https://github.com/dryvist/ansible-proxmox-ai/commit/3d0794da1994e7098dcea7577232b554a940fff6))
+* **llm_router:** limit the donna key to local classes ([#1974](https://github.com/dryvist/ansible-proxmox-ai/issues/1974)) ([2f2efa0](https://github.com/dryvist/ansible-proxmox-ai/commit/2f2efa0567ecb47548871327ba1e0fe641667108))
+* **openbao:** give one credential path its own secret domain ([#1956](https://github.com/dryvist/ansible-proxmox-ai/issues/1956)) ([043ddd3](https://github.com/dryvist/ansible-proxmox-ai/commit/043ddd36b4bdd5a0ff3007aa412fbf791bff1126))
+* **openbao:** remove the unread ai/hermes/dify path from the hermes domain ([#1977](https://github.com/dryvist/ansible-proxmox-ai/issues/1977)) ([bf3b4ff](https://github.com/dryvist/ansible-proxmox-ai/commit/bf3b4ffb78c4b32bdd6a4109962afd476fe4a7ee))
+* **pre-commit:** wait for the ansible-lint lock without busy-polling ([#1967](https://github.com/dryvist/ansible-proxmox-ai/issues/1967)) ([cd325b8](https://github.com/dryvist/ansible-proxmox-ai/commit/cd325b8f6cf533a8d32e51e8e3dd5e61f520cca1))
+* **untrusted-classify:** retry a classify timeout once ([#1976](https://github.com/dryvist/ansible-proxmox-ai/issues/1976)) ([d1910c6](https://github.com/dryvist/ansible-proxmox-ai/commit/d1910c68fd4b6527e5e4ac42f690a013a1072944))
+
 ## [2.15.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.14.0...v2.15.0) (2026-11-03)
 
 
