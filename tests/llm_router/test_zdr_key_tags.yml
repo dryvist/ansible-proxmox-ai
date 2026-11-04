@@ -64,24 +64,25 @@
         quiet: true
         that:
           - llm_router_seed_mode == 'initial'
-          - _zdr_keys | length == 7
+          - _zdr_keys | length == 9
           - >-
             _zdr_keys | map(attribute='alias') | sort
             == [
-              'github-actions-ci-fix', 'github-actions-pr-review',
+              'dify', 'github-actions-ci-fix', 'github-actions-pr-review',
               (
                 _llm_router_hermes_profile_keys
                 | selectattr('alias', 'search', '-default$')
                 | map(attribute='alias') | first
               ),
-              'hermes-private', 'hindsight',
+              'hermes-private', 'hindsight', 'langfuse',
               'litellm-local', 'litellm-local-workstation'
             ]
           - _bad_keys | length == 0
         fail_msg: >-
           ZDR key aliases={{ _zdr_keys | map(attribute='alias') | list }}
           unsafe={{ _bad_keys }}
-        success_msg: "All seven ZDR-only keys require ZDR, exclude free, and enable tag filtering."
+        success_msg: "All nine ZDR-only keys require ZDR, exclude free, and enable tag filtering."
+
       vars:
         _zdr_keys: >-
           {%- set ns = namespace(keys=[]) -%}
@@ -100,6 +101,31 @@
           {%- endif -%}
           {%- endfor -%}
           {{ ns.rows }}
+
+    - name: The automated langfuse and dify keys cannot reach a zero_data_retention false group
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _automated_keys | length == 2
+          - _retaining_reach | length == 0
+        fail_msg: >-
+          automated keys={{ _automated_keys | map(attribute='alias') | list }}
+          reaching zero_data_retention false groups={{ _retaining_reach }}
+        success_msg: "langfuse and dify reach no zero_data_retention false group."
+      vars:
+        _automated_keys: >-
+          {%- set ns = namespace(keys=[]) -%}
+          {%- for k in llm_router_virtual_keys if k.alias in ['langfuse', 'dify'] -%}
+          {%- set ns.keys = ns.keys + [k] -%}
+          {%- endfor -%}
+          {{ ns.keys }}
+        _retaining_reach: >-
+          {%- set ns = namespace(aliases=[]) -%}
+          {%- for k in _automated_keys
+                if (k.models | intersect(llm_router_zdr_false_group_names) | length) > 0 -%}
+          {%- set ns.aliases = ns.aliases + [k.alias] -%}
+          {%- endfor -%}
+          {{ ns.aliases }}
 
     - name: Read the create and reconcile key request definitions
       ansible.builtin.set_fact:
