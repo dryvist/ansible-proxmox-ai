@@ -1,5 +1,4 @@
-"""The event relay ships off. Its queue inputs come from the secret store, so an
-unset input must not fail converge while the default is in force."""
+"""Event relay defaults: off, and every relay task gated on the enable flag."""
 from pathlib import Path
 
 from _role_files import role_defaults, role_tasks
@@ -16,4 +15,4 @@ def test_every_event_relay_task_waits_on_the_flag():
     tasks = role_tasks(ROLE, "event_relay.yml")
     assert tasks, "event_relay.yml resolved to no tasks"
     for task in tasks:
-        assert "hermes_agent_event_relay_enabled" in str(task.get("when", "")), task.get("name")
+        assert task.get("when") == "hermes_agent_event_relay_enabled | bool", task.get("name")
