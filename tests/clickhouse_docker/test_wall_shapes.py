@@ -51,6 +51,15 @@ def test_gemini_shape_reads_content_objects_and_skips_thought_parts():
     assert "(NOT JSONExtractBool(b, 'thought'))" in branch
 
 
+def test_gemini_rows_report_as_the_antigravity_source_and_other_tables_keep_their_name():
+    # Gemini CLI is now AGY (Antigravity): one cloud, not two.
+    for statement in (_statement(WORD_CLOUD), _statement(RECENT)):
+        assert "'antigravity'" in _branch(statement, "gemini")
+        assert "'gemini'" not in _branch(statement, "gemini")
+        for table in ("claude", "codex", "antigravity", "zcode", "opencode"):
+            assert f"'{table}'" in _branch(statement, table)
+
+
 def test_chat_shape_reads_top_level_role_content_and_model():
     statement = _statement(WORD_CLOUD)
 

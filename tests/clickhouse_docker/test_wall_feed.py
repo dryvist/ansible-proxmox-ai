@@ -69,7 +69,12 @@ def test_wall_sources_are_llm_tables_and_name_their_json_shape():
     assert set(WALL_TABLES) <= set(defaults["clickhouse_docker_llm_tables"])
     assert {source["table"]: source["shape"] for source in sources} == WALL_SHAPES
     for source in sources:
-        assert set(source) == {"table", "shape"}
+        assert set(source) <= {"table", "shape", "name"}
+    # Gemini CLI is now AGY (Antigravity); every other table names its own source.
+    assert {source["table"]: source.get("name", source["table"]) for source in sources} == {
+        **{table: table for table in WALL_TABLES},
+        "gemini": "antigravity",
+    }
 
 
 def test_stopwords_are_strings_and_include_yaml_11_keywords():
@@ -144,7 +149,8 @@ def test_word_cloud_refreshes_hourly_over_every_harness_and_keeps_top_words_per_
     assert statement.count("UNION ALL") == len(WALL_TABLES) - 1
     for table in WALL_TABLES:
         assert f"FROM llm.{table} FINAL" in statement
-        assert f"if(msg_role = 'user', 'user', '{table}') AS source" in statement
+        name = "antigravity" if table == "gemini" else table
+        assert f"if(msg_role = 'user', 'user', '{name}') AS source" in statement
     assert "ARRAY JOIN splitByNonAlpha(lower(body)) AS word" in statement
     assert "lengthUTF8(word) BETWEEN 3 AND 24" in statement
     # splitByNonAlpha keeps digits and non-ASCII bytes inside tokens; only ASCII letters pass.
