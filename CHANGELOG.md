@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.16.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.0...v2.16.1) (2026-11-04)
+
+
+### Bug Fixes
+
+* **inventory:** assign legacy GPU guests from their own profile and require a writable model cache ([#1979](https://github.com/dryvist/ansible-proxmox-ai/issues/1979)) ([0e13caa](https://github.com/dryvist/ansible-proxmox-ai/commit/0e13caad5761e78c62b6b525953f44d74a506fc0))
+
 ## [2.16.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.15.0...v2.16.0) (2026-11-04)
 
 
