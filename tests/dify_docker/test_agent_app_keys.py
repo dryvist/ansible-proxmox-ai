@@ -37,20 +37,22 @@ def test_token_tasks_are_secret_safe_and_create_only_when_missing():
     by_name = {task["name"]: task for task in api_key_block["block"]}
 
     top_level_by_name = {task["name"]: task for task in tasks}
-    assert {CREATE_TASK, STORE_TASK} <= by_name.keys()
+    assert STORE_TASK in by_name
+    assert CREATE_TASK in top_level_by_name
     assert READ_TASK in top_level_by_name
-    for name in (CREATE_TASK, STORE_TASK):
-        assert by_name[name]["no_log"] is True
+    assert top_level_by_name[CREATE_TASK]["no_log"] is True
+    assert by_name[STORE_TASK]["no_log"] is True
     assert top_level_by_name[READ_TASK]["no_log"] is True
 
     assert "community.hashi_vault.vault_kv2_get" in top_level_by_name[READ_TASK]
-    assert by_name[CREATE_TASK]["ansible.builtin.uri"]["method"] == "POST"
-    assert by_name[CREATE_TASK]["ansible.builtin.uri"]["status_code"] == 201
-    assert api_key_block["when"] == [
+    assert top_level_by_name[CREATE_TASK]["ansible.builtin.uri"]["method"] == "POST"
+    assert top_level_by_name[CREATE_TASK]["ansible.builtin.uri"]["status_code"] == 201
+    assert top_level_by_name[CREATE_TASK]["when"] == [
         "not ansible_check_mode",
         "dify_docker_agent_app_id | length > 0",
         "((dify_docker_agent_app_api_key_lookup.secret | default({})).api_key | default('', true)) | length == 0",
     ]
+    assert api_key_block["when"] == "dify_docker_agent_app_api_key_create.status | default(0) == 201"
 
     seed = by_name[STORE_TASK]
     assert seed["ansible.builtin.include_role"]["tasks_from"] == "seed_generated"
@@ -60,32 +62,59 @@ def test_token_tasks_are_secret_safe_and_create_only_when_missing():
     assert seed["vars"]["openbao_secrets_seed_path"] == "{{ dify_docker_agent_app_api_key_path }}"
 
 
-def test_create_and_seed_share_rescue_that_deletes_created_key():
+def test_seed_rescue_reads_leaf_before_deleting_created_key():
     tasks = _yaml(API_KEY_TASKS)
     api_key_block = next(task for task in tasks if "block" in task)
+    top_level_by_name = {task["name"]: task for task in tasks}
     block_names = {task["name"] for task in api_key_block["block"]}
     rescue = api_key_block["rescue"]
 
-    assert {CREATE_TASK, STORE_TASK} <= block_names
-    assert len(rescue) == 2
-    delete = rescue[0]
+    assert CREATE_TASK in top_level_by_name
+    assert block_names == {STORE_TASK}
+    assert len(rescue) == 3
+    readback, delete, fail = rescue
+    assert "community.hashi_vault.vault_kv2_get" in readback
+    assert readback["register"] == "dify_docker_agent_app_api_key_readback"
+    assert readback["community.hashi_vault.vault_kv2_get"]["path"] == "{{ dify_docker_agent_app_api_key_path }}"
+    assert readback["no_log"] is True
     assert delete["ansible.builtin.uri"]["method"] == "DELETE"
     assert delete["ansible.builtin.uri"]["status_code"] == 204
-    assert delete["ansible.builtin.uri"]["headers"] == next(
-        task["ansible.builtin.uri"]["headers"]
-        for task in api_key_block["block"]
-        if task["name"] == CREATE_TASK
+    assert delete["ansible.builtin.uri"]["headers"] == top_level_by_name[CREATE_TASK][
+        "ansible.builtin.uri"
+    ]["headers"]
+    assert delete["when"] == (
+        "((dify_docker_agent_app_api_key_readback.secret | default({})).api_key "
+        "| default('', true)) != dify_docker_agent_app_api_key_create.json.token"
     )
-    assert delete["when"] == "dify_docker_agent_app_api_key_create.status | default(0) == 201"
     assert delete["no_log"] is True
     delete_url = delete["ansible.builtin.uri"]["url"]
     assert delete_url.startswith(
         "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/api-keys/"
     )
     assert "dify_docker_agent_app_api_key_create.json.id" in delete_url
-    assert rescue[1]["ansible.builtin.fail"]["msg"] == (
-        "The Dify agent app API key could not be stored in OpenBao; "
-        "the created key was deleted."
+    assert fail["ansible.builtin.fail"]["msg"] == (
+        "The Dify agent app API key could not be stored in OpenBao."
+    )
+    assert fail["no_log"] is True
+
+
+def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
+    tasks = _yaml(API_KEY_TASKS)
+    app_list = next(
+        task
+        for task in tasks
+        if task["name"] == "List Dify apps to resolve the agent app id"
+    )
+    resolve = next(
+        task for task in tasks if task["name"] == "Resolve the Dify agent app id by name"
+    )
+
+    assert app_list["ansible.builtin.uri"]["url"] == (
+        "{{ dify_docker_console_api_base }}/apps?page=1&limit=100&name="
+        "{{ dify_docker_dsl_name | urlencode }}"
+    )
+    assert "selectattr('name', 'equalto', dify_docker_dsl_name)" in (
+        resolve["ansible.builtin.set_fact"]["dify_docker_agent_app_id"]
     )
 
 

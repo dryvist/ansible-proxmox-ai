@@ -1,7 +1,7 @@
 ---
 - name: List Dify apps to resolve the agent app id
   ansible.builtin.uri:
-    url: "{{ dify_docker_console_api_base }}/apps?page=1&limit=100"
+    url: "{{ dify_docker_console_api_base }}/apps?page=1&limit=100&name={{ dify_docker_dsl_name | urlencode }}"
     method: GET
     headers:
       Cookie: "{{ dify_docker_console_cookies }}"
@@ -51,26 +51,27 @@
     ansible_become: false
   no_log: true
 
-- name: Create and store the Dify agent app API key
+- name: Create the Dify agent app API key only when OpenBao has none
   when:
     - not ansible_check_mode
     - dify_docker_agent_app_id | length > 0
     - ((dify_docker_agent_app_api_key_lookup.secret | default({})).api_key | default('', true)) | length == 0
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/api-keys"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 201
+    return_content: true
+  register: dify_docker_agent_app_api_key_create
+  changed_when: dify_docker_agent_app_api_key_create.status | default(0) == 201
+  no_log: true
+
+- name: Store the Dify agent app API key in OpenBao
+  when: dify_docker_agent_app_api_key_create.status | default(0) == 201
   block:
-    - name: Create the Dify agent app API key only when OpenBao has none
-      ansible.builtin.uri:
-        url: "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/api-keys"
-        method: POST
-        headers:
-          Cookie: "{{ dify_docker_console_cookies }}"
-          X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
-        status_code: 201
-        return_content: true
-      register: dify_docker_agent_app_api_key_create
-      changed_when: dify_docker_agent_app_api_key_create.status | default(0) == 201
-      no_log: true
     - name: Store the Dify agent app API key through the shared seed_generated task
-      when: dify_docker_agent_app_api_key_create.status | default(0) == 201
       delegate_to: localhost
       connection: local
       become: false
@@ -94,6 +95,27 @@
         tasks_from: seed_generated
       no_log: true
   rescue:
+    - name: Read back the Dify agent app API key after OpenBao storage failed
+      community.hashi_vault.vault_kv2_get:
+        url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+        auth_method: token
+        token: "{{ openbao_secrets_converge_writer_token }}"
+        engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+        path: "{{ dify_docker_agent_app_api_key_path }}"
+        validate_certs: "{{ openbao_secrets_validate_certs }}"
+      register: dify_docker_agent_app_api_key_readback
+      check_mode: false
+      failed_when: >-
+        dify_docker_agent_app_api_key_readback is failed
+        and 'Invalid or missing path' not in
+          (dify_docker_agent_app_api_key_readback.msg | default(''))
+      changed_when: false
+      delegate_to: localhost
+      connection: local
+      become: false
+      vars:
+        ansible_become: false
+      no_log: true
     - name: Delete the Dify agent app API key if OpenBao storage failed
       ansible.builtin.uri:
         url: >-
@@ -104,8 +126,12 @@
           Cookie: "{{ dify_docker_console_cookies }}"
           X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
         status_code: 204
-      when: dify_docker_agent_app_api_key_create.status | default(0) == 201
+      when: >-
+        ((dify_docker_agent_app_api_key_readback.secret | default({})).api_key
+        | default('', true)) !=
+        dify_docker_agent_app_api_key_create.json.token
       no_log: true
-    - name: Fail after deleting the unstored Dify agent app API key
+    - name: Fail after OpenBao storage failed
       ansible.builtin.fail:
-        msg: The Dify agent app API key could not be stored in OpenBao; the created key was deleted.
+        msg: The Dify agent app API key could not be stored in OpenBao.
+      no_log: true
