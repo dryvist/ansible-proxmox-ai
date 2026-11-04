@@ -17,7 +17,8 @@ def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> 
     ]
     capabilities = {entry["route_group"] for entry in local_entries}
     # Parked model trials have no route group until their serving route exists.
-    assert len(capabilities) == 4, capabilities
+    # review-async is the Mac-first review group, alongside medium, small, embed and ocr.
+    assert len(capabilities) == 5, capabilities
 
     enabled_alias_entries = [
         entry for entry in registry

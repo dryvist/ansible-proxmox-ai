@@ -17,9 +17,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = REPO_ROOT / "llm-models.d"
-MAC_MODEL = "mlx-community/Qwen3.8-27B-4bit"
 GPU_PROFILE = "qwen38-96k-11-fp8-mtp"
-GPU_MEDIUM = "gpu-medium-a-c11-96k"
 
 
 def _rows(name: str) -> list[dict]:
@@ -31,6 +29,14 @@ def _rows(name: str) -> list[dict]:
         for item in value
         if isinstance(item, dict)
     ]
+
+
+MAC_MODEL = next(
+    row["client_model_id"] for row in _rows("10-large.yml") if row.get("serving_role") == "primary"
+)
+GPU_MEDIUM = next(
+    row["client_model_id"] for row in _rows("60-gpu.yml") if row.get("profile") == GPU_PROFILE
+)
 
 
 def _rendered_rows() -> list[dict]:
