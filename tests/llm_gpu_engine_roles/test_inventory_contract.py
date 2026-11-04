@@ -238,10 +238,13 @@ def test_qwen131k_routes_only_unassigned_vllm_tagged_guests_to_llama_cpp_profile
     loader = yaml.safe_dump(_load(REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml"))
     environment = jinja2.Environment()
 
-    def selected(tags: list[str], identity: str | None, profile: str) -> bool:
+    def selected(tags: list[str], identity: str | None, profile: str, controller: str = "medium-b") -> bool:
+        # The task runs on localhost: `controller` is localhost's own profile and must
+        # never decide a guest's group; only the guest's hostvars entry may.
         context = {
             "item": {"key": "fixture", "value": {"tags": tags, "llm_gpu_engine_identity": identity}},
-            "llm_active_profile": profile,
+            "hostvars": {"fixture": {"llm_active_profile": profile}},
+            "llm_active_profile": controller,
         }
         return all(environment.compile_expression(condition)(context) for condition in conditions)
 
@@ -251,6 +254,7 @@ def test_qwen131k_routes_only_unassigned_vllm_tagged_guests_to_llama_cpp_profile
     assert selected(["nvidia-gpu", "llm-vllm"], None, "qwen38-27b-131k-1")
     assert not selected(["nvidia-gpu", "llm-vllm"], "vllm", "qwen38-27b-131k-1")
     assert not selected(["nvidia-gpu", "llm-vllm"], "", "")
+    assert not selected(["nvidia-gpu", "llm-vllm"], "", "", controller="qwen38-27b-131k-1")
 
 
 def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():

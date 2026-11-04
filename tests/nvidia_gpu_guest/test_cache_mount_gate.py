@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -96,3 +97,19 @@ def test_existing_mount_directory_passes_and_reaches_the_change(tmp_path: Path) 
 
     assert result.returncode == 0, output
     assert CHANGE_TASK in output, output
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can write a 0555 directory; CI runs as a normal user")
+def test_read_only_mount_fails_before_any_change(tmp_path: Path) -> None:
+    cache = tmp_path / "read-only-cache"
+    cache.mkdir()
+    cache.chmod(0o555)
+    try:
+        result = _run_gate(tmp_path, str(cache))
+    finally:
+        cache.chmod(0o755)
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0, output
+    assert "this converge can write" in output, output
+    assert CHANGE_TASK not in output, output
