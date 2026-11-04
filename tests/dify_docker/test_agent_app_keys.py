@@ -3,12 +3,14 @@
 from pathlib import Path
 
 import yaml
+from jinja2 import Environment
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 IMPORT_TASKS = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
 API_KEY_TASKS = ROOT / "roles/dify_docker/tasks/ensure_agent_app_api_key.yml"
+APP_PAGE_TASKS = ROOT / "roles/dify_docker/tasks/list_agent_app_page.yml"
 
 READ_TASK = "Read the stored Dify agent app API key from OpenBao"
 CREATE_TASK = "Create the Dify agent app API key only when OpenBao has none"
@@ -22,6 +24,11 @@ DUPLICATE_APP_ASSERT_MSG = (
 
 def _yaml(path):
     return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _render_yaml_expression(expression, **context):
+    rendered = Environment().from_string(expression).render(context)
+    return yaml.safe_load(rendered) if rendered else ""
 
 
 def test_api_key_provisioning_is_wired_after_each_agent_dsl():
@@ -104,10 +111,16 @@ def test_seed_rescue_reads_leaf_before_deleting_created_key():
 
 def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
     tasks = _yaml(API_KEY_TASKS)
+    page_tasks = _yaml(APP_PAGE_TASKS)
+    initialize = next(
+        task for task in tasks if "dify_docker_agent_apps_all" in task.get("ansible.builtin.set_fact", {})
+    )
+    include_pages = next(
+        task for task in tasks if task.get("ansible.builtin.include_tasks") == "list_agent_app_page.yml"
+    )
     app_list = next(
-        task
-        for task in tasks
-        if task["name"] == "List Dify apps to resolve the agent app id"
+        task for task in page_tasks
+        if task["name"] == "List one page of Dify apps to resolve the agent app id"
     )
     matches = next(
         task for task in tasks if task["name"] == "Resolve exact Dify agent app matches by name"
@@ -116,15 +129,60 @@ def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
         task for task in tasks if task["name"] == "Resolve the Dify agent app id by name"
     )
 
+    assert initialize["ansible.builtin.set_fact"]["dify_docker_agent_apps_all"] == []
+    assert initialize["no_log"] is True
+    assert include_pages["vars"]["dify_docker_app_page"] == 1
+    assert include_pages["no_log"] is True
     assert app_list["ansible.builtin.uri"]["url"] == (
-        "{{ dify_docker_console_api_base }}/apps?page=1&limit=100&name="
+        "{{ dify_docker_console_api_base }}/apps?page={{ dify_docker_app_page }}&limit=100&name="
         "{{ dify_docker_dsl_name | urlencode }}"
     )
+    assert app_list["no_log"] is True
     assert "selectattr('name', 'equalto', dify_docker_dsl_name)" in (
+        matches["ansible.builtin.set_fact"]["dify_docker_agent_app_matches"]
+    )
+    assert "dify_docker_agent_apps_all" in (
         matches["ansible.builtin.set_fact"]["dify_docker_agent_app_matches"]
     )
     assert resolve["ansible.builtin.set_fact"]["dify_docker_agent_app_id"] == (
         "{{ dify_docker_agent_app_matches[0].id | default('') }}"
+    )
+
+
+def test_recursive_app_list_pagination_has_cap_and_shape_guards():
+    assert APP_PAGE_TASKS.exists()
+    tasks = _yaml(APP_PAGE_TASKS)
+    recursive_include = next(
+        task
+        for task in tasks
+        if task.get("ansible.builtin.include_tasks") == "list_agent_app_page.yml"
+    )
+    cap_fail = next(
+        task
+        for task in tasks
+        if task.get("ansible.builtin.fail", {}).get("msg")
+        == "Too many Dify apps match the agent name to check for duplicates; narrow the name."
+    )
+    missing_has_more_fail = next(
+        task
+        for task in tasks
+        if task.get("ansible.builtin.fail", {}).get("msg")
+        == "Dify app list response has no has_more field."
+    )
+
+    assert recursive_include["vars"]["dify_docker_app_page"] == (
+        "{{ dify_docker_app_page | int + 1 }}"
+    )
+    assert recursive_include["when"] == [
+        "dify_docker_agent_apps_page.json.has_more is true",
+        "dify_docker_app_page | int < 50",
+    ]
+    assert cap_fail["when"] == [
+        "dify_docker_agent_apps_page.json.has_more is true",
+        "dify_docker_app_page | int >= 50",
+    ]
+    assert missing_has_more_fail["when"] == (
+        "dify_docker_agent_apps_page.json.has_more is not defined"
     )
 
 
@@ -169,6 +227,75 @@ def test_missing_agent_app_fails_with_assert():
     ]
     assert "{{ dify_docker_dsl_name }}" in assertion["ansible.builtin.assert"]["fail_msg"]
     assert assertion.get("no_log") is not True
+
+
+def test_exact_name_uniqueness_uses_apps_aggregated_from_all_pages():
+    tasks = _yaml(API_KEY_TASKS)
+    page_tasks = _yaml(APP_PAGE_TASKS)
+    accumulate = next(
+        task for task in page_tasks if task["name"] == "Accumulate this page of Dify apps"
+    )
+    matches_task = next(
+        task for task in tasks if task["name"] == "Resolve exact Dify agent app matches by name"
+    )
+    matches_assertion = next(
+        task
+        for task in tasks
+        if task.get("ansible.builtin.assert", {}).get("fail_msg") == DUPLICATE_APP_ASSERT_MSG
+    )
+    id_task = next(
+        task for task in tasks if task["name"] == "Resolve the Dify agent app id by name"
+    )
+    found_assertion = next(task for task in tasks if task["name"] == APP_ASSERT_TASK)
+
+    accumulate_expression = accumulate["ansible.builtin.set_fact"]["dify_docker_agent_apps_all"]
+    matches_expression = matches_task["ansible.builtin.set_fact"]["dify_docker_agent_app_matches"]
+    uniqueness_expression = matches_assertion["ansible.builtin.assert"]["that"][0]
+    app_id_expression = id_task["ansible.builtin.set_fact"]["dify_docker_agent_app_id"]
+    found_expression = found_assertion["ansible.builtin.assert"]["that"][0]
+
+    def check_pages(page_one_data, page_two_data):
+        pages = [
+            {"json": {"data": page_one_data, "has_more": True}},
+            {"json": {"data": page_two_data, "has_more": False}},
+        ]
+        all_apps = []
+        for page in pages:
+            all_apps = _render_yaml_expression(
+                accumulate_expression,
+                dify_docker_agent_apps_all=all_apps,
+                dify_docker_agent_apps_page=page,
+            )
+        matches = _render_yaml_expression(
+            matches_expression,
+            dify_docker_agent_apps_all=all_apps,
+            dify_docker_dsl_name="agent-app",
+        )
+        uniqueness_passes = Environment().compile_expression(uniqueness_expression)(
+            dify_docker_agent_app_matches=matches
+        )
+        app_id = _render_yaml_expression(
+            app_id_expression, dify_docker_agent_app_matches=matches
+        )
+        found_passes = Environment().compile_expression(found_expression)(
+            dify_docker_agent_app_id=app_id
+        )
+        return pages, all_apps, matches, uniqueness_passes, found_passes
+
+    first_page = [{"id": "first", "name": "agent-app"}]
+    duplicate_page = [{"id": "second", "name": "agent-app"}]
+    pages, all_apps, matches, uniqueness_passes, _ = check_pages(first_page, duplicate_page)
+    assert [page["json"]["has_more"] for page in pages] == [True, False]
+    assert [app["id"] for app in all_apps] == ["first", "second"]
+    assert [app["id"] for app in matches] == ["first", "second"]
+    assert uniqueness_passes is False
+
+    _, _, matches, uniqueness_passes, found_passes = check_pages(
+        first_page, [{"id": "substring", "name": "agent-app-copy"}]
+    )
+    assert [app["id"] for app in matches] == ["first"]
+    assert uniqueness_passes is True
+    assert found_passes is True
 
 
 def test_api_key_leaf_is_derived_from_the_dify_openbao_base_path():

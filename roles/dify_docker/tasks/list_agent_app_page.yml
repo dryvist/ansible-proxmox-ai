@@ -1,0 +1,42 @@
+---
+- name: List one page of Dify apps to resolve the agent app id
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps?page={{ dify_docker_app_page }}\
+      &limit=100&name={{ dify_docker_dsl_name | urlencode }}"
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_agent_apps_page
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+- name: Fail when the Dify app list response has no pagination status
+  ansible.builtin.fail:
+    msg: "Dify app list response has no has_more field."
+  when: dify_docker_agent_apps_page.json.has_more is not defined
+
+- name: Accumulate this page of Dify apps
+  ansible.builtin.set_fact:
+    dify_docker_agent_apps_all: >-
+      {{ dify_docker_agent_apps_all + dify_docker_agent_apps_page.json.data }}
+  no_log: true
+
+- name: Fail when the Dify app list exceeds the page limit
+  ansible.builtin.fail:
+    msg: "Too many Dify apps match the agent name to check for duplicates; narrow the name."
+  when:
+    - dify_docker_agent_apps_page.json.has_more is true
+    - dify_docker_app_page | int >= 50
+
+- name: Continue listing Dify apps while more pages remain
+  ansible.builtin.include_tasks: list_agent_app_page.yml
+  vars:
+    dify_docker_app_page: "{{ dify_docker_app_page | int + 1 }}"
+  when:
+    - dify_docker_agent_apps_page.json.has_more is true
+    - dify_docker_app_page | int < 50
+  no_log: true
