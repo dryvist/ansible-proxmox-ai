@@ -165,8 +165,17 @@ llm_router_alias_pairs: >-
        + llm_router_opencode_stable_alias_entries
        + (llm_router_registry_enabled
           | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) | list))
-       | unique(attribute='client_model_id') | list -%}
-  {%- for _entry in _entries | selectattr('stable_aliases', 'defined') -%}
+       -%}
+  {#- One entry per client and route group: a model served by two groups keeps both, so its aliases survive. -#}
+  {%- set ns.seen = namespace(keys=[], kept=[]) -%}
+  {%- for _e in _entries -%}
+  {%- set _key = _e.client_model_id ~ '|' ~ (_e.route_group | default('')) -%}
+  {%- if _key not in ns.seen.keys -%}
+  {%- set _discard = ns.seen.keys.append(_key) -%}
+  {%- set _discard = ns.seen.kept.append(_e) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- for _entry in ns.seen.kept | selectattr('stable_aliases', 'defined') -%}
   {%- for _alias in _entry.stable_aliases -%}
   {%- set _target = _entry.route_group | default(_entry.client_model_id) -%}
   {%- if _entry.tier in llm_router_local_registry_tiers
