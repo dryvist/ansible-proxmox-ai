@@ -43,7 +43,10 @@ repos:
           mkdir -p "$HOME/.cache" && exec 9>"$HOME/.cache/pre-commit-ansible-lint.lock" || exit 1
           msg="another ansible-lint is running on this machine; retry later"
           if [ -x /usr/bin/lockf ]; then
-            /usr/bin/lockf -s -t 900 9 || { echo "$msg"; exit 1; }
+            # File mode: lockf waiting on a descriptor busy-polls a CPU core on macOS.
+            /usr/bin/lockf -s -t 900 "$HOME/.cache/pre-commit-ansible-lint.lock" \
+              env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE ansible-lint "$@"
+            rc=$?; [ "$rc" -eq 75 ] && echo "$msg"; exit "$rc"
           elif command -v flock >/dev/null 2>&1; then
             flock -w 900 9 || { echo "$msg"; exit 1; }
           else
