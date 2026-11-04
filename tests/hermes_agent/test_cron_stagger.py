@@ -87,7 +87,7 @@ def _agentic_jobs() -> dict[str, str]:
     named lookups (a `*_cron_name`-shaped regex against the job list, a
     `*_cron_schedule`/`*_schedule`-suffixed variable scan against every
     default). That two-lookup shape is exactly what let a job through
-    unchecked: a literal `name:`/`schedule:` pair (the three
+    unchecked: a literal `name:`/`schedule:` pair (the
     `assistant-*` jobs in `41-*`, and `review`, whose name is
     `hermes_agent_kanban_reviewer_job` — no `_cron_name` suffix) never
     matched either lookup's naming convention, so it silently sat outside
@@ -137,7 +137,7 @@ def test_recurring_agentic_jobs_avoid_the_board_digest_tick() -> None:
     board digest in every one of those hours if its minute-of-HOUR lands on a
     digest tick. The digest runs on a fixed interval it cannot dodge, so the
     recurring card moves instead. Checks every guarded job, the hourly Donna
-    pulse included, and fabric-status by name."""
+    pulse and fabric-status included."""
     digest_interval = int(DEFAULTS["hermes_agent_kanban_digest_interval_minutes"])
     digest = set(range(0, 60, digest_interval))
     offenders: dict[str, list[int]] = {}
@@ -147,13 +147,8 @@ def test_recurring_agentic_jobs_avoid_the_board_digest_tick() -> None:
         overlap = {m % 60 for m in _minutes(expr)} & digest
         if overlap:
             offenders[name] = sorted(overlap)
-    fabric = {m % 60 for m in _minutes(DEFAULTS["hermes_agent_daily_status_cron_schedule"])}
     assert not offenders, "\n".join(
         f"{name} starts on board digest minute(s) {mins}" for name, mins in sorted(offenders.items())
-    )
-    assert not (fabric & digest), (
-        f"fabric-status starts at {sorted(fabric)}, which overlaps the board "
-        f"digest tick at {sorted(digest)}"
     )
 
 
