@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from _eval_support import GROUP_VARS, ROOT, load_yaml, render
+from _eval_support import ROOT, load_yaml, render
 
 INVENTORY = ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml"
 PLAYBOOKS = ROOT / "playbooks"
 GROUPS_EXPRESSION = next(task for task in load_yaml(INVENTORY) if "ansible.builtin.add_host" in task)[
     "ansible.builtin.add_host"
 ]["groups"]
-EVAL_GROUPS = {"sim_eval_group", "dify_eval_group", "langflow_eval_group"}
+EVAL_GROUPS = {"sim_eval_group"}
 PREFETCH_GROUPS = set(
     next(
         play
@@ -29,20 +29,11 @@ PREFETCH_GROUPS = set(
 PRODUCTION_GROUPS = {"dify_group", "langflow_group", "ai_agent_pool_group", "hermes_agent_group"} | PREFETCH_GROUPS
 
 EVAL_HOSTS = [
-    pytest.param("dify-eval-fixture", ["dify-eval"], "dify_eval_group", id="dify-eval"),
-    pytest.param("langflow-eval-fixture", ["langflow-eval"], "langflow_eval_group", id="langflow-eval"),
     pytest.param("sim-eval-fixture", ["sim-eval"], "sim_eval_group", id="sim-eval"),
 ]
 PRODUCTION_HOSTS = [
     pytest.param("dify-prod-fixture", ["dify"], "dify_group", id="dify-prod"),
     pytest.param("langflow-prod-fixture", ["langflow"], "langflow_group", id="langflow-prod"),
-]
-DUAL_TAGGED_HOSTS = [
-    pytest.param("dify-both-fixture", ["dify", "dify-eval"], "dify_eval_group", "dify_group", id="dify-both"),
-    pytest.param(
-        "langflow-both-fixture", ["langflow", "langflow-eval"], "langflow_eval_group", "langflow_group",
-        id="langflow-both",
-    ),
 ]
 
 
@@ -59,8 +50,8 @@ def groups_for(name: str, tags: list[str]) -> set[str]:
     return set(render(GROUPS_EXPRESSION, variables))
 
 
-def test_the_evaluation_group_set_is_exactly_the_three_known_groups() -> None:
-    groups = groups_for("all-eval-fixture", ["sim-eval", "dify-eval", "langflow-eval", "future-eval"])
+def test_the_evaluation_group_set_is_exactly_the_known_group() -> None:
+    groups = groups_for("all-eval-fixture", ["sim-eval", "future-eval"])
 
     assert {group for group in groups if group.endswith("_eval_group")} == EVAL_GROUPS
 
@@ -86,20 +77,8 @@ def test_production_host_never_joins_an_evaluation_group(name: str, tags: list[s
     assert groups & EVAL_GROUPS == set()
 
 
-@pytest.mark.parametrize(("name", "tags", "eval_group", "production_group"), DUAL_TAGGED_HOSTS)
-def test_host_tagged_for_both_never_gets_the_production_group(
-    name: str, tags: list[str], eval_group: str, production_group: str
-) -> None:
-    groups = groups_for(name, tags)
-
-    assert eval_group in groups
-    assert production_group not in groups
-
-
 def test_inventory_maps_each_evaluation_tag_to_exactly_one_group() -> None:
-    for tag, group in (("sim-eval", "sim_eval_group"), ("dify-eval", "dify_eval_group"),
-                       ("langflow-eval", "langflow_eval_group")):
-        assert groups_for("one-eval-fixture", [tag]) & EVAL_GROUPS == {group}
+    assert groups_for("one-eval-fixture", ["sim-eval"]) & EVAL_GROUPS == {"sim_eval_group"}
 
 
 def _playbook_text(path: str) -> str:
@@ -151,11 +130,7 @@ def test_specialist_eval_targets_only_evaluation_groups() -> None:
     plays = _eval_plays()
     others = [play for play in plays if "hosts" in play and not _pins_endpoint(play)]
 
-    assert {play["hosts"] for play in _eval_target_plays()} == {
-        "sim_eval_group",
-        "dify_eval_group",
-        "langflow_eval_group",
-    }
+    assert {play["hosts"] for play in _eval_target_plays()} == {"sim_eval_group"}
     assert all(play["hosts"] in EVAL_GROUPS for play in others)
 
 
@@ -178,40 +153,15 @@ def test_the_endpoint_play_reads_no_domain_and_targets_no_group() -> None:
     assert include["vars"]["openbao_secrets_fail_when_unavailable"] is True
 
 
-def test_only_the_dify_evaluation_play_reads_its_apps_key() -> None:
-    plays = _eval_plays()
-    dify = next(play for play in plays if play.get("hosts") == "dify_eval_group")
-    prefetch = next(
-        task for task in dify["pre_tasks"]
-        if task.get("name") == "Fetch only the Dify evaluation router-key path from OpenBao"
-    )
-    publish = next(
-        task for task in dify["pre_tasks"]
-        if task.get("name") == "Publish only the Dify evaluation OpenBao apps fields"
-    )
-    sim = next(play for play in plays if play.get("hosts") == "sim_eval_group")
-    langflow = next(play for play in plays if play.get("hosts") == "langflow_eval_group")
+def test_the_sim_evaluation_play_reads_no_apps_key() -> None:
+    sim = next(play for play in _eval_plays() if play.get("hosts") == "sim_eval_group")
 
-    assert prefetch["ansible.builtin.include_role"]["name"] == "dryvist.homelab.openbao_secrets"
-    assert prefetch["vars"]["openbao_secrets_domains"] == [
-        {
-            "name": "apps",
-            "paths": [{"path": "{{ dify_docker_eval_router_key_path }}", "optional": True}],
-        }
-    ]
-    assert publish["no_log"] is True
     assert "pre_tasks" not in sim
-    assert "pre_tasks" not in langflow
 
 
 def test_the_endpoint_comes_from_the_same_driver_site_yml_uses() -> None:
     assert "dryvist.homelab.openbao_secrets" in _playbook_text("site.yml")
     assert "dryvist.homelab.openbao_secrets" in _playbook_text("specialist-eval.yml")
-
-
-@pytest.mark.parametrize("group", ["dify_eval_group", "langflow_eval_group"])
-def test_each_evaluation_app_has_its_group_vars_file(group: str) -> None:
-    assert (GROUP_VARS / f"{group}.yml").is_file()
 
 
 @pytest.mark.parametrize("play", _eval_target_plays(), ids=lambda play: play["hosts"])

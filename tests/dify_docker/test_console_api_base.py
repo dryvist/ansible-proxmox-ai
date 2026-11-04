@@ -3,7 +3,6 @@
 from _admin_secret_shared import (
     CONSOLE_BASE_ASSERT_TASK,
     DEFAULTS,
-    EVAL_GROUP,
     GROUP_VARS,
     load_yaml,
     render,
@@ -53,13 +52,4 @@ def test_group_vars_console_api_base_renders_the_container_address_and_web_port(
     assert render(
         "{{ dify_docker_console_api_base }}",
         console_base_context(GROUP_VARS, container_ip),
-    ) == f"http://{container_ip}:8000/console/api"
-
-
-def test_eval_group_console_api_base_renders_the_container_address_and_web_port():
-    container_ip = "dify-eval.example.test"
-
-    assert render(
-        "{{ dify_docker_console_api_base }}",
-        console_base_context(EVAL_GROUP, container_ip),
     ) == f"http://{container_ip}:8000/console/api"

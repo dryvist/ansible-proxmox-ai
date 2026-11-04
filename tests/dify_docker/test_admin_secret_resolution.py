@@ -1,15 +1,11 @@
-"""Production and evaluation Dify admin credentials resolve from the leaf.
+"""Production Dify admin credentials resolve from the leaf.
 
 Each host reads DIFY_ADMIN_EMAIL and DIFY_ADMIN_PASSWORD from the seeded
-OpenBao leaf or the environment; evaluation hosts read only DIFY_EVAL_* names.
+OpenBao leaf or the environment.
 """
 
 from _admin_secret_shared import (
     DEFAULTS,
-    EVAL_EMAIL,
-    EVAL_GROUP,
-    EVAL_PASSWORD,
-    EVAL_RESOLVE_TASK,
     LEAF_EMAIL,
     LEAF_PASSWORD,
     OWNER_EMAIL,
@@ -58,26 +54,6 @@ def test_discovered_owner_email_reaches_the_admin_email(monkeypatch):
     assert render("{{ dify_docker_admin_email }}", variables) == OWNER_EMAIL
 
 
-def test_evaluation_group_reads_only_its_own_names(monkeypatch):
-    defaults = load_yaml(DEFAULTS)
-    eval_group = load_yaml(EVAL_GROUP)
-    monkeypatch.setenv("DIFY_ADMIN_EMAIL", OWNER_EMAIL)
-    monkeypatch.setenv("DIFY_ADMIN_PASSWORD", LEAF_PASSWORD)
-    monkeypatch.setenv("DIFY_EVAL_ADMIN_EMAIL", EVAL_EMAIL)
-    monkeypatch.setenv("DIFY_EVAL_ADMIN_PASSWORD", EVAL_PASSWORD)
-    variables = {
-        **defaults,
-        "bao_local_llm_secrets": {
-            "DIFY_ADMIN_EMAIL": LEAF_EMAIL,
-            "DIFY_ADMIN_PASSWORD": LEAF_PASSWORD,
-        },
-        **eval_group,
-    }
-
-    assert render("{{ dify_docker_admin_email }}", variables) == EVAL_EMAIL
-    assert render("{{ dify_docker_admin_password }}", variables) == EVAL_PASSWORD
-
-
 def test_seed_read_back_resolves_the_admin_credentials_for_every_host():
     task = task_named(READ_BACK_TASK)
 
@@ -104,9 +80,3 @@ def test_seed_read_back_resolves_the_admin_credentials_for_every_host():
         "dify_docker_admin_email": OWNER_EMAIL,
     }
     assert render(set_fact["dify_docker_admin_email"], email_missing) == OWNER_EMAIL
-
-
-def test_the_evaluation_resolve_no_longer_duplicates_the_admin_password():
-    assert "dify_docker_admin_password" not in task_named(EVAL_RESOLVE_TASK)[
-        "ansible.builtin.set_fact"
-    ]

@@ -51,10 +51,6 @@ def test_owner_email_discovery_is_no_log_and_gated_on_a_leaf_without_the_email(
             variables = email_gate_context(monkeypatch, query, setup_state)
             assert all(render_all(task["when"], variables))
 
-    eval_variables = email_gate_context(monkeypatch, EMPTY_RESULT, NOT_STARTED_SETUP)
-    eval_variables["group_names"] = ["dify_eval_group"]
-    assert not all(render_all(task["when"], eval_variables))
-
 
 def test_adopted_owner_email_is_no_log_and_only_from_a_successful_query(monkeypatch):
     task = task_named(ADOPT_TASK)
