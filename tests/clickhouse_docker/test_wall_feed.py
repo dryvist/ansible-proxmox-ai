@@ -297,3 +297,30 @@ def test_wall_reader_is_readonly_limited_and_granted_only_the_two_views():
         "               TO {{ clickhouse_docker_wall_reader_user }};"
     ) in task
     assert "      - clickhouse_docker_wall_reader_password\n" in (ROLE / "tasks/main.yml").read_text(encoding="utf-8")
+
+
+def _render_gateway_cidr(tofu_data: dict) -> str:
+    template = _defaults()["clickhouse_docker_wall_gateway_cidr"]
+    return jinja2.Template(template).render(hostvars={"localhost": {"tofu_data": tofu_data}}).strip()
+
+
+def test_wall_gateway_cidr_reads_the_published_apps_subnet_and_is_empty_without_it():
+    assert _render_gateway_cidr({"vlan_cidrs": {"apps": "192.0.2.0/24"}}) == "192.0.2.0/24"
+    assert _render_gateway_cidr({"vlan_cidrs": {"other": "198.51.100.0/24"}}) == ""
+    assert _render_gateway_cidr({}) == ""
+
+
+def test_wall_reader_is_bound_to_the_gateway_subnet_and_the_converge_fails_closed():
+    names = [task.get("name") for task in _wall_tasks()]
+    assert_name = "Assert the wall gateway subnet is a bounded IPv4 CIDR"
+    assert names.index(assert_name) == names.index(GRANTS_TASK) - 1
+
+    that = _task(assert_name)["ansible.builtin.assert"]["that"]
+    assert "clickhouse_docker_wall_gateway_cidr is ansible.utils.ipv4" in that
+    assert "'/' in clickhouse_docker_wall_gateway_cidr" in that
+    assert "(clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) >= 16" in that
+    assert "(clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) <= 30" in that
+
+    query = _task(GRANTS_TASK)["ansible.builtin.command"]["cmd"]
+    assert query.count("HOST IP '{{ clickhouse_docker_wall_gateway_cidr }}'") == 2
+    assert "HOST ANY" not in query
