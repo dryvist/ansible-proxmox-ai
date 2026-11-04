@@ -203,10 +203,14 @@ def test_splunk_bank_is_the_agent_bank_on_the_owner_and_dedicated_elsewhere() ->
     assert _splunk_bank("hermes", {}) == "hermes-splunk"
 
 
-def test_only_the_splunk_profile_sets_a_bank_and_the_config_task_passes_it() -> None:
+def test_only_the_dedicated_profiles_set_a_bank_and_the_config_task_passes_it() -> None:
     profiles = {p["name"]: p for p in DEFAULTS["hermes_agent_profiles"]}
     assert profiles["splunk-admin"]["memory_bank_id"] == "{{ hermes_agent_splunk_memory_bank_id }}"
-    assert all("memory_bank_id" not in p for name, p in profiles.items() if name != "splunk-admin")
+    assert profiles["homelab-admin"]["memory_bank_id"] == "{{ hermes_agent_memory_bank_id ~ '-homelab-admin' }}"
+    assert profiles["github-maint"]["memory_bank_id"] == "{{ hermes_agent_memory_bank_id ~ '-github-maint' }}"
+    assert profiles["orchestrator"]["memory_bank_id"] == "{{ hermes_agent_memory_bank_id ~ '-orchestrator' }}"
+    dedicated = {"splunk-admin", "homelab-admin", "github-maint", "orchestrator"}
+    assert all("memory_bank_id" not in p for name, p in profiles.items() if name not in dedicated)
 
     tasks = yaml.safe_load((ROLE / "tasks" / "profiles.yml").read_text())
     task = next(t for t in tasks if str(t.get("name", "")).startswith("Deploy the hindsight provider config"))
