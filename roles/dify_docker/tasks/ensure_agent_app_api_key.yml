@@ -1,0 +1,150 @@
+---
+- name: Initialize the accumulated Dify app list
+  ansible.builtin.set_fact:
+    dify_docker_agent_apps_all: []
+    dify_docker_agent_apps_more: true
+  no_log: true
+
+- name: List Dify apps page by page until no more pages remain
+  ansible.builtin.include_tasks: list_agent_app_page.yml
+  loop: "{{ range(1, 51) | list }}"
+  loop_control:
+    loop_var: dify_docker_app_page
+  no_log: true
+
+- name: Resolve exact Dify agent app matches by name
+  ansible.builtin.set_fact:
+    dify_docker_agent_app_matches: >-
+      {{ dify_docker_agent_apps_all | default([])
+         | selectattr('name', 'equalto', dify_docker_dsl_name) | list }}
+  no_log: true
+
+- name: Assert exactly one Dify agent app matched the name
+  ansible.builtin.assert:
+    that:
+      - dify_docker_agent_app_matches | length <= 1
+    fail_msg: >-
+      More than one Dify app has the agent name; resolve the duplicate before
+      provisioning the agent key.
+  no_log: false
+
+- name: Resolve the Dify agent app id by name
+  ansible.builtin.set_fact:
+    dify_docker_agent_app_id: >-
+      {{ dify_docker_agent_app_matches[0].id | default('') }}
+  no_log: true
+
+- name: Assert the Dify agent app was found
+  ansible.builtin.assert:
+    that:
+      - dify_docker_agent_app_id | length > 0
+    fail_msg: >-
+      The Dify agent app "{{ dify_docker_dsl_name }}" could not be found.
+
+- name: Read the stored Dify agent app API key from OpenBao
+  community.hashi_vault.vault_kv2_get:
+    url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+    auth_method: token
+    token: "{{ openbao_secrets_converge_writer_token }}"
+    engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+    path: "{{ dify_docker_agent_app_api_key_path }}"
+    validate_certs: "{{ openbao_secrets_validate_certs }}"
+  register: dify_docker_agent_app_api_key_lookup
+  check_mode: false
+  failed_when: >-
+    dify_docker_agent_app_api_key_lookup is failed
+    and 'Invalid or missing path' not in
+      (dify_docker_agent_app_api_key_lookup.msg | default(''))
+  changed_when: false
+  when: dify_docker_agent_app_id | length > 0
+  delegate_to: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  no_log: true
+
+- name: Create the Dify agent app API key only when OpenBao has none
+  when:
+    - not ansible_check_mode
+    - dify_docker_agent_app_id | length > 0
+    - ((dify_docker_agent_app_api_key_lookup.secret | default({})).api_key | default('', true)) | length == 0
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/api-keys"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 201
+    return_content: true
+  register: dify_docker_agent_app_api_key_create
+  changed_when: dify_docker_agent_app_api_key_create.status | default(0) == 201
+  no_log: true
+
+- name: Store the Dify agent app API key in OpenBao
+  when: dify_docker_agent_app_api_key_create.status | default(0) == 201
+  block:
+    - name: Store the Dify agent app API key through the shared seed_generated task
+      delegate_to: localhost
+      connection: local
+      become: false
+      vars:
+        ansible_become: false
+        openbao_secrets_seed_addr: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+        openbao_secrets_seed_mount: "{{ openbao_secrets_kv_mount }}"
+        openbao_secrets_seed_path: "{{ dify_docker_agent_app_api_key_path }}"
+        openbao_secrets_seed_fields:
+          - name: api_key
+            length: 50
+            charset: alnum
+            value: "{{ dify_docker_agent_app_api_key_create.json.token }}"
+        openbao_secrets_seed_token: "{{ openbao_secrets_converge_writer_token }}"
+        openbao_secrets_seed_expected_writer_policy: ansible-converge
+        openbao_secrets_seed_check_capabilities: "{{ not ansible_check_mode }}"
+        openbao_secrets_seed_revoke_token: false
+        openbao_secrets_seed_register: dify_docker_agent_app_api_key_seed_result
+      ansible.builtin.include_role:
+        name: dryvist.homelab.openbao_secrets
+        tasks_from: seed_generated
+      no_log: true
+  rescue:
+    - name: Read back the Dify agent app API key after OpenBao storage failed
+      community.hashi_vault.vault_kv2_get:
+        url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+        auth_method: token
+        token: "{{ openbao_secrets_converge_writer_token }}"
+        engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+        path: "{{ dify_docker_agent_app_api_key_path }}"
+        validate_certs: "{{ openbao_secrets_validate_certs }}"
+      register: dify_docker_agent_app_api_key_readback
+      check_mode: false
+      failed_when: >-
+        dify_docker_agent_app_api_key_readback is failed
+        and 'Invalid or missing path' not in
+          (dify_docker_agent_app_api_key_readback.msg | default(''))
+      changed_when: false
+      delegate_to: localhost
+      connection: local
+      become: false
+      vars:
+        ansible_become: false
+      no_log: true
+    - name: Delete the Dify agent app API key if OpenBao storage failed
+      ansible.builtin.uri:
+        url: >-
+          {{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/api-keys/{{
+          dify_docker_agent_app_api_key_create.json.id }}
+        method: DELETE
+        headers:
+          Cookie: "{{ dify_docker_console_cookies }}"
+          X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+        status_code: 204
+      when: >-
+        ((dify_docker_agent_app_api_key_readback.secret | default({})).api_key
+        | default('', true)) !=
+        dify_docker_agent_app_api_key_create.json.token
+      no_log: true
+    - name: Fail after OpenBao storage failed
+      ansible.builtin.fail:
+        msg: The Dify agent app API key could not be stored in OpenBao.
+      no_log: true
