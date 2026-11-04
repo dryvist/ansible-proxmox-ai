@@ -1,4 +1,7 @@
 ---
+# Each task checks the stop flag when it runs. The loop in the caller expands
+# every page before any of them runs, so a check on the include itself would
+# not stop the later pages.
 - name: List one page of Dify apps to resolve the agent app id
   ansible.builtin.uri:
     url: "{{ dify_docker_console_api_base }}/apps?page={{ dify_docker_app_page }}\
@@ -12,27 +15,33 @@
   register: dify_docker_agent_apps_page
   check_mode: false
   changed_when: false
+  when: dify_docker_agent_apps_more | bool
   no_log: true
 
-- name: Fail when the Dify app list response has no pagination status
+- name: Fail when the Dify app list response has no boolean has_more field
   ansible.builtin.fail:
-    msg: "Dify app list response has no has_more field."
-  when: dify_docker_agent_apps_page.json.has_more is not defined
+    msg: "Dify app list response has no boolean has_more field."
+  when:
+    - dify_docker_agent_apps_more | bool
+    - dify_docker_agent_apps_page.json.has_more is not boolean
 
 - name: Accumulate this page of Dify apps
   ansible.builtin.set_fact:
     dify_docker_agent_apps_all: >-
       {{ dify_docker_agent_apps_all + dify_docker_agent_apps_page.json.data }}
+  when: dify_docker_agent_apps_more | bool
   no_log: true
 
 - name: Record whether another page follows
   ansible.builtin.set_fact:
     dify_docker_agent_apps_more: "{{ dify_docker_agent_apps_page.json.has_more }}"
+  when: dify_docker_agent_apps_more | bool
   no_log: true
 
 - name: Fail when the Dify app list exceeds the page limit
   ansible.builtin.fail:
     msg: "Too many Dify apps match the agent name to check for duplicates; narrow the name."
   when:
+    - dify_docker_agent_apps_more | bool
     - dify_docker_agent_apps_page.json.has_more is true
     - dify_docker_app_page | int >= 50

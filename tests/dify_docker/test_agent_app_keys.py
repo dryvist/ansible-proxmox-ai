@@ -133,7 +133,6 @@ def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
     assert initialize["no_log"] is True
     assert include_pages["loop"] == "{{ range(1, 51) | list }}"
     assert include_pages["loop_control"] == {"loop_var": "dify_docker_app_page"}
-    assert include_pages["when"] == "dify_docker_agent_apps_more | bool"
     assert include_pages["no_log"] is True
     assert app_list["ansible.builtin.uri"]["url"] == (
         "{{ dify_docker_console_api_base }}/apps?page={{ dify_docker_app_page }}&limit=100&name="
@@ -172,23 +171,29 @@ def test_app_list_pagination_is_a_bounded_loop_with_cap_and_shape_guards():
         task
         for task in page_tasks
         if task.get("ansible.builtin.fail", {}).get("msg")
-        == "Dify app list response has no has_more field."
+        == "Dify app list response has no boolean has_more field."
     )
 
     assert page_loop["loop"] == "{{ range(1, 51) | list }}"
     assert page_loop["loop_control"] == {"loop_var": "dify_docker_app_page"}
-    assert page_loop["when"] == "dify_docker_agent_apps_more | bool"
     assert more_record["ansible.builtin.set_fact"]["dify_docker_agent_apps_more"] == (
         "{{ dify_docker_agent_apps_page.json.has_more }}"
     )
     assert not any("ansible.builtin.include_tasks" in task for task in page_tasks)
+    # Every page task must check the stop flag when it runs, not when the loop expands.
+    for task in page_tasks:
+        when = task.get("when")
+        conditions = when if isinstance(when, list) else [when]
+        assert "dify_docker_agent_apps_more | bool" in conditions, task["name"]
     assert cap_fail["when"] == [
+        "dify_docker_agent_apps_more | bool",
         "dify_docker_agent_apps_page.json.has_more is true",
         "dify_docker_app_page | int >= 50",
     ]
-    assert missing_has_more_fail["when"] == (
-        "dify_docker_agent_apps_page.json.has_more is not defined"
-    )
+    assert missing_has_more_fail["when"] == [
+        "dify_docker_agent_apps_more | bool",
+        "dify_docker_agent_apps_page.json.has_more is not boolean",
+    ]
 
 
 def test_duplicate_agent_apps_fail_before_agent_app_id_is_used():
