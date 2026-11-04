@@ -132,19 +132,42 @@ def test_no_two_active_agentic_cards_start_in_the_same_minute() -> None:
     )
 
 
-def test_the_hourly_card_avoids_the_board_digest_tick() -> None:
-    """The fabric-status card is the only hourly agentic one, so a collision it
-    has repeats every single hour rather than once a day. The board digest runs
-    on a fixed interval it cannot dodge, so the hourly card moves instead."""
-    # The digest ticks every N minutes of every hour, so only fabric-status's
-    # minute-of-HOUR matters here (unlike the minute-of-day check above).
-    fabric = {m % 60 for m in _minutes(DEFAULTS["hermes_agent_daily_status_cron_schedule"])}
+def test_recurring_agentic_jobs_avoid_the_board_digest_tick() -> None:
+    """A card that fires in more than one hour of the day collides with the
+    board digest in every one of those hours if its minute-of-HOUR lands on a
+    digest tick. The digest runs on a fixed interval it cannot dodge, so the
+    recurring card moves instead. Checks every guarded job, the hourly Donna
+    pulse included, and fabric-status by name."""
     digest_interval = int(DEFAULTS["hermes_agent_kanban_digest_interval_minutes"])
     digest = set(range(0, 60, digest_interval))
+    offenders: dict[str, list[int]] = {}
+    for name, expr in _agentic_jobs().items():
+        if len(_expand_field(expr.split()[1], 24)) < 2:
+            continue
+        overlap = {m % 60 for m in _minutes(expr)} & digest
+        if overlap:
+            offenders[name] = sorted(overlap)
+    fabric = {m % 60 for m in _minutes(DEFAULTS["hermes_agent_daily_status_cron_schedule"])}
+    assert not offenders, "\n".join(
+        f"{name} starts on board digest minute(s) {mins}" for name, mins in sorted(offenders.items())
+    )
     assert not (fabric & digest), (
         f"fabric-status starts at {sorted(fabric)}, which overlaps the board "
         f"digest tick at {sorted(digest)}"
     )
+
+
+def test_identity_scoped_assistant_jobs_are_inside_the_guard() -> None:
+    """Identity-scoped jobs sit in their own list, outside the core fleet's.
+    Each enabled one must still resolve into the set the guard checks, or a
+    collision involving it would pass unseen."""
+    guarded = _agentic_jobs()
+    missing = [
+        _render(entry["name"])
+        for entry in DEFAULTS["hermes_agent_direct_cron_jobs_assistant"]
+        if entry.get("enabled") is not False and _render(entry["name"]) not in guarded
+    ]
+    assert not missing, f"assistant jobs outside the stagger guard: {missing}"
 
 
 if __name__ == "__main__":
