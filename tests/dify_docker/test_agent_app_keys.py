@@ -131,7 +131,9 @@ def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
 
     assert initialize["ansible.builtin.set_fact"]["dify_docker_agent_apps_all"] == []
     assert initialize["no_log"] is True
-    assert include_pages["vars"]["dify_docker_app_page"] == 1
+    assert include_pages["loop"] == "{{ range(1, 51) | list }}"
+    assert include_pages["loop_control"] == {"loop_var": "dify_docker_app_page"}
+    assert include_pages["when"] == "dify_docker_agent_apps_more | bool"
     assert include_pages["no_log"] is True
     assert app_list["ansible.builtin.uri"]["url"] == (
         "{{ dify_docker_console_api_base }}/apps?page={{ dify_docker_app_page }}&limit=100&name="
@@ -149,34 +151,37 @@ def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
     )
 
 
-def test_recursive_app_list_pagination_has_cap_and_shape_guards():
-    assert APP_PAGE_TASKS.exists()
-    tasks = _yaml(APP_PAGE_TASKS)
-    recursive_include = next(
-        task
-        for task in tasks
-        if task.get("ansible.builtin.include_tasks") == "list_agent_app_page.yml"
+def test_app_list_pagination_is_a_bounded_loop_with_cap_and_shape_guards():
+    # Recursive include_tasks cannot reference its own page variable: Ansible
+    # raises "Recursive loop detected", so pages come from a bounded loop.
+    tasks = _yaml(API_KEY_TASKS)
+    page_tasks = _yaml(APP_PAGE_TASKS)
+    page_loop = next(
+        task for task in tasks if task.get("ansible.builtin.include_tasks") == "list_agent_app_page.yml"
+    )
+    more_record = next(
+        task for task in page_tasks if task["name"] == "Record whether another page follows"
     )
     cap_fail = next(
         task
-        for task in tasks
+        for task in page_tasks
         if task.get("ansible.builtin.fail", {}).get("msg")
         == "Too many Dify apps match the agent name to check for duplicates; narrow the name."
     )
     missing_has_more_fail = next(
         task
-        for task in tasks
+        for task in page_tasks
         if task.get("ansible.builtin.fail", {}).get("msg")
         == "Dify app list response has no has_more field."
     )
 
-    assert recursive_include["vars"]["dify_docker_app_page"] == (
-        "{{ dify_docker_app_page | int + 1 }}"
+    assert page_loop["loop"] == "{{ range(1, 51) | list }}"
+    assert page_loop["loop_control"] == {"loop_var": "dify_docker_app_page"}
+    assert page_loop["when"] == "dify_docker_agent_apps_more | bool"
+    assert more_record["ansible.builtin.set_fact"]["dify_docker_agent_apps_more"] == (
+        "{{ dify_docker_agent_apps_page.json.has_more }}"
     )
-    assert recursive_include["when"] == [
-        "dify_docker_agent_apps_page.json.has_more is true",
-        "dify_docker_app_page | int < 50",
-    ]
+    assert not any("ansible.builtin.include_tasks" in task for task in page_tasks)
     assert cap_fail["when"] == [
         "dify_docker_agent_apps_page.json.has_more is true",
         "dify_docker_app_page | int >= 50",
