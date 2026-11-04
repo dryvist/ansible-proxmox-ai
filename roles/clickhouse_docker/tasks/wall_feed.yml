@@ -148,6 +148,20 @@
   changed_when: false
   no_log: true
 
+- name: Assert the wall gateway subnet is a bounded IPv4 CIDR
+  ansible.builtin.assert:
+    that:
+      - clickhouse_docker_wall_gateway_cidr is string
+      - "'/' in clickhouse_docker_wall_gateway_cidr"
+      - clickhouse_docker_wall_gateway_cidr is ansible.utils.ipv4
+      - (clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) >= 16
+      - (clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) <= 30
+    fail_msg: >-
+      clickhouse_docker_wall_gateway_cidr must be an IPv4 subnet from /16 to
+      /30 (from tofu_data.vlan_cidrs.apps). Refusing to provision
+      wall_reader without a host restriction.
+    quiet: true
+
 # The wall gateway's user reads the two wall views and nothing else. The first
 # GRANT ... WITH REPLACE OPTION drops any other privilege the user holds, so a
 # converge always leaves exactly these two grants. Its settings (readonly=1
@@ -163,9 +177,11 @@
       --password {{ clickhouse_docker_app_password }}
       --multiquery
       --query "CREATE USER IF NOT EXISTS {{ clickhouse_docker_wall_reader_user }}
-               IDENTIFIED WITH sha256_password BY '{{ clickhouse_docker_wall_reader_password }}';
+               IDENTIFIED WITH sha256_password BY '{{ clickhouse_docker_wall_reader_password }}'
+               HOST IP '{{ clickhouse_docker_wall_gateway_cidr }}';
                ALTER USER {{ clickhouse_docker_wall_reader_user }}
                IDENTIFIED WITH sha256_password BY '{{ clickhouse_docker_wall_reader_password }}'
+               HOST IP '{{ clickhouse_docker_wall_gateway_cidr }}'
                SETTINGS {{ clickhouse_docker_wall_reader_settings.items() | map('join', ' = ') | join(', ') }};
                GRANT SELECT ON {{ clickhouse_docker_llm_database }}.{{ clickhouse_docker_wall_words_view }}
                TO {{ clickhouse_docker_wall_reader_user }} WITH REPLACE OPTION;
