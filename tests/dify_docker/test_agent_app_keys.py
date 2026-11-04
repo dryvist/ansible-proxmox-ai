@@ -14,6 +14,10 @@ READ_TASK = "Read the stored Dify agent app API key from OpenBao"
 CREATE_TASK = "Create the Dify agent app API key only when OpenBao has none"
 STORE_TASK = "Store the Dify agent app API key through the shared seed_generated task"
 APP_ASSERT_TASK = "Assert the Dify agent app was found"
+DUPLICATE_APP_ASSERT_MSG = (
+    "More than one Dify app has the agent name; resolve the duplicate before "
+    "provisioning the agent key."
+)
 
 
 def _yaml(path):
@@ -105,6 +109,9 @@ def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
         for task in tasks
         if task["name"] == "List Dify apps to resolve the agent app id"
     )
+    matches = next(
+        task for task in tasks if task["name"] == "Resolve exact Dify agent app matches by name"
+    )
     resolve = next(
         task for task in tasks if task["name"] == "Resolve the Dify agent app id by name"
     )
@@ -114,8 +121,35 @@ def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
         "{{ dify_docker_dsl_name | urlencode }}"
     )
     assert "selectattr('name', 'equalto', dify_docker_dsl_name)" in (
-        resolve["ansible.builtin.set_fact"]["dify_docker_agent_app_id"]
+        matches["ansible.builtin.set_fact"]["dify_docker_agent_app_matches"]
     )
+    assert resolve["ansible.builtin.set_fact"]["dify_docker_agent_app_id"] == (
+        "{{ dify_docker_agent_app_matches[0].id | default('') }}"
+    )
+
+
+def test_duplicate_agent_apps_fail_before_agent_app_id_is_used():
+    tasks = _yaml(API_KEY_TASKS)
+    uniqueness_assertions = [
+        (index, task)
+        for index, task in enumerate(tasks)
+        if task.get("ansible.builtin.assert", {}).get("fail_msg") == DUPLICATE_APP_ASSERT_MSG
+    ]
+
+    assert len(uniqueness_assertions) == 1
+    uniqueness_index, uniqueness_assertion = uniqueness_assertions[0]
+    assert uniqueness_assertion["ansible.builtin.assert"]["that"] == [
+        "dify_docker_agent_app_matches | length <= 1"
+    ]
+    assert uniqueness_assertion.get("no_log") is False
+
+    app_id_task_indices = [
+        index
+        for index, task in enumerate(tasks)
+        if "dify_docker_agent_app_id" in yaml.safe_dump(task)
+    ]
+    assert app_id_task_indices
+    assert uniqueness_index < min(app_id_task_indices)
 
 
 def test_missing_agent_app_fails_with_assert():
@@ -123,8 +157,12 @@ def test_missing_agent_app_fails_with_assert():
     resolve_index = next(
         index for index, task in enumerate(tasks) if task["name"] == "Resolve the Dify agent app id by name"
     )
-    assertion = tasks[resolve_index + 1]
+    assertion_index = next(
+        index for index, task in enumerate(tasks) if task["name"] == APP_ASSERT_TASK
+    )
+    assertion = tasks[assertion_index]
 
+    assert assertion_index > resolve_index
     assert assertion["name"] == APP_ASSERT_TASK
     assert assertion["ansible.builtin.assert"]["that"] == [
         "dify_docker_agent_app_id | length > 0"
