@@ -250,6 +250,20 @@ def test_a_profile_bank_overrides_the_agent_bank_only_when_set() -> None:
     assert _render_hindsight_config("hermes", profile_bank_id="hermes-splunk")["bank_id"] == "hermes-splunk"
 
 
+def test_a_gateway_key_refuses_a_profile_bank_instead_of_sharing_the_gateway_bank() -> None:
+    check = _task("Refuse a profile memory bank that the agentgateway key would override")["ansible.builtin.assert"]["that"][0]
+    env = Environment(undefined=StrictUndefined)
+
+    def passes(item: dict, gateway_key: str) -> bool:
+        return env.from_string("{{ " + check + " }}").render(
+            item=item, hermes_agent_memory_gateway_key=gateway_key
+        ) == "True"
+
+    assert passes({"name": "homelab-admin", "memory_bank_id": "donna-homelab-admin"}, "")
+    assert passes({"name": "assistant-pulse"}, "fixture-donna-gateway-key")
+    assert not passes({"name": "homelab-admin", "memory_bank_id": "donna-homelab-admin"}, "fixture-donna-gateway-key")
+
+
 def test_hindsight_config_enables_current_turn_recall_in_both_modes() -> None:
     assert _render_hindsight_config("hermes", mode="local_external")["recall_sync"] is True
     assert _render_hindsight_config("hermes", mode="local_embedded")["recall_sync"] is True
