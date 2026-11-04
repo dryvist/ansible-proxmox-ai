@@ -195,9 +195,9 @@ way if staleness matters there.
 
 - `docker_engine`: local copy; apps keeps its own for its remaining Docker
   roles.
-- `openbao_secrets`: local copy trimmed to the `local-llm` domain; apps keeps
-  the full multi-domain copy. Promoting both into `homelab-contracts` is a
-  tracked follow-up.
+- `openbao_secrets`: no local copy. Both this repo and apps run the shared
+  `dryvist.homelab.openbao_secrets` role from the homelab-contracts collection
+  (`requirements.yml`, `playbooks/site.yml`).
 
 ### Rolling converge for pooled services
 
