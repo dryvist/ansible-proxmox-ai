@@ -4,7 +4,7 @@ Reads the registry source directly. The active GPU profile renders; other GPU
 profiles do not. Asserts that:
 
 * medium still holds the active GPU deployment (order 1) and the Mac deployment (order 2);
-* review-async holds the Mac deployment (order 1) and the active GPU deployment (order 2);
+* review-async holds only the Mac deployment (order 1);
 * the review-local alias appears once, on the review-async Mac entry;
 * the primary serving role and both direct aliases stay on the medium entries.
 """
@@ -20,7 +20,6 @@ REGISTRY = REPO_ROOT / "llm-models.d"
 MAC_MODEL = "mlx-community/Qwen3.8-27B-4bit"
 GPU_PROFILE = "qwen38-96k-11-fp8-mtp"
 GPU_MEDIUM = "gpu-medium-a-c11-96k"
-GPU_REVIEW_ASYNC = "gpu-medium-a-c11-96k-review-async"
 
 
 def _rows(name: str) -> list[dict]:
@@ -58,10 +57,8 @@ def test_medium_members_and_orders_are_unchanged():
     )
 
 
-def test_review_async_is_mac_first_then_gpu():
-    assert _members("review-async") == sorted(
-        [(MAC_MODEL, 1), (GPU_REVIEW_ASYNC, 2)]
-    )
+def test_review_async_holds_only_the_mac_deployment():
+    assert _members("review-async") == [(MAC_MODEL, 1)]
 
 
 def test_review_local_points_only_at_review_async():
