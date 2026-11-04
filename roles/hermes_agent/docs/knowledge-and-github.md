@@ -24,7 +24,7 @@ capability against `dryvist/docs` and `dryvist/docs-starlight`, via a dedicated
 GitHub App (`hermes-docs-bot`). Commits are authored through the
 `createCommitOnBranch` GraphQL mutation so GitHub marks them **Verified/signed**
 (a plain `git push` is rejected by the org's required-signatures ruleset). The
-bundled `dryvist/docs-pr` skill enforces the guardrails: `human:review` label and no auto-merge, attribution
+bundled `dryvist/docs-pr` skill enforces the guardrails: no auto-merge, attribution
 triad, dated branches, `docs:` Conventional-Commit titles, per-repo/day caps +
 de-dup, secret redaction, and absolute privacy routing (sensitive → docs-starlight
 only). **No-merge** is guaranteed by the org ruleset (human review + signatures,
