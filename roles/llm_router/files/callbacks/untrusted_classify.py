@@ -73,6 +73,16 @@ async def _post(url, key, body, timeout):
     return response.json()
 
 
+async def _post_with_retry(settings, body):
+    """Retry once, and only after a timeout. A second timeout or any other failure raises."""
+    args = (settings["url"], settings["key"], body, settings["timeout"])
+    try:
+        return await asyncio.wait_for(_post(*args), settings["timeout"])
+    except (asyncio.TimeoutError, httpx.TimeoutException):
+        # A short queue spike can clear within the second try; any other failure is not retried.
+        return await asyncio.wait_for(_post(*args), settings["timeout"])
+
+
 async def _refusal_reason(data):
     """None when the request may pass; otherwise the category logged for the refusal."""
     text = _message_text(data)
@@ -92,10 +102,8 @@ async def _refusal_reason(data):
             # Top level, as ci_effort_pin does: a 4-token budget is spent on reasoning otherwise.
             "chat_template_kwargs": {"enable_thinking": False},
         }
-        reply = await asyncio.wait_for(
-            _post(settings["url"], settings["key"], body, settings["timeout"]), settings["timeout"]
-        )
-    except asyncio.TimeoutError:
+        reply = await _post_with_retry(settings, body)
+    except (asyncio.TimeoutError, httpx.TimeoutException):
         return "timeout"
     except Exception:
         # Fail closed on any classify failure. The exception is not logged: its text can carry request content.

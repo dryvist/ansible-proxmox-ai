@@ -38,6 +38,7 @@ def ns(monkeypatch):
     fastapi.HTTPException = HTTPException
     # Only imported by the module; every test replaces _post, so no client is built.
     httpx = types.ModuleType("httpx")
+    httpx.TimeoutException = type("TimeoutException", (Exception,), {})
     monkeypatch.setitem(sys.modules, "litellm", litellm)
     monkeypatch.setitem(sys.modules, "litellm.integrations", integrations)
     monkeypatch.setitem(sys.modules, "litellm.integrations.custom_logger", custom_logger)
@@ -67,6 +68,21 @@ class Classifier:
         if self.exc is not None:
             raise self.exc
         return {"choices": [{"message": {"content": self.reply}}]}
+
+
+class Scripted(Classifier):
+    """Each call takes the next outcome: a label, or an exception to raise."""
+
+    def __init__(self, *outcomes):
+        super().__init__()
+        self.outcomes = list(outcomes)
+
+    async def __call__(self, url, key, body, timeout):
+        self.calls.append({"url": url, "key": key, "body": body, "timeout": timeout})
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return {"choices": [{"message": {"content": outcome}}]}
 
 
 def _key(tier):
@@ -124,6 +140,44 @@ def test_classifier_timeout_is_refused(ns, monkeypatch):
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_TIMEOUT_SECONDS", "0.01")
     monkeypatch.setitem(ns, "_post", Classifier(reply="public", delay=1.0))
     _refused(ns, _key("untrusted"), _data())
+
+
+def test_classifier_timeout_then_public_passes(ns, monkeypatch):
+    classifier = Scripted(ns["httpx"].TimeoutException("slow"), "public")
+    monkeypatch.setitem(ns, "_post", classifier)
+    data = _data()
+    assert _run(ns, _key("untrusted"), data) is data
+    assert len(classifier.calls) == 2
+
+
+def test_classifier_timeout_twice_is_refused(ns, monkeypatch, caplog):
+    classifier = Scripted(asyncio.TimeoutError(), ns["httpx"].TimeoutException("slow"))
+    monkeypatch.setitem(ns, "_post", classifier)
+    _refused(ns, _key("untrusted"), _data())
+    assert len(classifier.calls) == 2
+    assert "classifier timeout" in caplog.text
+
+
+def test_classifier_timeout_then_error_is_refused(ns, monkeypatch, caplog):
+    classifier = Scripted(ns["httpx"].TimeoutException("slow"), RuntimeError("backend down"))
+    monkeypatch.setitem(ns, "_post", classifier)
+    _refused(ns, _key("untrusted"), _data())
+    assert len(classifier.calls) == 2
+    assert "classifier error" in caplog.text
+
+
+def test_classifier_error_is_not_retried(ns, monkeypatch):
+    classifier = Scripted(RuntimeError("backend down"), "public")
+    monkeypatch.setitem(ns, "_post", classifier)
+    _refused(ns, _key("untrusted"), _data())
+    assert len(classifier.calls) == 1
+
+
+def test_classifier_httpx_timeout_is_logged_as_timeout(ns, monkeypatch, caplog):
+    monkeypatch.setitem(ns, "_post", Classifier(exc=ns["httpx"].TimeoutException("read timed out")))
+    _refused(ns, _key("untrusted"), _data())
+    assert "classifier timeout" in caplog.text
+    assert "classifier error" not in caplog.text
 
 
 @pytest.mark.parametrize("reply", ["", "public.", "I think it is public", "PUBLIC please", None, 7])
