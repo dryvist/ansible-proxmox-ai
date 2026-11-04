@@ -312,14 +312,23 @@ def test_wall_gateway_cidr_reads_the_published_apps_subnet_and_is_empty_without_
 
 def test_wall_reader_is_bound_to_the_gateway_subnet_and_the_converge_fails_closed():
     names = [task.get("name") for task in _wall_tasks()]
-    assert_name = "Assert the wall gateway subnet is a bounded IPv4 CIDR"
-    assert names.index(assert_name) == names.index(GRANTS_TASK) - 1
+    check_name = "Check the wall gateway subnet, or lock wall_reader out"
+    assert names.index(check_name) == names.index(GRANTS_TASK) - 1
 
-    that = _task(assert_name)["ansible.builtin.assert"]["that"]
+    check = _task(check_name)
+    (assertion,) = check["block"]
+    that = assertion["ansible.builtin.assert"]["that"]
     assert "clickhouse_docker_wall_gateway_cidr is ansible.utils.ipv4" in that
     assert "'/' in clickhouse_docker_wall_gateway_cidr" in that
     assert "(clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) >= 16" in that
     assert "(clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) <= 30" in that
+
+    lock, stop = check["rescue"]
+    assert lock["ansible.builtin.command"]["argv"][-1] == (
+        "ALTER USER IF EXISTS {{ clickhouse_docker_wall_reader_user }} HOST NONE"
+    )
+    assert lock["no_log"] is True
+    assert "ansible.builtin.fail" in stop
 
     query = _task(GRANTS_TASK)["ansible.builtin.command"]["cmd"]
     assert query.count("HOST IP '{{ clickhouse_docker_wall_gateway_cidr }}'") == 2

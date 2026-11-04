@@ -148,19 +148,50 @@
   changed_when: false
   no_log: true
 
-- name: Assert the wall gateway subnet is a bounded IPv4 CIDR
-  ansible.builtin.assert:
-    that:
-      - clickhouse_docker_wall_gateway_cidr is string
-      - "'/' in clickhouse_docker_wall_gateway_cidr"
-      - clickhouse_docker_wall_gateway_cidr is ansible.utils.ipv4
-      - (clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) >= 16
-      - (clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) <= 30
-    fail_msg: >-
-      clickhouse_docker_wall_gateway_cidr must be an IPv4 subnet from /16 to
-      /30 (from tofu_data.vlan_cidrs.apps). Refusing to provision
-      wall_reader without a host restriction.
-    quiet: true
+# Fail closed. A wall_reader left by an earlier converge may still accept any
+# host, so a bad or missing subnet locks it out (HOST NONE) before the converge
+# stops; it never keeps its old host list.
+- name: Check the wall gateway subnet, or lock wall_reader out
+  block:
+    - name: Assert the wall gateway subnet is a bounded IPv4 CIDR
+      ansible.builtin.assert:
+        that:
+          - clickhouse_docker_wall_gateway_cidr is string
+          - "'/' in clickhouse_docker_wall_gateway_cidr"
+          - clickhouse_docker_wall_gateway_cidr is ansible.utils.ipv4
+          - (clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) >= 16
+          - (clickhouse_docker_wall_gateway_cidr.split('/')[1] | int) <= 30
+        fail_msg: >-
+          clickhouse_docker_wall_gateway_cidr must be an IPv4 subnet from /16
+          to /30 (from tofu_data.vlan_cidrs.apps).
+        quiet: true
+  rescue:
+    - name: Lock wall_reader out of every host
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - -f
+          - "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+          - exec
+          - -T
+          - "{{ clickhouse_docker_service }}"
+          - clickhouse-client
+          - --user
+          - "{{ clickhouse_docker_app_user }}"
+          - --password
+          - "{{ clickhouse_docker_app_password }}"
+          - --query
+          - "ALTER USER IF EXISTS {{ clickhouse_docker_wall_reader_user }} HOST NONE"
+      changed_when: true
+      no_log: true
+
+    - name: Stop the converge without a wall gateway subnet
+      ansible.builtin.fail:
+        msg: >-
+          Locked wall_reader out (HOST NONE): clickhouse_docker_wall_gateway_cidr
+          is not an IPv4 subnet from /16 to /30. Publish tofu_data.vlan_cidrs.apps
+          and converge again.
 
 # The wall gateway's user reads the two wall views and nothing else. The first
 # GRANT ... WITH REPLACE OPTION drops any other privilege the user holds, so a
