@@ -291,15 +291,14 @@ This repo uses [Nix flakes](https://wiki.nixos.org/wiki/Flakes) +
 direnv allow    # one-time per worktree — auto-activates on cd
 ```
 
-The shell is provided by the `ansible-apps` shell in
-[nix-devenv](https://github.com/JacobPEvans/nix-devenv) via `.envrc`. There is
-no local `flake.nix` — direnv fetches and caches the remote shell
-automatically.
+The local `flake.nix` re-exports the `ansible-apps` shell from
+[nix-devenv](https://github.com/dryvist/nix-devenv) (`?ref=v0`) as its default
+dev shell, and `.envrc` runs `use flake`.
 
 To activate manually without direnv:
 
 ```sh
-nix develop "github:JacobPEvans/nix-devenv#ansible-apps"
+nix develop
 ```
 
 ### Tools provided
