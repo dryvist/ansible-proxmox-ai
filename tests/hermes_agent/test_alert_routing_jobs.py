@@ -67,7 +67,6 @@ PROFILE_ROUTED_JOBS = {
 
 ROOT_HOME_JOBS = (
     "hermes_agent_anomaly_hunt_cron_name",
-    "hermes_agent_ai_news_cron_name",
     "hermes_agent_daily_innovation_cron_name",
     "hermes_agent_docs_study_cron_name",
     "hermes_agent_release_watch_cron_name",
@@ -126,8 +125,9 @@ def test_scouting_jobs_report_to_the_home_channel() -> None:
     recurring source: reading material on a fixed cadence, never an observation
     that something changed."""
     ctx = _resolve(CONFIGURED)
-    for var in ("hermes_agent_ai_news_cron_name", "hermes_agent_daily_innovation_cron_name"):
-        assert _direct_deliver(var, ctx) == "slack:C_HOME", var
+    assert _direct_deliver("hermes_agent_daily_innovation_cron_name", ctx) == "slack:C_HOME"
+    # ai-news reports to the donna-owned target until its Slack path exists.
+    assert _direct_job("hermes_agent_ai_news_cron_name")["deliver"] == "{{ hermes_agent_donna_deliver }}"
 
 
 def test_the_former_kanban_cards_report_to_the_home_channel() -> None:
@@ -153,7 +153,7 @@ def test_splunk_findings_and_anomaly_hunt_route_by_reader() -> None:
 def test_profile_cron_homes_and_delivery_targets_match_the_decision() -> None:
     ctx = _routed_context()
     assert sum(map(len, PROFILE_ROUTED_JOBS.values())) == 14
-    assert len(ROOT_HOME_JOBS) == 6
+    assert len(ROOT_HOME_JOBS) == 5
 
     for profile, cron_names in PROFILE_ROUTED_JOBS.items():
         route_target = f"slack:{PROFILE_CHANNELS[profile]}"
