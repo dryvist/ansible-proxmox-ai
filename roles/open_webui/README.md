@@ -6,7 +6,7 @@ LLM, talking to **Ollama** (CT 167) and fronted by **Traefik** at
 
 ## Installation
 
-Ships with the `ansible-proxmox-apps` repo; no external install. The container is
+Ships with this repo; no external install. The container is
 provisioned by `tofu-proxmox`. This role is wired into `playbooks/site.yml`
 against the `open_webui_group` (containers tagged `open-webui` in the tofu
 inventory) and runs over the `proxmox_pct_remote` connection. Tools come from the

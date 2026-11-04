@@ -12,7 +12,7 @@ The role installs the dependency set from the hash-enforced
 `files/requirements.txt` lock, generated from the Renovate-managed
 `files/requirements.in` source.
 
-Ships with the `ansible-proxmox-apps` repo; no external install. Wired into
+Ships with this repo; no external install. Wired into
 `playbooks/site.yml` against `llm_router_group` (guests tagged `llm-router` in the
 tofu inventory). Tools come from the repo's Nix dev shell (`direnv allow`).
 
