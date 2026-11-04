@@ -43,7 +43,7 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 | `splunk-parsing` | `37 2 * * *` | Splunk findings |
 | `splunk-deepdive` | `11 3 * * *` | Splunk findings |
 | `llm-stats-hourly` | `54 * * * *` | Splunk findings |
-| `github-triage` | `26 */6 * * *` | github-maint profile |
+| `github-triage` | `26 */6 * * *` | Agent home |
 | `bot-pr-triage` | `43 */6 * * *` | Agent home |
 | `review` | `0 */8 * * *` | Agent home (paused, wall clock) |
 | `anomaly-hunt` | `13 */12 * * *` | Agent home (paused, wall clock) |
