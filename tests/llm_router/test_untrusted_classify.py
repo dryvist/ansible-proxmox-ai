@@ -38,6 +38,7 @@ def ns(monkeypatch):
     fastapi.HTTPException = HTTPException
     # Only imported by the module; every test replaces _post, so no client is built.
     httpx = types.ModuleType("httpx")
+    httpx.TimeoutException = type("TimeoutException", (Exception,), {})
     monkeypatch.setitem(sys.modules, "litellm", litellm)
     monkeypatch.setitem(sys.modules, "litellm.integrations", integrations)
     monkeypatch.setitem(sys.modules, "litellm.integrations.custom_logger", custom_logger)
@@ -124,6 +125,13 @@ def test_classifier_timeout_is_refused(ns, monkeypatch):
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_TIMEOUT_SECONDS", "0.01")
     monkeypatch.setitem(ns, "_post", Classifier(reply="public", delay=1.0))
     _refused(ns, _key("untrusted"), _data())
+
+
+def test_classifier_httpx_timeout_is_logged_as_timeout(ns, monkeypatch, caplog):
+    monkeypatch.setitem(ns, "_post", Classifier(exc=ns["httpx"].TimeoutException("read timed out")))
+    _refused(ns, _key("untrusted"), _data())
+    assert "classifier timeout" in caplog.text
+    assert "classifier error" not in caplog.text
 
 
 @pytest.mark.parametrize("reply", ["", "public.", "I think it is public", "PUBLIC please", None, 7])

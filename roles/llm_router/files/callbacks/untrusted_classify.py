@@ -95,7 +95,7 @@ async def _refusal_reason(data):
         reply = await asyncio.wait_for(
             _post(settings["url"], settings["key"], body, settings["timeout"]), settings["timeout"]
         )
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, httpx.TimeoutException):
         return "timeout"
     except Exception:
         # Fail closed on any classify failure. The exception is not logged: its text can carry request content.
