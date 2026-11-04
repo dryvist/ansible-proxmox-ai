@@ -13,6 +13,7 @@ API_KEY_TASKS = ROOT / "roles/dify_docker/tasks/ensure_agent_app_api_key.yml"
 READ_TASK = "Read the stored Dify agent app API key from OpenBao"
 CREATE_TASK = "Create the Dify agent app API key only when OpenBao has none"
 STORE_TASK = "Store the Dify agent app API key through the shared seed_generated task"
+APP_ASSERT_TASK = "Assert the Dify agent app was found"
 
 
 def _yaml(path):
@@ -32,24 +33,75 @@ def test_api_key_provisioning_is_wired_after_each_agent_dsl():
 
 def test_token_tasks_are_secret_safe_and_create_only_when_missing():
     tasks = _yaml(API_KEY_TASKS)
-    by_name = {task["name"]: task for task in tasks}
+    api_key_block = next(task for task in tasks if "block" in task)
+    by_name = {task["name"]: task for task in api_key_block["block"]}
 
-    assert {READ_TASK, CREATE_TASK, STORE_TASK} <= by_name.keys()
-    for name in (READ_TASK, CREATE_TASK, STORE_TASK):
+    top_level_by_name = {task["name"]: task for task in tasks}
+    assert {CREATE_TASK, STORE_TASK} <= by_name.keys()
+    assert READ_TASK in top_level_by_name
+    for name in (CREATE_TASK, STORE_TASK):
         assert by_name[name]["no_log"] is True
+    assert top_level_by_name[READ_TASK]["no_log"] is True
 
-    assert "community.hashi_vault.vault_kv2_get" in by_name[READ_TASK]
+    assert "community.hashi_vault.vault_kv2_get" in top_level_by_name[READ_TASK]
     assert by_name[CREATE_TASK]["ansible.builtin.uri"]["method"] == "POST"
     assert by_name[CREATE_TASK]["ansible.builtin.uri"]["status_code"] == 201
-    assert any("api_key_lookup.secret.api_key" in condition for condition in by_name[CREATE_TASK]["when"])
+    assert api_key_block["when"] == [
+        "not ansible_check_mode",
+        "dify_docker_agent_app_id | length > 0",
+        "((dify_docker_agent_app_api_key_lookup.secret | default({})).api_key | default('', true)) | length == 0",
+    ]
 
-    seed = by_name[STORE_TASK]["block"][0]
-    assert seed["no_log"] is True
+    seed = by_name[STORE_TASK]
     assert seed["ansible.builtin.include_role"]["tasks_from"] == "seed_generated"
     fields = seed["vars"]["openbao_secrets_seed_fields"]
     assert fields[0]["name"] == "api_key"
     assert fields[0]["value"] == "{{ dify_docker_agent_app_api_key_create.json.token }}"
     assert seed["vars"]["openbao_secrets_seed_path"] == "{{ dify_docker_agent_app_api_key_path }}"
+
+
+def test_create_and_seed_share_rescue_that_deletes_created_key():
+    tasks = _yaml(API_KEY_TASKS)
+    api_key_block = next(task for task in tasks if "block" in task)
+    block_names = {task["name"] for task in api_key_block["block"]}
+    rescue = api_key_block["rescue"]
+
+    assert {CREATE_TASK, STORE_TASK} <= block_names
+    assert len(rescue) == 2
+    delete = rescue[0]
+    assert delete["ansible.builtin.uri"]["method"] == "DELETE"
+    assert delete["ansible.builtin.uri"]["status_code"] == 204
+    assert delete["ansible.builtin.uri"]["headers"] == next(
+        task["ansible.builtin.uri"]["headers"]
+        for task in api_key_block["block"]
+        if task["name"] == CREATE_TASK
+    )
+    assert delete["when"] == "dify_docker_agent_app_api_key_create.status | default(0) == 201"
+    assert delete["no_log"] is True
+    delete_url = delete["ansible.builtin.uri"]["url"]
+    assert delete_url.startswith(
+        "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/api-keys/"
+    )
+    assert "dify_docker_agent_app_api_key_create.json.id" in delete_url
+    assert rescue[1]["ansible.builtin.fail"]["msg"] == (
+        "The Dify agent app API key could not be stored in OpenBao; "
+        "the created key was deleted."
+    )
+
+
+def test_missing_agent_app_fails_with_assert():
+    tasks = _yaml(API_KEY_TASKS)
+    resolve_index = next(
+        index for index, task in enumerate(tasks) if task["name"] == "Resolve the Dify agent app id by name"
+    )
+    assertion = tasks[resolve_index + 1]
+
+    assert assertion["name"] == APP_ASSERT_TASK
+    assert assertion["ansible.builtin.assert"]["that"] == [
+        "dify_docker_agent_app_id | length > 0"
+    ]
+    assert "{{ dify_docker_dsl_name }}" in assertion["ansible.builtin.assert"]["fail_msg"]
+    assert assertion.get("no_log") is not True
 
 
 def test_api_key_leaf_is_derived_from_the_dify_openbao_base_path():
