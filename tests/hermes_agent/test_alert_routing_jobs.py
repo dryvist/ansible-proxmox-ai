@@ -130,6 +130,17 @@ def test_scouting_jobs_report_to_the_home_channel() -> None:
     assert _direct_job("hermes_agent_ai_news_cron_name")["deliver"] == "{{ hermes_agent_donna_deliver }}"
 
 
+def test_every_donna_owned_job_fails_to_the_donna_failure_target() -> None:
+    """Failure notices follow the output target: both stay local until the donna
+    identity has a Slack adapter, and one variable flip moves both."""
+    donna_jobs = [
+        job for job in DEFAULTS["hermes_agent_direct_cron_jobs"]
+        if job.get("deliver") == "{{ hermes_agent_donna_deliver }}"
+    ]
+    assert len(donna_jobs) >= 8
+    assert all(job.get("failure_deliver") == "{{ hermes_agent_donna_failure_deliver }}" for job in donna_jobs)
+
+
 def test_the_former_kanban_cards_report_to_the_home_channel() -> None:
     """Docs-site study and docs-sync were Kanban cards before the reframe
     (18/18 to cron); they are now direct-cron jobs but keep the same
