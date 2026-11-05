@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.18.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.17.0...v2.18.0) (2026-11-05)
+
+
+### Features
+
+* **dify_docker:** fetch private agent DSLs with a bearer token ([#2008](https://github.com/dryvist/ansible-proxmox-ai/issues/2008)) ([f3fdde5](https://github.com/dryvist/ansible-proxmox-ai/commit/f3fdde5f391a9773e58ba7baee76fd2b13fba5fe))
+* **dify_docker:** import five more agent DSLs from a refreshed pin ([#2007](https://github.com/dryvist/ansible-proxmox-ai/issues/2007)) ([0885750](https://github.com/dryvist/ansible-proxmox-ai/commit/0885750dc62c00779592d9e1408944bb58bba555))
+
+
+### Bug Fixes
+
+* **hermes:** create a missing Hindsight bank on converge ([#2009](https://github.com/dryvist/ansible-proxmox-ai/issues/2009)) ([392b824](https://github.com/dryvist/ansible-proxmox-ai/commit/392b8246dac52d9f5b4ebe3010ecc2d23115c2f4))
+* **langfuse_docker:** keep the Postgres data dir owned by the container user ([#2005](https://github.com/dryvist/ansible-proxmox-ai/issues/2005)) ([df1222f](https://github.com/dryvist/ansible-proxmox-ai/commit/df1222f4d018dcdc4c8bd551cfdfac59dc51213d))
+
 ## [2.17.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.6...v2.17.0) (2026-11-05)
 
 
