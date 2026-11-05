@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.16.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.4...v2.16.5) (2026-11-05)
+
+
+### Bug Fixes
+
+* **hermes_agent:** skip retired runner process steps when the account is absent ([#1998](https://github.com/dryvist/ansible-proxmox-ai/issues/1998)) ([83b2669](https://github.com/dryvist/ansible-proxmox-ai/commit/83b2669ec5c1fe12ac8b7e44ef5c18c1306916d5))
+
 ## [2.16.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.3...v2.16.4) (2026-11-05)
 
 
