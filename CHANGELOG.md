@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.16.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.5...v2.16.6) (2026-11-05)
+
+
+### Bug Fixes
+
+* **llm_router:** scope langfuse and dify keys to ZDR-only ([#1986](https://github.com/dryvist/ansible-proxmox-ai/issues/1986)) ([8c4c543](https://github.com/dryvist/ansible-proxmox-ai/commit/8c4c5436a856cfdddae04a681a22767d41caa38d))
+
 ## [2.16.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.4...v2.16.5) (2026-11-05)
 
 
