@@ -41,38 +41,30 @@ import statistics
 import sys
 from collections import namedtuple
 
-# --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
+# --- config, rendered from roles/hermes_agent/defaults/main.yml ---
 ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
 STATE_PATH = "{{ hermes_agent_hermes_home }}/state/splunk-digest.json"
-# Expected-continuous indexes: absent / zero-volume / stale here is an ingest
-# anomaly, not "no anomalies". #17144 was os + network going silent unnoticed.
+# Expected-continuous indexes: absent, zero-volume or stale is an ingest anomaly (#17144).
 EXPECTED_CONTINUOUS = {{ hermes_agent_splunk_digest_expected_indexes | to_json }}
 STALENESS_MIN = {{ hermes_agent_splunk_digest_staleness_minutes }}
-# Synthetic senders from the e2e suites. They write into production indexes on a
-# schedule of their own, so their rows are dropped before any finding is built.
+# Synthetic e2e senders write into production indexes; their rows are dropped first.
 TEST_SENDER_HOSTS = {{ hermes_agent_splunk_digest_test_senders | to_json }}
 TEST_SENDER_SOURCETYPES = {{ hermes_agent_splunk_digest_test_sourcetypes | to_json }}
-# A host whose every row carries one of these sourcetypes reports inventory, not
-# logs. It is sparse: never counted in the fleet, so its silence is no fleet drop.
+# Hosts whose rows are all these sourcetypes are inventory, not logs: sparse, never in the fleet.
 SPARSE_SOURCETYPES = {{ hermes_agent_splunk_digest_sparse_sourcetypes | to_json }}
-# WARNING: the MCP server IGNORES the `earliest` argument this is passed as.
-# Proven live 2026-07-28 — `splunk_run_query` returned byte-identical results
-# for -1h, -24h and -7d. This digest is only correct because its window happens
-# to equal the server's own default; it is accidentally right, not deliberately.
-# splunk-triage.py.j2 fixes this by writing `earliest=... latest=now` INLINE in
-# the SPL, where Splunk applies it. Do the same here before changing this value
-# to anything other than -24h, and verify the new number against the REST API
-# rather than assuming the argument took effect.
+# WARNING: the MCP server IGNORES the `earliest` argument. Live proof 2026-07-28:
+# -1h, -24h and -7d returned identical rows. This digest is right only because its
+# window equals the server default. splunk-triage.py.j2 writes `earliest=... latest=now`
+# inline in the SPL instead. Do the same here before changing this value from -24h,
+# and verify against the REST API rather than trusting the argument.
 EARLIEST = "{{ hermes_agent_splunk_digest_window }}"
 ROW_LIMIT = 1000  # the MCP tool's maximum; the truncation guard fails loudly past it
 BACKUP_OUTCOME_AFTER_HOUR_UTC = {{ hermes_agent_splunk_digest_backup_outcome_after_hour_utc }}
 
-# Same span, phrased for prose ("the 24h window" rather than "the -24h window").
+# Same span, phrased for prose ("the 24h window").
 WINDOW = EARLIEST.lstrip("-")
-# Inventory + liveness via tstats metadata ONLY — never index=* over raw events.
-# Grouped by host AND sourcetype: one metadata call feeds every finding dimension
-# (index volume, host membership, per-host liveness, sourcetype composition), so
-# escalating the search costs no extra Splunk work.
+# Inventory and liveness via tstats metadata only, never index=* over raw events.
+# Grouped by host and sourcetype: one call feeds every finding dimension at no extra cost.
 TSTATS_QUERY = "| tstats count as vol, max(_time) as last_time where index=* by index, host, sourcetype"
 # Hourly counts per index, host and sourcetype, as "epoch:count" pairs.
 # shortcut: series silent >25h age out after their first DOWN; a repeat needs the series to clear first, not a longer window.
@@ -87,41 +79,31 @@ BACKUP_OUTCOME_QUERY = (
     'status=success result_count>0 earliest=-24h | stats count AS fires '
     'max(_time) AS last_fire BY savedsearch_name'
 )
-# State schema version. Bumped when the shape changes; an older/absent value
-# means "no usable baseline" and the run reports full numbers with no deltas.
+# State schema version, bumped when the shape changes. Older or absent means no baseline.
 # 4: the fleet membership excludes test senders and sparse roster-only hosts.
 STATE_SCHEMA = 4
-# ponytail: calibration knobs, deliberately module constants and not Ansible
-# variables — real ingest jitters, and these want tuning against it rather than
-# templating.
-# Series below this volume are never reported down: 3 -> 9 events is +200% and
-# means nothing.
+# ponytail: calibration knobs, module constants not Ansible vars; tune against real ingest.
+# Series below this volume are never reported down: 3 -> 9 events is +200% and means nothing.
 MIN_MOVER_VOL = 100
-# Volume is judged on hourly counts, not a rolling 24h total.
-# A series is DOWN when its last complete hour is under DOWN_FRACTION of the median
-# of the 24 hours before it, and that holds for DOWN_RUNS consecutive runs.
+# Volume is judged on hourly counts: DOWN when the last complete hour is under
+# DOWN_FRACTION of the median of the 24 before it, for DOWN_RUNS runs in a row.
 DOWN_FRACTION = 0.5
 DOWN_RUNS = 2
-# Cap on how many host names a single set-change line will spell out.
+# Max host names spelled out on one set-change line.
 MAX_NAMED_HOSTS = 5
-# Per-run cap on routine findings. Unshown novel findings stay unledgered and
-# surface next run, which spreads a burst across the day instead of one wall post.
+# Per-run cap on routine findings. Overflow stays unledgered and surfaces next run.
 MAX_FINDINGS = 8
 # Ledger size cap; oldest keys drop first. Only ever holds one day of keys.
 LEDGER_MAX = 500
-# Net host-fleet shrink treated as a critical finding rather than routine
-# per-host movement.
+# Net host-fleet shrink at or above this is critical, not routine per-host movement.
 HOST_DROP_CRIT = 3
 # Fully quiet and unchanged runs return SILENT; only newly observed findings post.
-# Upstream's `hermes cron` executor skips Slack delivery when a --script
-# cron's STDOUT is exactly this string — the same contract splunk-triage.py.j2
-# already relies on for its per-day "quiet" suppression.
+# hermes cron skips Slack delivery when a --script's STDOUT is exactly this string,
+# the same contract splunk-triage.py.j2 uses for its per-day quiet suppression.
 SILENT = "[SILENT]"
-# Prefix that tells the cron scheduler this run's own observation path
-# failed, so the post is routed to the issues channel instead of the work
-# surface. This script exits 0 and prints its failure (so it is delivered
-# rather than lost), which the runner reads as success — the marker is how
-# it says otherwise. Value comes from Ansible: one definition, two consumers.
+# Prefix routing this run's own failure to the issues channel. The script exits 0 so the
+# failure is delivered, and the runner reads exit 0 as success; the marker says otherwise.
+# Value comes from Ansible: one definition, two consumers.
 ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
 
 # key: stable identity for the day ledger. text: the Slack line.
@@ -151,8 +133,7 @@ async def run_splunk_query(url, token, query):
             streamable_http_client(url, http_client=http) as (r, w, *_):
         async with ClientSession(r, w) as s:
             await s.initialize()
-            # The MCP names the window `earliest_time` and caps rows at `row_limit`
-            # (default 100): a capped table reads as missing indexes/hosts.
+            # row_limit caps rows (MCP default 100): a capped table reads as missing indexes/hosts.
             res = await s.call_tool("splunk_run_query", {"query": query, "earliest_time": EARLIEST,
                                                         "latest_time": "now", "row_limit": ROW_LIMIT})
             if getattr(res, "is_error", False):
@@ -358,15 +339,14 @@ def critical_findings(by_index, prev_by_index, hosts, prev_hosts, have_baseline,
                                f":warning: INGEST SILENCE: index={idx} — last event "
                                f"{fmt_age(rec['age_min'])} ago, 24h volume {fmt_vol(rec['vol'])}"))
 
-    # An index that carried traffic and has now gone to zero or vanished. The
-    # expected-continuous ones are already covered above; don't say it twice.
+    # Traffic that went to zero or vanished. Expected-continuous indexes are covered above.
     for idx in sorted(prev_by_index):
         if idx in EXPECTED_CONTINUOUS:
             continue
         was = prev_by_index[idx].get("vol", 0)
         rec = by_index.get(idx)
-        # Below MIN_MOVER_VOL a series ages out of the rolling 24h window without
-        # going quiet, so only a series that carried real volume can go critical.
+        # Under MIN_MOVER_VOL a series ages out of the 24h window without going quiet;
+        # only real volume can go critical.
         if was >= MIN_MOVER_VOL and (rec is None or rec["vol"] == 0):
             where = "absent from results" if rec is None else "reporting 0 events"
             out.append(Finding(f"crit:zeroed:{idx}",
@@ -508,8 +488,7 @@ def host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last, now_epo
         last = host_last.get(host, 0)
         age = (now_epoch - last) / 60.0 if last > 0 else float("inf")
         if age > STALENESS_MIN:
-            # Bucketed by whole hours: one stale host is one finding per hour of
-            # staleness, not one per run.
+            # Bucketed by whole hours: one finding per hour of staleness, not per run.
             bucket = "inf" if age == float("inf") else int(age // 60)
             out.append(Finding(f"stale:{host}:{bucket}",
                                f":hourglass: host {host} has data in the {WINDOW} window but its "
@@ -621,8 +600,8 @@ def build_digest(results, now, state, backup_outcomes=None, hourly=None):
     ledger_entries = load_ledger_entries(state, today)
     previously_reported = set((state or {}).get("reported_findings") or [])
     previously_reported.update(entry["k"] for entry in ledger_entries)
-    # Critical conditions are judged on their own record, never the ledger. A condition
-    # that clears drops out of it, so its next occurrence posts again.
+    # Critical conditions are judged on their own record, not the ledger. A cleared one
+    # drops out, so its next occurrence posts again.
     reported_critical = set((state or {}).get("reported_critical") or [])
     if backup_outcomes is None:
         stored_backup_findings = (state or {}).get("backup_outcome_findings", [])
@@ -764,9 +743,8 @@ def failure_report(root, state, now):
     key = failure_key(root)
     detail = f"{type(root).__name__}: {str(root)[:200]}"
 
-    # Read-modify-write: the baseline snapshot (by_index, hosts, ...) belongs to
-    # the last SUCCESSFUL run and must survive a failure untouched, or recovery
-    # would report full numbers with no deltas and look like a fresh install.
+    # Read-modify-write: the baseline (by_index, hosts, ...) belongs to the last successful
+    # run and must survive a failure untouched, or recovery reports no deltas.
     payload = dict(state or {})
     suppressed = suppression_of(state, today)
 
@@ -783,8 +761,7 @@ def failure_report(root, state, now):
     payload["suppressed"] = {"day": today, "count": 0,
                              "since_hhmm": now.strftime("%H:%M")}
     payload["failure"] = {"day": today, "key": key}
-    # Keep the report text with the key so recovery can summarize suppressed
-    # repeats without replacing the last successful baseline.
+    # Keep the report text with the key so recovery can summarize suppressed repeats.
     payload["ledger"] = {"day": today,
                          "keys": (ledger_entries
                                   + [{"k": key, "t": f":warning: Splunk digest failing — {detail}"}]
@@ -859,19 +836,16 @@ def main():
             backup_outcomes = asyncio.run(run_backup_outcomes(url, token))
         text, payload = build_digest(results, now, state, backup_outcomes, hourly)
     except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
-        # asyncio.TaskGroup wraps the real fault in an ExceptionGroup; unwrap to
-        # the root leaf so the delivered message names the actual cause (e.g.
-        # "502 Bad Gateway from the Splunk MCP") instead of a useless
-        # "ExceptionGroup: 1 sub-exception". Keep it short and free of secrets.
+        # Unwrap the asyncio TaskGroup ExceptionGroup to its root leaf, so the message names
+        # the real cause (e.g. "502 Bad Gateway from the Splunk MCP"). Keep it free of secrets.
         root = e
         for _ in range(10):
             sub = getattr(root, "exceptions", None)
             if not sub:
                 break
             root = sub[0]
-        # Delivered through the day ledger, not straight to stdout. Failure is
-        # still always reported the first time it is seen and a changed cause
-        # posts at once; only verbatim repetition is suppressed, and counted.
+        # Delivered through the day ledger, not straight to stdout. A first failure always posts;
+        # a changed cause posts at once; only verbatim repeats are suppressed, and counted.
         text, payload = failure_report(root, state, now)
         if backup_query_attempted:
             payload["backup_outcome_checked_date"] = now.strftime("%Y-%m-%d")
@@ -880,15 +854,12 @@ def main():
         return 0
 
     recovered = recovery_line(state, now)
-    # The run succeeded, so the stored failure is over. Clearing it here (rather
-    # than leaving it for the next failure to overwrite) is what makes the
-    # recovery line fire exactly once.
+    # A successful run ends the stored failure. Clearing it here makes the recovery line fire once.
     payload.pop("failure", None)
     payload.pop("suppressed", None)
     save_state(payload)
     if recovered:
-        # A recovery is news even when the digest itself has nothing new, so it
-        # overrides SILENT rather than being appended to it.
+        # A recovery is news even when the digest has nothing new, so it overrides SILENT.
         print(recovered if text == SILENT else f"{recovered}\n{text}")
         return 0
     print(text)
