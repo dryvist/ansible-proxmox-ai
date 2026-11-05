@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.19.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.18.0...v2.19.0) (2026-11-05)
+
+
+### Features
+
+* **llm_router:** add the recorder-medium local-only role ([#2012](https://github.com/dryvist/ansible-proxmox-ai/issues/2012)) ([52d18ad](https://github.com/dryvist/ansible-proxmox-ai/commit/52d18adb5002eafaae7c33e3791159c47118f1f2))
+
 ## [2.18.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.17.0...v2.18.0) (2026-11-05)
 
 
