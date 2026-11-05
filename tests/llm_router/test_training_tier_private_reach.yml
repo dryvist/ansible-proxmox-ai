@@ -67,6 +67,26 @@
           {%- endfor -%}
           {{ ns.names | unique | list }}
 
+    - name: Name every key, public or not, that holds a training-tier group
+      ansible.builtin.set_fact:
+        _training_key_aliases: >-
+          {%- set ns = namespace(aliases=[]) -%}
+          {%- for key in llm_router_virtual_keys | default([]) -%}
+          {%- if (key.models | default([]) | intersect(_training_ids) | length) > 0 -%}
+          {%- set ns.aliases = ns.aliases + [key.alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.aliases | unique | sort | list }}
+
+    - name: Training-tier groups are granted to the sandbox key alone
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _training_key_aliases == ['sandbox-agent']
+        fail_msg: >-
+          Training-tier groups must be granted to the sandbox-agent key alone;
+          holders={{ _training_key_aliases }}.
+
     - name: Name the chain members a non-public key can enter
       ansible.builtin.set_fact:
         _exposed_chain_names: >-
