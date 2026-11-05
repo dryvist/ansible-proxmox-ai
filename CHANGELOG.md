@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.20.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.2...v2.20.3) (2026-11-05)
+
+
+### Bug Fixes
+
+* **hermes_agent:** claim the model-catalog cache directory for the runtime user ([#2025](https://github.com/dryvist/ansible-proxmox-ai/issues/2025)) ([d74badf](https://github.com/dryvist/ansible-proxmox-ai/commit/d74badfa28ee6ad0a9ce20ccdd71aaa72281c3c4))
+
 ## [2.20.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.1...v2.20.2) (2026-11-05)
 
 
