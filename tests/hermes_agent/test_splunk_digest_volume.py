@@ -13,6 +13,7 @@ from _splunk_digest_shared import (
     DIGEST,
     at,
     hourly_row,
+    ledger_keys,
     scale,
     step,
 )
@@ -175,8 +176,9 @@ def test_a_cleared_index_down_that_recurs_the_same_day_posts_again():
     assert "\nindex=os down" in first
     _, s3 = step(BASE, s2, 3, hourly=_whole_index_low(3, 6_000))     # recovers, clears
     _, s4 = step(BASE, s3, 4, hourly=_whole_index_low(4, 2_000))
-    again, _ = step(BASE, s4, 5, hourly=_whole_index_low(5, 2_000))
+    again, s5 = step(BASE, s4, 5, hourly=_whole_index_low(5, 2_000))
     assert "\nindex=os down" in again, "a critical condition is not suppressed by the day's ledger"
+    assert ledger_keys(s5).count("down:index:os") == 1, "a repeated episode is ledgered once, not per episode"
 
 
 def test_a_state_file_from_before_critical_records_posts_an_active_index_down_once():
