@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.20.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.19.0...v2.20.0) (2026-11-05)
+
+
+### Features
+
+* **llm_router:** publish the GPU fill router key to apps ([#2016](https://github.com/dryvist/ansible-proxmox-ai/issues/2016)) ([c101050](https://github.com/dryvist/ansible-proxmox-ai/commit/c101050a8b9c23601b56167bbbcfc007adc24d27))
+
 ## [2.19.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.18.0...v2.19.0) (2026-11-05)
 
 
