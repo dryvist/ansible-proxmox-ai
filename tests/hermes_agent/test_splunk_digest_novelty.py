@@ -211,6 +211,26 @@ def test_a_sparse_index_aging_out_of_the_window_is_not_critical():
     assert "New critical findings" in text
 
 
+def test_a_test_sender_leaving_is_not_a_fleet_drop():
+    # The e2e suites write from a named host and from e2e:* sourcetypes on their
+    # own schedule. Three of them going quiet at once is not a fleet drop.
+    senders = {"dns": {"ansible-e2e-host": {"technitium:dnsquery": 500}},
+               "main": {"probe-a": {"e2e:hec:test": 500}, "probe-b": {"e2e:hec:test": 500}}}
+    _, s0 = step({**BASE, **senders}, None, 0)
+    text, _ = step(BASE, s0, 1)
+    assert text == DIGEST.SILENT, "test senders are not part of the fleet"
+
+
+def test_a_roster_only_host_leaving_is_not_a_fleet_drop():
+    # Converge roster rows say a host is in inventory, not that it logs.
+    roster = {"ansible": {"roster-a": {"ansible:converge:roster": 4},
+                          "roster-b": {"ansible:converge:roster": 4},
+                          "roster-c": {"ansible:converge:roster": 4}}}
+    _, s0 = step({**BASE, **roster}, None, 0)
+    text, _ = step(BASE, s0, 1)
+    assert text == DIGEST.SILENT, "roster-only hosts are sparse, not a fleet drop"
+
+
 def test_ingest_silence_and_fail_loud_contracts_are_preserved():
     text, _ = step({"os": {"host-a": {"syslog": 10}}}, None, 0)
     assert "INGEST SILENCE" in text and "index=network" in text and "index=firewall" in text

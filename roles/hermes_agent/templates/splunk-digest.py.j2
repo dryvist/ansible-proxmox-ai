@@ -32,6 +32,7 @@ STDOUT, and the single terminal print() keeps the delivered payload clean.
 """
 import asyncio
 import datetime as dt
+import fnmatch
 import hashlib
 import json
 import math
@@ -46,6 +47,13 @@ STATE_PATH = "{{ hermes_agent_hermes_home }}/state/splunk-digest.json"
 # anomaly, not "no anomalies". #17144 was os + network going silent unnoticed.
 EXPECTED_CONTINUOUS = {{ hermes_agent_splunk_digest_expected_indexes | to_json }}
 STALENESS_MIN = {{ hermes_agent_splunk_digest_staleness_minutes }}
+# Synthetic senders from the e2e suites. They write into production indexes on a
+# schedule of their own, so their rows are dropped before any finding is built.
+TEST_SENDER_HOSTS = {{ hermes_agent_splunk_digest_test_senders | to_json }}
+TEST_SENDER_SOURCETYPES = {{ hermes_agent_splunk_digest_test_sourcetypes | to_json }}
+# A host whose every row carries one of these sourcetypes reports inventory, not
+# logs. It is sparse: never counted in the fleet, so its silence is no fleet drop.
+SPARSE_SOURCETYPES = {{ hermes_agent_splunk_digest_sparse_sourcetypes | to_json }}
 # WARNING: the MCP server IGNORES the `earliest` argument this is passed as.
 # Proven live 2026-07-28 — `splunk_run_query` returned byte-identical results
 # for -1h, -24h and -7d. This digest is only correct because its window happens
@@ -72,7 +80,8 @@ BACKUP_OUTCOME_QUERY = (
 )
 # State schema version. Bumped when the shape changes; an older/absent value
 # means "no usable baseline" and the run reports full numbers with no deltas.
-STATE_SCHEMA = 3
+# 4: the fleet membership excludes test senders and sparse roster-only hosts.
+STATE_SCHEMA = 4
 # ponytail: calibration knobs, deliberately module constants and not Ansible
 # variables — real ingest jitters, and these want tuning against it rather than
 # templating. PCT_BANDS are the magnitude bands a change is bucketed into, and the
@@ -255,6 +264,27 @@ def name_list(names):
     shown = sorted(names)[:MAX_NAMED_HOSTS]
     extra = len(names) - len(shown)
     return ", ".join(shown) + (f" (+{extra} more)" if extra > 0 else "")
+
+
+def is_test_row(host, sourcetype):
+    return host in TEST_SENDER_HOSTS or any(
+        fnmatch.fnmatchcase(sourcetype or "", glob) for glob in TEST_SENDER_SOURCETYPES)
+
+
+def is_sparse_sourcetype(sourcetype):
+    return any(fnmatch.fnmatchcase(sourcetype, glob) for glob in SPARSE_SOURCETYPES)
+
+
+def fleet_rows(results):
+    """Return (rows, sparse_hosts) with test-sender rows and sparse hosts removed."""
+    rows = [row for row in results if not is_test_row(row.get("host"), row.get("sourcetype"))]
+    stypes_by_host = {}
+    for row in rows:
+        if row.get("host"):
+            stypes_by_host.setdefault(row["host"], set()).add(row.get("sourcetype") or "")
+    sparse = {host for host, stypes in stypes_by_host.items()
+              if all(is_sparse_sourcetype(st) for st in stypes)}
+    return [row for row in rows if row.get("host") not in sparse], sparse
 
 
 def parse_results(results, now_epoch):
@@ -583,7 +613,8 @@ def build_digest(results, now, state, backup_outcomes=None):
     else:
         backup_findings = backup_outcome_findings(backup_outcomes)
 
-    by_index, host_last, saw_host, saw_st = parse_results(results, now_epoch)
+    rows, _ = fleet_rows(results)
+    by_index, host_last, saw_host, saw_st = parse_results(rows, now_epoch)
     hosts = set(host_last)
 
     prev_by_index = (prev or {}).get("by_index") or {}
