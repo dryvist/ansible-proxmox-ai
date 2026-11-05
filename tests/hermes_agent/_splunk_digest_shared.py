@@ -22,7 +22,7 @@ FIXTURE_CONFIG = {
     "STATE_PATH": str(Path(STATE_DIR) / "splunk-digest.json"),
     "EXPECTED_CONTINUOUS": ["os", "network", "firewall"],
     "STALENESS_MIN": 60,
-    "TEST_SENDER_HOSTS": ["ansible-e2e-host"],
+    "TEST_SENDER_HOSTS": ["host-h"],
     "TEST_SENDER_SOURCETYPES": ["e2e:*"],
     "SPARSE_SOURCETYPES": ["ansible:converge:roster"],
     "EARLIEST": "-24h",

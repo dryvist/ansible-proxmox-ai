@@ -44,7 +44,7 @@ from collections import namedtuple
 # --- config, rendered from roles/hermes_agent/defaults/main.yml ---
 ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
 STATE_PATH = "{{ hermes_agent_hermes_home }}/state/splunk-digest.json"
-# Expected-continuous indexes: absent, zero-volume or stale is an ingest anomaly (#17144).
+# Expected-continuous indexes: absent, zero-volume or stale is an ingest anomaly.
 EXPECTED_CONTINUOUS = {{ hermes_agent_splunk_digest_expected_indexes | to_json }}
 STALENESS_MIN = {{ hermes_agent_splunk_digest_staleness_minutes }}
 # Synthetic e2e senders write into production indexes; their rows are dropped first.
@@ -83,12 +83,14 @@ BACKUP_OUTCOME_QUERY = (
 # 4: the fleet membership excludes test senders and sparse roster-only hosts.
 STATE_SCHEMA = 4
 # ponytail: calibration knobs, module constants not Ansible vars; tune against real ingest.
-# Series below this volume are never reported down: 3 -> 9 events is +200% and means nothing.
+# A 24-hour volume floor: a series whose median hourly count x 24 is below it is never reported down.
 MIN_MOVER_VOL = 100
 # Volume is judged on hourly counts: DOWN when the last complete hour is under
 # DOWN_FRACTION of the median of the 24 before it, for DOWN_RUNS runs in a row.
 DOWN_FRACTION = 0.5
 DOWN_RUNS = 2
+# The median spans the 24 complete hours before the last one; less history is no baseline.
+BASELINE_HOURS = 24
 # Max host names spelled out on one set-change line.
 MAX_NAMED_HOSTS = 5
 # Per-run cap on routine findings. Overflow stays unledgered and surfaces next run.
@@ -383,41 +385,38 @@ def mover_rates(hourly_rows, now_epoch, sparse_hosts):
     """Map each index, host and sourcetype to (label, last complete hour, median of the 24 before).
 
     An hour with no row counts as zero, so a series silent for an hour is a real zero
-    in its median. Coverage starts at the earliest hour the search returned, so a
-    search that reaches less than 24 hours back is never padded with fabricated zeros.
+    in its median. A series whose own history does not reach back to the start of the
+    24-hour window has no baseline: its median is None and no finding judges it, so a
+    young series is never padded with zeros into a judgment. Rows without a host count
+    toward the index and sourcetype totals only.
     """
     last_hour = int(now_epoch // 3600) * 3600 - 3600
-    host_series, st_series = {}, {}
+    window_start = last_hour - BASELINE_HOURS * 3600
+    prev_hours = range(window_start, last_hour, 3600)
+    index_series, host_series, st_series = {}, {}, {}
     for row in hourly_rows:
         idx, host, stype = row.get("index"), row.get("host"), row.get("sourcetype")
-        if not isinstance(idx, str) or not isinstance(host, str) or not host:
-            continue
-        if is_test_row(host, stype) or host in sparse_hosts:
+        if not isinstance(idx, str) or is_test_row(host, stype) or host in sparse_hosts:
             continue
         counts = hourly_counts(row.get("hours"))
-        add_counts(host_series, (idx, host), counts)
+        add_counts(index_series, idx, counts)
         if isinstance(stype, str) and stype:
             add_counts(st_series, (idx, stype), counts)
-    if not host_series:
-        return {}
-    covered_from = min(hour for counts in host_series.values() for hour in counts)
-    prev_hours = list(range(max(covered_from, last_hour - 24 * 3600), last_hour, 3600))
-    if not prev_hours:
-        return {}
-
+        if isinstance(host, str) and host:
+            add_counts(host_series, (idx, host), counts)
     def rate(label, counts):
-        return (label, counts.get(last_hour, 0),
-                statistics.median(counts.get(hour, 0) for hour in prev_hours))
+        # The series' own first bucket must reach the window's start, or the median is partial.
+        median = None
+        if min(counts, default=last_hour) <= window_start:
+            median = statistics.median(counts.get(hour, 0) for hour in prev_hours)
+        return (label, counts.get(last_hour, 0), median)
 
-    by_index = {}
-    for (idx, _), counts in host_series.items():
-        add_counts(by_index, idx, counts)
     rates = {}
     for (idx, host), counts in host_series.items():
         rates[f"host:{idx}:{host}"] = rate(f"host {host} in index={idx}", counts)
     for (idx, stype), counts in st_series.items():
         rates[f"st:{idx}:{stype}"] = rate(f"sourcetype {stype} in index={idx}", counts)
-    for idx, counts in by_index.items():
+    for idx, counts in index_series.items():
         rates[f"index:{idx}"] = rate(f"index={idx}", counts)
     return rates
 
@@ -425,12 +424,12 @@ def mover_rates(hourly_rows, now_epoch, sparse_hosts):
 def down_findings(rates, prev_streak):
     """Return (findings, streak): a series is down after DOWN_RUNS low runs in a row.
 
-    A series whose median is under MIN_MOVER_VOL is never down: a handful of
-    events an hour is not a volume that can be lost.
+    A series with no full baseline (median None), or a 24-hour volume (median x 24) under
+    MIN_MOVER_VOL, is never down: a handful of events an hour is not a volume that can be lost.
     """
     streak, out = {}, []
     for key, (label, last, median) in sorted(rates.items()):
-        if median < MIN_MOVER_VOL or last >= DOWN_FRACTION * median:
+        if median is None or median * 24 < MIN_MOVER_VOL or last >= DOWN_FRACTION * median:
             continue
         run = prev_streak.get(key, 0) + 1
         streak[key] = run

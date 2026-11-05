@@ -51,7 +51,7 @@ def test_a_sparse_index_aging_out_of_the_window_is_not_critical():
 def test_a_test_sender_leaving_is_not_a_fleet_drop():
     # The e2e suites write from a named host and from e2e:* sourcetypes on their
     # own schedule. Three of them going quiet at once is not a fleet drop.
-    senders = {"dns": {"ansible-e2e-host": {"technitium:dnsquery": 500}},
+    senders = {"dns": {"host-h": {"technitium:dnsquery": 500}},
                "main": {"probe-a": {"e2e:hec:test": 500}, "probe-b": {"e2e:hec:test": 500}}}
     _, s0 = step({**BASE, **senders}, None, 0)
     text, _ = step(BASE, s0, 1)
@@ -69,13 +69,13 @@ def test_a_roster_only_host_leaving_is_not_a_fleet_drop():
 
 
 def test_a_one_hour_burst_then_normal_traffic_is_not_down():
-    # The llm-router-3 shape: one hour at 55k events inside the 24 hours before the
-    # last complete hour, then 5-9k an hour. The burst is an outlier the median
-    # ignores, not a decline, so neither run may report the host or index down.
-    spec = {**BASE, "llm": {"llm-router-3": {"litellm:proxy": 6_000}}}
+    # One host, one hour at 55k events inside the 24 hours before the last complete
+    # hour, then 5-9k an hour. The burst is an outlier the median ignores, not a
+    # decline, so neither run may report the host or index down.
+    spec = {**BASE, "llm": {"host-g": {"litellm:proxy": 6_000}}}
     counts = [5_000 + (i * 997) % 4_001 for i in range(24)]
     counts[10] = 55_501
-    rows_at = lambda hour: [hourly_row("llm", "llm-router-3", counts + [6_000], at(hour))]
+    rows_at = lambda hour: [hourly_row("llm", "host-g", counts + [6_000], at(hour))]
     _, state = step(spec, None, 0, hourly=rows_at(0))
     for hour in (1, 2):
         text, state = step(spec, state, hour, hourly=rows_at(hour))
@@ -100,25 +100,38 @@ def test_a_series_below_half_its_hourly_median_is_down_only_after_two_runs():
 
 
 def test_a_series_under_the_volume_floor_is_never_down():
-    quiet = [5] * 25
+    # 4 an hour is 96 a day, under the 24-hour floor of MIN_MOVER_VOL.
+    quiet = [4] * 25
     _, s0 = step(BASE, None, 0, hourly=[hourly_row("firewall", "host-d", quiet, at(0))])
-    dropped = [5] * 24 + [0]
+    dropped = [4] * 24 + [0]
     first, s1 = step(BASE, s0, 1, hourly=[hourly_row("firewall", "host-d", dropped, at(1))])
     second, _ = step(BASE, s1, 2, hourly=[hourly_row("firewall", "host-d", dropped, at(2))])
     assert "down" not in first + second, "a handful of events an hour is not a volume to lose"
 
 
+def test_a_series_of_240_events_a_day_that_drops_to_zero_is_down():
+    # 10 an hour is 240 a day, above the 24-hour floor: a drop to zero is a real loss.
+    def rows_at(hour, last):
+        return [hourly_row("langflow", "host-f", [10] * 24 + [last], at(hour))]
+
+    _, s0 = step(BASE, None, 0, hourly=rows_at(0, 10))
+    first, s1 = step(BASE, s0, 1, hourly=rows_at(1, 0))
+    second, _ = step(BASE, s1, 2, hourly=rows_at(2, 0))
+    assert "down" not in first, "one silent hour is not down"
+    assert "host host-f in index=langflow down" in second, "a 240-a-day series going quiet is down"
+
+
 def test_a_one_hour_burst_that_ages_out_of_a_sourcetype_is_not_down():
-    # The llm-router-3 burst seen by one sourcetype: 55k in one hour, then 5-6k an
-    # hour. The rolling 24h total fell by the burst when it left the window; the
-    # hourly median ignores it, so no run may report the sourcetype down.
+    # A one-hour burst of 55k seen by one sourcetype, then 5-6k an hour. The rolling
+    # 24h total fell by the burst when it left the window; the hourly median ignores
+    # it, so no run may report the sourcetype down.
     timeline = [5_000 + (i * 997) % 1_000 for i in range(60)]
     timeline[30] = 55_501
     state = None
     for start, hour in ((29, 0), (30, 1), (31, 2)):     # the burst leaves the window at hour 2
         window = timeline[start:start + 25]
-        spec = {**BASE, "llm": {"llm-router-3": {"litellm:proxy": sum(window[:24])}}}
-        hourly = [hourly_row("llm", "llm-router-3", window, at(hour), sourcetype="litellm:proxy")]
+        spec = {**BASE, "llm": {"host-g": {"litellm:proxy": sum(window[:24])}}}
+        hourly = [hourly_row("llm", "host-g", window, at(hour), sourcetype="litellm:proxy")]
         text, state = step(spec, state, hour, hourly=hourly)
         assert "down" not in text, f"hour {hour}: a burst that ages out is not a decline"
 
