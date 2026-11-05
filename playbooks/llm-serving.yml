@@ -136,6 +136,56 @@
               {{ ansible_failed_result.msg | default(ansible_failed_task.name | default('task failed')) }}.
               Remaining pool members keep their previous config.
 
+    - name: Publish Hatchet eval router key to apps
+      when: >-
+        (hostvars['localhost'].openbao_secrets_by_domain | default({}, true)).get(
+          'llm-router-agent-keys', {}).get(
+          'hatchet_eval_llm_router_key', '') | length > 0
+      delegate_to: localhost
+      connection: local
+      become: false
+      vars:
+        ansible_become: false
+      run_once: true
+      no_log: true
+      tags:
+        - llm_router
+      block:
+        - name: Seed the Hatchet eval API key through seed_generated
+          ansible.builtin.include_role:
+            name: dryvist.homelab.openbao_secrets
+            tasks_from: seed_generated
+          vars:
+            openbao_secrets_seed_addr: "{{ hostvars['localhost'].openbao_secrets_active_addr }}"
+            openbao_secrets_seed_mount: "{{ openbao_secrets_kv_mount }}"
+            openbao_secrets_seed_path: apps/hatchet/eval
+            openbao_secrets_seed_fields:
+              - name: hatchet_eval_litellm_api_key
+                value: >-
+                  {{ (hostvars['localhost'].openbao_secrets_by_domain | default({}, true)).get(
+                     'llm-router-agent-keys', {}).get(
+                     'hatchet_eval_llm_router_key', '') }}
+                generate: false
+            openbao_secrets_seed_rotate_fields:
+              - hatchet_eval_litellm_api_key
+            openbao_secrets_seed_token: "{{ openbao_secrets_converge_writer_token }}"
+            openbao_secrets_seed_expected_writer_policy: ansible-converge
+            openbao_secrets_seed_check_capabilities: "{{ not ansible_check_mode }}"
+            openbao_secrets_seed_revoke_token: false
+
+    - name: Report the Hatchet eval router key is absent from the roster domain
+      ansible.builtin.debug:
+        msg: >-
+          Skipping Hatchet eval key publication because the key is absent from
+          llm-router-agent-keys.
+      when: >-
+        (hostvars['localhost'].openbao_secrets_by_domain | default({}, true)).get(
+          'llm-router-agent-keys', {}).get(
+          'hatchet_eval_llm_router_key', '') | length == 0
+      run_once: true
+      tags:
+        - llm_router
+
 - name: Roll LiteLLM restarts (one member at a time)
   hosts: llm_router_group
   become: true
