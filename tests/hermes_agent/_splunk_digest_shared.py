@@ -22,6 +22,9 @@ FIXTURE_CONFIG = {
     "STATE_PATH": str(Path(STATE_DIR) / "splunk-digest.json"),
     "EXPECTED_CONTINUOUS": ["os", "network", "firewall"],
     "STALENESS_MIN": 60,
+    "TEST_SENDER_HOSTS": ["host-h"],
+    "TEST_SENDER_SOURCETYPES": ["e2e:*"],
+    "SPARSE_SOURCETYPES": ["ansible:converge:roster"],
     "EARLIEST": "-24h",
     "BACKUP_OUTCOME_AFTER_HOUR_UTC": 10,
     "ISSUES_MARKER": "[ISSUES]",
@@ -110,8 +113,23 @@ def with_stale_host(hour, host, hours):
     return out
 
 
-def step(spec, state, when):
+def with_new_index(spec, index="audit", host="host-a"):
+    """Same shape plus one index on a known host: a routine index-level change."""
+    out = {i: {h: dict(s) for h, s in hosts.items()} for i, hosts in spec.items()}
+    out[index] = {host: {"auditd": 1_000}}
+    return out
+
+
+def hourly_row(index, host, counts, now, sourcetype="syslog"):
+    """One row as the hourly search returns it. `counts` runs oldest hour first and
+    ends with the last complete hour, so it must hold 25 values (24 before it)."""
+    last = int(now.timestamp()) // 3600 * 3600 - 3600
+    hours = ";".join(f"{last - (len(counts) - 1 - i) * 3600}:{c}" for i, c in enumerate(counts))
+    return {"index": index, "host": host, "sourcetype": sourcetype, "hours": hours}
+
+
+def step(spec, state, when, hourly=None):
     """One hourly run. `spec` is a nested dict or a raw row list."""
     now = when if isinstance(when, dt.datetime) else at(when)
     results = rows(spec, int(now.timestamp()) - 60) if isinstance(spec, dict) else spec
-    return DIGEST.build_digest(results, now, state)
+    return DIGEST.build_digest(results, now, state, hourly=hourly)
