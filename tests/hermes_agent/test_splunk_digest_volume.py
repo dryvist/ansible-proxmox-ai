@@ -162,6 +162,34 @@ def test_a_whole_index_going_down_is_critical_not_routine():
     assert "New critical findings" not in third, "a critical finding already presented is not repeated"
 
 
+def _whole_index_low(hour, low):
+    steady = [6_000] * 24
+    return [hourly_row("os", "host-a", steady + [low], at(hour)),
+            hourly_row("os", "host-b", steady + [low], at(hour))]
+
+
+def test_a_cleared_index_down_that_recurs_the_same_day_posts_again():
+    _, s0 = step(BASE, None, 0, hourly=_whole_index_low(0, 6_000))
+    _, s1 = step(BASE, s0, 1, hourly=_whole_index_low(1, 2_000))
+    first, s2 = step(BASE, s1, 2, hourly=_whole_index_low(2, 2_000))
+    assert "\nindex=os down" in first
+    _, s3 = step(BASE, s2, 3, hourly=_whole_index_low(3, 6_000))     # recovers, clears
+    _, s4 = step(BASE, s3, 4, hourly=_whole_index_low(4, 2_000))
+    again, _ = step(BASE, s4, 5, hourly=_whole_index_low(5, 2_000))
+    assert "\nindex=os down" in again, "a critical condition is not suppressed by the day's ledger"
+
+
+def test_a_state_file_from_before_critical_records_posts_an_active_index_down_once():
+    # Before reported_critical existed, the index DOWN was already in the ledger and in
+    # reported_findings. The first run after the upgrade must still post it as critical.
+    _, s0 = step(BASE, None, 0, hourly=_whole_index_low(0, 6_000))
+    _, s1 = step(BASE, s0, 1, hourly=_whole_index_low(1, 2_000))
+    _, s2 = step(BASE, s1, 2, hourly=_whole_index_low(2, 2_000))
+    legacy = {k: v for k, v in s2.items() if k != "reported_critical"}
+    upgraded, _ = step(BASE, legacy, 3, hourly=_whole_index_low(3, 2_000))
+    assert "\nindex=os down" in upgraded, "an active critical must post after the upgrade"
+
+
 def test_a_rolling_total_rise_is_not_an_index_finding():
     _, s0 = step(BASE, None, 0)
     text, _ = step(scale(BASE, "os", 1.45), s0, 1)

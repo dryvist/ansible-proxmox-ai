@@ -621,6 +621,9 @@ def build_digest(results, now, state, backup_outcomes=None, hourly=None):
     ledger_entries = load_ledger_entries(state, today)
     previously_reported = set((state or {}).get("reported_findings") or [])
     previously_reported.update(entry["k"] for entry in ledger_entries)
+    # Critical conditions are judged on their own record, never the ledger. A condition
+    # that clears drops out of it, so its next occurrence posts again.
+    reported_critical = set((state or {}).get("reported_critical") or [])
     if backup_outcomes is None:
         stored_backup_findings = (state or {}).get("backup_outcome_findings", [])
         backup_findings = [Finding(key, "") for key in stored_backup_findings
@@ -676,7 +679,7 @@ def build_digest(results, now, state, backup_outcomes=None, hourly=None):
     for _, found in tiers:
         current_keys.update(finding.key for finding in found)
     current_keys.update(finding.key for finding in backup_findings)
-    new_critical = [finding for finding in critical if finding.key not in previously_reported]
+    new_critical = [finding for finding in critical if finding.key not in reported_critical]
     new_backup_findings = [finding for finding in backup_findings
                            if finding.key not in previously_reported]
     emitted = [*new_critical, *novel, *new_backup_findings]
@@ -709,6 +712,8 @@ def build_digest(results, now, state, backup_outcomes=None, hourly=None):
                "last_post_date": today, "captured_iso": now.isoformat(),
                "last_post_iso": last_post_iso,
                "reported_findings": sorted(reported_findings),
+               "reported_critical": sorted((reported_critical & current_keys)
+                                           | {finding.key for finding in new_critical}),
                "backup_outcome_findings": sorted(finding.key for finding in backup_findings),
                "down_streak": streak,
                "ledger": {"day": today,
