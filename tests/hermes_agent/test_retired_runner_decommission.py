@@ -89,7 +89,7 @@ def test_runner_processes_stop_before_the_account_is_removed() -> None:
     assert stop["failed_when"] == "hermes_agent_retired_runner_process_stop.rc not in [0, 1]"
     assert wait["failed_when"] == "hermes_agent_retired_runner_processes.rc not in [0, 1]"
     assert wait["until"] == "hermes_agent_retired_runner_processes.rc == 1"
-    assert stop["when"] == wait["when"]
+    assert wait["when"] == ["not ansible_check_mode", stop["when"]]
     assert "hermes_agent_retired_runner_account_lookup.ansible_facts.getent_passwd" in stop["when"]
     assert names.index(stop["name"]) < names.index(wait["name"]) < names.index(
         "Remove the retired codex-runner user"
@@ -109,22 +109,23 @@ def _write_stub(path: Path, body: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("account_present", "check_mode", "expected_calls"),
+    ("account_present", "check_mode", "process_alive", "expected_calls"),
     [
-        (False, False, []),
-        (True, False, ["pkill --signal TERM --uid codex-runner", "pgrep --uid codex-runner"]),
-        (True, True, ["pgrep --uid codex-runner"]),
+        (False, False, False, []),
+        (True, False, False, ["pkill --signal TERM --uid codex-runner", "pgrep --uid codex-runner"]),
+        (True, True, False, []),
+        (True, True, True, []),
     ],
-    ids=("account-absent", "no-processes", "no-processes-check-mode"),
+    ids=("account-absent", "no-processes", "check-mode-no-processes", "check-mode-live-process"),
 )
 def test_runner_kill_and_wait_accept_no_matching_process(
-    tmp_path, account_present, check_mode, expected_calls
+    tmp_path, account_present, check_mode, process_alive, expected_calls
 ) -> None:
-    """Run the real lookup, kill and wait tasks against stubs that match no process.
+    """Run the real lookup, kill and wait tasks against stubs.
 
-    Only read-only checks and the kill are recorded. An absent account must
-    skip the kill and the wait, and in check mode the kill must not run while
-    the wait still reads the real process table.
+    Only the kill and the process probe are recorded. An absent account skips
+    both. In check mode neither the kill nor the wait runs, so a live process
+    cannot fail the check run.
     """
     cleanup = yaml.safe_load((TASKS / "decommission_retired_runner.yml").read_text())
     selected = [_task(cleanup, name) for name in RUNNER_PROCESS_TASKS]
@@ -141,7 +142,7 @@ def test_runner_kill_and_wait_accept_no_matching_process(
         getent = "exit 2"
     _write_stub(bin_dir / "getent", getent)
     _write_stub(bin_dir / "pkill", f"{record}\nexit 1")
-    _write_stub(bin_dir / "pgrep", f"{record}\nexit 1")
+    _write_stub(bin_dir / "pgrep", f"{record}\nexit {0 if process_alive else 1}")
 
     playbook = tmp_path / "playbook.yml"
     playbook.write_text(
