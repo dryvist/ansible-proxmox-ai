@@ -22,15 +22,59 @@ _llm_router_trust_scoped_key_caller_ids: >-
   {%- endfor -%}
   {{ ns.ids }}
 
+# Local-tier group names: every name a registry entry of a local tier carries and
+# no non-local entry carries. A name that is also on a hosted entry is excluded.
+_llm_router_local_tier_group_names: >-
+  {%- set ns = namespace(local=[], other=[]) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- set _names = [m.client_model_id]
+        + ([m.route_group] if m.route_group is defined else [])
+        + ([m.fallback_group] if m.fallback_group is defined else []) -%}
+  {%- if m.tier in llm_router_local_registry_tiers -%}
+  {%- set ns.local = ns.local + _names -%}
+  {%- else -%}
+  {%- set ns.other = ns.other + _names -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.local | unique | reject('in', ns.other) | list }}
+
+# A caller key whose every model resolves to a local-tier group has a local route.
+# LiteLLM re-checks the key's model list on every fallback hop
+# (general_settings.enforce_fallback_model_access), so no hop can leave that list,
+# and the &local tag keeps each hop on local deployments. Fail closed: without the
+# enforcement, or with any model outside the local tier, no key is marked.
+_llm_router_route_local_key_aliases: >-
+  {%- set ns = namespace(aliases=[]) -%}
+  {%- set _local = _llm_router_local_tier_group_names -%}
+  {%- set _resolve = llm_router_model_group_aliases | default({}, true) -%}
+  {%- if llm_router_enforce_fallback_model_access | default(false) | bool -%}
+  {%- for _key in llm_router_virtual_keys if (_key.models | default([]) | length > 0) -%}
+  {%- set _bad = namespace(n=0) -%}
+  {%- for _name in _key.models -%}
+  {%- if _resolve.get(_name, _name) not in _local -%}
+  {%- set _bad.n = _bad.n + 1 -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- if _bad.n == 0 -%}
+  {%- set ns.aliases = ns.aliases + [_key.alias] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- endif -%}
+  {{ ns.aliases }}
+
 # The trust marker the untrusted_classify callback reads, per caller-scoped key
 # alias. Written on create and reconciled on every converge, so a live key
 # carries it without a rebuild. A tier outside the trusted set is "untrusted".
+# route_local is written for every caller key, true or false, so a reconcile
+# clears a stale true when a key stops being local-only.
 _llm_router_key_trust_metadata: >-
   {%- set ns = namespace(out={}) -%}
+  {%- set _route_local = _llm_router_route_local_key_aliases -%}
   {%- for _alias, _caller in _llm_router_trust_scoped_key_caller_ids.items() -%}
   {%- set _tier = (ai_callers | default({})).get(_caller, {}).get('trust_tier', '')
         | default(agent_callers_default_tier | default(''), true) -%}
   {%- set _ = ns.out.update({_alias: {'trust_tier':
-        _tier if _tier in _llm_router_trusted_caller_tiers else 'untrusted'}}) -%}
+        _tier if _tier in _llm_router_trusted_caller_tiers else 'untrusted',
+        'route_local': _alias in _route_local}}) -%}
   {%- endfor -%}
   {{ ns.out }}

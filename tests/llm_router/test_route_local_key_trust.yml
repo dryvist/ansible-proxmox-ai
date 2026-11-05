@@ -1,0 +1,98 @@
+---
+# A caller key is marked route_local only when every model it can reach is a local-tier
+# group and the fallback model-access enforcement is on. The untrusted_classify callback
+# skips the classifier for a marked key and classifies every other untrusted key.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_route_local_key_trust.yml -i localhost, -c local
+- name: Verify route_local marks only keys whose every model is local-tier
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # Skip the shared trusted-caller fixture so the untrusted ceiling is exercised.
+    llm_router_unforced_trust_fixture: true
+  tasks:
+    - name: Prepare role-backed rendered contract
+      ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+
+    - name: Name a hosted paid-zdr group from the registry
+      ansible.builtin.set_fact:
+        _fixture_hosted_group: "{{ _llm_router_m_d1_rungs_by_class['paid-zdr'] | first }}"
+
+    - name: Add a local-only caller and a caller whose route includes a paid-zdr group
+      ansible.builtin.set_fact:
+        _llm_router_target_virtual_keys: >-
+          {{ _llm_router_target_virtual_keys + [
+            {
+              'alias': 'fixture-local-route',
+              'enabled': true,
+              'allowed_classes': ['local'],
+              'models': [llm_router_primary_model, llm_router_embedding_model],
+              'models_authoritative': true
+            },
+            {
+              'alias': 'fixture-hosted-route',
+              'enabled': true,
+              'allowed_classes': ['local', 'paid-zdr'],
+              'models': [llm_router_primary_model, _fixture_hosted_group],
+              'models_authoritative': true
+            }
+          ] }}
+        ai_callers: >-
+          {{ (ai_callers | default({})) | combine({
+            'fixture-local-route': {'trust_tier': agent_callers_default_tier},
+            'fixture-hosted-route': {'trust_tier': agent_callers_default_tier}
+          }) }}
+
+    - name: Refresh the projection after adding the fixture callers
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: Capture the effective keys and their trust markers
+      ansible.builtin.set_fact:
+        _route_keys: "{{ llm_router_virtual_keys }}"
+        _route_meta: "{{ _llm_router_key_trust_metadata }}"
+      no_log: true
+
+    - name: The local-only key carries route_local and the hosted-route key does not
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _local_key | length == 1
+          - _hosted_key | length == 1
+          - "'&zdr' in _local_key[0].tags"
+          - _local_key[0].models | length > 0
+          - _local_key[0].models | difference(_local_names) | length == 0
+          - _fixture_hosted_group in _hosted_key[0].models
+          - _route_meta['fixture-local-route'].route_local | bool
+          - _route_meta['fixture-local-route'].trust_tier == 'untrusted'
+          - not (_route_meta['fixture-hosted-route'].route_local | bool)
+          - _route_meta['fixture-hosted-route'].trust_tier == 'untrusted'
+        fail_msg: >-
+          route_local must mark only the all-local key; local={{ _local_key }},
+          hosted={{ _hosted_key }}, markers={{ _route_meta }}.
+      vars:
+        _local_key: "{{ _route_keys | selectattr('alias', 'equalto', 'fixture-local-route') | list }}"
+        _hosted_key: "{{ _route_keys | selectattr('alias', 'equalto', 'fixture-hosted-route') | list }}"
+        _local_names: "{{ _llm_router_local_tier_group_names }}"
+
+    - name: Without the fallback model-access enforcement no key is marked route_local
+      ansible.builtin.set_fact:
+        llm_router_enforce_fallback_model_access: false
+
+    - name: Refresh the projection with the enforcement off
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: The local-only key is not marked when the enforcement is off
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (_llm_router_key_trust_metadata['fixture-local-route'].route_local | bool)
+          - _llm_router_route_local_key_aliases | length == 0
+        fail_msg: "Enforcement off must mark no key; markers={{ _llm_router_key_trust_metadata }}."
