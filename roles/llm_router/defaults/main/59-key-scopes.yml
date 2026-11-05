@@ -122,6 +122,26 @@ llm_router_zdr_false_group_names: >-
   {%- endfor -%}
   {{ ns.names | unique | list }}
 
+# Training-tier groups: enabled hosted entries marked zero_data_retention: false
+# whose client id or upstream id carries a training marker (muse, contributor,
+# train). The registry has no training-specific field, so the name is the marker.
+# Named the way the rendered lists spell them (client id, route group, fallback
+# group). Excluded from the shared opencode retaining segment in
+# 36-hermes-cloud-segments.yml, so no class ladder or review chain reaches them.
+llm_router_training_tier_group_names: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for m in llm_router_registry_enabled
+        if m.zero_data_retention is defined
+           and not (m.zero_data_retention | bool)
+           and (m.tier | default('')) not in llm_router_local_registry_tiers
+           and ((m.client_model_id ~ ' ' ~ (m.upstream_model_id | default('')))
+                is search('(?i)muse|contributor|train')) -%}
+  {%- set ns.names = ns.names + [m.client_model_id]
+        + ([m.route_group] if m.route_group is defined else [])
+        + ([m.fallback_group] if m.fallback_group is defined else []) -%}
+  {%- endfor -%}
+  {{ ns.names | unique | list }}
+
 # Every group name whose entries are local or explicitly ZDR and are not in
 # the free class. Any missing or false cloud assertion is retaining. Names are
 # spelled the way the rendered model list spells them (client id, route group,
