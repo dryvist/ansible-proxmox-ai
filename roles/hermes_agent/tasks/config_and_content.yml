@@ -181,6 +181,59 @@
   notify: Restart hermes-gateway
   when: hermes_agent_memory_provider == 'hindsight'
 
+# The default profile's bank is the one the verify.yml recall gate reads.
+- name: Ensure the Hindsight memory bank exists
+  when:
+    - hermes_agent_memory_provider == 'hindsight'
+    - hermes_agent_hindsight_config_bank_id | default('') | length > 0
+    - hermes_agent_hindsight_config_api_url | default('') | length > 0
+    - hermes_agent_hindsight_config_api_key | default('') | length > 0
+  vars:
+    hermes_agent_bank_url: >-
+      {{ hermes_agent_hindsight_config_api_url }}{{ '/v1/default/banks/'
+      ~ hermes_agent_hindsight_config_bank_id }}
+  block:
+    - name: Read the Hindsight memory bank configuration
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_bank_url }}/config"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ hermes_agent_hindsight_config_api_key }}"
+        status_code: [200, 404]
+        timeout: 30
+      register: hermes_agent_bank_read
+      until: hermes_agent_bank_read is succeeded
+      retries: 2
+      delay: 5
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: Report the Hindsight memory bank that check mode would create
+      ansible.builtin.debug:
+        msg: The Hindsight memory bank is missing; a converge run would create it.
+      when:
+        - ansible_check_mode
+        - hermes_agent_bank_read.status == 404
+
+    # Upstream PUT on the bank path creates the bank when it is missing. Every body
+    # field is optional, so an empty object creates it with default config.
+    - name: Create the Hindsight memory bank
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_bank_url }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ hermes_agent_hindsight_config_api_key }}"
+        body_format: json
+        body: {}
+        status_code: 200
+        timeout: 30
+      when:
+        - not ansible_check_mode
+        - hermes_agent_bank_read.status == 404
+      changed_when: true
+      no_log: true
+
 - name: Manage Splunk memory bank extraction mode
   when:
     - hermes_agent_memory_provider == 'hindsight'
