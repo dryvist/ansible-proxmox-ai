@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.16.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.3...v2.16.4) (2026-11-05)
+
+
+### Bug Fixes
+
+* **hermes_agent:** run github-triage on the github-maint profile ([#1988](https://github.com/dryvist/ansible-proxmox-ai/issues/1988)) ([2ea948e](https://github.com/dryvist/ansible-proxmox-ai/commit/2ea948e3d6ca2e1c91321882604cf97b56e299f5))
+* **llm_router:** clear local-only keys for repo content ([#1990](https://github.com/dryvist/ansible-proxmox-ai/issues/1990)) ([7e67875](https://github.com/dryvist/ansible-proxmox-ai/commit/7e67875297aaa70a35b491813d872454cbb6097a))
+
 ## [2.16.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.2...v2.16.3) (2026-11-05)
 
 
