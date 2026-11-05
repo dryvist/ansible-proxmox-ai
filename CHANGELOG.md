@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.20.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.1...v2.20.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **llm_router:** seed keys only when the alias is absent ([#2021](https://github.com/dryvist/ansible-proxmox-ai/issues/2021)) ([f3a41b6](https://github.com/dryvist/ansible-proxmox-ai/commit/f3a41b69e0d9df7b6428ae468c14f12116b21068))
+
 ## [2.20.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.0...v2.20.1) (2026-11-05)
 
 
