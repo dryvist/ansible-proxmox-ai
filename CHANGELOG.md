@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.20.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.0...v2.20.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **langfuse_docker:** size database connection pools ([#2019](https://github.com/dryvist/ansible-proxmox-ai/issues/2019)) ([2452125](https://github.com/dryvist/ansible-proxmox-ai/commit/2452125e41459d42a27bcad3e26fd347a28dc65a))
+
 ## [2.20.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.19.0...v2.20.0) (2026-11-05)
 
 
