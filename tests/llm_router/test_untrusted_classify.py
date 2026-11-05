@@ -227,6 +227,35 @@ def test_classifier_pass_through_state_is_classified(ns, monkeypatch):
     assert "from the state field" in classifier.calls[0]["body"]["messages"][1]["content"]
 
 
+def _route_key(route_local, tier="untrusted"):
+    metadata = {"trust_tier": tier, "route_local": route_local}
+    return types.SimpleNamespace(key_alias="caller-under-test", metadata=metadata)
+
+
+def test_untrusted_key_on_a_local_route_is_cleared_without_a_classify_call(ns, monkeypatch):
+    classifier = Classifier(reply="sensitive")
+    monkeypatch.setitem(ns, "_post", classifier)
+    data = _data("the private repository source")
+    assert _run(ns, _route_key(True), data) is data
+    assert classifier.calls == []
+
+
+@pytest.mark.parametrize("route_local", [False, None, "true", 1])
+def test_untrusted_key_without_a_strict_local_route_is_still_refused(ns, monkeypatch, route_local):
+    classifier = Classifier(reply="sensitive")
+    monkeypatch.setitem(ns, "_post", classifier)
+    _refused(ns, _route_key(route_local), _data("the private repository source"))
+    assert len(classifier.calls) == 1
+
+
+def test_route_local_marker_on_a_trusted_key_changes_nothing(ns, monkeypatch):
+    classifier = Classifier(reply="sensitive")
+    monkeypatch.setitem(ns, "_post", classifier)
+    data = _data()
+    assert _run(ns, _route_key(True, tier="trusted"), data) is data
+    assert classifier.calls == []
+
+
 def test_classify_call_is_local_capped_and_uses_the_master_key(ns, monkeypatch):
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHARS", "5")
     classifier = Classifier(reply="public")

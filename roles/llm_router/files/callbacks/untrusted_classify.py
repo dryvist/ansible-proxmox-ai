@@ -2,7 +2,8 @@
 
 Registered from litellm_settings.callbacks: "untrusted_classify.proxy_handler_instance"
 while llm_router_untrusted_classify_enabled. Only keys whose metadata trust_tier is
-"untrusted" are inspected. Every failure on the classify path refuses the request.
+"untrusted" are inspected, and of those, not keys marked route_local (every model local-tier).
+Every failure on the classify path refuses the request.
 """
 
 import asyncio
@@ -124,6 +125,10 @@ class UntrustedClassify(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
         metadata = getattr(user_api_key_dict, "metadata", None)
         if not isinstance(metadata, dict) or metadata.get("trust_tier") != _UNTRUSTED:
+            return data
+        # route_local is written only for a key whose every model is local-tier (56c). The identity
+        # check fails closed: any other value keeps the classifier in front of the request.
+        if metadata.get("route_local") is True:
             return data
         reason = await _refusal_reason(data)
         if reason is None:
