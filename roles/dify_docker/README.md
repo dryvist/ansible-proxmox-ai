@@ -55,6 +55,16 @@ values remain authoritative; values supplied through the environment seed
 only missing fields. The local sandbox reaches the API only through the
 dedicated SSRF proxy's signed file and Agent Stub routes.
 
+## Private agent DSLs
+
+`dify_docker_private_agent_dsls` (default `[]`) lists agent DSL sources the public
+pin list does not carry, each as `name`, `url` and `sha256`. The list and
+`dify_docker_private_agent_dsl_token` (default empty) are supplied at converge time
+from a private source and are never committed. Each private entry is fetched with
+`Authorization: Bearer <token>`, verified against its `sha256`, and imported like
+the public DSLs, which skips an app name that already exists. Private entries are
+skipped while the token is empty.
+
 ## What in this stack needs protecting
 
 | Component | Needs protection | Why |
