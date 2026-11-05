@@ -65,8 +65,10 @@
 # reframe made bare names the desired end state again, so this is a one-way
 # migration, not a legacy name to keep excluding). Reuses the slurp above;
 # self-safe base64("{}") default makes a missing jobs.json a no-op. Empty loop
-# after the first converge -> idempotent.
-- name: "Remove superseded kanban-enqueuer script crons (native-cron reframe)"
+# after the first converge -> idempotent. The same loop also withdraws a job that
+# moved to another profile's home (hermes_agent_moved_off_default_home_cron_names),
+# so a copy left on the default home stops firing.
+- name: "Remove superseded and moved-off cron jobs from the default home"
   ansible.builtin.command: >-
     {{ hermes_agent_bin }} {{ hermes_agent_cli_profile_args | join(' ') }}
     cron remove {{ item }}
@@ -78,7 +80,8 @@
     {{ (hermes_agent_cron_store.content | default('e30=', true) | b64decode | from_json).jobs
        | default([])
        | map(attribute='name') | list
-       | select('in', hermes_agent_superseded_kanban_enqueuer_cron_names) | list }}
+       | select('in', hermes_agent_superseded_kanban_enqueuer_cron_names
+                      + hermes_agent_moved_off_default_home_cron_names) | list }}
   register: hermes_agent_superseded_cron_remove
   # `hermes cron remove` exits 1 on an already-absent job ("... not found"),
   # but absent IS the desired state here — a list-guard race or a substring

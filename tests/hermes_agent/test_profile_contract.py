@@ -262,7 +262,6 @@ def test_default_profile_has_no_static_write_github_token() -> None:
 def test_default_issue_crons_use_the_short_lived_github_identity() -> None:
     jobs = {entry["name"]: entry for entry in _defaults()["hermes_agent_direct_cron_jobs"]}
     for name in (
-        "{{ hermes_agent_github_monitor_cron_name }}",
         "{{ hermes_agent_bot_pr_triage_cron_name }}",
         "{{ hermes_agent_promotion_drift_cron_name }}",
         "{{ hermes_agent_docs_study_cron_name }}",
