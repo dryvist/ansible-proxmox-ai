@@ -10,12 +10,15 @@ from jinja2.nativetypes import NativeEnvironment
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "playbooks/llm-serving.yml"
 SITE = ROOT / "playbooks/site.yml"
+GPU_FILL_TASKS = "playbooks/tasks/publish_gpu_fill_router_key.yml"
 
-# (publish task, absent-key report task, roster key, field written to apps/hatchet/eval)
+# (publish task, absent-key report task, task file or None for the rendering play,
+#  roster key, field written to apps/hatchet/eval)
 PROJECTIONS = [
     pytest.param(
         "Publish Hatchet eval router key to apps",
         "Report the Hatchet eval router key is absent from the roster domain",
+        None,
         "hatchet_eval_llm_router_key",
         "hatchet_eval_litellm_api_key",
         id="hatchet-eval",
@@ -23,6 +26,7 @@ PROJECTIONS = [
     pytest.param(
         "Publish GPU fill router key to apps",
         "Report the GPU fill router key is absent from the roster domain",
+        GPU_FILL_TASKS,
         "gpu_fill_llm_router_key",
         "gpu_fill_llm_router_key",
         id="gpu-fill",
@@ -42,10 +46,20 @@ def _router_play():
     return next(play for play in plays if play.get("name") == "Render the LiteLLM router config (all members in parallel)")
 
 
-@pytest.mark.parametrize(("publish_name", "report_name", "roster_key", "apps_field"), PROJECTIONS)
-def test_publish_runs_with_the_prefetched_domain_and_converge_writer(publish_name, report_name, roster_key, apps_field):
+def _tasks(tasks_file):
+    if tasks_file is None:
+        return _router_play()["tasks"]
+    return yaml.safe_load((ROOT / tasks_file).read_text(encoding="utf-8"))
+
+
+def _task(tasks_file, name):
+    return next(task for task in _tasks(tasks_file) if task.get("name") == name)
+
+
+@pytest.mark.parametrize(("publish_name", "report_name", "tasks_file", "roster_key", "apps_field"), PROJECTIONS)
+def test_publish_runs_with_the_prefetched_domain_and_converge_writer(publish_name, report_name, tasks_file, roster_key, apps_field):
     play = _router_play()
-    task = next(task for task in play["tasks"] if task.get("name") == publish_name)
+    task = _task(tasks_file, publish_name)
     seed_task = task["block"][0]
     include = seed_task["ansible.builtin.include_role"]
     seed_vars = seed_task["vars"]
@@ -76,11 +90,10 @@ def test_publish_runs_with_the_prefetched_domain_and_converge_writer(publish_nam
     assert site_plays.index(prefetch) < site_plays.index(serving)
 
 
-@pytest.mark.parametrize(("publish_name", "report_name", "roster_key", "apps_field"), PROJECTIONS)
-def test_absent_roster_key_is_reported_and_skipped(publish_name, report_name, roster_key, apps_field):
-    play = _router_play()
-    publish = next(task for task in play["tasks"] if task.get("name") == publish_name)
-    report = next(task for task in play["tasks"] if task.get("name") == report_name)
+@pytest.mark.parametrize(("publish_name", "report_name", "tasks_file", "roster_key", "apps_field"), PROJECTIONS)
+def test_absent_roster_key_is_reported_and_skipped(publish_name, report_name, tasks_file, roster_key, apps_field):
+    publish = _task(tasks_file, publish_name)
+    report = _task(tasks_file, report_name)
 
     assert roster_key in publish["when"]
     assert "length > 0" in publish["when"]
@@ -97,3 +110,11 @@ def test_absent_roster_key_is_reported_and_skipped(publish_name, report_name, ro
     assert report_condition.render(hostvars=absent) is True
     assert publish_condition.render(hostvars=present) is True
     assert report_condition.render(hostvars=present) is False
+
+
+def test_gpu_fill_publish_is_imported_into_the_rendering_play():
+    imports = [
+        task for task in _router_play()["tasks"]
+        if task.get("ansible.builtin.import_tasks") == "tasks/publish_gpu_fill_router_key.yml"
+    ]
+    assert len(imports) == 1
