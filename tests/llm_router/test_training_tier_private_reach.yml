@@ -1,0 +1,94 @@
+---
+# A hosted model whose provider trains on request data must not be reachable by
+# any non-public key (local or private), directly or through a fallback chain.
+# The registry has no training-specific field, so the training tier is the set of
+# enabled hosted entries marked zero_data_retention: false whose name carries a
+# training marker (llm_router_training_tier_group_names, 59-key-scopes.yml).
+- name: Verify training-tier hosted models stay out of non-public reach
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the shared router fixture
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/ladder_keys_fixture.yml"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Give router projection fixtures their trusted caller tier
+      ansible.builtin.import_tasks: tasks/trust_fixture_callers.yml
+
+    - name: Add the fixture sandbox key and keep the large tier gated off
+      ansible.builtin.set_fact:
+        bao_apps_secrets: >-
+          {{ (bao_apps_secrets | default({})) | combine({
+            'sandbox_agent_router_llm_router_key': 'fixture-sandbox-agent'}) }}
+        llm_router_llm_vllm_enabled: false
+        llm_router_vllm_precheck_passed: false
+      no_log: true
+
+    - name: Refresh the router projections
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render router config
+      ansible.builtin.set_fact:
+        _render_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Name the training-tier groups from the registry
+      ansible.builtin.set_fact:
+        _training_ids: "{{ llm_router_training_tier_group_names | default([]) }}"
+
+    - name: Name the non-public keys and the fallback chains they can enter
+      ansible.builtin.set_fact:
+        _nonpublic_keys: >-
+          {{ (llm_router_virtual_keys | default([]))
+             | rejectattr('sensitivity_tag', 'equalto', '&sensitivity:public') | list }}
+        _fallback_map: >-
+          {%- set ns = namespace(map={}) -%}
+          {%- for entry in _render_config.router_settings.fallbacks | default([]) -%}
+          {%- set ns.map = ns.map | combine(entry) -%}
+          {%- endfor -%}
+          {{ ns.map }}
+
+    - name: Name every group a non-public key can name
+      ansible.builtin.set_fact:
+        _nonpublic_model_names: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for key in _nonpublic_keys | default([]) -%}
+          {%- set ns.names = ns.names + (key.models | default([])) -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
+
+    - name: Name the chain members a non-public key can enter
+      ansible.builtin.set_fact:
+        _exposed_chain_names: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for name, chain in (_fallback_map | default({})).items()
+                if name in (_nonpublic_model_names | default([])) -%}
+          {%- set ns.names = ns.names + (chain | default([])) -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
+
+    - name: Check training-tier models are absent from non-public keys and their chains
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _training_ids | length > 0
+          - _training_ids | intersect(_nonpublic_model_names) | length == 0
+          - _training_ids | intersect(_exposed_chain_names) | length == 0
+          - _training_ids | intersect(_render_config.router_settings.default_fallbacks | default([])) | length == 0
+          - _training_ids | intersect(llm_router_model_group_aliases.values() | list) | length == 0
+        fail_msg: >-
+          training={{ _training_ids }}, non-public key reach={{ _nonpublic_model_names | intersect(_training_ids) }},
+          exposed chain members={{ _exposed_chain_names | intersect(_training_ids) }}.
+        success_msg: >-
+          Training-tier models {{ _training_ids }} are reached by no non-public key and
+          sit in no fallback chain a non-public key can enter.
