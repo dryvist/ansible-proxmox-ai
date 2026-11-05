@@ -70,6 +70,24 @@
           - _rendered_off.services['langfuse-worker'].environment.CLICKHOUSE_USER == 'clickhouse'
           - _rendered_off.services['langfuse-worker'].environment.CLICKHOUSE_DB is not defined
 
+    - name: Postgres pins max_connections and the web and worker pools fit under it with headroom
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _rendered_off.services['postgres'].command
+            == 'postgres -c max_connections=' ~ langfuse_docker_postgres_max_connections
+          - >-
+            ('connection_limit=' ~ langfuse_docker_web_db_connection_limit)
+            in _rendered_off.services['langfuse-web'].environment.DATABASE_URL
+          - >-
+            ('connection_limit=' ~ langfuse_docker_worker_db_connection_limit)
+            in _rendered_off.services['langfuse-worker'].environment.DATABASE_URL
+          - >-
+            (langfuse_docker_web_db_connection_limit | int)
+            + (langfuse_docker_worker_db_connection_limit | int) * (langfuse_docker_worker_count | int)
+            < (langfuse_docker_postgres_max_connections | int) - 10
+
     - name: Add a placeholder ClickHouse guest to the test inventory
       ansible.builtin.add_host:
         name: clickhouse
