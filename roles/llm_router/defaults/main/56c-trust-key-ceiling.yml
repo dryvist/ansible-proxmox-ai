@@ -42,13 +42,17 @@ _llm_router_local_tier_group_names: >-
 # LiteLLM re-checks the key's model list on every fallback hop
 # (general_settings.enforce_fallback_model_access), so no hop can leave that list,
 # and the &local tag keeps each hop on local deployments. Fail closed: without the
-# enforcement, or with any model outside the local tier, no key is marked.
+# enforcement, or with any model outside the local tier, no key is marked. A key
+# whose model list is not authoritative also keeps live grants that this list does
+# not name, so it is never marked.
 _llm_router_route_local_key_aliases: >-
   {%- set ns = namespace(aliases=[]) -%}
   {%- set _local = _llm_router_local_tier_group_names -%}
   {%- set _resolve = llm_router_model_group_aliases | default({}, true) -%}
   {%- if llm_router_enforce_fallback_model_access | default(false) | bool -%}
-  {%- for _key in llm_router_virtual_keys if (_key.models | default([]) | length > 0) -%}
+  {%- for _key in llm_router_virtual_keys
+       if (_key.models | default([]) | length > 0)
+          and (_key.models_authoritative | default(true) | bool) -%}
   {%- set _bad = namespace(n=0) -%}
   {%- for _name in _key.models -%}
   {%- if _resolve.get(_name, _name) not in _local -%}

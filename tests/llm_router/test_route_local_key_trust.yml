@@ -39,12 +39,20 @@
               'allowed_classes': ['local', 'paid-zdr'],
               'models': [llm_router_primary_model, _fixture_hosted_group],
               'models_authoritative': true
+            },
+            {
+              'alias': 'fixture-nonauth-local',
+              'enabled': true,
+              'allowed_classes': ['local'],
+              'models': [llm_router_primary_model, llm_router_embedding_model],
+              'models_authoritative': false
             }
           ] }}
         ai_callers: >-
           {{ (ai_callers | default({})) | combine({
             'fixture-local-route': {'trust_tier': agent_callers_default_tier},
-            'fixture-hosted-route': {'trust_tier': agent_callers_default_tier}
+            'fixture-hosted-route': {'trust_tier': agent_callers_default_tier},
+            'fixture-nonauth-local': {'trust_tier': agent_callers_default_tier}
           }) }}
 
     - name: Refresh the projection after adding the fixture callers
@@ -79,6 +87,16 @@
         _local_key: "{{ _route_keys | selectattr('alias', 'equalto', 'fixture-local-route') | list }}"
         _hosted_key: "{{ _route_keys | selectattr('alias', 'equalto', 'fixture-hosted-route') | list }}"
         _local_names: "{{ _llm_router_local_tier_group_names }}"
+
+    - name: A local-only key whose model list is not authoritative is never marked
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (_route_meta['fixture-nonauth-local'].route_local | bool)
+          - "'fixture-nonauth-local' not in _llm_router_route_local_key_aliases"
+        fail_msg: >-
+          A non-authoritative key keeps live grants outside its list, so it must not be
+          marked; markers={{ _route_meta }}.
 
     - name: Without the fallback model-access enforcement no key is marked route_local
       ansible.builtin.set_fact:
