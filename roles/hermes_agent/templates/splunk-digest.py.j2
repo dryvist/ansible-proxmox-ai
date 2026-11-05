@@ -37,6 +37,7 @@ import hashlib
 import json
 import math
 import os
+import statistics
 import sys
 from collections import namedtuple
 
@@ -73,6 +74,15 @@ WINDOW = EARLIEST.lstrip("-")
 # (index volume, host membership, per-host liveness, sourcetype composition), so
 # escalating the search costs no extra Splunk work.
 TSTATS_QUERY = "| tstats count as vol, max(_time) as last_time where index=* by index, host, sourcetype"
+# Hourly counts for the mover rule, one row per index, host and sourcetype, each
+# listing "epoch:count" for every hour that had events. The window is inline so
+# it reaches the last complete hour plus the 24 hours before it.
+HOURLY_QUERY = (
+    "| tstats count where index=* earliest=-25h@h latest=@h by _time span=1h index host sourcetype "
+    '| eval hour=strftime(_time, "%s") . ":" . count '
+    "| stats list(hour) as hours by index host sourcetype "
+    '| eval hours=mvjoin(hours, ";")'
+)
 BACKUP_OUTCOME_QUERY = (
     'index=_internal sourcetype=scheduler savedsearch_name="HomelabAlert - *backup*" '
     'status=success result_count>0 earliest=-24h | stats count AS fires '
@@ -99,6 +109,12 @@ MIN_MOVER_VOL = 100
 # Raise it if small indexes still fill the output; lower it only with evidence
 # that a real incident was missed under it.
 MIN_MOVER_DELTA = 500
+# Index and host volume is judged on hourly counts, never on a rolling 24h total:
+# one burst ages out of that total a day later and reads as a decline. A series is
+# DOWN when its last complete hour is under DOWN_FRACTION of the median of the 24
+# hours before it, and that holds for DOWN_RUNS consecutive runs.
+DOWN_FRACTION = 0.5
+DOWN_RUNS = 2
 # Cap on how many host names a single set-change line will spell out.
 MAX_NAMED_HOSTS = 5
 # Per-run cap on routine findings. Unshown novel findings stay unledgered and
@@ -179,6 +195,10 @@ async def run_backup_outcomes(url, token):
     return await run_splunk_query(url, token, BACKUP_OUTCOME_QUERY)
 
 
+async def run_hourly_rows(url, token):
+    return await run_splunk_query(url, token, HOURLY_QUERY)
+
+
 def backup_outcome_due(now, state):
     """Run once on the first digest invocation at or after the configured UTC hour."""
     today = now.strftime("%Y-%m-%d")
@@ -244,9 +264,8 @@ def band_of(cur, prev):
     mean anything, a swing under the smallest band, or a move too few events to
     matter however large the percentage. Never an estimate.
 
-    Both floors live here rather than at the call sites: index-level and
-    per-host movers both route through this one function, so one guard covers
-    every mover finding the digest can emit.
+    Both floors live here rather than at the call sites, so the sourcetype
+    composition movers that still use it cannot bypass them.
     """
     if prev is None or prev < MIN_MOVER_VOL:
         return None
@@ -400,6 +419,69 @@ def critical_findings(by_index, prev_by_index, hosts, prev_hosts, have_baseline,
     return out
 
 
+def mover_rates(hourly_rows, now_epoch, sparse_hosts):
+    """Map each index and host to (label, last complete hour, median of the 24 before).
+
+    An hour with no row counts as zero, so a host silent for an hour is a real zero
+    in its median. Coverage starts at the earliest hour the search returned, so a
+    search that reaches less than 24 hours back is never padded with fabricated zeros.
+    """
+    last_hour = int(now_epoch // 3600) * 3600 - 3600
+    series = {}
+    for row in hourly_rows:
+        idx, host = row.get("index"), row.get("host")
+        if not isinstance(idx, str) or not isinstance(host, str) or not host:
+            continue
+        if is_test_row(host, row.get("sourcetype")) or host in sparse_hosts:
+            continue
+        counts = series.setdefault((idx, host), {})
+        for part in str(row.get("hours") or "").split(";"):
+            hour, _, count = part.partition(":")
+            if hour and count:
+                counts[int(float(hour))] = counts.get(int(float(hour)), 0) + int(float(count))
+    if not series:
+        return {}
+    covered_from = min(hour for counts in series.values() for hour in counts)
+    prev_hours = list(range(max(covered_from, last_hour - 24 * 3600), last_hour, 3600))
+    if not prev_hours:
+        return {}
+
+    by_index = {}
+    for (idx, _), counts in series.items():
+        total = by_index.setdefault(idx, {})
+        for hour, count in counts.items():
+            total[hour] = total.get(hour, 0) + count
+    rates = {}
+    for (idx, host), counts in series.items():
+        rates[f"host:{idx}:{host}"] = (
+            f"host {host} in index={idx}", counts.get(last_hour, 0),
+            statistics.median(counts.get(hour, 0) for hour in prev_hours))
+    for idx, counts in by_index.items():
+        rates[f"index:{idx}"] = (
+            f"index={idx}", counts.get(last_hour, 0),
+            statistics.median(counts.get(hour, 0) for hour in prev_hours))
+    return rates
+
+
+def down_findings(rates, prev_streak):
+    """Return (findings, streak): a series is down after DOWN_RUNS low runs in a row.
+
+    A series whose median is under MIN_MOVER_VOL is never down: a handful of
+    events an hour is not a volume that can be lost.
+    """
+    streak, out = {}, []
+    for key, (label, last, median) in sorted(rates.items()):
+        if median < MIN_MOVER_VOL or last >= DOWN_FRACTION * median:
+            continue
+        run = prev_streak.get(key, 0) + 1
+        streak[key] = run
+        if run >= DOWN_RUNS:
+            out.append(Finding(f"down:{key}",
+                               f"{label} down — {fmt_vol(last)} events in the last complete hour, "
+                               f"under half the {fmt_vol(int(median))} median of the 24 hours before"))
+    return out, streak
+
+
 def index_findings(by_index, prev_by_index, have_baseline, host_detail):
     """Tier 0 — the index-level picture. Cheapest and highest-level.
 
@@ -415,12 +497,6 @@ def index_findings(by_index, prev_by_index, have_baseline, host_detail):
                                f":new: index={idx} newly reporting — {fmt_vol(r['vol'])} events, "
                                f"{len(r['hosts'])} host(s)"))
             continue
-        move = band_of(r["vol"], prev_vol)
-        if move:
-            direction, edge, pct = move
-            out.append(Finding(f"vol:{idx}:{direction}{edge}",
-                               f"index={idx} volume {direction} {abs(pct):.0f}% "
-                               f"({fmt_vol(prev_vol)} -> {fmt_vol(r['vol'])})"))
         if isinstance(prev, dict) and host_detail:
             prev_n = prev.get("hosts")
             if isinstance(prev_n, int) and prev_n != len(r["hosts"]):
@@ -438,11 +514,6 @@ def host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last, now_epo
     if not host_detail:
         return out
 
-    prev_host_vol = {}
-    for idx, prev in prev_by_index.items():
-        for host, vol in (prev.get("host_vol") or {}).items():
-            prev_host_vol[(idx, host)] = vol
-
     if have_baseline:
         for host in sorted(hosts - prev_hosts):
             where = sorted(i for i, r in by_index.items() if host in r["hosts"])
@@ -453,15 +524,6 @@ def host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last, now_epo
             out.append(Finding(f"host-:{host}",
                                f":warning: host {host} stopped logging — was in index(es) "
                                f"{', '.join(was) or 'unknown'}"))
-
-    for idx, r in sorted(by_index.items()):
-        for host, vol in sorted(r["hosts"].items()):
-            move = band_of(vol, prev_host_vol.get((idx, host)))
-            if move:
-                direction, edge, pct = move
-                out.append(Finding(f"hostvol:{idx}:{host}:{direction}{edge}",
-                                   f"host {host} in index={idx} {direction} {abs(pct):.0f}% "
-                                   f"({fmt_vol(prev_host_vol[(idx, host)])} -> {fmt_vol(vol)})"))
 
     for host in sorted(hosts):
         last = host_last.get(host, 0)
@@ -594,7 +656,7 @@ def baseline_from(state):
     return state if isinstance(state.get("by_index"), dict) else None
 
 
-def build_digest(results, now, state, backup_outcomes=None):
+def build_digest(results, now, state, backup_outcomes=None, hourly=None):
     """Return (text, payload) where payload is the complete next state file.
 
     Everything the run decides — which findings are novel, which repeat, what the
@@ -613,8 +675,12 @@ def build_digest(results, now, state, backup_outcomes=None):
     else:
         backup_findings = backup_outcome_findings(backup_outcomes)
 
-    rows, _ = fleet_rows(results)
+    rows, sparse_hosts = fleet_rows(results)
     by_index, host_last, saw_host, saw_st = parse_results(rows, now_epoch)
+    rates = mover_rates(hourly, now_epoch, sparse_hosts) if hourly is not None else {}
+    downs, streak = down_findings(rates, (state or {}).get("down_streak") or {})
+    index_downs = [finding for finding in downs if finding.key.startswith("down:index:")]
+    host_downs = [finding for finding in downs if finding.key.startswith("down:host:")]
     hosts = set(host_last)
 
     prev_by_index = (prev or {}).get("by_index") or {}
@@ -634,9 +700,10 @@ def build_digest(results, now, state, backup_outcomes=None):
     critical = critical_findings(by_index, prev_by_index, hosts, prev_hosts,
                                  have_baseline, host_detail)
     tiers = [
-        ("index level", index_findings(by_index, prev_by_index, have_baseline, host_detail)),
+        ("index level", index_findings(by_index, prev_by_index, have_baseline, host_detail)
+         + index_downs),
         ("host level", host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last,
-                                     now_epoch, have_baseline, host_detail)),
+                                     now_epoch, have_baseline, host_detail) + host_downs),
         ("sourcetype + composition level",
          composition_findings(by_index, prev_by_index, have_baseline, saw_st, prev_st_detail)),
     ]
@@ -689,6 +756,7 @@ def build_digest(results, now, state, backup_outcomes=None):
                "last_post_iso": last_post_iso,
                "reported_findings": sorted(reported_findings),
                "backup_outcome_findings": sorted(finding.key for finding in backup_findings),
+               "down_streak": streak,
                "ledger": {"day": today,
                           "keys": (ledger_entries
                                    + [{"k": finding.key, "t": finding.text} for finding in emitted])[-LEDGER_MAX:]}}
@@ -821,13 +889,14 @@ def main():
         if not url or not token:
             raise RuntimeError("SPLUNK_MCP_URL / SPLUNK_MCP_TOKEN missing from .env")
         results = asyncio.run(run_tstats(url, token))
+        hourly = asyncio.run(run_hourly_rows(url, token))
         backup_outcomes = None
         if check_backup_outcomes:
             backup_query_attempted = True
             # Store the date first: a run killed mid-query must not retry every hour.
             save_state({**(state or {}), "backup_outcome_checked_date": now.strftime("%Y-%m-%d")})
             backup_outcomes = asyncio.run(run_backup_outcomes(url, token))
-        text, payload = build_digest(results, now, state, backup_outcomes)
+        text, payload = build_digest(results, now, state, backup_outcomes, hourly)
     except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
         # asyncio.TaskGroup wraps the real fault in an ExceptionGroup; unwrap to
         # the root leaf so the delivered message names the actual cause (e.g.

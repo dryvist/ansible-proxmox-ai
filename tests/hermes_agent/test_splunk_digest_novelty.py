@@ -26,9 +26,11 @@ from _splunk_digest_shared import (
     STATE_DIR,
     TEMPLATE,
     at,
+    hourly_row,
     ledger_keys,
     scale,
     step,
+    with_new_index,
     with_stale_host,
 )
 
@@ -48,18 +50,17 @@ def test_first_run_records_a_baseline_without_a_status_post():
 
 def test_a_routine_finding_already_posted_today_is_suppressed():
     _, s0 = step(BASE, None, 0)
-    grown = scale(BASE, "os", 1.45)          # +45% -> a real index-level finding
+    grown = with_new_index(BASE)              # a routine index-level change
 
     second, s1 = step(grown, s0, 1)
-    assert "index=os volume up 45%" in second, "a novel routine move must be posted"
+    assert "index=audit newly reporting" in second, "a novel routine change must be posted"
     assert "First digest of" not in second, "the daily table is routine — once per day only"
-    assert "1,740,000" in second
-    key = next(k for k in ledger_keys(s1) if k.startswith("vol:os:up"))
+    key = next(k for k in ledger_keys(s1) if k.startswith("idx+:audit"))
 
-    # The same +45% band an hour later against the new baseline: same identity.
-    third, s2 = step(scale(grown, "os", 1.45), s1, 2)
+    # The same change an hour later against the new baseline: same identity.
+    third, s2 = step(grown, s1, 2)
     assert ledger_keys(s2).count(key) == 1, "a repeat must not be re-ledgered"
-    assert "index=os volume up 45%" not in third, \
+    assert "index=audit newly reporting" not in third, \
         "a routine finding already presented today must be suppressed"
 
 
@@ -96,8 +97,8 @@ def test_fully_quiet_runs_remain_silent_without_a_heartbeat():
     """Quiet runs stay silent regardless of elapsed time; findings still post."""
     baseline, s0 = step(BASE, None, 0)
     assert baseline == DIGEST.SILENT
-    grown = scale(BASE, "os", 1.6)
-    _, s1 = step(grown, s0, 1)                  # real post: the +60% finding
+    grown = with_new_index(BASE)
+    _, s1 = step(grown, s0, 1)                  # real post: the new index
     flat, s2 = step(grown, s1, 2)
     assert flat == DIGEST.SILENT
 
@@ -142,9 +143,9 @@ def test_composition_tier_is_reached_when_index_and_host_tiers_are_spent():
 
 def test_the_day_boundary_does_not_repeat_a_still_active_finding():
     _, s0 = step(BASE, None, 0)
-    moved = scale(BASE, "os", 1.45)
+    moved = with_new_index(BASE)
     first, s1 = step(moved, s0, 1)
-    assert "index=os volume up 45%" in first
+    assert "index=audit newly reporting" in first
 
     next_day, s2 = step(moved, s1, at(0, day=25))
     assert s2["ledger"]["day"] == "2026-07-25"
@@ -174,7 +175,7 @@ def test_old_schema_state_file_is_treated_as_no_baseline_not_a_crash():
 def test_unchanged_findings_are_silent_across_consecutive_runs():
     baseline, state = step(BASE, None, 0)
     assert baseline == DIGEST.SILENT
-    moved = scale(BASE, "os", 1.6)
+    moved = with_new_index(BASE)
     first, state = step(moved, state, 1)
     assert first != DIGEST.SILENT
     for hour in (2, 3, 4):
@@ -229,6 +230,52 @@ def test_a_roster_only_host_leaving_is_not_a_fleet_drop():
     _, s0 = step({**BASE, **roster}, None, 0)
     text, _ = step(BASE, s0, 1)
     assert text == DIGEST.SILENT, "roster-only hosts are sparse, not a fleet drop"
+
+
+def test_a_one_hour_burst_then_normal_traffic_is_not_down():
+    # The llm-router-3 shape: one hour at 55k events inside the 24 hours before the
+    # last complete hour, then 5-9k an hour. The burst is an outlier the median
+    # ignores, not a decline, so neither run may report the host or index down.
+    spec = {**BASE, "llm": {"llm-router-3": {"litellm:proxy": 6_000}}}
+    counts = [5_000 + (i * 997) % 4_001 for i in range(24)]
+    counts[10] = 55_501
+    rows_at = lambda hour: [hourly_row("llm", "llm-router-3", counts + [6_000], at(hour))]
+    _, state = step(spec, None, 0, hourly=rows_at(0))
+    for hour in (1, 2):
+        text, state = step(spec, state, hour, hourly=rows_at(hour))
+        assert "down" not in text, f"hour {hour}: a burst that ages out is not a decline"
+
+
+def test_a_series_below_half_its_hourly_median_is_down_only_after_two_runs():
+    steady = [6_000] * 24
+
+    def rows_at(hour, low):
+        # host-a drops to `low`; host-b holds, so the index total is not down.
+        return [hourly_row("os", "host-a", steady + [low], at(hour)),
+                hourly_row("os", "host-b", steady + [6_000], at(hour))]
+
+    _, s0 = step(BASE, None, 0, hourly=rows_at(0, 6_000))
+    first, s1 = step(BASE, s0, 1, hourly=rows_at(1, 2_000))
+    assert "down" not in first, "one low hour is not down"
+    second, s2 = step(BASE, s1, 2, hourly=rows_at(2, 2_000))
+    assert "host host-a in index=os down" in second, "two low hours in a row are down"
+    third, _ = step(BASE, s2, 3, hourly=rows_at(3, 2_000))
+    assert third == DIGEST.SILENT, "a down finding already presented is not repeated"
+
+
+def test_a_series_under_the_volume_floor_is_never_down():
+    quiet = [5] * 25
+    _, s0 = step(BASE, None, 0, hourly=[hourly_row("firewall", "host-d", quiet, at(0))])
+    dropped = [5] * 24 + [0]
+    first, s1 = step(BASE, s0, 1, hourly=[hourly_row("firewall", "host-d", dropped, at(1))])
+    second, _ = step(BASE, s1, 2, hourly=[hourly_row("firewall", "host-d", dropped, at(2))])
+    assert "down" not in first + second, "a handful of events an hour is not a volume to lose"
+
+
+def test_a_rolling_total_rise_is_not_an_index_finding():
+    _, s0 = step(BASE, None, 0)
+    text, _ = step(scale(BASE, "os", 1.45), s0, 1)
+    assert "index=os volume" not in text, "index volume is judged on hourly counts only"
 
 
 def test_ingest_silence_and_fail_loud_contracts_are_preserved():
