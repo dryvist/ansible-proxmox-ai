@@ -196,6 +196,21 @@ def test_a_fleet_drop_is_critical_but_one_host_leaving_is_routine():
     assert "New critical findings" in drop
 
 
+def test_a_sparse_index_aging_out_of_the_window_is_not_critical():
+    # A series of a few events a day leaves the 24h window on its own; it did not
+    # go quiet. A series that carried real volume going to zero still does.
+    sparse = {**BASE, "clickhouse": {"host-e": {"syslog": 2}}}
+    _, s0 = step(sparse, None, 0)
+    text, _ = step(BASE, s0, 1)
+    assert "went to ZERO" not in text, "a 2-event index aging out is not an outage"
+
+    busy = {**BASE, "langflow": {"host-f": {"syslog": 5000}}}
+    _, b0 = step(busy, None, 0)
+    text, _ = step(BASE, b0, 1)
+    assert "index=langflow went to ZERO" in text
+    assert "New critical findings" in text
+
+
 def test_ingest_silence_and_fail_loud_contracts_are_preserved():
     text, _ = step({"os": {"host-a": {"syslog": 10}}}, None, 0)
     assert "INGEST SILENCE" in text and "index=network" in text and "index=firewall" in text
