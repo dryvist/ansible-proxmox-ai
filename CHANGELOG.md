@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.16.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.2...v2.16.3) (2026-11-05)
+
+
+### Bug Fixes
+
+* **llm_router:** limit training-tier groups to the sandbox key ([#1992](https://github.com/dryvist/ansible-proxmox-ai/issues/1992)) ([d84ffe6](https://github.com/dryvist/ansible-proxmox-ai/commit/d84ffe6d7186c2a70b0ecbb61776aec01a6a28ea))
+
 ## [2.16.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.1...v2.16.2) (2026-11-04)
 
 
