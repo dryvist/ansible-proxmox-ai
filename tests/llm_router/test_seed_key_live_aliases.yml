@@ -59,13 +59,10 @@
 - name: The create failure expression treats an existing alias as success, not failure
   hosts: localhost
   gather_facts: false
-  # Pins the real fix for Semaphore tasks 267/277 (2026-09-21): mint every
-  # virtual key with a seeded value every run, and let LiteLLM's own
-  # alias-uniqueness check at /key/generate be the "does this exist" answer
-  # instead of a fragile client-side pre-filter. A 400 whose body says the
-  # alias already exists means the create has nothing left to do; any other
-  # non-2xx is still a real failure. Uses the exact failed_when expression
-  # seed-keys.yml runs, against the real error body LiteLLM 1.102.0 returns
+  # Pins the failed_when expression seed-keys.yml runs on the create: a 400
+  # whose body says the alias already exists is tolerated, and any other
+  # non-2xx is a real failure. Uses the exact expression, against the real
+  # error body LiteLLM 1.102.0 returns
   # (confirmed on the live proxy: {"error":{"message":"Key with alias 'X'
   # already exists. Unique key aliases across all keys are required.", ...}}).
   vars:
@@ -114,7 +111,7 @@
               (_llm_router_key_generate_result_created.json.error.message | default('')))
         fail_msg: "A successful create was treated as a failure"
 
-- name: Verify seed-keys.yml mints every seeded key unconditionally and tolerates an existing alias
+- name: Verify seed-keys.yml creates an alias only when the proxy does not already carry it
   hosts: localhost
   gather_facts: false
   vars:
@@ -123,22 +120,98 @@
     - name: Read the seed-keys.yml source
       ansible.builtin.slurp:
         src: "{{ _role_dir }}/tasks/seed-keys.yml"
-      register: _seed_keys_source_create
+      register: _seed_keys_slurp
 
-    - name: Assert the create loop is not gated by a pre-filtered "unseeded" list, and accepts an alias-exists 400
+    - name: Read the seed-keys.yml task list
+      ansible.builtin.set_fact:
+        _seed_tasks: "{{ _seed_keys_slurp.content | b64decode | from_yaml }}"
+
+    - name: Read the create task from seed-keys.yml
+      ansible.builtin.set_fact:
+        _create_task: "{{ _seed_tasks | selectattr('name', 'search', 'Create the caller keys') | first }}"
+
+    - name: Assert the create runs behind the alias-absent condition and accepts an alias-exists 400
       ansible.builtin.assert:
         quiet: true
         that:
-          - "'rejectattr(''alias'', ''in''' not in (_seed_keys_source_create.content | b64decode)"
-          - "'status_code: [200, 201, 400]' in (_seed_keys_source_create.content | b64decode)"
-          - "'already exists' in (_seed_keys_source_create.content | b64decode)"
+          - _create_task.when == 'item.alias not in _llm_router_live_key_aliases'
+          - "'alias' not in _create_task.loop"
+          - "_create_task['ansible.builtin.uri'].status_code == [200, 201, 400]"
+          - "'already exists' in _create_task.failed_when"
         fail_msg: >-
-          seed-keys.yml's key-generate loop went back to pre-filtering by a
-          client-side live-alias read — that read has been wrong more than
-          once for a reason narrower than pagination (Semaphore tasks
-          267/277) and turned an already-existing alias into a hard failure
-          instead of the no-op /key/generate's own uniqueness check already
-          treats it as.
+          seed-keys.yml's create task must run only when item.alias is absent
+          from _llm_router_live_key_aliases, must loop over the seeded values
+          without an alias pre-filter, and must keep accepting an alias-exists 400.
+
+- name: The create runs for an absent alias and is skipped for a live one
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_existing_keys:
+      json:
+        keys:
+          - key_alias: langgraph
+            token: hash1
+          - token: hash2
+        total_pages: 1
+  tasks:
+    - name: Read the seed-keys.yml source
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/seed-keys.yml"
+      register: _seed_keys_slurp
+
+    - name: Read the seed-keys.yml task list
+      ansible.builtin.set_fact:
+        _seed_tasks: "{{ _seed_keys_slurp.content | b64decode | from_yaml }}"
+
+    - name: Read the live-alias expression from seed-keys.yml
+      ansible.builtin.set_fact:
+        _live_expr: >-
+          {{ (_seed_tasks | selectattr('name', 'search', 'Collect the aliases') | first)
+             ['ansible.builtin.set_fact']['_llm_router_live_key_aliases'] }}
+
+    - name: Write the live-alias expression to a template file
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _live_template
+
+    - name: Persist the live-alias expression unrendered
+      ansible.builtin.copy:
+        dest: "{{ _live_template.path }}"
+        content: "{{ _live_expr }}"
+        mode: '0600'
+
+    - name: Render the live-alias expression against the fixture
+      ansible.builtin.set_fact:
+        _llm_router_live_key_aliases: "{{ lookup('template', _live_template.path) }}"
+
+    - name: Remove the temporary expression file
+      ansible.builtin.file:
+        path: "{{ _live_template.path }}"
+        state: absent
+
+    - name: Assert the live-alias list holds the live alias only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_live_key_aliases == ['langgraph']
+        fail_msg: "Expected ['langgraph'], got {{ _llm_router_live_key_aliases }}"
+
+    - name: Assert the create condition holds only for the alias the proxy does not carry
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (item.alias not in _llm_router_live_key_aliases) == item.expect_create
+        fail_msg: "Create condition for {{ item.alias }} did not match expect_create={{ item.expect_create }}"
+      loop:
+        - alias: langgraph
+          expect_create: false
+        - alias: fresh-alias
+          expect_create: true
+      loop_control:
+        label: "{{ item.alias }}"
 
 - name: Verify seed-keys.yml requests the full-object shape /key/list needs to expose key_alias
   hosts: localhost

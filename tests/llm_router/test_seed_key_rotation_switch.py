@@ -56,11 +56,10 @@ def test_delete_task_treats_an_absent_alias_as_done() -> None:
 
 
 def test_keys_are_re_read_after_a_rotation_delete() -> None:
-    """The re-read keeps the route/model reconcile tasks' view of live keys
-    current after a rotation delete — the create step itself no longer
-    depends on this read (it mints every seeded key unconditionally and
-    treats an existing alias as a no-op, see test_seed_key_live_aliases.yml),
-    but the reconcile tasks after it still diff against a live read."""
+    """The re-read drops the rotated alias from the live snapshot, so the create
+    (which runs only for aliases absent from that snapshot) re-mints it, and the
+    reconcile tasks after it diff against the same live read. See
+    test_seed_key_live_aliases.yml for the create's alias-absent condition."""
     delete_idx = SEED_KEYS_SOURCE.index("/key/delete")
     reread_idx = SEED_KEYS_SOURCE.index(
         "Re-read the live keys when a rotation delete ran"
