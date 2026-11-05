@@ -10,12 +10,12 @@ under pytest. Plain asserts, no fixtures, no framework.
 """
 import datetime as dt
 
-from _splunk_digest_shared import BASE, DIGEST, TEMPLATE, at, scale, step
+from _splunk_digest_shared import BASE, DIGEST, TEMPLATE, at, step, with_new_index
 
 
 def quiet_state():
     """Record a baseline and finding, then reach a quiet unchanged state."""
-    grown = scale(BASE, "os", 1.6)
+    grown = with_new_index(BASE)
     _, s0 = step(BASE, None, 0)
     _, s1 = step(grown, s0, 1)
     _, s2 = step(grown, s1, 2)

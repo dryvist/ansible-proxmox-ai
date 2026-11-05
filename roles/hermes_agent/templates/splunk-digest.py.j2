@@ -32,86 +32,80 @@ STDOUT, and the single terminal print() keeps the delivered payload clean.
 """
 import asyncio
 import datetime as dt
+import fnmatch
 import hashlib
 import json
 import math
 import os
+import statistics
 import sys
 from collections import namedtuple
 
-# --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
+# --- config, rendered from roles/hermes_agent/defaults/main.yml ---
 ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
 STATE_PATH = "{{ hermes_agent_hermes_home }}/state/splunk-digest.json"
-# Expected-continuous indexes: absent / zero-volume / stale here is an ingest
-# anomaly, not "no anomalies". #17144 was os + network going silent unnoticed.
+# Expected-continuous indexes: absent, zero-volume or stale is an ingest anomaly.
 EXPECTED_CONTINUOUS = {{ hermes_agent_splunk_digest_expected_indexes | to_json }}
 STALENESS_MIN = {{ hermes_agent_splunk_digest_staleness_minutes }}
-# WARNING: the MCP server IGNORES the `earliest` argument this is passed as.
-# Proven live 2026-07-28 — `splunk_run_query` returned byte-identical results
-# for -1h, -24h and -7d. This digest is only correct because its window happens
-# to equal the server's own default; it is accidentally right, not deliberately.
-# splunk-triage.py.j2 fixes this by writing `earliest=... latest=now` INLINE in
-# the SPL, where Splunk applies it. Do the same here before changing this value
-# to anything other than -24h, and verify the new number against the REST API
-# rather than assuming the argument took effect.
+# Synthetic e2e senders write into production indexes; their rows are dropped first.
+TEST_SENDER_HOSTS = {{ hermes_agent_splunk_digest_test_senders | to_json }}
+TEST_SENDER_SOURCETYPES = {{ hermes_agent_splunk_digest_test_sourcetypes | to_json }}
+# Hosts whose rows are all these sourcetypes are inventory, not logs: sparse, never in the fleet.
+SPARSE_SOURCETYPES = {{ hermes_agent_splunk_digest_sparse_sourcetypes | to_json }}
+# WARNING: the MCP server IGNORES the `earliest` argument. Live proof 2026-07-28:
+# -1h, -24h and -7d returned identical rows. This digest is right only because its
+# window equals the server default. splunk-triage.py.j2 writes `earliest=... latest=now`
+# inline in the SPL instead. Do the same here before changing this value from -24h,
+# and verify against the REST API rather than trusting the argument.
 EARLIEST = "{{ hermes_agent_splunk_digest_window }}"
 ROW_LIMIT = 1000  # the MCP tool's maximum; the truncation guard fails loudly past it
 BACKUP_OUTCOME_AFTER_HOUR_UTC = {{ hermes_agent_splunk_digest_backup_outcome_after_hour_utc }}
 
-# Same span, phrased for prose ("the 24h window" rather than "the -24h window").
+# Same span, phrased for prose ("the 24h window").
 WINDOW = EARLIEST.lstrip("-")
-# Inventory + liveness via tstats metadata ONLY — never index=* over raw events.
-# Grouped by host AND sourcetype: one metadata call feeds every finding dimension
-# (index volume, host membership, per-host liveness, sourcetype composition), so
-# escalating the search costs no extra Splunk work.
+# Inventory and liveness via tstats metadata only, never index=* over raw events.
+# Grouped by host and sourcetype: one call feeds every finding dimension at no extra cost.
 TSTATS_QUERY = "| tstats count as vol, max(_time) as last_time where index=* by index, host, sourcetype"
+# Hourly counts per index, host and sourcetype, as "epoch:count" pairs.
+# shortcut: series silent >25h age out after their first DOWN; a repeat needs the series to clear first, not a longer window.
+HOURLY_QUERY = (
+    "| tstats count where index=* earliest=-25h@h latest=@h by _time span=1h index host sourcetype "
+    '| eval hour=strftime(_time, "%s") . ":" . count '
+    "| stats list(hour) as hours by index host sourcetype "
+    '| eval hours=mvjoin(hours, ";")'
+)
 BACKUP_OUTCOME_QUERY = (
     'index=_internal sourcetype=scheduler savedsearch_name="HomelabAlert - *backup*" '
     'status=success result_count>0 earliest=-24h | stats count AS fires '
     'max(_time) AS last_fire BY savedsearch_name'
 )
-# State schema version. Bumped when the shape changes; an older/absent value
-# means "no usable baseline" and the run reports full numbers with no deltas.
-STATE_SCHEMA = 3
-# ponytail: calibration knobs, deliberately module constants and not Ansible
-# variables — real ingest jitters, and these want tuning against it rather than
-# templating. PCT_BANDS are the magnitude bands a change is bucketed into, and the
-# band is part of a finding's identity: "os up 25%" is one finding for the day,
-# while "os up 300%" later the same day is a genuinely different one. Raise the
-# first band if normal diurnal swing starts filling the output.
-PCT_BANDS = (25, 50, 100, 300, 1000)
-# Series below this volume are excluded from percent findings — 3 -> 9 events is
-# +200% and means nothing.
+# State schema version, bumped when the shape changes. Older or absent means no baseline.
+# 4: the fleet membership excludes test senders and sparse roster-only hosts.
+STATE_SCHEMA = 4
+# ponytail: calibration knobs, module constants not Ansible vars; tune against real ingest.
+# A 24-hour volume floor: a series whose median hourly count x 24 is below it is never reported down.
 MIN_MOVER_VOL = 100
-# ...and neither does a large percentage of a small number: 109 -> 195 events in
-# 24h clears MIN_MOVER_VOL and the 50% band, and reported as "up 79%" it reads
-# like news. A move must ALSO be this many events to be a finding. Audience is
-# one person, so the bar is "would a human act on this", not "is it measurable".
-# Raise it if small indexes still fill the output; lower it only with evidence
-# that a real incident was missed under it.
-MIN_MOVER_DELTA = 500
-# Cap on how many host names a single set-change line will spell out.
+# Volume is judged on hourly counts: DOWN when the last complete hour is under
+# DOWN_FRACTION of the median of the 24 before it, for DOWN_RUNS runs in a row.
+DOWN_FRACTION = 0.5
+DOWN_RUNS = 2
+# The median spans the 24 complete hours before the last one; less history is no baseline.
+BASELINE_HOURS = 24
+# Max host names spelled out on one set-change line.
 MAX_NAMED_HOSTS = 5
-# Per-run cap on routine findings. Unshown novel findings stay unledgered and
-# surface next run, which spreads a burst across the day instead of one wall post.
+# Per-run cap on routine findings. Overflow stays unledgered and surfaces next run.
 MAX_FINDINGS = 8
 # Ledger size cap; oldest keys drop first. Only ever holds one day of keys.
 LEDGER_MAX = 500
-# Net host-fleet shrink treated as a critical finding rather than routine
-# per-host movement.
+# Net host-fleet shrink at or above this is critical, not routine per-host movement.
 HOST_DROP_CRIT = 3
-# Percentage points of total-ingest share movement worth reporting.
-SHARE_SHIFT_PP = 5.0
 # Fully quiet and unchanged runs return SILENT; only newly observed findings post.
-# Upstream's `hermes cron` executor skips Slack delivery when a --script
-# cron's STDOUT is exactly this string — the same contract splunk-triage.py.j2
-# already relies on for its per-day "quiet" suppression.
+# hermes cron skips Slack delivery when a --script's STDOUT is exactly this string,
+# the same contract splunk-triage.py.j2 uses for its per-day quiet suppression.
 SILENT = "[SILENT]"
-# Prefix that tells the cron scheduler this run's own observation path
-# failed, so the post is routed to the issues channel instead of the work
-# surface. This script exits 0 and prints its failure (so it is delivered
-# rather than lost), which the runner reads as success — the marker is how
-# it says otherwise. Value comes from Ansible: one definition, two consumers.
+# Prefix routing this run's own failure to the issues channel. The script exits 0 so the
+# failure is delivered, and the runner reads exit 0 as success; the marker says otherwise.
+# Value comes from Ansible: one definition, two consumers.
 ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
 
 # key: stable identity for the day ledger. text: the Slack line.
@@ -141,8 +135,7 @@ async def run_splunk_query(url, token, query):
             streamable_http_client(url, http_client=http) as (r, w, *_):
         async with ClientSession(r, w) as s:
             await s.initialize()
-            # The MCP names the window `earliest_time` and caps rows at `row_limit`
-            # (default 100): a capped table reads as missing indexes/hosts.
+            # row_limit caps rows (MCP default 100): a capped table reads as missing indexes/hosts.
             res = await s.call_tool("splunk_run_query", {"query": query, "earliest_time": EARLIEST,
                                                         "latest_time": "now", "row_limit": ROW_LIMIT})
             if getattr(res, "is_error", False):
@@ -168,6 +161,10 @@ async def run_tstats(url, token):
 
 async def run_backup_outcomes(url, token):
     return await run_splunk_query(url, token, BACKUP_OUTCOME_QUERY)
+
+
+async def run_hourly_rows(url, token):
+    return await run_splunk_query(url, token, HOURLY_QUERY)
 
 
 def backup_outcome_due(now, state):
@@ -228,33 +225,32 @@ def fmt_delta(cur, prev_vol, have_baseline):
     return "0" if diff == 0 else f"{diff:+,}"
 
 
-def band_of(cur, prev):
-    """(direction, band_edge, pct) for a real move, else None.
-
-    None means "not a finding": no baseline, a series too small for a percent to
-    mean anything, a swing under the smallest band, or a move too few events to
-    matter however large the percentage. Never an estimate.
-
-    Both floors live here rather than at the call sites: index-level and
-    per-host movers both route through this one function, so one guard covers
-    every mover finding the digest can emit.
-    """
-    if prev is None or prev < MIN_MOVER_VOL:
-        return None
-    if abs(cur - prev) < MIN_MOVER_DELTA:
-        return None
-    pct = (cur - prev) * 100.0 / prev
-    if abs(pct) < PCT_BANDS[0]:
-        return None
-    edge = max(e for e in PCT_BANDS if abs(pct) >= e)
-    return ("up" if pct > 0 else "down", edge, pct)
-
-
 def name_list(names):
     """Comma-joined, capped, with an honest '+N more' tail."""
     shown = sorted(names)[:MAX_NAMED_HOSTS]
     extra = len(names) - len(shown)
     return ", ".join(shown) + (f" (+{extra} more)" if extra > 0 else "")
+
+
+def is_test_row(host, sourcetype):
+    return host in TEST_SENDER_HOSTS or any(
+        fnmatch.fnmatchcase(sourcetype or "", glob) for glob in TEST_SENDER_SOURCETYPES)
+
+
+def is_sparse_sourcetype(sourcetype):
+    return any(fnmatch.fnmatchcase(sourcetype, glob) for glob in SPARSE_SOURCETYPES)
+
+
+def fleet_rows(results):
+    """Return (rows, sparse_hosts) with test-sender rows and sparse hosts removed."""
+    rows = [row for row in results if not is_test_row(row.get("host"), row.get("sourcetype"))]
+    stypes_by_host = {}
+    for row in rows:
+        if row.get("host"):
+            stypes_by_host.setdefault(row["host"], set()).add(row.get("sourcetype") or "")
+    sparse = {host for host, stypes in stypes_by_host.items()
+              if all(is_sparse_sourcetype(st) for st in stypes)}
+    return [row for row in rows if row.get("host") not in sparse], sparse
 
 
 def parse_results(results, now_epoch):
@@ -345,14 +341,15 @@ def critical_findings(by_index, prev_by_index, hosts, prev_hosts, have_baseline,
                                f":warning: INGEST SILENCE: index={idx} — last event "
                                f"{fmt_age(rec['age_min'])} ago, 24h volume {fmt_vol(rec['vol'])}"))
 
-    # An index that carried traffic and has now gone to zero or vanished. The
-    # expected-continuous ones are already covered above; don't say it twice.
+    # Traffic that went to zero or vanished. Expected-continuous indexes are covered above.
     for idx in sorted(prev_by_index):
         if idx in EXPECTED_CONTINUOUS:
             continue
         was = prev_by_index[idx].get("vol", 0)
         rec = by_index.get(idx)
-        if was > 0 and (rec is None or rec["vol"] == 0):
+        # Under MIN_MOVER_VOL a series ages out of the 24h window without going quiet;
+        # only real volume can go critical.
+        if was >= MIN_MOVER_VOL and (rec is None or rec["vol"] == 0):
             where = "absent from results" if rec is None else "reporting 0 events"
             out.append(Finding(f"crit:zeroed:{idx}",
                                f":warning: index={idx} went to ZERO — {fmt_vol(was)} events at the "
@@ -366,6 +363,81 @@ def critical_findings(by_index, prev_by_index, hosts, prev_hosts, have_baseline,
                                f"previous run ({len(prev_hosts)} -> {len(hosts)}): "
                                f"{name_list(prev_hosts - hosts)}"))
     return out
+
+
+def hourly_counts(hours):
+    """Parse the hourly search's "epoch:count;epoch:count" string into {hour: count}."""
+    counts = {}
+    for part in str(hours or "").split(";"):
+        hour, _, count = part.partition(":")
+        if hour and count:
+            counts[int(float(hour))] = counts.get(int(float(hour)), 0) + int(float(count))
+    return counts
+
+
+def add_counts(series, key, counts):
+    total = series.setdefault(key, {})
+    for hour, count in counts.items():
+        total[hour] = total.get(hour, 0) + count
+
+
+def mover_rates(hourly_rows, now_epoch, sparse_hosts):
+    """Map each index, host and sourcetype to (label, last complete hour, median of the 24 before).
+
+    An hour with no row counts as zero, so a series silent for an hour is a real zero
+    in its median. A series whose own history does not reach back to the start of the
+    24-hour window has no baseline: its median is None and no finding judges it, so a
+    young series is never padded with zeros into a judgment. Rows without a host count
+    toward the index and sourcetype totals only.
+    """
+    last_hour = int(now_epoch // 3600) * 3600 - 3600
+    window_start = last_hour - BASELINE_HOURS * 3600
+    prev_hours = range(window_start, last_hour, 3600)
+    index_series, host_series, st_series = {}, {}, {}
+    for row in hourly_rows:
+        idx, host, stype = row.get("index"), row.get("host"), row.get("sourcetype")
+        if not isinstance(idx, str) or is_test_row(host, stype) or host in sparse_hosts:
+            continue
+        counts = hourly_counts(row.get("hours"))
+        add_counts(index_series, idx, counts)
+        if isinstance(stype, str) and stype:
+            add_counts(st_series, (idx, stype), counts)
+        if isinstance(host, str) and host:
+            add_counts(host_series, (idx, host), counts)
+    def rate(label, counts):
+        # The series' own first bucket must reach the window's start, or the median is partial.
+        median = None
+        if min(counts, default=last_hour) <= window_start:
+            median = statistics.median(counts.get(hour, 0) for hour in prev_hours)
+        return (label, counts.get(last_hour, 0), median)
+
+    rates = {}
+    for (idx, host), counts in host_series.items():
+        rates[f"host:{idx}:{host}"] = rate(f"host {host} in index={idx}", counts)
+    for (idx, stype), counts in st_series.items():
+        rates[f"st:{idx}:{stype}"] = rate(f"sourcetype {stype} in index={idx}", counts)
+    for idx, counts in index_series.items():
+        rates[f"index:{idx}"] = rate(f"index={idx}", counts)
+    return rates
+
+
+def down_findings(rates, prev_streak):
+    """Return (findings, streak): a series is down after DOWN_RUNS low runs in a row.
+
+    A series with no full baseline (median None), or a 24-hour volume (median x 24) under
+    MIN_MOVER_VOL, is never down: a handful of events an hour is not a volume that can be lost.
+    """
+    streak, out = {}, []
+    for key, (label, last, median) in sorted(rates.items()):
+        if median is None or median * 24 < MIN_MOVER_VOL or last >= DOWN_FRACTION * median:
+            continue
+        run = prev_streak.get(key, 0) + 1
+        streak[key] = run
+        if run >= DOWN_RUNS:
+            out.append(Finding(f"down:{key}",
+                               f"{label} down — {fmt_vol(last)} events in the last complete hour, "
+                               f"under half the {fmt_vol(int(median))} median of the 24 hours before"))
+    return out, streak
 
 
 def index_findings(by_index, prev_by_index, have_baseline, host_detail):
@@ -383,12 +455,6 @@ def index_findings(by_index, prev_by_index, have_baseline, host_detail):
                                f":new: index={idx} newly reporting — {fmt_vol(r['vol'])} events, "
                                f"{len(r['hosts'])} host(s)"))
             continue
-        move = band_of(r["vol"], prev_vol)
-        if move:
-            direction, edge, pct = move
-            out.append(Finding(f"vol:{idx}:{direction}{edge}",
-                               f"index={idx} volume {direction} {abs(pct):.0f}% "
-                               f"({fmt_vol(prev_vol)} -> {fmt_vol(r['vol'])})"))
         if isinstance(prev, dict) and host_detail:
             prev_n = prev.get("hosts")
             if isinstance(prev_n, int) and prev_n != len(r["hosts"]):
@@ -406,11 +472,6 @@ def host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last, now_epo
     if not host_detail:
         return out
 
-    prev_host_vol = {}
-    for idx, prev in prev_by_index.items():
-        for host, vol in (prev.get("host_vol") or {}).items():
-            prev_host_vol[(idx, host)] = vol
-
     if have_baseline:
         for host in sorted(hosts - prev_hosts):
             where = sorted(i for i, r in by_index.items() if host in r["hosts"])
@@ -422,21 +483,11 @@ def host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last, now_epo
                                f":warning: host {host} stopped logging — was in index(es) "
                                f"{', '.join(was) or 'unknown'}"))
 
-    for idx, r in sorted(by_index.items()):
-        for host, vol in sorted(r["hosts"].items()):
-            move = band_of(vol, prev_host_vol.get((idx, host)))
-            if move:
-                direction, edge, pct = move
-                out.append(Finding(f"hostvol:{idx}:{host}:{direction}{edge}",
-                                   f"host {host} in index={idx} {direction} {abs(pct):.0f}% "
-                                   f"({fmt_vol(prev_host_vol[(idx, host)])} -> {fmt_vol(vol)})"))
-
     for host in sorted(hosts):
         last = host_last.get(host, 0)
         age = (now_epoch - last) / 60.0 if last > 0 else float("inf")
         if age > STALENESS_MIN:
-            # Bucketed by whole hours: one stale host is one finding per hour of
-            # staleness, not one per run.
+            # Bucketed by whole hours: one finding per hour of staleness, not per run.
             bucket = "inf" if age == float("inf") else int(age // 60)
             out.append(Finding(f"stale:{host}:{bucket}",
                                f":hourglass: host {host} has data in the {WINDOW} window but its "
@@ -445,7 +496,7 @@ def host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last, now_epo
 
 
 def composition_findings(by_index, prev_by_index, have_baseline, st_detail, prev_st_detail):
-    """Tier 2 — sourcetype mix and each index's share of total ingest."""
+    """Tier 3 — sourcetypes newly present in an index. Volume and stops come from mover_rates."""
     out = []
     if not have_baseline:
         return out
@@ -457,32 +508,6 @@ def composition_findings(by_index, prev_by_index, have_baseline, st_detail, prev
                 out.append(Finding(f"st+:{idx}:{stype}",
                                    f":new: sourcetype {stype} newly present in index={idx} — "
                                    f"{fmt_vol(r['sourcetypes'][stype])} events"))
-            for stype in sorted(set(prev_st) - set(r["sourcetypes"])):
-                out.append(Finding(f"st-:{idx}:{stype}",
-                                   f":warning: sourcetype {stype} no longer present in index={idx} — had "
-                                   f"{fmt_vol(prev_st[stype])} events at the previous run"))
-            for stype, vol in sorted(r["sourcetypes"].items()):
-                move = band_of(vol, prev_st.get(stype))
-                if move:
-                    direction, edge, pct = move
-                    out.append(Finding(f"stvol:{idx}:{stype}:{direction}{edge}",
-                                       f"sourcetype {stype} in index={idx} {direction} {abs(pct):.0f}% "
-                                       f"({fmt_vol(prev_st[stype])} -> {fmt_vol(vol)})"))
-
-    total = sum(r["vol"] for r in by_index.values())
-    prev_total = sum(p.get("vol", 0) for p in prev_by_index.values())
-    if total > 0 and prev_total > 0:
-        for idx, r in sorted(by_index.items(), key=lambda kv: kv[1]["vol"], reverse=True):
-            prev = prev_by_index.get(idx)
-            if not isinstance(prev, dict):
-                continue
-            share = r["vol"] * 100.0 / total
-            prev_share = prev.get("vol", 0) * 100.0 / prev_total
-            shift = share - prev_share
-            if abs(shift) >= SHARE_SHIFT_PP:
-                out.append(Finding(f"share:{idx}:{int(share // SHARE_SHIFT_PP)}",
-                                   f"index={idx} share of total ingest {prev_share:.0f}% -> {share:.0f}% "
-                                   f"({shift:+.0f} points)"))
     return out
 
 
@@ -562,7 +587,7 @@ def baseline_from(state):
     return state if isinstance(state.get("by_index"), dict) else None
 
 
-def build_digest(results, now, state, backup_outcomes=None):
+def build_digest(results, now, state, backup_outcomes=None, hourly=None):
     """Return (text, payload) where payload is the complete next state file.
 
     Everything the run decides — which findings are novel, which repeat, what the
@@ -574,6 +599,9 @@ def build_digest(results, now, state, backup_outcomes=None):
     ledger_entries = load_ledger_entries(state, today)
     previously_reported = set((state or {}).get("reported_findings") or [])
     previously_reported.update(entry["k"] for entry in ledger_entries)
+    # Critical conditions are judged on their own record, not the ledger. A cleared one
+    # drops out, so its next occurrence posts again.
+    reported_critical = set((state or {}).get("reported_critical") or [])
     if backup_outcomes is None:
         stored_backup_findings = (state or {}).get("backup_outcome_findings", [])
         backup_findings = [Finding(key, "") for key in stored_backup_findings
@@ -581,7 +609,13 @@ def build_digest(results, now, state, backup_outcomes=None):
     else:
         backup_findings = backup_outcome_findings(backup_outcomes)
 
-    by_index, host_last, saw_host, saw_st = parse_results(results, now_epoch)
+    rows, sparse_hosts = fleet_rows(results)
+    by_index, host_last, saw_host, saw_st = parse_results(rows, now_epoch)
+    rates = mover_rates(hourly, now_epoch, sparse_hosts) if hourly is not None else {}
+    downs, streak = down_findings(rates, (state or {}).get("down_streak") or {})
+    index_downs = [finding for finding in downs if finding.key.startswith("down:index:")]
+    host_downs = [finding for finding in downs if finding.key.startswith("down:host:")]
+    st_downs = [finding for finding in downs if finding.key.startswith("down:st:")]
     hosts = set(host_last)
 
     prev_by_index = (prev or {}).get("by_index") or {}
@@ -599,13 +633,14 @@ def build_digest(results, now, state, backup_outcomes=None):
     )
     fingerprint = hashlib.sha256(json.dumps(fp_tuples).encode()).hexdigest()
     critical = critical_findings(by_index, prev_by_index, hosts, prev_hosts,
-                                 have_baseline, host_detail)
+                                 have_baseline, host_detail) + index_downs
     tiers = [
         ("index level", index_findings(by_index, prev_by_index, have_baseline, host_detail)),
         ("host level", host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last,
-                                     now_epoch, have_baseline, host_detail)),
+                                     now_epoch, have_baseline, host_detail) + host_downs),
         ("sourcetype + composition level",
-         composition_findings(by_index, prev_by_index, have_baseline, saw_st, prev_st_detail)),
+         composition_findings(by_index, prev_by_index, have_baseline, saw_st, prev_st_detail)
+         + st_downs),
     ]
 
     # Escalate to the first tier with new findings. Only printed items enter
@@ -622,7 +657,7 @@ def build_digest(results, now, state, backup_outcomes=None):
     for _, found in tiers:
         current_keys.update(finding.key for finding in found)
     current_keys.update(finding.key for finding in backup_findings)
-    new_critical = [finding for finding in critical if finding.key not in previously_reported]
+    new_critical = [finding for finding in critical if finding.key not in reported_critical]
     new_backup_findings = [finding for finding in backup_findings
                            if finding.key not in previously_reported]
     emitted = [*new_critical, *novel, *new_backup_findings]
@@ -651,14 +686,19 @@ def build_digest(results, now, state, backup_outcomes=None):
         lines.extend(f"• {finding.text}" for finding in new_backup_findings)
 
     last_post_iso = now.isoformat() if emitted else (state or {}).get("last_post_iso")
+    ledgered = {entry["k"] for entry in ledger_entries}
     payload = {"schema": STATE_SCHEMA, "fingerprint": fingerprint,
                "last_post_date": today, "captured_iso": now.isoformat(),
                "last_post_iso": last_post_iso,
                "reported_findings": sorted(reported_findings),
+               "reported_critical": sorted((reported_critical & current_keys)
+                                           | {finding.key for finding in new_critical}),
                "backup_outcome_findings": sorted(finding.key for finding in backup_findings),
+               "down_streak": streak,
                "ledger": {"day": today,
                           "keys": (ledger_entries
-                                   + [{"k": finding.key, "t": finding.text} for finding in emitted])[-LEDGER_MAX:]}}
+                                   + [{"k": finding.key, "t": finding.text} for finding in emitted
+                                      if finding.key not in ledgered])[-LEDGER_MAX:]}}
     if backup_outcomes is not None:
         payload["backup_outcome_checked_date"] = today
     elif (state or {}).get("backup_outcome_checked_date"):
@@ -702,9 +742,8 @@ def failure_report(root, state, now):
     key = failure_key(root)
     detail = f"{type(root).__name__}: {str(root)[:200]}"
 
-    # Read-modify-write: the baseline snapshot (by_index, hosts, ...) belongs to
-    # the last SUCCESSFUL run and must survive a failure untouched, or recovery
-    # would report full numbers with no deltas and look like a fresh install.
+    # Read-modify-write: the baseline (by_index, hosts, ...) belongs to the last successful
+    # run and must survive a failure untouched, or recovery reports no deltas.
     payload = dict(state or {})
     suppressed = suppression_of(state, today)
 
@@ -721,8 +760,7 @@ def failure_report(root, state, now):
     payload["suppressed"] = {"day": today, "count": 0,
                              "since_hhmm": now.strftime("%H:%M")}
     payload["failure"] = {"day": today, "key": key}
-    # Keep the report text with the key so recovery can summarize suppressed
-    # repeats without replacing the last successful baseline.
+    # Keep the report text with the key so recovery can summarize suppressed repeats.
     payload["ledger"] = {"day": today,
                          "keys": (ledger_entries
                                   + [{"k": key, "t": f":warning: Splunk digest failing — {detail}"}]
@@ -788,27 +826,25 @@ def main():
         if not url or not token:
             raise RuntimeError("SPLUNK_MCP_URL / SPLUNK_MCP_TOKEN missing from .env")
         results = asyncio.run(run_tstats(url, token))
+        hourly = asyncio.run(run_hourly_rows(url, token))
         backup_outcomes = None
         if check_backup_outcomes:
             backup_query_attempted = True
             # Store the date first: a run killed mid-query must not retry every hour.
             save_state({**(state or {}), "backup_outcome_checked_date": now.strftime("%Y-%m-%d")})
             backup_outcomes = asyncio.run(run_backup_outcomes(url, token))
-        text, payload = build_digest(results, now, state, backup_outcomes)
+        text, payload = build_digest(results, now, state, backup_outcomes, hourly)
     except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
-        # asyncio.TaskGroup wraps the real fault in an ExceptionGroup; unwrap to
-        # the root leaf so the delivered message names the actual cause (e.g.
-        # "502 Bad Gateway from the Splunk MCP") instead of a useless
-        # "ExceptionGroup: 1 sub-exception". Keep it short and free of secrets.
+        # Unwrap the asyncio TaskGroup ExceptionGroup to its root leaf, so the message names
+        # the real cause (e.g. "502 Bad Gateway from the Splunk MCP"). Keep it free of secrets.
         root = e
         for _ in range(10):
             sub = getattr(root, "exceptions", None)
             if not sub:
                 break
             root = sub[0]
-        # Delivered through the day ledger, not straight to stdout. Failure is
-        # still always reported the first time it is seen and a changed cause
-        # posts at once; only verbatim repetition is suppressed, and counted.
+        # Delivered through the day ledger, not straight to stdout. A first failure always posts;
+        # a changed cause posts at once; only verbatim repeats are suppressed, and counted.
         text, payload = failure_report(root, state, now)
         if backup_query_attempted:
             payload["backup_outcome_checked_date"] = now.strftime("%Y-%m-%d")
@@ -817,15 +853,12 @@ def main():
         return 0
 
     recovered = recovery_line(state, now)
-    # The run succeeded, so the stored failure is over. Clearing it here (rather
-    # than leaving it for the next failure to overwrite) is what makes the
-    # recovery line fire exactly once.
+    # A successful run ends the stored failure. Clearing it here makes the recovery line fire once.
     payload.pop("failure", None)
     payload.pop("suppressed", None)
     save_state(payload)
     if recovered:
-        # A recovery is news even when the digest itself has nothing new, so it
-        # overrides SILENT rather than being appended to it.
+        # A recovery is news even when the digest has nothing new, so it overrides SILENT.
         print(recovered if text == SILENT else f"{recovered}\n{text}")
         return 0
     print(text)

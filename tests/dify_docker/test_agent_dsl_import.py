@@ -1,4 +1,4 @@
-"""Agent DSL import: pinned sources, the seven names, and which console imports them."""
+"""Agent DSL import: pinned sources, the pinned names, and which console imports them."""
 
 import re
 from pathlib import Path
@@ -14,10 +14,15 @@ EVAL_GROUP = ROOT / "inventory/group_vars/dify_eval_group.yml"  # removed with t
 TASKS = ROOT / "roles/dify_docker/tasks"
 
 EXPECTED_NAMES = [
+    "action-extractor",
     "ci-fixer",
     "code-simplifier",
+    "commit-grouper",
     "doc-contradiction-finder",
     "docs-updater",
+    "plain-rewriter",
+    "style-gate",
+    "tag-suggester",
     "vikunja-clerk",
     "vikunja-triage",
     "zammad-triage",
@@ -28,12 +33,14 @@ def _defaults():
     return yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))
 
 
-def test_seven_agent_dsls_pinned_to_commit_with_sha256():
+def test_agent_dsls_pinned_to_commit_with_sha256():
     pins = yaml.safe_load(AGENT_DSLS.read_text(encoding="utf-8"))
     assert re.fullmatch(r"[0-9a-f]{40}", pins["dify_docker_agent_dsl_commit"])
     dsls = pins["dify_docker_agent_dsls"]
 
     assert [entry["name"] for entry in dsls] == EXPECTED_NAMES
+    assert EXPECTED_NAMES == sorted(EXPECTED_NAMES)
+    assert len({entry["sha256"] for entry in dsls}) == len(dsls)
     for entry in dsls:
         assert entry["url"] == "{{ dify_docker_agent_dsl_base }}/" + entry["name"] + ".dsl.yml", entry["name"]
         assert re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]), entry["name"]

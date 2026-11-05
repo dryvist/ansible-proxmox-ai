@@ -64,6 +64,7 @@ def test_a_run_killed_during_the_backup_query_still_marks_today_checked():
         "load_env": lambda path: {"SPLUNK_MCP_URL": "u", "SPLUNK_MCP_TOKEN": "t"},
         "backup_outcome_due": lambda now, state: True,
         "run_tstats": tstats,
+        "run_hourly_rows": tstats,
         "run_backup_outcomes": killed,
     }
     saved = {name: getattr(DIGEST, name) for name in patches}

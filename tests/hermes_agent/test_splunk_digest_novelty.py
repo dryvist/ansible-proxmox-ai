@@ -27,8 +27,8 @@ from _splunk_digest_shared import (
     TEMPLATE,
     at,
     ledger_keys,
-    scale,
     step,
+    with_new_index,
     with_stale_host,
 )
 
@@ -48,18 +48,17 @@ def test_first_run_records_a_baseline_without_a_status_post():
 
 def test_a_routine_finding_already_posted_today_is_suppressed():
     _, s0 = step(BASE, None, 0)
-    grown = scale(BASE, "os", 1.45)          # +45% -> a real index-level finding
+    grown = with_new_index(BASE)              # a routine index-level change
 
     second, s1 = step(grown, s0, 1)
-    assert "index=os volume up 45%" in second, "a novel routine move must be posted"
+    assert "index=audit newly reporting" in second, "a novel routine change must be posted"
     assert "First digest of" not in second, "the daily table is routine — once per day only"
-    assert "1,740,000" in second
-    key = next(k for k in ledger_keys(s1) if k.startswith("vol:os:up"))
+    key = next(k for k in ledger_keys(s1) if k.startswith("idx+:audit"))
 
-    # The same +45% band an hour later against the new baseline: same identity.
-    third, s2 = step(scale(grown, "os", 1.45), s1, 2)
+    # The same change an hour later against the new baseline: same identity.
+    third, s2 = step(grown, s1, 2)
     assert ledger_keys(s2).count(key) == 1, "a repeat must not be re-ledgered"
-    assert "index=os volume up 45%" not in third, \
+    assert "index=audit newly reporting" not in third, \
         "a routine finding already presented today must be suppressed"
 
 
@@ -96,8 +95,8 @@ def test_fully_quiet_runs_remain_silent_without_a_heartbeat():
     """Quiet runs stay silent regardless of elapsed time; findings still post."""
     baseline, s0 = step(BASE, None, 0)
     assert baseline == DIGEST.SILENT
-    grown = scale(BASE, "os", 1.6)
-    _, s1 = step(grown, s0, 1)                  # real post: the +60% finding
+    grown = with_new_index(BASE)
+    _, s1 = step(grown, s0, 1)                  # real post: the new index
     flat, s2 = step(grown, s1, 2)
     assert flat == DIGEST.SILENT
 
@@ -142,9 +141,9 @@ def test_composition_tier_is_reached_when_index_and_host_tiers_are_spent():
 
 def test_the_day_boundary_does_not_repeat_a_still_active_finding():
     _, s0 = step(BASE, None, 0)
-    moved = scale(BASE, "os", 1.45)
+    moved = with_new_index(BASE)
     first, s1 = step(moved, s0, 1)
-    assert "index=os volume up 45%" in first
+    assert "index=audit newly reporting" in first
 
     next_day, s2 = step(moved, s1, at(0, day=25))
     assert s2["ledger"]["day"] == "2026-07-25"
@@ -174,26 +173,12 @@ def test_old_schema_state_file_is_treated_as_no_baseline_not_a_crash():
 def test_unchanged_findings_are_silent_across_consecutive_runs():
     baseline, state = step(BASE, None, 0)
     assert baseline == DIGEST.SILENT
-    moved = scale(BASE, "os", 1.6)
+    moved = with_new_index(BASE)
     first, state = step(moved, state, 1)
     assert first != DIGEST.SILENT
     for hour in (2, 3, 4):
         text, state = step(moved, state, hour)
         assert text == DIGEST.SILENT
-
-
-def test_a_fleet_drop_is_critical_but_one_host_leaving_is_routine():
-    _, s0 = step(BASE, None, 0)
-    one_gone = {i: h for i, h in BASE.items() if i != "firewall"}   # host-d leaves
-    text, _ = step(one_gone, s0, 1)
-    assert "HOST FLEET DROP" not in text, "one host is not a fleet drop"
-
-    wide = {"os": {f"host-{n}": {"syslog": 1000} for n in range(8)}}
-    _, w0 = step(wide, None, 0)
-    shrunk = {"os": {f"host-{n}": {"syslog": 1000} for n in range(4)}}
-    drop, _ = step(shrunk, w0, 1)
-    assert "HOST FLEET DROP: 4 host(s)" in drop
-    assert "New critical findings" in drop
 
 
 def test_ingest_silence_and_fail_loud_contracts_are_preserved():

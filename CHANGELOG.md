@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.17.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.6...v2.17.0) (2026-11-05)
+
+
+### Features
+
+* **hatchet:** add eval project and router key publishing ([#2002](https://github.com/dryvist/ansible-proxmox-ai/issues/2002)) ([05adb89](https://github.com/dryvist/ansible-proxmox-ai/commit/05adb8975ae3e5bf2a205586b98cefbfc04591f2))
+* **hatchet:** publish eval Langfuse and router keys to apps/hatchet/eval ([05adb89](https://github.com/dryvist/ansible-proxmox-ai/commit/05adb8975ae3e5bf2a205586b98cefbfc04591f2))
+
+
+### Bug Fixes
+
+* **hermes_agent:** digest skips test senders and judges volume on hourly counts ([#1991](https://github.com/dryvist/ansible-proxmox-ai/issues/1991)) ([41842e0](https://github.com/dryvist/ansible-proxmox-ai/commit/41842e039ebdc2700f78b134ad389b362cc117fb))
+
 ## [2.16.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.16.5...v2.16.6) (2026-11-05)
 
 
