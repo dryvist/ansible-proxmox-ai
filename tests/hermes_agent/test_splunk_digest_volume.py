@@ -141,6 +141,27 @@ def test_a_sourcetype_that_stops_is_down_after_two_runs():
     assert third == DIGEST.SILENT, "a down finding already presented is not repeated"
 
 
+def test_a_whole_index_going_down_is_critical_not_routine():
+    # Both hosts of the os index drop together, so the index total is down. That is
+    # critical: it posts as a critical line, never as a routine bullet, and only once.
+    steady = [6_000] * 24
+
+    def rows_at(hour, low):
+        return [hourly_row("os", "host-a", steady + [low], at(hour)),
+                hourly_row("os", "host-b", steady + [low], at(hour))]
+
+    _, s0 = step(BASE, None, 0, hourly=rows_at(0, 6_000))
+    first, s1 = step(BASE, s0, 1, hourly=rows_at(1, 2_000))
+    assert "down" not in first, "one low hour is not down"
+    second, s2 = step(BASE, s1, 2, hourly=rows_at(2, 2_000))
+    assert "\nindex=os down" in second, "a whole index going down is a critical line"
+    assert "• index=os down" not in second, "the index total must not sit in the routine tier"
+    # The sourcetype that carries the same drop is a new lower-tier finding, so the
+    # search escalates to it on the third run. The critical block must not repeat.
+    third, _ = step(BASE, s2, 3, hourly=rows_at(3, 2_000))
+    assert "New critical findings" not in third, "a critical finding already presented is not repeated"
+
+
 def test_a_rolling_total_rise_is_not_an_index_finding():
     _, s0 = step(BASE, None, 0)
     text, _ = step(scale(BASE, "os", 1.45), s0, 1)
