@@ -102,6 +102,26 @@
           {%- endfor -%}
           {{ ns.rows }}
 
+    - name: The dify key calls the local-only medium recorder role through an empty fallback chain
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'recorder-medium' in _dify.models"
+          - llm_router_primary_model in _dify.models
+          - "'recorder-medium' in llm_router_local_only_fail_fast_names"
+          - _role.model == llm_router_primary_model
+          - _role.fallbacks == []
+          - _role.litellm_params.turn_off_message_logging is sameas true
+          - _rendered_chain == []
+        fail_msg: "dify models={{ _dify.models }}, role={{ _role }}, rendered chain={{ _rendered_chain }}"
+        success_msg: "dify reaches recorder-medium on the medium capability with no fallback."
+      vars:
+        _dify: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'dify') | first }}"
+        _role: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'recorder-medium') | first }}"
+        _rendered_chain: >-
+          {{ _config.router_settings.fallbacks | map('dict2items') | flatten
+             | selectattr('key', 'equalto', 'recorder-medium') | map(attribute='value') | first }}
+
     - name: The automated langfuse and dify keys cannot reach a zero_data_retention false group
       ansible.builtin.assert:
         quiet: true
