@@ -94,25 +94,14 @@ BACKUP_OUTCOME_QUERY = (
 STATE_SCHEMA = 4
 # ponytail: calibration knobs, deliberately module constants and not Ansible
 # variables — real ingest jitters, and these want tuning against it rather than
-# templating. PCT_BANDS are the magnitude bands a change is bucketed into, and the
-# band is part of a finding's identity: "os up 25%" is one finding for the day,
-# while "os up 300%" later the same day is a genuinely different one. Raise the
-# first band if normal diurnal swing starts filling the output.
-PCT_BANDS = (25, 50, 100, 300, 1000)
-# Series below this volume are excluded from percent findings — 3 -> 9 events is
-# +200% and means nothing.
+# templating.
+# Series below this volume are never reported down: 3 -> 9 events is +200% and
+# means nothing.
 MIN_MOVER_VOL = 100
-# ...and neither does a large percentage of a small number: 109 -> 195 events in
-# 24h clears MIN_MOVER_VOL and the 50% band, and reported as "up 79%" it reads
-# like news. A move must ALSO be this many events to be a finding. Audience is
-# one person, so the bar is "would a human act on this", not "is it measurable".
-# Raise it if small indexes still fill the output; lower it only with evidence
-# that a real incident was missed under it.
-MIN_MOVER_DELTA = 500
-# Index and host volume is judged on hourly counts, never on a rolling 24h total:
-# one burst ages out of that total a day later and reads as a decline. A series is
-# DOWN when its last complete hour is under DOWN_FRACTION of the median of the 24
-# hours before it, and that holds for DOWN_RUNS consecutive runs.
+# Index, host and sourcetype volume is judged on hourly counts, never on a rolling
+# 24h total: one burst ages out of that total a day later and reads as a decline.
+# A series is DOWN when its last complete hour is under DOWN_FRACTION of the median
+# of the 24 hours before it, and that holds for DOWN_RUNS consecutive runs.
 DOWN_FRACTION = 0.5
 DOWN_RUNS = 2
 # Cap on how many host names a single set-change line will spell out.
@@ -125,8 +114,6 @@ LEDGER_MAX = 500
 # Net host-fleet shrink treated as a critical finding rather than routine
 # per-host movement.
 HOST_DROP_CRIT = 3
-# Percentage points of total-ingest share movement worth reporting.
-SHARE_SHIFT_PP = 5.0
 # Fully quiet and unchanged runs return SILENT; only newly observed findings post.
 # Upstream's `hermes cron` executor skips Slack delivery when a --script
 # cron's STDOUT is exactly this string — the same contract splunk-triage.py.j2
@@ -255,27 +242,6 @@ def fmt_delta(cur, prev_vol, have_baseline):
         return "NEW"
     diff = cur - prev_vol
     return "0" if diff == 0 else f"{diff:+,}"
-
-
-def band_of(cur, prev):
-    """(direction, band_edge, pct) for a real move, else None.
-
-    None means "not a finding": no baseline, a series too small for a percent to
-    mean anything, a swing under the smallest band, or a move too few events to
-    matter however large the percentage. Never an estimate.
-
-    Both floors live here rather than at the call sites, so the sourcetype
-    composition movers that still use it cannot bypass them.
-    """
-    if prev is None or prev < MIN_MOVER_VOL:
-        return None
-    if abs(cur - prev) < MIN_MOVER_DELTA:
-        return None
-    pct = (cur - prev) * 100.0 / prev
-    if abs(pct) < PCT_BANDS[0]:
-        return None
-    edge = max(e for e in PCT_BANDS if abs(pct) >= e)
-    return ("up" if pct > 0 else "down", edge, pct)
 
 
 def name_list(names):
@@ -419,47 +385,62 @@ def critical_findings(by_index, prev_by_index, hosts, prev_hosts, have_baseline,
     return out
 
 
-def mover_rates(hourly_rows, now_epoch, sparse_hosts):
-    """Map each index and host to (label, last complete hour, median of the 24 before).
+def hourly_counts(hours):
+    """Parse the hourly search's "epoch:count;epoch:count" string into {hour: count}."""
+    counts = {}
+    for part in str(hours or "").split(";"):
+        hour, _, count = part.partition(":")
+        if hour and count:
+            counts[int(float(hour))] = counts.get(int(float(hour)), 0) + int(float(count))
+    return counts
 
-    An hour with no row counts as zero, so a host silent for an hour is a real zero
+
+def add_counts(series, key, counts):
+    total = series.setdefault(key, {})
+    for hour, count in counts.items():
+        total[hour] = total.get(hour, 0) + count
+
+
+def mover_rates(hourly_rows, now_epoch, sparse_hosts):
+    """Map each index, host and sourcetype to (label, last complete hour, median of the 24 before).
+
+    An hour with no row counts as zero, so a series silent for an hour is a real zero
     in its median. Coverage starts at the earliest hour the search returned, so a
     search that reaches less than 24 hours back is never padded with fabricated zeros.
     """
     last_hour = int(now_epoch // 3600) * 3600 - 3600
-    series = {}
+    host_series, st_series = {}, {}
     for row in hourly_rows:
-        idx, host = row.get("index"), row.get("host")
+        idx, host, stype = row.get("index"), row.get("host"), row.get("sourcetype")
         if not isinstance(idx, str) or not isinstance(host, str) or not host:
             continue
-        if is_test_row(host, row.get("sourcetype")) or host in sparse_hosts:
+        if is_test_row(host, stype) or host in sparse_hosts:
             continue
-        counts = series.setdefault((idx, host), {})
-        for part in str(row.get("hours") or "").split(";"):
-            hour, _, count = part.partition(":")
-            if hour and count:
-                counts[int(float(hour))] = counts.get(int(float(hour)), 0) + int(float(count))
-    if not series:
+        counts = hourly_counts(row.get("hours"))
+        add_counts(host_series, (idx, host), counts)
+        if isinstance(stype, str) and stype:
+            add_counts(st_series, (idx, stype), counts)
+    if not host_series:
         return {}
-    covered_from = min(hour for counts in series.values() for hour in counts)
+    covered_from = min(hour for counts in host_series.values() for hour in counts)
     prev_hours = list(range(max(covered_from, last_hour - 24 * 3600), last_hour, 3600))
     if not prev_hours:
         return {}
 
+    def rate(label, counts):
+        return (label, counts.get(last_hour, 0),
+                statistics.median(counts.get(hour, 0) for hour in prev_hours))
+
     by_index = {}
-    for (idx, _), counts in series.items():
-        total = by_index.setdefault(idx, {})
-        for hour, count in counts.items():
-            total[hour] = total.get(hour, 0) + count
+    for (idx, _), counts in host_series.items():
+        add_counts(by_index, idx, counts)
     rates = {}
-    for (idx, host), counts in series.items():
-        rates[f"host:{idx}:{host}"] = (
-            f"host {host} in index={idx}", counts.get(last_hour, 0),
-            statistics.median(counts.get(hour, 0) for hour in prev_hours))
+    for (idx, host), counts in host_series.items():
+        rates[f"host:{idx}:{host}"] = rate(f"host {host} in index={idx}", counts)
+    for (idx, stype), counts in st_series.items():
+        rates[f"st:{idx}:{stype}"] = rate(f"sourcetype {stype} in index={idx}", counts)
     for idx, counts in by_index.items():
-        rates[f"index:{idx}"] = (
-            f"index={idx}", counts.get(last_hour, 0),
-            statistics.median(counts.get(hour, 0) for hour in prev_hours))
+        rates[f"index:{idx}"] = rate(f"index={idx}", counts)
     return rates
 
 
@@ -539,7 +520,7 @@ def host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last, now_epo
 
 
 def composition_findings(by_index, prev_by_index, have_baseline, st_detail, prev_st_detail):
-    """Tier 2 — sourcetype mix and each index's share of total ingest."""
+    """Tier 3 — sourcetypes newly present in an index. Volume and stops come from mover_rates."""
     out = []
     if not have_baseline:
         return out
@@ -551,32 +532,6 @@ def composition_findings(by_index, prev_by_index, have_baseline, st_detail, prev
                 out.append(Finding(f"st+:{idx}:{stype}",
                                    f":new: sourcetype {stype} newly present in index={idx} — "
                                    f"{fmt_vol(r['sourcetypes'][stype])} events"))
-            for stype in sorted(set(prev_st) - set(r["sourcetypes"])):
-                out.append(Finding(f"st-:{idx}:{stype}",
-                                   f":warning: sourcetype {stype} no longer present in index={idx} — had "
-                                   f"{fmt_vol(prev_st[stype])} events at the previous run"))
-            for stype, vol in sorted(r["sourcetypes"].items()):
-                move = band_of(vol, prev_st.get(stype))
-                if move:
-                    direction, edge, pct = move
-                    out.append(Finding(f"stvol:{idx}:{stype}:{direction}{edge}",
-                                       f"sourcetype {stype} in index={idx} {direction} {abs(pct):.0f}% "
-                                       f"({fmt_vol(prev_st[stype])} -> {fmt_vol(vol)})"))
-
-    total = sum(r["vol"] for r in by_index.values())
-    prev_total = sum(p.get("vol", 0) for p in prev_by_index.values())
-    if total > 0 and prev_total > 0:
-        for idx, r in sorted(by_index.items(), key=lambda kv: kv[1]["vol"], reverse=True):
-            prev = prev_by_index.get(idx)
-            if not isinstance(prev, dict):
-                continue
-            share = r["vol"] * 100.0 / total
-            prev_share = prev.get("vol", 0) * 100.0 / prev_total
-            shift = share - prev_share
-            if abs(shift) >= SHARE_SHIFT_PP:
-                out.append(Finding(f"share:{idx}:{int(share // SHARE_SHIFT_PP)}",
-                                   f"index={idx} share of total ingest {prev_share:.0f}% -> {share:.0f}% "
-                                   f"({shift:+.0f} points)"))
     return out
 
 
@@ -681,6 +636,7 @@ def build_digest(results, now, state, backup_outcomes=None, hourly=None):
     downs, streak = down_findings(rates, (state or {}).get("down_streak") or {})
     index_downs = [finding for finding in downs if finding.key.startswith("down:index:")]
     host_downs = [finding for finding in downs if finding.key.startswith("down:host:")]
+    st_downs = [finding for finding in downs if finding.key.startswith("down:st:")]
     hosts = set(host_last)
 
     prev_by_index = (prev or {}).get("by_index") or {}
@@ -705,7 +661,8 @@ def build_digest(results, now, state, backup_outcomes=None, hourly=None):
         ("host level", host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last,
                                      now_epoch, have_baseline, host_detail) + host_downs),
         ("sourcetype + composition level",
-         composition_findings(by_index, prev_by_index, have_baseline, saw_st, prev_st_detail)),
+         composition_findings(by_index, prev_by_index, have_baseline, saw_st, prev_st_detail)
+         + st_downs),
     ]
 
     # Escalate to the first tier with new findings. Only printed items enter

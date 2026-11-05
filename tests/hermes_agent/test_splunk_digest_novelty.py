@@ -272,6 +272,40 @@ def test_a_series_under_the_volume_floor_is_never_down():
     assert "down" not in first + second, "a handful of events an hour is not a volume to lose"
 
 
+def test_a_one_hour_burst_that_ages_out_of_a_sourcetype_is_not_down():
+    # The llm-router-3 burst seen by one sourcetype: 55k in one hour, then 5-6k an
+    # hour. The rolling 24h total fell by the burst when it left the window; the
+    # hourly median ignores it, so no run may report the sourcetype down.
+    timeline = [5_000 + (i * 997) % 1_000 for i in range(60)]
+    timeline[30] = 55_501
+    state = None
+    for start, hour in ((29, 0), (30, 1), (31, 2)):     # the burst leaves the window at hour 2
+        window = timeline[start:start + 25]
+        spec = {**BASE, "llm": {"llm-router-3": {"litellm:proxy": sum(window[:24])}}}
+        hourly = [hourly_row("llm", "llm-router-3", window, at(hour), sourcetype="litellm:proxy")]
+        text, state = step(spec, state, hour, hourly=hourly)
+        assert "down" not in text, f"hour {hour}: a burst that ages out is not a decline"
+
+
+def test_a_sourcetype_that_stops_is_down_after_two_runs():
+    # A sourcetype that goes silent is a real loss. It is reported on the second low
+    # run, in the sourcetype tier, and only once.
+    spec = {**BASE, "firewall": {"host-d": {"pan:traffic": 2_000, "pan:threat": 20_000}}}
+
+    def rows_at(hour, traffic):
+        return [hourly_row("firewall", "host-d", [2_000] * 24 + [traffic], at(hour), sourcetype="pan:traffic"),
+                hourly_row("firewall", "host-d", [20_000] * 25, at(hour), sourcetype="pan:threat")]
+
+    _, s0 = step(spec, None, 0, hourly=rows_at(0, 2_000))
+    first, s1 = step(spec, s0, 1, hourly=rows_at(1, 0))
+    assert "down" not in first, "one silent hour is not down"
+    second, s2 = step(spec, s1, 2, hourly=rows_at(2, 0))
+    assert "sourcetype pan:traffic in index=firewall down" in second
+    assert "sourcetype + composition level" in second
+    third, _ = step(spec, s2, 3, hourly=rows_at(3, 0))
+    assert third == DIGEST.SILENT, "a down finding already presented is not repeated"
+
+
 def test_a_rolling_total_rise_is_not_an_index_finding():
     _, s0 = step(BASE, None, 0)
     text, _ = step(scale(BASE, "os", 1.45), s0, 1)
