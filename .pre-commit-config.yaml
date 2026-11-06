@@ -28,7 +28,8 @@ repos:
         # before the commit. A whole-repo lint on every commit took 15-40 min
         # with several sessions sharing the machine.
         # `require_serial` keeps one ansible-lint process per commit; the lock
-        # in `entry` keeps one per machine.
+        # in `entry` keeps one per machine. Set PRE_COMMIT_ANSIBLE_LINT_LOCK_DIR
+        # when the home cache is not writable.
         #
         # `env -u GIT_DIR ...` is required, not cosmetic. Git exports GIT_DIR,
         # GIT_INDEX_FILE and GIT_WORK_TREE to every hook, and child processes
@@ -40,11 +41,12 @@ repos:
         # that is perfectly valid upstream.
         entry: |-
           sh -c '
-          mkdir -p "$HOME/.cache" && exec 9>"$HOME/.cache/pre-commit-ansible-lint.lock" || exit 1
+          lock_dir="${PRE_COMMIT_ANSIBLE_LINT_LOCK_DIR:-$HOME/.cache}"
+          mkdir -p "$lock_dir" && exec 9>"$lock_dir/pre-commit-ansible-lint.lock" || exit 1
           msg="another ansible-lint is running on this machine; retry later"
           if [ -x /usr/bin/lockf ]; then
             # File mode: lockf waiting on a descriptor busy-polls a CPU core on macOS.
-            /usr/bin/lockf -s -t 900 "$HOME/.cache/pre-commit-ansible-lint.lock" \
+            /usr/bin/lockf -s -t 900 "$lock_dir/pre-commit-ansible-lint.lock" \
               env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE ansible-lint "$@"
             rc=$?; [ "$rc" -eq 75 ] && echo "$msg"; exit "$rc"
           elif command -v flock >/dev/null 2>&1; then

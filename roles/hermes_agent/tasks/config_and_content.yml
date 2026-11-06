@@ -149,6 +149,19 @@
     force: false
   when: hermes_agent_seed_user_profile | bool
 
+# This profile is role-owned: operators edit the source in Git and the next
+# converge replaces the HERMES_HOME copy. Keep it separate from USER.md, which
+# Hermes owns and edits itself.
+- name: Deploy Donna's editable interest profile
+  ansible.builtin.copy:
+    src: donna-interest-profile.txt
+    dest: "{{ hermes_agent_hermes_home }}/interest-profile.txt"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    force: true
+  when: hermes_agent_id == 'donna'
+
 # The bundle's own plugins (dryvist-guardrails) are staged here for the collection's
 # plugins task, which copies them from this guest path into each Hermes home.
 - name: Stage the nix-hermes bundle plugins on the guest
@@ -231,6 +244,80 @@
       when:
         - not ansible_check_mode
         - hermes_agent_bank_read.status == 404
+      changed_when: true
+      no_log: true
+
+# The stable document ID makes the Git-managed profile a single Hindsight
+# source. Read first so ordinary converges do not re-extract unchanged content.
+- name: Seed Donna's Hindsight interest profile
+  when:
+    - hermes_agent_id == 'donna'
+    - hermes_agent_memory_provider == 'hindsight'
+    - hermes_agent_hindsight_config_bank_id | default('') | length > 0
+    - hermes_agent_hindsight_config_api_url | default('') | length > 0
+    - hermes_agent_hindsight_config_api_key | default('') | length > 0
+  vars:
+    hermes_agent_donna_interest_profile_content: >-
+      {{ lookup('ansible.builtin.file', role_path ~ '/files/donna-interest-profile.txt',
+                rstrip=false) }}
+    hermes_agent_donna_interest_document_url: >-
+      {{ hermes_agent_hindsight_config_api_url }}{{ '/v1/default/banks/'
+      ~ hermes_agent_hindsight_config_bank_id
+      ~ '/documents/donna-interest-profile' }}
+    hermes_agent_donna_interest_memory_url: >-
+      {{ hermes_agent_hindsight_config_api_url }}/v1/default/banks/{{ hermes_agent_hindsight_config_bank_id }}/memories
+  block:
+    - name: Read Donna's Hindsight interest profile document
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_donna_interest_document_url }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ hermes_agent_hindsight_config_api_key }}"
+        status_code: [200, 404]
+        timeout: 30
+      register: hermes_agent_donna_interest_document_read
+      until: hermes_agent_donna_interest_document_read is succeeded
+      retries: 2
+      delay: 5
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: Report the Donna Hindsight profile check-mode update
+      ansible.builtin.debug:
+        msg: Donna's Hindsight interest profile would be retained.
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - >-
+          hermes_agent_donna_interest_document_read.status == 404
+          or hermes_agent_donna_interest_document_read.json.original_text
+             != hermes_agent_donna_interest_profile_content
+
+    - name: Retain Donna's pinned interest profile in Hindsight
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_donna_interest_memory_url }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ hermes_agent_hindsight_config_api_key }}"
+        body_format: json
+        body:
+          items:
+            - content: "{{ hermes_agent_donna_interest_profile_content }}"
+              document_id: donna-interest-profile
+              timestamp: unset
+              tags:
+                - profile:donna
+                - interest-profile
+                - pinned
+        status_code: 200
+        timeout: 120
+      when:
+        - not ansible_check_mode
+        - >-
+          hermes_agent_donna_interest_document_read.status == 404
+          or hermes_agent_donna_interest_document_read.json.original_text
+             != hermes_agent_donna_interest_profile_content
       changed_when: true
       no_log: true
 
