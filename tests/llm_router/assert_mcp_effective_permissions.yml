@@ -1,0 +1,103 @@
+---
+- name: Render the real server catalog and profile grants
+  ansible.builtin.set_fact:
+    _catalog: >-
+      {{ (lookup('ansible.builtin.template', _role_dir ~ '/templates/mcp-servers.yaml.j2')
+          | from_yaml).mcp_servers }}
+    _profiles: "{{ _llm_router_hermes_profile_keys }}"
+  no_log: true
+
+- name: Require exact registration parity and unchanged service permissions
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _catalog.keys() | sort == llm_router_mcp_registered_server_ids | sort
+      - >-
+        _profiles | map(attribute='alias') | sort
+        == (_llm_router_hermes_profile_names | map('regex_replace', '^', 'hermes-') | sort)
+      - >-
+        (_profiles | selectattr('alias', 'equalto', 'hermes-eval') | first).object_permission
+        == llm_router_mcp_default_object_permission
+      - >-
+        _profiles | rejectattr('alias', 'equalto', 'hermes-eval')
+        | map(attribute='object_permission.mcp_servers') | list
+        == [llm_router_mcp_hermes_object_permission.mcp_servers] * 2
+      - >-
+        _profiles | map(attribute='object_permission.mcp_servers') | flatten
+        | difference(_catalog.keys() | list + llm_router_mcp_default_object_permission.mcp_servers)
+        | length == 0
+      - >-
+        _profiles | map(attribute='object_permission.mcp_servers') | flatten
+        | intersect(_llm_router_app_agent_matrix | map(attribute='server_id') | list) | length == 0
+      - _catalog.values() | selectattr('allow_all_keys') | list | length == 0
+    fail_msg: Profile grants must contain only registered intended servers or the explicit deny sentinel.
+
+- name: Select the production denial probe with another entity tool first
+  ansible.builtin.include_tasks: ../../playbooks/verify/tasks/mcp-select-probe.yml
+  vars:
+    _mcp_key: {profile: default}
+    _mcp_catalog:
+      vikunja_read:
+        allowed_tools: [vikunja_projects, vikunja_tasks]
+
+- name: Require the named read operation regardless of catalog order
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _mcp_forbidden == 'vikunja_read'
+      - _mcp_probe.name == 'vikunja_tasks'
+      - _mcp_probe.arguments == {'subcommand':'list'}
+
+- name: Select the production eval denial probe
+  ansible.builtin.include_tasks: ../../playbooks/verify/tasks/mcp-select-probe.yml
+  vars:
+    _mcp_key: {profile: eval}
+    _mcp_catalog:
+      zammad:
+        allowed_tools: [zammad_update_ticket, zammad_search_tickets]
+
+- name: Require the named service read operation for eval
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _mcp_forbidden == llm_router_mcp_zammad_server_id
+      - _mcp_probe.name == 'zammad_search_tickets'
+      - _mcp_probe.arguments == {'query':''}
+
+- name: Select the production app denial probe with a write operation first
+  ansible.builtin.include_tasks: ../../playbooks/verify/tasks/mcp-select-probe.yml
+  vars:
+    _mcp_key: {profile: orchestrator}
+    _llm_router_app_agent_matrix:
+      - {app: zammad, server_id: zammad_write, enabled: true}
+    _mcp_catalog:
+      zammad_write:
+        allowed_tools: [zammad_create_ticket, zammad_search_tickets]
+
+- name: Require the named app read operation for orchestrator
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _mcp_forbidden == 'zammad_write'
+      - _mcp_probe.name == 'zammad_search_tickets'
+      - _mcp_probe.arguments == {'query':''}
+
+- name: Reject a catalog without the explicit read operation
+  vars:
+    _mcp_key: {profile: eval}
+    _mcp_catalog:
+      zammad:
+        allowed_tools: [zammad_update_ticket]
+  block:
+    - name: Select a probe without a registered read operation
+      ansible.builtin.include_tasks: ../../playbooks/verify/tasks/mcp-select-probe.yml
+
+    - name: Reject an accepted catalog without a read operation
+      ansible.builtin.fail:
+        msg: A catalog without the read operation was accepted.
+  rescue:
+    - name: Require the catalog validation failure
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - ansible_failed_task.name == 'Require the explicit read operation in the registered catalog'
