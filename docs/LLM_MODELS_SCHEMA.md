@@ -100,10 +100,11 @@ Optional:
                       servable does NOT mean pre-loaded or residency-pinned:
                       the small tier is servable and still evictable
                       (ttl=900), with a measured ~79s cold load.
-  serving_role        `primary` | `routine` | `small` | `cluster` | `ocr`. Names the
-                      role this entry serves in. Repointing the serving host
-                      is a move of this one field: `primary` is what the
-                      consumer aliases and the fabric's selector vars follow.
+  serving_role        `primary` | `large` | `routine` | `small` | `cluster` | `ocr`.
+                      Names the role this entry serves in. Repointing the
+                      serving host is a move of this one field: `primary` is
+                      what the consumer aliases and the fabric's selector vars follow.
+                      `large` names the optional local large-tier selector.
                       `routine` names the second warm model on a host that
                       holds more than one — no selector reads it today, and it
                       exists so the invariant below stays exact. `ocr` is the
