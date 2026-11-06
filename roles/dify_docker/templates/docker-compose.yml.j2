@@ -17,7 +17,15 @@ x-logging: &dify_docker_logging
   options:
     tag: dify
 
+x-otel-env: &dify-otel-env
+  ENABLE_OTEL: "true"
+  OTEL_EXPORTER_TYPE: "otlp"
+  OTLP_BASE_ENDPOINT: "{{ dify_docker_otel_endpoint }}"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "{{ dify_docker_otel_protocol }}"
+  OTEL_SAMPLING_RATE: "{{ dify_docker_otel_sampling_rate }}"
+
 x-shared-env: &dify-api-worker-env
+  <<: *dify-otel-env
   LOG_LEVEL: "INFO"
   DEPLOY_ENV: "PRODUCTION"
   SECRET_KEY: "{{ dify_docker_secret_key }}"
@@ -83,10 +91,6 @@ x-shared-env: &dify-api-worker-env
   # the console model-provider API after first-run setup.
   OPENAI_API_BASE: "{{ dify_docker_model_endpoint_url }}"
   OPENAI_API_KEY: "{{ dify_docker_model_api_key }}"
-  # OpenTelemetry export to the homelab collector (group_var, reference only).
-  ENABLE_OTEL: "true"
-  OTLP_BASE_ENDPOINT: "{{ dify_docker_otel_endpoint }}"
-  OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
   # CORS — internal-only deployment behind the homelab reverse proxy.
   WEB_API_CORS_ALLOW_ORIGINS: "*"
   CONSOLE_CORS_ALLOW_ORIGINS: "*"
@@ -239,6 +243,7 @@ services:
     restart: {{ dify_docker_restart_policy }}
     logging: *dify_docker_logging
     environment:
+      <<: *dify-otel-env
       DB_HOST: "db"
       DB_PORT: "{{ dify_docker_postgres_port }}"
       DB_USERNAME: "{{ dify_docker_db_user }}"
@@ -275,6 +280,13 @@ services:
     restart: {{ dify_docker_restart_policy }}
     logging: *dify_docker_logging
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "{{ dify_docker_otel_endpoint }}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "{{ dify_docker_otel_protocol }}"
+      # The native trajectory exporter always samples and stamps dify.app_id.
+      DIFY_AGENT_TRAJECTORY_ENABLED: "true"
+      DIFY_AGENT_TRAJECTORY_OTLP_TRACES_ENDPOINT: "{{ dify_docker_otel_trace_endpoint }}"
+      DIFY_AGENT_TRAJECTORY_INCLUDE_CONTENT: "false"
+      LOGFIRE_CONSOLE: "false"
       DIFY_AGENT_REDIS_URL: "redis://:{{ dify_docker_redis_password }}@redis:{{ dify_docker_redis_port }}/2"
       DIFY_AGENT_PLUGIN_DAEMON_URL: "http://plugin_daemon:{{ dify_docker_plugin_daemon_port }}"
       DIFY_AGENT_PLUGIN_DAEMON_API_KEY: "{{ dify_docker_plugin_daemon_key }}"
