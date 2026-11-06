@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.20.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.4...v2.20.5) (2026-11-06)
+
+
+### Bug Fixes
+
+* account for grouped router matrix entries ([#2035](https://github.com/dryvist/ansible-proxmox-ai/issues/2035)) ([8c20d03](https://github.com/dryvist/ansible-proxmox-ai/commit/8c20d03b713c33095031478f8d30cd2b063bc120))
+* **llm_router:** keep Donna private work on local-only routes ([#2045](https://github.com/dryvist/ansible-proxmox-ai/issues/2045)) ([8ab9dd7](https://github.com/dryvist/ansible-proxmox-ai/commit/8ab9dd77842d3e38283e09862d29debde0ead47f))
+
 ## [2.20.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.3...v2.20.4) (2026-11-06)
 
 
