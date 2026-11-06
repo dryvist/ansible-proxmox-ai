@@ -19,6 +19,30 @@ def test_hermes_a2a_target_uses_the_published_container_and_port_contract() -> N
     assert "hermes_a2a_token" in ROLE_DEFAULTS["agentgateway_docker_hermes_a2a_token"]
 
 
+def test_default_peer_roster_preserves_registered_a2a_callers() -> None:
+    agents = {
+        "trusted-agent": {"trust_tier": "trusted"},
+        "untrusted-agent": {"trust_tier": "untrusted"},
+        "no-tier-agent": {},
+    }
+    registry = {"claude-code": {"trust_tier": "trusted"}, "unseeded": {"trust_tier": "trusted"}}
+    keys = {f"{name.replace('-', '_')}_agentgateway_key": f"fixture-{name}" for name in [*agents, "claude-code"]}
+    routes = _routes(_render(agents=agents, keys=keys, registry=registry, extra={
+        "agentgateway_docker_a2a_targets": [
+            {"name": name, "path_prefix": f"/a2a/{name}/", "host": f"{name}.example.test:8000"}
+            for name in ("hermes", "langgraph")
+        ],
+    }))
+    a2a_routes = [route for route in routes if "a2a" in route.get("policies", {})]
+    for route, allowed in zip(a2a_routes, ({"trusted-agent", "claude-code"}, {*agents, "claude-code"})):
+        policies = route["policies"]
+        assert policies["apiKey"]["mode"] == "strict"
+        rules = policies["authorization"]["rules"]
+        for caller in [*agents, *registry, "unknown"]:
+            assert authorize(rules, {"apiKey": {"agent": caller}})[0] is (caller in allowed)
+        assert not authorize(rules, {})[0]
+
+
 def test_a2a_routes_authenticate_callers_and_use_peer_allowlists() -> None:
     agents = {
         "hermes-brain": {"trust_tier": "trusted"},

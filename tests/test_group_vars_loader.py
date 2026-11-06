@@ -8,6 +8,7 @@ def test_load_group_vars_all_merges_each_top_level_file() -> None:
 
     assert "ai_agent_default_concurrency" in group_vars
     assert "ai_callers" in group_vars
+    assert "agentgateway_docker_a2a_allowed_tier" in group_vars
 
 
 def test_later_file_wins(tmp_path: Path) -> None:

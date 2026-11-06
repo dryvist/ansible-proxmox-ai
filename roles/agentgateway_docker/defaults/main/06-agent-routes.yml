@@ -2,10 +2,15 @@
 # Schema: https://raw.githubusercontent.com/agentgateway/agentgateway/v1.6.0/schema/config.json
 # Route policies use apiKey, authorization, and requestHeaderModifier;
 # Dify backends use mcp.targets[].mcp.host. Verified 2026-11-06.
-# Roster projection supplied by the agent definitions' deployment pipeline.
 # Each entry: {agent: <name>, allowed_callers: [<caller names>]}.
-# Missing entries and empty allowlists deny every caller.
-agentgateway_docker_agent_roster: []
+# Defaults derive Hermes callers by tier and LangGraph callers by registration.
+# A supplied roster replaces these defaults; missing entries deny every caller.
+agentgateway_docker_agent_roster: >-
+  {%- set tier_callers = (ai_callers | default({})) | dict2items
+      | selectattr('value.trust_tier', 'equalto', agentgateway_docker_a2a_allowed_tier)
+      | map(attribute='key') | select('in', agentgateway_docker_roster_keys) | list -%}
+  {{ [{'agent': 'hermes', 'allowed_callers': tier_callers},
+      {'agent': 'langgraph', 'allowed_callers': agentgateway_docker_roster_keys | list}] }}
 
 # Dify-published MCP servers, one per live agent: {name: <agent>, url: <server URL>}.
 # URLs are deployment inputs; the role holds no app definitions or prompts.

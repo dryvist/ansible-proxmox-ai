@@ -134,7 +134,8 @@ def _render(
         "ai_agents": roster,
         "ai_agent_owner": owners or {},
         "agentgateway_docker_roster_keys": roster_keys,
-        "agentgateway_docker_agent_roster": [],
+        "ai_callers": callers,
+        "agentgateway_docker_a2a_allowed_tier": INVENTORY_VARS["agentgateway_docker_a2a_allowed_tier"],
         "agentgateway_docker_dify_mcp_targets": [],
         "agentgateway_docker_hindsight_roster_tiers": roster_tiers,
         **FACADE_DEFAULTS,
@@ -144,6 +145,10 @@ def _render(
         "agentgateway_docker_facade_callers": [],
         **(extra or {}),
     }
+    if "agentgateway_docker_agent_roster" not in context:
+        context["agentgateway_docker_agent_roster"] = yaml.safe_load(
+            ENV.from_string(ROLE_DEFAULTS["agentgateway_docker_agent_roster"]).render(**context)
+        )
     return ENV.from_string(TEMPLATE_SOURCE if template_source is None else template_source).render(**context)
 
 
@@ -206,6 +211,10 @@ def test_owned_route_requires_a_key_and_allows_only_its_owner(baseline: str) -> 
         if "a2a" in route.get("policies", {}):
             assert route["policies"]["apiKey"]["keys"] == splunk["policies"]["apiKey"]["keys"]
             route["policies"]["apiKey"]["keys"] = baseline_route["policies"]["apiKey"]["keys"]
+            assert route["policies"]["authorization"]["rules"] == [
+                {"allow": 'apiKey.agent in ["splunk-heimdall", "other-agent"]'}
+            ]
+            route["policies"]["authorization"] = baseline_route["policies"]["authorization"]
 
     assert {key: value for key, value in splunk.items() if key != "policies"} == baseline_splunk
     policy = splunk["policies"]
