@@ -88,6 +88,12 @@ def test_native_reconciliation(tmp_path, scenario):
                 self.respond(500, {"message": "fixture-write-error"})
                 return
             key = self.path.rsplit("/", 1)[-1] if self.command == "POST" else self.path.split("/")[-2]
+            if key == "evaluators" and any(
+                "jsonPath" in mapping and not isinstance(mapping["jsonPath"], str)
+                for mapping in body["variableMapping"]
+            ):
+                self.respond(400, {"message": "jsonPath must be omitted or a string"})
+                return
             if key == "datasets":
                 resources[key][body["name"]] = body
                 self.respond(200, body)
@@ -173,7 +179,7 @@ def test_native_reconciliation(tmp_path, scenario):
         assert judge["modelConfig"] == {"provider": "litellm-router", "model": "small"}
         assert judge["outputDefinition"] == {"dataType": "NUMERIC", "minValue": 0, "maxValue": 1}
         assert judge["variableMapping"] == [
-            {"variable": name, "source": name, "jsonPath": None} for name in ("input", "output")]
+            {"variable": name, "source": name} for name in ("input", "output")]
         rule = resources["evaluation-rules"][0]
         assert rule["sampling"] == 0.1
         assert rule["enabled"] is True
