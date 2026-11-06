@@ -51,6 +51,8 @@
         quiet: true
         that:
           - _rendered.services[item].environment.WORKFLOW_MAX_EXECUTION_TIME == '43200'
+          - _rendered.services[item].environment.WORKFLOW_MAX_EXECUTION_STEPS == '5000'
+          - _rendered.services[item].environment.CELERY_BROKER_VISIBILITY_TIMEOUT == '46800'
           - _rendered.services[item].environment.GUNICORN_TIMEOUT == '43200'
           - _rendered.services[item].environment.PLUGIN_DAEMON_TIMEOUT == '43200'
           - _rendered.services[item].environment.CELERY_WORKER_AMOUNT == '2'
@@ -173,6 +175,7 @@
     - name: Supply runtime input overrides
       ansible.builtin.set_fact:
         dify_docker_workflow_max_execution_time: 50000
+        dify_docker_workflow_max_execution_steps: 7500
         dify_docker_plugin_max_execution_timeout: 45000
         dify_docker_celery_worker_amount: 3
         dify_docker_workflow_schedule_poller_enabled: false
@@ -190,6 +193,8 @@
         quiet: true
         that:
           - _overridden.services[item].environment.WORKFLOW_MAX_EXECUTION_TIME == '50000'
+          - _overridden.services[item].environment.WORKFLOW_MAX_EXECUTION_STEPS == '7500'
+          - _overridden.services[item].environment.CELERY_BROKER_VISIBILITY_TIMEOUT == '53600'
           - _overridden.services[item].environment.GUNICORN_TIMEOUT == '50000'
           - _overridden.services[item].environment.PLUGIN_DAEMON_TIMEOUT == '45000'
           - _overridden.services['plugin_daemon'].environment.PLUGIN_MAX_EXECUTION_TIMEOUT == '45000'
@@ -202,4 +207,19 @@
           - _overridden.services[item].environment.TRIGGER_URL == dify_docker_trigger_url
           - _overridden.services[item].environment.OTLP_BASE_ENDPOINT == dify_docker_otel_endpoint
           - "'--appendonly no' in _overridden.services['redis'].command"
+      loop: [api, worker, worker_beat]
+
+    - name: Supply an explicit broker visibility timeout
+      ansible.builtin.set_fact:
+        dify_docker_celery_broker_visibility_timeout: 60000
+
+    - name: Render the explicit broker visibility timeout
+      ansible.builtin.set_fact:
+        _broker_overridden: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+
+    - name: Honor the explicit broker visibility timeout on every Celery participant
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _broker_overridden.services[item].environment.CELERY_BROKER_VISIBILITY_TIMEOUT == '60000'
       loop: [api, worker, worker_beat]
