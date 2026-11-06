@@ -51,6 +51,8 @@
         quiet: true
         that:
           - _rendered.services[item].environment.WORKFLOW_MAX_EXECUTION_TIME == '43200'
+          - _rendered.services[item].environment.GUNICORN_TIMEOUT == '43200'
+          - _rendered.services[item].environment.PLUGIN_DAEMON_TIMEOUT == '43200'
           - _rendered.services[item].environment.CELERY_WORKER_AMOUNT == '2'
           - _rendered.services[item].environment.CELERY_AUTO_SCALE == 'false'
           - _rendered.services[item].environment.ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK == 'true'
@@ -59,6 +61,20 @@
           - _rendered.services[item].environment.ENABLE_OTEL == 'true'
           - _rendered.services[item].environment.OTLP_BASE_ENDPOINT == ai_orchestration_otel_endpoint
       loop: [api, worker, worker_beat]
+
+    - name: Apply the batch plugin budget to daemon execution and callbacks
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services['plugin_daemon'].environment.PLUGIN_MAX_EXECUTION_TIMEOUT == '43200'
+          - _rendered.services['plugin_daemon'].environment.DIFY_INVOCATION_CONNECTION_IDLE_TIMEOUT == '43200'
+          - _rendered.services['plugin_daemon'].environment.DIFY_BACKWARDS_INVOCATION_READ_TIMEOUT == '43200000'
+          - >-
+            'proxy_read_timeout 43200s;' in lookup('ansible.builtin.template', playbook_dir ~
+            '/../../roles/dify_docker/templates/nginx-default.conf.j2')
+          - >-
+            'proxy_send_timeout 43200s;' in lookup('ansible.builtin.template', playbook_dir ~
+            '/../../roles/dify_docker/templates/nginx-default.conf.j2')
 
     - name: Persist Redis queued messages on its data mount
       ansible.builtin.assert:
@@ -157,6 +173,7 @@
     - name: Supply runtime input overrides
       ansible.builtin.set_fact:
         dify_docker_workflow_max_execution_time: 50000
+        dify_docker_plugin_max_execution_timeout: 45000
         dify_docker_celery_worker_amount: 3
         dify_docker_workflow_schedule_poller_enabled: false
         dify_docker_trigger_provider_refresh_enabled: false
@@ -173,6 +190,11 @@
         quiet: true
         that:
           - _overridden.services[item].environment.WORKFLOW_MAX_EXECUTION_TIME == '50000'
+          - _overridden.services[item].environment.GUNICORN_TIMEOUT == '50000'
+          - _overridden.services[item].environment.PLUGIN_DAEMON_TIMEOUT == '45000'
+          - _overridden.services['plugin_daemon'].environment.PLUGIN_MAX_EXECUTION_TIMEOUT == '45000'
+          - _overridden.services['plugin_daemon'].environment.DIFY_INVOCATION_CONNECTION_IDLE_TIMEOUT == '45000'
+          - _overridden.services['plugin_daemon'].environment.DIFY_BACKWARDS_INVOCATION_READ_TIMEOUT == '45000000'
           - _overridden.services[item].environment.CELERY_WORKER_AMOUNT == '3'
           - _overridden.services[item].environment.GRAPH_ENGINE_MAX_WORKERS == '2'
           - _overridden.services[item].environment.ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK == 'false'

@@ -7,6 +7,7 @@ Deploys the Dify LLMOps platform as a Docker Compose stack in an LXC.
 | Input | Default | Runtime setting |
 | --- | --- | --- |
 | `dify_docker_workflow_max_execution_time` | `43200` seconds (12 hours) | `WORKFLOW_MAX_EXECUTION_TIME` |
+| `dify_docker_plugin_max_execution_timeout` | `dify_docker_workflow_max_execution_time` | `PLUGIN_MAX_EXECUTION_TIMEOUT` and `PLUGIN_DAEMON_TIMEOUT` |
 | `dify_docker_redis_appendonly` | `true` | Redis `--appendonly yes`, persisted on the Redis data mount |
 | `dify_docker_celery_worker_amount` | `ai_agent_default_concurrency` | `CELERY_WORKER_AMOUNT`, with `CELERY_AUTO_SCALE=false` |
 | `dify_docker_workflow_schedule_poller_enabled` | `true` | `ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK` |
@@ -19,6 +20,10 @@ Additional worker replicas multiply the active task capacity. `GRAPH_ENGINE_MAX_
 remains the per-workflow engine limit, derived from `ai_agent_default_concurrency`.
 The API, worker, and scheduler share the runtime environment, including enabled
 OpenTelemetry export over HTTP/protobuf.
+Gunicorn and Nginx read/send timeouts follow `dify_docker_workflow_max_execution_time`.
+The plugin input applies in seconds; the daemon callback read budget converts it
+to milliseconds for `DIFY_BACKWARDS_INVOCATION_READ_TIMEOUT`. The callback connection
+idle budget uses seconds through `DIFY_INVOCATION_CONNECTION_IDLE_TIMEOUT`.
 
 Dify 1.18 registers webhook routes without a separate enable flag. `TRIGGER_URL`
 sets their advertised base URL; the schedule poller runs through `worker_beat`.
@@ -37,6 +42,9 @@ Runtime names verified against Dify 1.18.0 on 2026-11-06:
 [workflow and schedule settings](https://github.com/langgenius/dify/blob/1.18.0/api/configs/feature/__init__.py),
 [trigger URL](https://github.com/langgenius/dify/blob/1.18.0/docker/.env.example), and
 [worker concurrency and queues](https://github.com/langgenius/dify/blob/1.18.0/api/docker/entrypoint.sh).
+Plugin transport settings follow the
+[Dify API client](https://github.com/langgenius/dify/blob/1.18.0/api/core/plugin/impl/base.py)
+and [daemon configuration](https://github.com/langgenius/dify-plugin-daemon/blob/0.6.12/internal/types/app/config.go).
 
 ## Installation
 
