@@ -11,6 +11,7 @@ import jinja2
 import pytest
 import yaml
 from ansible.plugins.filter.core import FilterModule
+from ansible.plugins.test.core import TestModule as AnsibleTestModule
 
 from _group_vars import load_group_vars_all
 
@@ -22,7 +23,7 @@ TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/config.yaml.j2"
 # The shared-route auth policies are normalized below so this remains a check of
 # the rest of the config render. Facade defaults and route identity are covered
 # in test_facade_route.py.
-BASELINE_SHA256 = "ca78c630817e07bc5c427cac4ce2feab36de4f7cb110e4068a655616b3c41e3d"
+BASELINE_SHA256 = "6a4a64b5cd1d5ae9c7df514a42fecc2d32b0faca454de51502dc217a15608952"
 MCP_ROUTE_PATHS = ("/memory", "/docs", "/vikunja", "/nautobot")
 
 AGENTS = {
@@ -36,12 +37,14 @@ KEYS = {
 
 ENV = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
 ENV.filters.update(FilterModule().filters())
+ENV.tests.update(AnsibleTestModule().tests())
 INVENTORY_VARS = load_group_vars_all()
 FACADE_DEFAULTS = yaml.safe_load((DEFAULTS.parent / "40-facade.yml").read_text())
 ROLE_DEFAULTS = {
     **yaml.safe_load(DEFAULTS.read_text()),
     **yaml.safe_load(MCP_ROUTE_AUTH_DEFAULTS.read_text()),
     **yaml.safe_load((DEFAULTS.parent / "05-a2a-targets.yml").read_text()),
+    **yaml.safe_load((DEFAULTS.parent / "06-agent-routes.yml").read_text()),
     **FACADE_DEFAULTS,
 }
 HINDSIGHT_DEFAULTS = yaml.safe_load(
@@ -131,6 +134,8 @@ def _render(
         "ai_agents": roster,
         "ai_agent_owner": owners or {},
         "agentgateway_docker_roster_keys": roster_keys,
+        "agentgateway_docker_agent_roster": [],
+        "agentgateway_docker_dify_mcp_targets": [],
         "agentgateway_docker_hindsight_roster_tiers": roster_tiers,
         **FACADE_DEFAULTS,
         # Keep generic authorization fixtures independent of the role's live
@@ -195,6 +200,12 @@ def test_owned_route_requires_a_key_and_allows_only_its_owner(baseline: str) -> 
     baseline_splunk = _route_for_path(baseline_routes, "/splunk")
     for path in MCP_ROUTE_PATHS:
         _route_for_path(routes, path).pop("policies")
+
+    # A2A now authenticates these same callers; compare its keys separately.
+    for route, baseline_route in zip(routes, baseline_routes):
+        if "a2a" in route.get("policies", {}):
+            assert route["policies"]["apiKey"]["keys"] == splunk["policies"]["apiKey"]["keys"]
+            route["policies"]["apiKey"]["keys"] = baseline_route["policies"]["apiKey"]["keys"]
 
     assert {key: value for key, value in splunk.items() if key != "policies"} == baseline_splunk
     policy = splunk["policies"]

@@ -19,7 +19,7 @@ def test_hermes_a2a_target_uses_the_published_container_and_port_contract() -> N
     assert "hermes_a2a_token" in ROLE_DEFAULTS["agentgateway_docker_hermes_a2a_token"]
 
 
-def test_hermes_a2a_route_authenticates_callers_and_allows_only_trusted_tier() -> None:
+def test_a2a_routes_authenticate_callers_and_use_peer_allowlists() -> None:
     agents = {
         "hermes-brain": {"trust_tier": "trusted"},
         "paperclip": {"trust_tier": "untrusted"},
@@ -39,7 +39,8 @@ def test_hermes_a2a_route_authenticates_callers_and_allows_only_trusted_tier() -
         },
         {
             "name": "langgraph",
-            "path_prefix": "/a2a/",
+            "path_prefix": "/a2a/langgraph/",
+            "backend_path_prefix": "/a2a/",
             "host": "langgraph.example.test:5000",
         },
     ]
@@ -49,7 +50,10 @@ def test_hermes_a2a_route_authenticates_callers_and_allows_only_trusted_tier() -
             keys=keys,
             extra={
                 "agentgateway_docker_a2a_targets": a2a_targets,
-                "agentgateway_docker_a2a_allowed_tier": "trusted",
+                "agentgateway_docker_agent_roster": [
+                    {"agent": "hermes", "allowed_callers": ["hermes-brain"]},
+                    {"agent": "langgraph", "allowed_callers": ["paperclip"]},
+                ],
             },
         )
     )
@@ -63,7 +67,7 @@ def test_hermes_a2a_route_authenticates_callers_and_allows_only_trusted_tier() -
     assert routes.index(hermes) < routes.index(langgraph)
     assert hermes["matches"][0]["path"] == {"pathPrefix": "/a2a/hermes/"}
     assert hermes["policies"]["urlRewrite"] == {"path": {"prefix": "/"}}
-    assert "urlRewrite" not in langgraph["policies"]
+    assert langgraph["policies"]["urlRewrite"] == {"path": {"prefix": "/a2a/"}}
     assert hermes["policies"]["apiKey"]["mode"] == "strict"
     assert hermes["policies"]["apiKey"]["location"] == {
         "header": {"name": "X-Agent-Key"}
@@ -78,7 +82,7 @@ def test_hermes_a2a_route_authenticates_callers_and_allows_only_trusted_tier() -
         "no-tier-agent": {"agent": "no-tier-agent"},
     }
     rules = hermes["policies"]["authorization"]["rules"]
-    assert rules == [{"allow": 'apiKey.tier == "trusted"'}]
+    assert rules == [{"allow": 'apiKey.agent in ["hermes-brain"]'}]
 
     def allowed(agent: str | None) -> bool:
         request: dict[str, Any] = {
@@ -106,5 +110,9 @@ def test_hermes_a2a_route_authenticates_callers_and_allows_only_trusted_tier() -
             }
         },
     }
-    assert langgraph["matches"][0]["path"] == {"pathPrefix": "/a2a/"}
-    assert langgraph["policies"] == {"a2a": {}}
+    assert langgraph["matches"][0]["path"] == {"pathPrefix": "/a2a/langgraph/"}
+    assert langgraph["policies"]["apiKey"]["mode"] == "strict"
+    langgraph_rules = langgraph["policies"]["authorization"]["rules"]
+    assert authorize(langgraph_rules, {"apiKey": metadata["paperclip"]})[0]
+    assert not authorize(langgraph_rules, {"apiKey": metadata["hermes-brain"]})[0]
+    assert not authorize(langgraph_rules, {})[0]

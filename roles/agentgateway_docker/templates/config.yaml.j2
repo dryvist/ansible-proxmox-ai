@@ -18,7 +18,7 @@
 # URL the client is given). The transitional /<name>/mcp aliases were
 # removed once Hermes and the workstation client configs migrated (#22).
 {%- set agentgateway_docker_api_key_block %}
-          keys:
+          keys:{{ ' []' if not agentgateway_docker_roster_keys else '' }}
 {% for agent_name, agent_key in agentgateway_docker_roster_keys | dictsort %}
             - key: {{ agent_key | to_json }}
               metadata:
@@ -28,6 +28,20 @@
 {% endif %}
 {% endfor %}
 {%- endset %}
+{% macro agent_policies(agent) %}
+{% set peers = agentgateway_docker_agent_roster | selectattr('agent', 'equalto', agent) | list %}
+        apiKey:
+          mode: strict
+          location:
+            header:
+              name: X-Agent-Key
+{{ agentgateway_docker_api_key_block }}
+        authorization:
+          rules:
+            - allow: {{ ('apiKey.agent in ' ~ ((peers[0].allowed_callers if peers else []) | to_json)) | to_json }}
+        requestHeaderModifier:
+          remove: {{ agentgateway_docker_caller_credential_headers | to_json }}
+{% endmacro %}
 
 config:
   # Bind the admin UI (Traefik-fronted) and the stats server (Prometheus
@@ -244,21 +258,10 @@ binds:
       - path:
           pathPrefix: {{ target.path_prefix }}
       policies:
-{% if target.name == 'hermes' %}
-        apiKey:
-          mode: strict
-          location:
-            header:
-              name: X-Agent-Key
-{{ agentgateway_docker_api_key_block }}
-        authorization:
-          rules:
-            - allow: {{ ('apiKey.tier == ' ~ (agentgateway_docker_a2a_allowed_tier | to_json)) | to_json }}
-{# Hermes serves its card and JSON-RPC at the root, so strip the route prefix. #}
+{{ agent_policies(target.name) }}
         urlRewrite:
           path:
-            prefix: /
-{% endif %}
+            prefix: {{ target.get('backend_path_prefix', '/') | to_json }}
         a2a: {}
       backends:
       - host: {{ target.host }}
@@ -272,6 +275,19 @@ binds:
                   name: authorization
                   prefix: "Bearer "
 {% endif %}
+{% endfor %}
+{% for target in agentgateway_docker_dify_mcp_targets %}
+    - matches:
+      - path:
+          exact: /agents/{{ target.name }}
+      policies:
+{{ agent_policies(target.name) }}
+      backends:
+      - mcp:
+          targets:
+          - name: {{ target.name }}
+            mcp:
+              host: {{ target.url | to_json }}
 {% endfor %}
 {% if agentgateway_docker_hindsight_enabled is defined
       and agentgateway_docker_hindsight_enabled | bool
