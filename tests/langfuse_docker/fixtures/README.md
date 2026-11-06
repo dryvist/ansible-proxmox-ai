@@ -12,3 +12,7 @@ The native reconciliation fixture follows Langfuse 4.70.0's runtime
 [cursor schema](https://github.com/langfuse/langfuse/blob/v4.70.0/web/src/features/public-api/types/evaluation/evaluators.ts):
 the initial request omits the cursor, and subsequent requests return its opaque
 base64url value unchanged. Terminal responses omit the next cursor.
+
+Judge mappings follow the runtime
+[mapping schema](https://github.com/langfuse/langfuse/blob/v4.70.0/web/src/features/public-api/types/evaluation/publicEvalsContract.ts):
+`jsonPath` is an optional, non-null string. Whole-source mappings omit it.
