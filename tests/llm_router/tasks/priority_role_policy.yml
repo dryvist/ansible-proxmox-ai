@@ -1,4 +1,18 @@
 ---
+- name: Supply authorized role callers through the real key projection
+  ansible.builtin.set_fact:
+    _llm_router_declared_virtual_keys:
+      - alias: judge
+        models: [judge]
+      - alias: recorder
+        models: [recorder, recorder-medium]
+      - alias: open-webui
+        models: [recorder, recorder-medium]
+
+- name: Resolve effective role caller tiers
+  ansible.builtin.set_fact:
+    _llm_router_m_virtual_keys: "{{ _llm_router_virtual_keys_source }}"
+
 - name: Project DB role creation through the shared tier policy
   ansible.builtin.set_fact:
     _role_seed: "{{ _llm_router_role_seed_policy }}"
@@ -14,7 +28,9 @@
       - _role_seed.judge.params.extra_body.priority == llm_router_priority_policy_by_tier['2'].priority
       - not _role_seed.judge.params.extra_body.chat_template_kwargs.enable_thinking
       - "'tier-1' in _role_seed.recorder.params.tags"
+      - "'tier-0' in _role_seed.recorder.params.tags"
       - "'tier-1' in _role_seed['recorder-medium'].params.tags"
+      - "'tier-0' in _role_seed['recorder-medium'].params.tags"
       - _role_seed.recorder.params.turn_off_message_logging
 
 - name: Model the DB readback with its provenance and a UI-owned parameter
@@ -30,6 +46,10 @@
               db_model: true
               priority_policy: "{{ _role_seed.judge.provenance }}"
     llm_router_priority_key_tiers: "{{ llm_router_priority_key_tiers | combine({'judge': 0}) }}"
+
+- name: Resolve the transitioned caller tier
+  ansible.builtin.set_fact:
+    _llm_router_m_virtual_keys: "{{ _llm_router_virtual_keys_source }}"
 
 - name: Reconcile a DB role from tier 2 to tier 0
   ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/prepare-role-tag-updates.yml"
@@ -75,6 +95,10 @@
   ansible.builtin.set_fact:
     llm_router_priority_key_tiers: "{{ llm_router_priority_key_tiers | combine({'judge': 2}) }}"
 
+- name: Resolve the restored caller tier
+  ansible.builtin.set_fact:
+    _llm_router_m_virtual_keys: "{{ _llm_router_virtual_keys_source }}"
+
 - name: Model an unrecognized UI target on a tier 2 role
   ansible.builtin.set_fact:
     _llm_router_roles_for_tag_sync:
@@ -102,3 +126,6 @@
       - "'model' not in _update.patch"
   vars:
     _update: "{{ _llm_router_role_tag_updates | first }}"
+
+- name: Verify explicit caller overrides and shared role tier admission
+  ansible.builtin.import_tasks: priority_role_callers.yml

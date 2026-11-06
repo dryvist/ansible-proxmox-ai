@@ -1,7 +1,13 @@
 {# The same projection supplies create, rebuild, and live policy updates. #}
 {%- set previous = _priority_previous | default({}) -%}
-{%- set tier = llm_router_priority_key_tiers.get(
-      _priority_role.key_alias | default(_priority_role.role), llm_router_priority_default_tier) -%}
+{%- set callers = namespace(tiers=[]) -%}
+{%- for key in _llm_router_virtual_keys_without_values
+      if _priority_role.role in key.models or '*' in key.models -%}
+{%- set callers.tiers = callers.tiers + [key.priority_tier] -%}
+{%- endfor -%}
+{%- set tiers = callers.tiers | unique | sort
+      if callers.tiers else [llm_router_priority_default_tier] -%}
+{%- set tier = tiers | first -%}
 {%- set policy = llm_router_priority_policy_by_tier[tier | string] -%}
 {%- set params = _priority_params.copy() -%}
 {%- for field, injected in previous.get('settings', {}).items() -%}
@@ -24,13 +30,13 @@
       | reject('equalto', 'default') | list) -%}
 {%- set local = 'local' in tags -%}
 {%- set settings = {} -%}
-{%- if local or tier != 2 -%}
-{%- set tags = tags + ['tier-' ~ tier] -%}
-{%- endif -%}
+{%- for caller_tier in tiers if local or caller_tier != 2 -%}
+{%- set _ = tags.append('tier-' ~ caller_tier) -%}
+{%- endfor -%}
 {%- if local -%}
 {%- set settings = {'extra_body': (params.extra_body | default({}))
       | combine({'priority': policy.priority}), 'keepalive_seconds': 0} -%}
-{%- if tier == 2 -%}
+{%- if 2 in tiers -%}
 {%- set settings = settings | combine({
       'timeout': llm_router_tier_2_timeout_seconds,
       'stream_timeout': llm_router_tier_2_timeout_seconds,
@@ -42,4 +48,5 @@
 {%- set _ = before.update({field: {'present': field in params, 'value': params.get(field)}}) -%}
 {%- endfor -%}
 {{ {'params': params | combine(settings, {'tags': tags | unique | list}),
-    'provenance': {'tier': tier, 'settings': settings, 'settings_before': before}} | to_json }}
+    'provenance': {'tier': tier, 'tiers': tiers,
+                   'settings': settings, 'settings_before': before}} | to_json }}

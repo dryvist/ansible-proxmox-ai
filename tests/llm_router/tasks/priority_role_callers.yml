@@ -1,0 +1,85 @@
+---
+- name: Override the recorder caller to tier 2 alongside an interactive caller
+  ansible.builtin.set_fact:
+    _llm_router_declared_virtual_keys:
+      - alias: recorder
+        priority_tier: 2
+        models: [recorder, recorder-medium]
+      - alias: open-webui
+        models: [recorder, recorder-medium]
+      - alias: fixture-unrelated
+        models: [judge]
+      - alias: fixture-disabled
+        enabled: false
+        models: [recorder, recorder-medium]
+
+- name: Resolve effective override key tiers
+  ansible.builtin.set_fact:
+    _llm_router_m_virtual_keys: "{{ _llm_router_virtual_keys_source }}"
+
+- name: Project shared role creation with the caller override
+  ansible.builtin.set_fact:
+    _override_seed: "{{ _llm_router_role_seed_policy }}"
+
+- name: Shared DB roles admit the union of effective authorized caller tiers
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _seed.provenance.tiers == [0, 2]
+      - "'tier-0' in _seed.params.tags"
+      - "'tier-2' in _seed.params.tags"
+      - "'tier-1' not in _seed.params.tags"
+      - _seed.params.timeout == llm_router_tier_2_timeout_seconds
+      - _seed.params.stream_timeout == llm_router_tier_2_timeout_seconds
+      - _seed.params.keepalive_seconds == llm_router_tier_2_keepalive_seconds
+      - _seed.params.extra_body.priority == llm_router_priority_policy_by_tier['0'].priority
+      - _seed.params.turn_off_message_logging
+  loop: [recorder, recorder-medium]
+  vars:
+    _seed: "{{ _override_seed[item] }}"
+
+- name: Reconcile a shared role previously admitting tiers 0 and 1
+  ansible.builtin.set_fact:
+    _llm_router_roles_for_tag_sync:
+      json:
+        data:
+          - model_name: recorder
+            litellm_params: "{{ _role_seed.recorder.params }}"
+            model_info:
+              id: recorder-fixture
+              db_model: true
+              priority_policy: "{{ _role_seed.recorder.provenance }}"
+
+- name: Project the new authorized caller union onto the existing DB role
+  ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/prepare-role-tag-updates.yml"
+
+- name: Existing DB role admission and patience match fresh creation
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_role_tag_updates | length == 1
+      - _update.params.tags | sort == _override_seed.recorder.params.tags | sort
+      - >-
+        _update.params | combine({'tags': []}) == _override_seed.recorder.params | combine({'tags': []})
+      - _update.model_info.priority_policy.tiers == _override_seed.recorder.provenance.tiers
+      - _update.model_info.priority_policy.settings == _override_seed.recorder.provenance.settings
+  vars:
+    _update: "{{ _llm_router_role_tag_updates | first }}"
+
+- name: Model the shared role readback with its updated policy ownership
+  ansible.builtin.set_fact:
+    _llm_router_roles_for_tag_sync:
+      json:
+        data:
+          - model_name: recorder
+            litellm_params: "{{ (_llm_router_role_tag_updates | first).params }}"
+            model_info: "{{ (_llm_router_role_tag_updates | first).model_info }}"
+
+- name: Recompute the shared role policy
+  ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/prepare-role-tag-updates.yml"
+
+- name: Shared role policy reconciliation is idempotent
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_role_tag_updates == []
