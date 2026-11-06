@@ -81,14 +81,14 @@ def test_registry_policy_age_boundary(age: int, allowed: bool) -> None:
     policy["models"][0]["upstream_created"] = (
         datetime.now(timezone.utc).date() - timedelta(days=age)
     ).isoformat()
-    model = {"client_model_id": "example/quantized", "upstream_model_id": "example/base"}
+    model = {"client_model_id": "example/client", "upstream_model_id": "example/quantized"}
     assert PLUGIN._POLICY.registry_policy_allowed(model, policy) is allowed
 
 
 @pytest.mark.parametrize("case", ["old", "undated", "denied", "unknown", "no-dossier"])
 def test_registry_projection_excludes_ineligible_models(case: str) -> None:
     policy = fixture("nvidia-qwen38.json")["policy"]
-    model = {"client_model_id": "example/quantized", "upstream_model_id": "example/base",
+    model = {"client_model_id": "example/client", "upstream_model_id": "example/quantized",
              "tier": "test", "enabled": True}
     if case == "old":
         model["lifecycle"] = "old"
@@ -110,7 +110,7 @@ def test_registry_projection_excludes_ineligible_models(case: str) -> None:
     eligible.pop("lifecycle", None)
     inputs.update(llm_router_model_registry=[eligible],
                   llm_model_trial_policy_data=fixture("nvidia-qwen38.json")["policy"])
-    assert "example/quantized" in template.render(**inputs)
+    assert "example/client" in template.render(**inputs)
 
 
 @pytest.mark.parametrize("change", [
@@ -128,12 +128,14 @@ def test_invalid_shared_policy_fails_closed(change: dict) -> None:
         )
 
 
-def test_registry_prefers_client_policy_record_over_upstream_record() -> None:
+def test_registry_matches_only_the_actual_upstream_artifact() -> None:
     policy = fixture("nvidia-qwen38.json")["policy"]
-    policy["models"].append(policy["models"][0] | {"id": "example/base"})
-    assert PLUGIN._POLICY.registry_policy_allowed(
-        {"client_model_id": "example/quantized", "upstream_model_id": "example/base"}, policy
-    )
+    model = {"client_model_id": "example/quantized", "upstream_model_id": "example/unlisted"}
+    assert not PLUGIN._POLICY.registry_policy_allowed(model, policy)
+    model["upstream_model_id"] = "example/quantized"
+    assert PLUGIN._POLICY.registry_policy_allowed(model, policy)
+    policy["deny"] = [model["upstream_model_id"]]
+    assert not PLUGIN._POLICY.registry_policy_allowed(model, policy)
 
 
 @pytest.mark.parametrize("installed", [False, True])
