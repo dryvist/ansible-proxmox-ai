@@ -17,10 +17,17 @@ AGENT_CAP = int(ALL_VARS["ai_agent_default_concurrency"])
 
 def _render_compose(role: str) -> dict:
     template_path = REPO_ROOT / "roles" / role / "templates/docker-compose.yml.j2"
-    env = jinja2.Environment(undefined=jinja2.StrictUndefined, autoescape=False)
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(template_path.parent),
+        undefined=jinja2.StrictUndefined,
+        autoescape=False,
+    )
     env.filters["bool"] = to_bool
     source = template_path.read_text()
     names = meta.find_undeclared_variables(env.parse(source))
+    for included in meta.find_referenced_templates(env.parse(source)):
+        included_source = env.loader.get_source(env, included)[0]
+        names.update(meta.find_undeclared_variables(env.parse(included_source)))
     context = {name: "fixture" for name in names}
     context["ai_agent_default_concurrency"] = AGENT_CAP
     if role == "dify_docker":

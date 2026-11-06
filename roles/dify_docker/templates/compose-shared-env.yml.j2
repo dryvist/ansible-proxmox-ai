@@ -1,0 +1,80 @@
+x-otel-env: &dify-otel-env
+  ENABLE_OTEL: "true"
+  OTEL_EXPORTER_TYPE: "otlp"
+  OTLP_BASE_ENDPOINT: "{{ dify_docker_otel_endpoint }}"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "{{ dify_docker_otel_protocol }}"
+  OTEL_SAMPLING_RATE: "{{ dify_docker_otel_sampling_rate }}"
+
+x-shared-env: &dify-api-worker-env
+  <<: *dify-otel-env
+  LOG_LEVEL: "INFO"
+  DEPLOY_ENV: "PRODUCTION"
+  SECRET_KEY: "{{ dify_docker_secret_key }}"
+  # Public URLs are derived by Dify from the request Host when left blank.
+  CONSOLE_API_URL: ""
+  CONSOLE_WEB_URL: ""
+  SERVICE_API_URL: ""
+  APP_API_URL: ""
+  APP_WEB_URL: ""
+  FILES_URL: ""
+  MIGRATION_ENABLED: "true"
+  # PostgreSQL (bundled `db` service).
+  DB_USERNAME: "{{ dify_docker_db_user }}"
+  DB_PASSWORD: "{{ dify_docker_db_password }}"
+  DB_HOST: "db"
+  DB_PORT: "{{ dify_docker_postgres_port }}"
+  DB_DATABASE: "{{ dify_docker_db_name }}"
+  # Redis (bundled `redis` service); Celery uses logical DB 1.
+  REDIS_HOST: "redis"
+  REDIS_PORT: "{{ dify_docker_redis_port }}"
+  REDIS_PASSWORD: "{{ dify_docker_redis_password }}"
+  REDIS_DB: "0"
+  REDIS_USE_SSL: "false"
+  CELERY_BROKER_URL: "redis://:{{ dify_docker_redis_password }}@redis:{{ dify_docker_redis_port }}/1"
+  CELERY_BROKER_VISIBILITY_TIMEOUT: "{{ dify_docker_celery_broker_visibility_timeout }}"
+  # Active tasks per worker container; graph workers are per workflow engine.
+  CELERY_WORKER_AMOUNT: "{{ dify_docker_celery_worker_amount }}"
+  CELERY_AUTO_SCALE: "false"
+  GRAPH_ENGINE_MAX_WORKERS: "{{ ai_agent_default_concurrency }}"
+  WORKFLOW_MAX_EXECUTION_TIME: "{{ dify_docker_workflow_max_execution_time }}"
+  WORKFLOW_MAX_EXECUTION_STEPS: "{{ dify_docker_workflow_max_execution_steps }}"
+  GUNICORN_TIMEOUT: "{{ dify_docker_workflow_max_execution_time }}"
+  PLUGIN_DAEMON_TIMEOUT: "{{ dify_docker_plugin_max_execution_timeout }}"
+  ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK: "{{ dify_docker_workflow_schedule_poller_enabled | bool | lower }}"
+  ENABLE_TRIGGER_PROVIDER_REFRESH_TASK: "{{ dify_docker_trigger_provider_refresh_enabled | bool | lower }}"
+  TRIGGER_URL: "{{ dify_docker_trigger_url }}"
+  BROKER_USE_SSL: "false"
+  # Vector store — bundled Weaviate (NOT the external qdrant).
+  VECTOR_STORE: "weaviate"
+  WEAVIATE_ENDPOINT: "http://weaviate:{{ dify_docker_weaviate_port }}"
+  WEAVIATE_API_KEY: "{{ dify_docker_weaviate_api_key }}"
+  # File storage on the local bind mount (relative to /app/api).
+  STORAGE_TYPE: "opendal"
+  OPENDAL_SCHEME: "fs"
+  OPENDAL_FS_ROOT: "storage"
+  # Code-execution sandbox + its SSRF egress proxy.
+  CODE_EXECUTION_ENDPOINT: "http://sandbox:{{ dify_docker_sandbox_port }}"
+  CODE_EXECUTION_API_KEY: "{{ dify_docker_sandbox_api_key }}"
+  SSRF_PROXY_HTTP_URL: "http://ssrf_proxy:{{ dify_docker_ssrf_proxy_port }}"
+  SSRF_PROXY_HTTPS_URL: "http://ssrf_proxy:{{ dify_docker_ssrf_proxy_port }}"
+  # Plugin daemon + marketplace. On 1.x model providers ARE plugins, so the api
+  # must reach plugin_daemon or no LLM can be configured. PLUGIN_DAEMON_KEY must
+  # equal the daemon's SERVER_KEY; INNER_API_KEY_FOR_PLUGIN must equal the
+  # daemon's DIFY_INNER_API_KEY (two distinct secrets).
+  PLUGIN_DAEMON_URL: "http://plugin_daemon:{{ dify_docker_plugin_daemon_port }}"
+  PLUGIN_DAEMON_KEY: "{{ dify_docker_plugin_daemon_key }}"
+  PLUGIN_MAX_PACKAGE_SIZE: "52428800"
+  INNER_API_KEY_FOR_PLUGIN: "{{ dify_docker_inner_api_key }}"
+  MARKETPLACE_ENABLED: "true"
+  MARKETPLACE_API_URL: "https://marketplace.dify.ai"
+  ENDPOINT_URL_TEMPLATE: "http://localhost/e/{hook_id}"
+  # Legacy OpenAI SDK fallback only. Usable Dify models are provisioned through
+  # the console model-provider API after first-run setup.
+  OPENAI_API_BASE: "{{ dify_docker_model_endpoint_url }}"
+  OPENAI_API_KEY: "{{ dify_docker_model_api_key }}"
+  # CORS — internal-only deployment behind the homelab reverse proxy.
+  WEB_API_CORS_ALLOW_ORIGINS: "*"
+  CONSOLE_CORS_ALLOW_ORIGINS: "*"
+{% if dify_docker_password_pepper is defined %}
+  PASSWORD_PEPPER: {{ dify_docker_password_pepper | tojson }}
+{% endif %}
