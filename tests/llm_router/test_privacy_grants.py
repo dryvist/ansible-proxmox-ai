@@ -66,6 +66,14 @@ def test_team_grants_and_default_team(tmp_path):
         assert (result.returncode == 0) == allowed, result.stdout + result.stderr
 
 
+def test_generated_key_defaults_remain_zdr_even_with_public_metadata(tmp_path):
+    result = run_tasks(tmp_path, [], "assert-privacy-grants.yml", llm_router_default_key_generate_params={
+        "models": ["fixture-retaining"], "metadata": {"privacy_class": "public"},
+    })
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Default keys and the default team must grant only ZDR" in result.stdout
+
+
 def test_all_live_keys_audited_without_edits_or_credential_output(tmp_path):
     records = [
         {"key_alias": "fixture-existing", "models": ["fixture-retaining"], "token": MARKER,
