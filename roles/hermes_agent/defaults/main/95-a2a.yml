@@ -18,5 +18,33 @@ hermes_agent_a2a_inbound_token: >-
 # the managed .env file; config.yaml references their generated env names.
 hermes_agent_a2a_peers: []
 
+# Roster opt-in: source.a2a_peers names targets; each target publishes a2a_url
+# and a2a_callers. URLs must address native bearer endpoints, not X-Agent-Key
+# gateway routes. No endpoint or memory-bank access is inferred from trust.
+hermes_agent_a2a_delegation_enabled: false
+hermes_agent_a2a_delegating_profiles: [orchestrator]
+hermes_agent_a2a_allowed_peer_names: >-
+  {%- set roster = ai_agents | default({}) -%}
+  {%- set source = roster.get(hermes_agent_id, {}) -%}
+  {%- set names = [] -%}
+  {%- if hermes_agent_a2a_delegation_enabled | bool and source.get('trust_tier') == 'trusted' -%}
+    {%- for name in source.get('a2a_peers', []) | unique | sort -%}
+      {%- set target = roster.get(name, {}) -%}
+      {%- if name != hermes_agent_id and target.get('trust_tier') == 'trusted'
+          and hermes_agent_id in target.get('a2a_callers', [])
+          and target.get('a2a_url', '').startswith('https://') -%}
+        {%- set _ = names.append(name) -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+  {{ names }}
+hermes_agent_a2a_authorized_peers: >-
+  {%- set peers = [] -%}
+  {%- for name in hermes_agent_a2a_allowed_peer_names -%}
+    {%- set _ = peers.append({'name': name, 'url': ai_agents[name].a2a_url,
+      'token': (bao_apps_secrets | default({})).get((name | replace('-', '_')) ~ '_a2a_token', '')}) -%}
+  {%- endfor -%}
+  {{ peers }}
+
 # Keep the existing Slack output unchanged unless an operator opts in.
 hermes_agent_slack_rich_blocks: false

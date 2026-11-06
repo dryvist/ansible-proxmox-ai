@@ -7,6 +7,7 @@ Every failure on the classify path refuses the request.
 """
 
 import asyncio
+import json
 import logging
 import os
 
@@ -19,8 +20,13 @@ _PUBLIC = "public"
 _SENSITIVE = "sensitive"
 _REFUSAL = "Request refused: the content is not cleared for this key."
 # "state" carries the request text on the classifier pass-through (/v1/systemone).
-_TEXT_KEYS = ("messages", "input", "instructions", "system", "prompt", "state")
+_TEXT_KEYS = (
+    "messages", "input", "instructions", "system", "prompt", "state", "suffix",
+    "tools", "functions", "tool_choice", "function_call",
+)
 _LABEL_KEYS = frozenset({"role", "type"})
+_TEXT_TYPES = frozenset({"text", "input_text", "output_text", "message", "function",
+                         "function_call", "function_call_output"})
 # The text is data. Wrapping it in tags and saying so makes an embedded instruction
 # to answer "public" less likely to be followed; it does not make that impossible.
 _PROMPT = (
@@ -48,6 +54,9 @@ def _strings(value):
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
+        # A text classifier cannot inspect images, audio, files, or unknown content blocks.
+        if "type" in value and value["type"] not in _TEXT_TYPES:
+            raise ValueError("unsupported content type")
         # role and type are labels, not content; leaving them in would spend the character cap on them.
         for key, item in value.items():
             if key not in _LABEL_KEYS:
@@ -55,13 +64,19 @@ def _strings(value):
     elif isinstance(value, (list, tuple)):
         for item in value:
             yield from _strings(item)
+    elif value is not None:
+        raise ValueError("unsupported content value")
 
 
 def _message_text(data):
     parts = []
     for key in _TEXT_KEYS:
         if key in data:
-            parts.extend(text for text in _strings(data[key]) if text.strip())
+            if key in {"tools", "functions"}:
+                # Definitions contain JSON Schema, not message content blocks. Keep keys and values.
+                parts.append(json.dumps(data[key], ensure_ascii=False, allow_nan=False))
+            else:
+                parts.extend(_strings(data[key]))
     return "\n".join(parts)
 
 
@@ -86,16 +101,18 @@ async def _post_with_retry(settings, body):
 
 async def _refusal_reason(data):
     """None when the request may pass; otherwise the category logged for the refusal."""
-    text = _message_text(data)
-    if not text.strip():
-        return "no text"
     try:
+        text = _message_text(data)
+        if not text.strip():
+            return "no text"
         settings = _settings()
+        if len(text) > settings["max_chars"]:
+            return "oversized"
         body = {
             "model": settings["model"],
             "messages": [
                 {"role": "system", "content": _PROMPT},
-                {"role": "user", "content": f"<text>\n{text[: settings['max_chars']]}\n</text>"},
+                {"role": "user", "content": f"<text>\n{text}\n</text>"},
             ],
             "temperature": 0,
             "max_tokens": 4,
