@@ -27,7 +27,7 @@ def test_dossier_completion_gate(tmp_path: Path, change: dict, reason: str) -> N
     target.parent.mkdir(parents=True)
     target.write_text("---\n" + yaml.safe_dump(metadata) + "---\n")
     policy["_dossier_root"] = str(tmp_path)
-    model = {"upstream_model_id": "example/base"}
+    model = {"upstream_model_id": data["info"]["id"]}
     assert PLUGIN._POLICY.registry_policy_allowed(model, policy) is (not reason)
     assert reason in PLUGIN._POLICY.registry_policy_reason(model, policy)
     if reason:
@@ -49,7 +49,7 @@ def test_invalid_dossier_paths_fail_closed(dossier, reason: str) -> None:
     with pytest.raises(ValueError, match=reason):
         select(data)
     assert not PLUGIN._POLICY.registry_policy_allowed(
-        {"upstream_model_id": "example/base"}, data["policy"]
+        {"upstream_model_id": data["info"]["id"]}, data["policy"]
     )
 
 
@@ -61,16 +61,18 @@ def test_unlisted_upstream_cannot_reuse_a_listed_client_name() -> None:
     data["upstreams"]["example/base"]["id"] = "example/unlisted"
     data["upstreams"]["example/unlisted"] = data["upstreams"].pop("example/base")
     data["upstreams"]["example/intermediate"]["cardData"]["base_model"] = "example/unlisted"
-    with pytest.raises(ValueError, match="upstream_id has no shared policy record"):
+    with pytest.raises(ValueError, match="does not match the Hub base_model chain"):
         select(data)
 
 
-def test_consistent_evidence_for_a_shared_upstream_is_admitted() -> None:
+def test_sibling_evidence_does_not_override_the_requested_artifact() -> None:
     data = fixture("nvidia-qwen38.json")
     policy = data["policy"]
     policy["models"].append(policy["models"][0] | {"id": "example/another-quant"})
     assert select(data)["upstream_id"] == "example/base"
     policy["models"][-1]["dossier"] = "other.md"
+    assert select(data)["upstream_id"] == "example/base"
+    policy["models"].append(policy["models"][0])
     with pytest.raises(ValueError, match="conflicting"):
         select(data)
 
@@ -87,7 +89,7 @@ def test_denied_quantization_does_not_reject_allowed_sibling(reverse: bool, reco
     if reverse:
         policy["models"].reverse()
     for artifact, allowed in [(denied, False), (sibling, True)]:
-        model = {"client_model_id": artifact, "upstream_model_id": "example/base"}
+        model = {"client_model_id": "example/client", "upstream_model_id": artifact}
         assert PLUGIN._POLICY.registry_policy_allowed(model, policy) is allowed
         data["info"]["id"] = artifact
         if allowed:
@@ -95,3 +97,25 @@ def test_denied_quantization_does_not_reject_allowed_sibling(reverse: bool, reco
         else:
             with pytest.raises(ValueError, match="denied"):
                 select(data)
+
+
+def test_quantized_artifact_uses_its_listed_base_model_evidence() -> None:
+    data = fixture("nvidia-qwen38.json")
+    entry = data["policy"]["models"][0]
+    assert entry["id"] == data["info"]["id"]
+    assert entry["upstream_id"] != entry["id"]
+    model = {"client_model_id": "example/client", "upstream_model_id": entry["id"]}
+    assert PLUGIN._POLICY.registry_policy_allowed(model, data["policy"])
+    assert select(data)["upstream_id"] == entry["upstream_id"]
+
+
+@pytest.mark.parametrize("artifact", ["example/unlisted", "example/base"])
+def test_unlisted_artifact_cannot_reuse_a_client_name_or_base(artifact: str) -> None:
+    data = fixture("nvidia-qwen38.json")
+    model = {"client_model_id": data["policy"]["models"][0]["id"],
+             "upstream_model_id": artifact}
+    assert not PLUGIN._POLICY.registry_policy_allowed(model, data["policy"])
+    data["info"]["id"] = artifact
+    data["info"]["cardData"] = {}
+    with pytest.raises(ValueError, match="artifact_id has no shared policy record"):
+        select(data)

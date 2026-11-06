@@ -72,21 +72,22 @@ def _validate_policy(policy: dict[str, Any], today: date) -> None:
 
 
 def model_policy_entry(
-    upstream_id: str, policy: dict[str, Any], today: date | None = None
+    artifact_id: str, policy: dict[str, Any], today: date | None = None
 ) -> dict[str, Any]:
-    """Resolve one policy record and enforce its upstream age and dossier."""
+    """Match the artifact's exact id, then enforce its base-model age and dossier."""
     today = today or datetime.now(timezone.utc).date()
     _validate_policy(policy, today)
     matches = [entry for entry in policy["models"]
-               if isinstance(entry, dict) and entry.get("upstream_id") == upstream_id]
-    if not upstream_id or not matches:
-        raise ValueError("Model upstream_id has no shared policy record")
+               if isinstance(entry, dict) and entry.get("id") == artifact_id]
+    if not artifact_id or not matches:
+        raise ValueError("Model artifact_id has no shared policy record")
+    if len(matches) != 1:
+        raise ValueError("Model artifact_id has conflicting shared policy records")
     entry = matches[0]
-    if any((match.get("upstream_created"), match.get("dossier")) !=
-           (entry.get("upstream_created"), entry.get("dossier")) for match in matches):
-        raise ValueError("Model upstream_id has conflicting shared policy records")
-    if upstream_id in denied_ids(policy):
-        raise ValueError("Model or upstream is denied by the shared policy")
+    if artifact_id in denied_ids(policy):
+        raise ValueError("Model artifact is denied by the shared policy")
+    if not isinstance(entry.get("upstream_id"), str) or not entry["upstream_id"]:
+        raise ValueError("Model policy requires an upstream_id for the artifact")
     created = policy_date(entry.get("upstream_created"))
     if not 0 <= (today - created).days <= policy["max_age_days"]:
         raise ValueError("Model upstream is old or future-dated under the shared policy")
@@ -99,10 +100,9 @@ def registry_policy_reason(model: dict[str, Any], policy: dict[str, Any]) -> str
     _validate_policy(policy, datetime.now(timezone.utc).date())
     if model.get("lifecycle") == "old":
         return "Model lifecycle is old"
-    if model.get("client_model_id") in denied_ids(policy):
-        return "Model is denied by the shared policy"
     try:
-        model_policy_entry(model.get("upstream_model_id", ""), policy)
+        # The registry's backend repository identifies the artifact, including quantizations.
+        model_policy_entry(artifact_id=model.get("upstream_model_id", ""), policy=policy)
     except ValueError as error:
         return str(error)
     return ""

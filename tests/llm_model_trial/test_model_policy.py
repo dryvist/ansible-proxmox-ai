@@ -43,10 +43,10 @@ def test_recent_quantization_inherits_old_base_and_is_rejected() -> None:
         select(data)
 
 
-@pytest.mark.parametrize("denied", ["example/quantized", "example/intermediate", "example/base"])
 @pytest.mark.parametrize("record", [False, True])
-def test_denied_model_or_ancestor_is_rejected(denied: str, record: bool) -> None:
+def test_denied_artifact_is_rejected(record: bool) -> None:
     data = fixture("nvidia-qwen38.json")
+    denied = data["info"]["id"]
     data["policy"]["deny"] = [{"id": denied, "reason": "fixture"} if record else denied]
     with pytest.raises(ValueError, match="denied"):
         select(data)
@@ -66,7 +66,7 @@ def test_missing_and_cyclic_ancestry_fail_closed() -> None:
 
 @pytest.mark.parametrize("change", [
     {"upstream_created": None}, {"upstream_created": "2025-01-01"},
-    {"upstream_id": "example/other"}, {"dossier": ""},
+    {"upstream_id": "example/other"}, {"upstream_id": None}, {"dossier": ""},
 ])
 def test_trial_policy_requires_matching_dated_upstream_and_dossier(change: dict) -> None:
     data = fixture("nvidia-qwen38.json")
@@ -81,21 +81,21 @@ def test_registry_policy_age_boundary(age: int, allowed: bool) -> None:
     policy["models"][0]["upstream_created"] = (
         datetime.now(timezone.utc).date() - timedelta(days=age)
     ).isoformat()
-    model = {"client_model_id": "example/client", "upstream_model_id": "example/base"}
+    model = {"client_model_id": "example/client", "upstream_model_id": "example/quantized"}
     assert PLUGIN._POLICY.registry_policy_allowed(model, policy) is allowed
 
 
 @pytest.mark.parametrize("case", ["old", "undated", "denied", "unknown", "no-dossier"])
 def test_registry_projection_excludes_ineligible_models(case: str) -> None:
     policy = fixture("nvidia-qwen38.json")["policy"]
-    model = {"client_model_id": "example/client", "upstream_model_id": "example/base",
+    model = {"client_model_id": "example/client", "upstream_model_id": "example/quantized",
              "tier": "test", "enabled": True}
     if case == "old":
         model["lifecycle"] = "old"
     elif case == "undated":
         policy["models"][0]["upstream_created"] = None
     elif case == "denied":
-        policy["deny"] = ["example/base"]
+        policy["deny"] = [model["upstream_model_id"]]
     elif case == "unknown":
         policy["models"] = []
     else:
@@ -124,7 +124,7 @@ def test_invalid_shared_policy_fails_closed(change: dict) -> None:
         select(data)
     with pytest.raises(ValueError):
         PLUGIN._POLICY.registry_policy_allowed(
-            {"client_model_id": "example/quantized", "upstream_model_id": "example/base"}, data["policy"]
+            {"client_model_id": "example/client", "upstream_model_id": "example/quantized"}, data["policy"]
         )
 
 
@@ -132,7 +132,7 @@ def test_registry_matches_only_the_actual_upstream_artifact() -> None:
     policy = fixture("nvidia-qwen38.json")["policy"]
     model = {"client_model_id": "example/quantized", "upstream_model_id": "example/unlisted"}
     assert not PLUGIN._POLICY.registry_policy_allowed(model, policy)
-    model["upstream_model_id"] = "example/base"
+    model["upstream_model_id"] = policy["models"][0]["id"]
     assert PLUGIN._POLICY.registry_policy_allowed(model, policy)
     policy["deny"] = [model["upstream_model_id"]]
     assert not PLUGIN._POLICY.registry_policy_allowed(model, policy)
@@ -144,7 +144,7 @@ def test_policy_loader_uses_installed_collection_before_role_input(
 ) -> None:
     policy = fixture("nvidia-qwen38.json")["policy"]
     if installed:
-        policy["deny"] = ["example/base"] if denied else []
+        policy["deny"] = [policy["models"][0]["id"]] if denied else []
         path = tmp_path / "ansible_collections/dryvist/homelab/roles/llm_model_catalog/files/model-policy.json"
         path.parent.mkdir(parents=True)
         dossier = path.parent / "dossiers/fixture.md"
