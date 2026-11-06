@@ -44,17 +44,27 @@
               | selectattr('key_alias', 'equalto', _k.alias)
               | map(attribute='router_settings', default={}) | first | default({}, true)) -%}
       {%- set _authoritative = _k.models_authoritative | default(true) -%}
-      {%- set _router_settings_target = (llm_router_review_key_router_settings[_k.router_settings_ref]
-            if _k.router_settings_ref is defined else _live_router_settings if _k.priority_tier is defined else {})
-            | combine((_k.router_settings | default({})) if _k.priority_tier is defined else {}) -%}
       {%- set _live_team = (llm_router_existing_keys.json['keys'] | default([])
               | selectattr('key_alias', 'equalto', _k.alias)
               | map(attribute='team_id', default=none) | first | default(none, true)) -%}
       {%- set _team_changed = _k.team_id is defined and _live_team != _k.team_id -%}
+      {%- set _leaving_tier_2 = _live_team == 'tier-2'
+            and _k.priority_tier is defined and _k.priority_tier != 2 -%}
+      {%- set _router_settings_target = (llm_router_review_key_router_settings[_k.router_settings_ref]
+            if _k.router_settings_ref is defined else _live_router_settings if _k.priority_tier is defined else {}) -%}
+      {%- if _leaving_tier_2 and _k.router_settings_ref is not defined -%}
+      {%- set _router_settings_target = _router_settings_target | dict2items
+            | rejectattr('key', 'in', ['fallbacks', 'context_window_fallbacks', 'content_policy_fallbacks'])
+            | items2dict | combine(dict(_router_settings_target.items()
+              | selectattr('0', 'in', ['fallbacks', 'context_window_fallbacks', 'content_policy_fallbacks'])
+              | rejectattr('1', 'equalto', []) | list)) -%}
+      {%- endif -%}
+      {%- set _router_settings_target = _router_settings_target
+            | combine((_k.router_settings | default({})) if _k.priority_tier is defined else {}) -%}
       {%- set _models_target = _k.models if _authoritative else ((_live_models + _k.models) | unique | list) -%}
       {%- set _models_changed = ((_live_models | sort) != (_models_target | sort))
             if _authoritative else (_k.models | difference(_live_models) | length > 0) -%}
-      {%- set _router_settings_changed = (_router_settings_target | length > 0)
+      {%- set _router_settings_changed = (_router_settings_target | length > 0 or _leaving_tier_2)
             and _live_router_settings != _router_settings_target -%}
       {%- set _routes_changed = (_k.allowed_routes is defined) and (_live_routes != _k.allowed_routes) -%}
       {%- set _live_metadata = (llm_router_existing_keys.json['keys'] | default([])
@@ -70,6 +80,9 @@
       {%- set _desired_tags = (_live_tags | reject('match', '^([&!])?sensitivity:') | list)
             + [_sensitivity_tag] -%}
       {%- if _k.priority_tier is defined -%}
+      {%- if _leaving_tier_2 and '&local' not in (_k.tags | default([])) -%}
+      {%- set _desired_tags = _desired_tags | reject('equalto', '&local') | list -%}
+      {%- endif -%}
       {%- set _desired_tags = (_desired_tags
             | reject('equalto', 'agent-priority')
             | reject('match', '^([&!])?tier-[0-9]+$') | list)

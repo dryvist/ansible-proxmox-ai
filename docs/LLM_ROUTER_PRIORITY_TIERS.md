@@ -20,6 +20,8 @@ disables key fallback maps, and receives deployment `timeout` and `stream_timeou
 of 43200 seconds with `keepalive_seconds: 15`. Cloud deployments carry only
 tiers 0 and 1 and retain their privacy tags.
 Hermes agent endpoints carry all priority tier tags and retain `sensitivity:public`.
+Keys moving from tier 2 to tier 0 or 1 receive the new tier tag and fallback
+policy. Explicit local-only declarations and unrelated key settings remain in force.
 
 The LiteLLM release pinned in
 [`files/requirements.in`](../roles/llm_router/files/requirements.in), checked 2026-11-06,
