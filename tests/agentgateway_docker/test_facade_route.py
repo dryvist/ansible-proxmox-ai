@@ -277,6 +277,16 @@ def test_ownerless_target_without_an_exception_fails_the_owner_assert() -> None:
     assert not _task_passes(_task(OWNER_TASK), **OWNER_CONTEXT)
 
 
+def test_empty_inventory_roster_passes_with_default_owner_exceptions() -> None:
+    context = {
+        **OWNER_CONTEXT,
+        "ai_agent_owner": {},
+        "agentgateway_docker_owner_exceptions": ROLE_DEFAULTS["agentgateway_docker_owner_exceptions"],
+    }
+    assert _task_passes(_task(OWNER_TASK), **context)
+    assert _task_passes(_task(EXCEPTION_TASK), **context)
+
+
 def test_ownerless_target_with_a_recorded_exception_passes() -> None:
     recorded = {**OWNER_CONTEXT, "agentgateway_docker_owner_exceptions": [RECORDED_EXCEPTION]}
 

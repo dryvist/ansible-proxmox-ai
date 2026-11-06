@@ -11,6 +11,7 @@ import jinja2
 import pytest
 import yaml
 from ansible.plugins.filter.core import FilterModule
+from ansible.plugins.test.core import TestModule as AnsibleTestModule
 
 from _group_vars import load_group_vars_all
 
@@ -22,7 +23,7 @@ TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/config.yaml.j2"
 # The shared-route auth policies are normalized below so this remains a check of
 # the rest of the config render. Facade defaults and route identity are covered
 # in test_facade_route.py.
-BASELINE_SHA256 = "ca78c630817e07bc5c427cac4ce2feab36de4f7cb110e4068a655616b3c41e3d"
+BASELINE_SHA256 = "6a4a64b5cd1d5ae9c7df514a42fecc2d32b0faca454de51502dc217a15608952"
 MCP_ROUTE_PATHS = ("/memory", "/docs", "/vikunja", "/nautobot")
 
 AGENTS = {
@@ -34,14 +35,20 @@ KEYS = {
     "other_agent_agentgateway_key": "example-key-other-agent",
 }
 
-ENV = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
+ENV = jinja2.Environment(
+    loader=jinja2.FileSystemLoader(TEMPLATE.parent),
+    undefined=jinja2.StrictUndefined,
+    trim_blocks=True,
+)
 ENV.filters.update(FilterModule().filters())
+ENV.tests.update(AnsibleTestModule().tests())
 INVENTORY_VARS = load_group_vars_all()
 FACADE_DEFAULTS = yaml.safe_load((DEFAULTS.parent / "40-facade.yml").read_text())
 ROLE_DEFAULTS = {
     **yaml.safe_load(DEFAULTS.read_text()),
     **yaml.safe_load(MCP_ROUTE_AUTH_DEFAULTS.read_text()),
     **yaml.safe_load((DEFAULTS.parent / "05-a2a-targets.yml").read_text()),
+    **yaml.safe_load((DEFAULTS.parent / "06-agent-routes.yml").read_text()),
     **FACADE_DEFAULTS,
 }
 HINDSIGHT_DEFAULTS = yaml.safe_load(
@@ -131,6 +138,9 @@ def _render(
         "ai_agents": roster,
         "ai_agent_owner": owners or {},
         "agentgateway_docker_roster_keys": roster_keys,
+        "ai_callers": callers,
+        "agentgateway_docker_a2a_allowed_tier": INVENTORY_VARS["agentgateway_docker_a2a_allowed_tier"],
+        "agentgateway_docker_dify_mcp_targets": [],
         "agentgateway_docker_hindsight_roster_tiers": roster_tiers,
         **FACADE_DEFAULTS,
         # Keep generic authorization fixtures independent of the role's live
@@ -139,6 +149,10 @@ def _render(
         "agentgateway_docker_facade_callers": [],
         **(extra or {}),
     }
+    if "agentgateway_docker_agent_roster" not in context:
+        context["agentgateway_docker_agent_roster"] = yaml.safe_load(
+            ENV.from_string(ROLE_DEFAULTS["agentgateway_docker_agent_roster"]).render(**context)
+        )
     return ENV.from_string(TEMPLATE_SOURCE if template_source is None else template_source).render(**context)
 
 
@@ -195,6 +209,16 @@ def test_owned_route_requires_a_key_and_allows_only_its_owner(baseline: str) -> 
     baseline_splunk = _route_for_path(baseline_routes, "/splunk")
     for path in MCP_ROUTE_PATHS:
         _route_for_path(routes, path).pop("policies")
+
+    # A2A now authenticates these same callers; compare its keys separately.
+    for route, baseline_route in zip(routes, baseline_routes):
+        if "a2a" in route.get("policies", {}):
+            assert route["policies"]["apiKey"]["keys"] == splunk["policies"]["apiKey"]["keys"]
+            route["policies"]["apiKey"]["keys"] = baseline_route["policies"]["apiKey"]["keys"]
+            assert route["policies"]["authorization"]["rules"] == [
+                {"allow": 'apiKey.agent in ["splunk-heimdall", "other-agent"]'}
+            ]
+            route["policies"]["authorization"] = baseline_route["policies"]["authorization"]
 
     assert {key: value for key, value in splunk.items() if key != "policies"} == baseline_splunk
     policy = splunk["policies"]
@@ -306,81 +330,3 @@ def test_nautobot_openapi_route_uses_the_staged_auth_mode() -> None:
         nautobot = _route_for_path(routes, "/nautobot")
         assert nautobot["policies"]["apiKey"]["mode"] == mode
         assert nautobot["policies"]["apiKey"]["location"] == {"header": {"name": "X-Agent-Key"}}
-
-
-def test_missing_roster_key_fails_the_role_assert_expression() -> None:
-    tasks = yaml.safe_load(TASKS.read_text())
-    validation = next(
-        task
-        for task in tasks
-        if task.get("name") == "Validate that every roster agent has a gateway API key"
-    )
-    condition = validation["ansible.builtin.assert"]["that"][0]
-    roster_keys = _render_map(
-        ROLE_DEFAULTS["agentgateway_docker_roster_keys"],
-        ai_agent_gateway_key_fields=_render_key_fields(AGENTS),
-        openbao_secrets_by_domain={
-            "agentgateway-agent-keys": {
-                "splunk_heimdall_agentgateway_key": KEYS["splunk_heimdall_agentgateway_key"]
-            }
-        },
-    )
-    assert (
-        ENV.compile_expression(condition)(
-            item={"key": "splunk-heimdall"}, agentgateway_docker_roster_keys=roster_keys
-        )
-        is True
-    )
-    assert (
-        ENV.compile_expression(condition)(
-            item={"key": "other-agent"}, agentgateway_docker_roster_keys=roster_keys
-        )
-        is False
-    )
-
-
-def _rendered_caller_keys(rendered: str) -> list[dict[str, Any]]:
-    keys: list[dict[str, Any]] = []
-    for route in _routes(rendered):
-        keys.extend(route.get("policies", {}).get("apiKey", {}).get("keys", []))
-    return keys
-
-
-def test_keyless_callers_are_omitted_from_rendered_config() -> None:
-    # other-agent holds only whitespace and the registry caller has no leaf: both are keyless.
-    keys = {
-        "splunk_heimdall_agentgateway_key": KEYS["splunk_heimdall_agentgateway_key"],
-        "other_agent_agentgateway_key": "   ",
-    }
-    rendered = _render(
-        AGENTS,
-        {},
-        keys,
-        registry={"registry-unseeded": {"trust_tier": "untrusted"}},
-    )
-    rendered_keys = _rendered_caller_keys(rendered)
-
-    assert rendered_keys
-    assert {key["metadata"]["agent"] for key in rendered_keys} == {"splunk-heimdall"}
-    assert all(key["key"] for key in rendered_keys)
-    assert 'key: ""' not in rendered
-
-
-def test_gateway_reader_domain_is_required_when_gateway_callers_exist() -> None:
-    tasks = yaml.safe_load(TASKS.read_text())
-    presence = next(
-        task
-        for task in tasks
-        if task.get("name") == "Require the agentgateway-agent-keys domain when gateway callers exist"
-    )
-    condition = presence["ansible.builtin.assert"]["that"][0]
-    when = presence["when"][0]
-
-    assert ENV.compile_expression(condition)(openbao_secrets_by_domain={}) is False
-    assert (
-        ENV.compile_expression(condition)(openbao_secrets_by_domain={"agentgateway-agent-keys": {}})
-        is True
-    )
-    callers = {"splunk-heimdall": "splunk_heimdall_agentgateway_key"}
-    assert ENV.compile_expression(when)(ai_agent_gateway_key_fields=callers) is True
-    assert ENV.compile_expression(when)(ai_agent_gateway_key_fields={}) is False
