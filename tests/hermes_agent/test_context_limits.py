@@ -45,7 +45,7 @@ UniqueKeyLoader.add_constructor(
 )
 
 
-def _render(template: str, limits: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _render(template: str, limits: dict[str, Any], **overrides: Any) -> tuple[str, dict[str, Any]]:
     env = Environment(
         autoescape=False,
         loader=FileSystemLoader(ROLE_ROOT / "templates"),
@@ -75,7 +75,10 @@ def _render(template: str, limits: dict[str, Any]) -> tuple[str, dict[str, Any]]
         "hermes_agent_dashboard_oidc_client_id": "fixture-client",
         "hermes_agent_kanban_max_in_progress": 8,
         "hermes_agent_kanban_max_in_progress_per_profile": 8,
+        "hermes_agent_pepper_vault_repo_url": "",
+        "hermes_agent_pepper_vault_read_token": "",
     })
+    context.update(overrides)
     rendered = env.get_template(template).render(**context)
     parsed = yaml.load(rendered, Loader=UniqueKeyLoader)
     return rendered, parsed

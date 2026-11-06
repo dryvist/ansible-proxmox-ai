@@ -47,6 +47,13 @@ openbao_secrets_domains: >-
     {%- set _ = legacy_domain.update({'paths': paths}) -%}
     {%- set _ = domains.append(legacy_domain) -%}
   {%- endfor -%}
+  {#- Pepper's domain is required only when its runtime is selected, never by another identity or the router. -#}
+  {%- for host in ansible_play_hosts_all | default([]) -%}
+    {%- if hostvars[host].hermes_agent_identity | default('') == 'pepper'
+           and 'pepper' not in domains | map(attribute='name') | list -%}
+      {%- set _ = domains.append({'name': 'pepper', 'paths': ['ai/pepper'], 'required': true}) -%}
+    {%- endif -%}
+  {%- endfor -%}
   {%- for reader in openbao_app_agent_tier_reader_domains -%}
     {%- set _ = domains.append({'name': reader.name, 'paths': [
         {'mount': openbao_agent_tier_mount, 'path': reader.path, 'optional': true}]}) -%}
@@ -54,7 +61,7 @@ openbao_secrets_domains: >-
   {%- set agents = ai_agents | default({}) -%}
   {%- set router_paths = [] -%}
   {%- set gateway_paths = [] -%}
-  {%- for agent_name, agent in agents.items() -%}
+  {%- for agent_name, agent in agents.items() if agent_name != 'pepper' -%}
     {#- Only a guest-backed agent's runtime reads ai/<agent> (hermes_agent_group settings). -#}
     {%- set paths = (['ai/' ~ agent_name] if agent.container | default(none) else [])
                     + ['apps/' ~ agent_name] -%}

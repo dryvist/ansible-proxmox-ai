@@ -23,7 +23,7 @@
 - name: Keep operational profiles off the private identity
   ansible.builtin.set_fact:
     hermes_agent_profiles: []
-  when: (hermes_agent_id | default('hermes')) == 'hermes-private'
+  when: (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) in ['hermes-private', 'pepper']
   tags: always
 
 # Read-only probe mode: report cron delivery routing, then stop this host
@@ -120,6 +120,11 @@
   tags:
     - "{{ hermes_agent_entry_point_task_tags['bundle_build.yml'] }}"
     - "{{ hermes_agent_entry_point_task_tags['public_gateway.yml'] }}"
+
+- name: Prepare Pepper read-only evidence before enabling its MCP server
+  ansible.builtin.import_tasks: pepper_vault.yml
+  when: hermes_agent_id == 'pepper'
+  tags: "{{ hermes_agent_entry_point_task_tags['pepper_vault.yml'] }}"
 
 - name: Deploy secrets, config.yaml, persona content, and Hindsight provider config
   ansible.builtin.import_tasks: config_and_content.yml
@@ -228,7 +233,7 @@
       - name: HERMES_TRUST_BOUNDARY
         value: "{{ hermes_agent_github_trust_boundary_default }}"
       - name: HERMES_CRON_GOAL_JOBS
-        value: "{{ hermes_agent_cron_goal_mode_jobs | join(',') }}"
+        value: "{{ (hermes_agent_cron_goal_mode_jobs if hermes_agent_id != 'pepper' else []) | join(',') }}"
       - name: HERMES_CRON_GOAL_MAX_TURNS
         value: "{{ hermes_agent_kanban_goal_max_turns }}"
     # The dashboard resolves its config from the sticky active profile when one is

@@ -1,5 +1,52 @@
 ---
 
+- name: Assert Pepper identity and rollout boundaries
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_model_api_key | default('', true) | trim | length > 0
+      - >-
+        hermes_agent_model_api_key == (lookup('env', 'PEPPER_AGENT_MODEL_API_KEY')
+        or hermes_agent_bao.get('pepper_llm_router_key', ''))
+      - hermes_agent_profiles | length == 0
+      - hermes_agent_kanban_max_in_progress | int == 1
+      - hermes_agent_kanban_max_in_progress_per_profile | int == 1
+      - not hermes_agent_codex_mcp_enabled | bool
+      - not hermes_agent_github_org_tokens_enabled | bool
+      - not hermes_agent_github_identity_enabled | bool
+      - not hermes_agent_ops_workload_enabled | bool
+      - not hermes_agent_langfuse_enabled | bool
+      - not hermes_agent_context7_mcp_enabled | bool
+      - not hermes_agent_docs_mcp_enabled | bool
+      - not hermes_agent_grep_mcp_enabled | bool
+      - not hermes_agent_vikunja_mcp_enabled | bool
+      - not hermes_agent_nautobot_mcp_enabled | bool
+      - not hermes_agent_splunk_access | bool
+      - hermes_agent_pepper_content_reviewed | bool
+      - hermes_agent_memory_provider | length == 0
+      - hermes_agent_memory_api_key | length == 0
+      - hermes_agent_memory_bank_id | length == 0
+      - not hermes_agent_kanban_goal_mode | bool
+      - "'pepper-bundle' in hermes_agent_bundle_flake_ref"
+    fail_msg: Pepper rollout prerequisites or identity boundaries are not satisfied.
+  no_log: true
+  when: hermes_agent_id == 'pepper'
+
+- name: Assert Pepper YouTrack credentials and tool scope
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_id == 'pepper'
+      - hermes_agent_youtrack_mcp_url | trim | length > 0
+      - hermes_agent_youtrack_mcp_token | trim | length > 0
+      - hermes_agent_youtrack_mcp_tools | length > 0
+      - >-
+        hermes_agent_youtrack_mcp_tools
+        | difference(['search_issues', 'get_issue', 'get_issue_comments', 'add_issue_comment']) | length == 0
+    fail_msg: Pepper YouTrack client requires scoped credentials and read/comment tools.
+  no_log: true
+  when: hermes_agent_youtrack_mcp_enabled | bool
+
 - name: Assert Hermes Agent brain-wiring contracts hold before converging
   ansible.builtin.assert:
     quiet: true

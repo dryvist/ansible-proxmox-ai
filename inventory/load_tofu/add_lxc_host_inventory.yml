@@ -2,6 +2,25 @@
 - name: Derive the container to agent map
   ansible.builtin.import_tasks: derive_agent_map.yml
 
+- name: Reject conflicting or unrecognized Hermes identity markers
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        identity_markers | difference(['hermes-private', 'hermes-donna', 'hermes-pepper',
+                                      'hermes-agent', 'hermes-ui']) | length == 0
+      - identity_markers | intersect(['hermes-private', 'hermes-donna', 'hermes-pepper']) | length <= 1
+      - "'hermes-pepper' not in identity_markers or 'hermes-agent' in identity_markers"
+      - >-
+        'hermes-pepper' not in identity_markers
+        or _ai_agent_by_container.get(item.key, 'pepper') == 'pepper'
+    fail_msg: Invalid Hermes identity tags.
+  vars:
+    identity_markers: "{{ item.value.tags | default([]) | select('match', '^hermes-') | list }}"
+  loop: "{{ tofu_data.containers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
 - name: Add AI LXC containers to inventory (proxmox_pct_remote connection)
   ansible.builtin.add_host:
     name: "{{ item.key }}"
@@ -343,9 +362,10 @@
     hermes_agent_identity: >-
       {{ _ai_agent_by_container[item.key | default('')]
          if (item.key | default('')) in _ai_agent_by_container
-         else ('hermes-private' if 'hermes-private' in (item.value.tags | default([]))
+         else ('pepper' if 'hermes-pepper' in (item.value.tags | default([]))
+               else ('hermes-private' if 'hermes-private' in (item.value.tags | default([]))
                else ('donna' if 'hermes-donna' in (item.value.tags | default([]))
-                     else 'hermes')) }}
+                     else 'hermes'))) }}
   vars:
     # _ai_agent_by_container is set by derive_agent_map.yml, imported at the top of this file.
     # Derived from tags, per-item, rather than a hand-maintained name
