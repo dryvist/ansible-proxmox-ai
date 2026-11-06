@@ -73,3 +73,25 @@ def test_consistent_evidence_for_a_shared_upstream_is_admitted() -> None:
     policy["models"][-1]["dossier"] = "other.md"
     with pytest.raises(ValueError, match="conflicting"):
         select(data)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("record", [False, True])
+def test_denied_quantization_does_not_reject_allowed_sibling(reverse: bool, record: bool) -> None:
+    data = fixture("nvidia-qwen38.json")
+    policy = data["policy"]
+    denied = data["info"]["id"]
+    sibling = "example/another-quant"
+    policy["models"].append(policy["models"][0] | {"id": sibling})
+    policy["deny"] = [{"id": denied, "reason": "fixture"} if record else denied]
+    if reverse:
+        policy["models"].reverse()
+    for artifact, allowed in [(denied, False), (sibling, True)]:
+        model = {"client_model_id": artifact, "upstream_model_id": "example/base"}
+        assert PLUGIN._POLICY.registry_policy_allowed(model, policy) is allowed
+        data["info"]["id"] = artifact
+        if allowed:
+            assert select(data)["upstream_id"] == "example/base"
+        else:
+            with pytest.raises(ValueError, match="denied"):
+                select(data)
