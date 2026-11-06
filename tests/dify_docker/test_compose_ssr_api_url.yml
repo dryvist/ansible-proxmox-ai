@@ -46,6 +46,52 @@
           {{ lookup('ansible.builtin.template', playbook_dir ~
              '/../../roles/dify_docker/templates/squid-agent.conf.j2') }}
 
+    - name: Apply batch runtime defaults to every Celery participant
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services[item].environment.WORKFLOW_MAX_EXECUTION_TIME == '43200'
+          - _rendered.services[item].environment.GUNICORN_TIMEOUT == '43200'
+          - _rendered.services[item].environment.PLUGIN_DAEMON_TIMEOUT == '43200'
+          - _rendered.services[item].environment.CELERY_WORKER_AMOUNT == '2'
+          - _rendered.services[item].environment.CELERY_AUTO_SCALE == 'false'
+          - _rendered.services[item].environment.ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK == 'true'
+          - _rendered.services[item].environment.ENABLE_TRIGGER_PROVIDER_REFRESH_TASK == 'true'
+          - _rendered.services[item].environment.TRIGGER_URL == _rendered.services['web'].environment.APP_API_URL
+          - _rendered.services[item].environment.ENABLE_OTEL == 'true'
+          - _rendered.services[item].environment.OTLP_BASE_ENDPOINT == ai_orchestration_otel_endpoint
+      loop: [api, worker, worker_beat]
+
+    - name: Apply the batch plugin budget to daemon execution and callbacks
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services['plugin_daemon'].environment.PLUGIN_MAX_EXECUTION_TIMEOUT == '43200'
+          - _rendered.services['plugin_daemon'].environment.DIFY_INVOCATION_CONNECTION_IDLE_TIMEOUT == '43200'
+          - _rendered.services['plugin_daemon'].environment.DIFY_BACKWARDS_INVOCATION_READ_TIMEOUT == '43200000'
+          - >-
+            'proxy_read_timeout 43200s;' in lookup('ansible.builtin.template', playbook_dir ~
+            '/../../roles/dify_docker/templates/nginx-default.conf.j2')
+          - >-
+            'proxy_send_timeout 43200s;' in lookup('ansible.builtin.template', playbook_dir ~
+            '/../../roles/dify_docker/templates/nginx-default.conf.j2')
+
+    - name: Persist Redis queued messages on its data mount
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'--appendonly yes' in _rendered.services['redis'].command"
+          - "(dify_docker_data_dir ~ '/redis:/data') in _rendered.services['redis'].volumes"
+
+    - name: Route native webhook requests to the API
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            ('location /triggers {\n        proxy_pass http://api:' ~ dify_docker_api_port ~ ';')
+            in lookup('ansible.builtin.template', playbook_dir ~
+            '/../../roles/dify_docker/templates/nginx-default.conf.j2')
+
     - name: SSR uses the internal API while browser URLs remain public
       ansible.builtin.assert:
         quiet: true
@@ -123,3 +169,37 @@
         that:
           - _rendered_with_password_pepper.services['api'].environment.PASSWORD_PEPPER == 'fixture-password-pepper'
           - _rendered_with_password_pepper.services['worker'].environment.PASSWORD_PEPPER == 'fixture-password-pepper'
+
+    - name: Supply runtime input overrides
+      ansible.builtin.set_fact:
+        dify_docker_workflow_max_execution_time: 50000
+        dify_docker_plugin_max_execution_timeout: 45000
+        dify_docker_celery_worker_amount: 3
+        dify_docker_workflow_schedule_poller_enabled: false
+        dify_docker_trigger_provider_refresh_enabled: false
+        dify_docker_trigger_url: "https://triggers.example.invalid"
+        dify_docker_otel_endpoint: "https://cribl.example.invalid"
+        dify_docker_redis_appendonly: false
+
+    - name: Render runtime overrides
+      ansible.builtin.set_fact:
+        _overridden: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+
+    - name: Honor runtime inputs across API and Celery services
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _overridden.services[item].environment.WORKFLOW_MAX_EXECUTION_TIME == '50000'
+          - _overridden.services[item].environment.GUNICORN_TIMEOUT == '50000'
+          - _overridden.services[item].environment.PLUGIN_DAEMON_TIMEOUT == '45000'
+          - _overridden.services['plugin_daemon'].environment.PLUGIN_MAX_EXECUTION_TIMEOUT == '45000'
+          - _overridden.services['plugin_daemon'].environment.DIFY_INVOCATION_CONNECTION_IDLE_TIMEOUT == '45000'
+          - _overridden.services['plugin_daemon'].environment.DIFY_BACKWARDS_INVOCATION_READ_TIMEOUT == '45000000'
+          - _overridden.services[item].environment.CELERY_WORKER_AMOUNT == '3'
+          - _overridden.services[item].environment.GRAPH_ENGINE_MAX_WORKERS == '2'
+          - _overridden.services[item].environment.ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK == 'false'
+          - _overridden.services[item].environment.ENABLE_TRIGGER_PROVIDER_REFRESH_TASK == 'false'
+          - _overridden.services[item].environment.TRIGGER_URL == dify_docker_trigger_url
+          - _overridden.services[item].environment.OTLP_BASE_ENDPOINT == dify_docker_otel_endpoint
+          - "'--appendonly no' in _overridden.services['redis'].command"
+      loop: [api, worker, worker_beat]
