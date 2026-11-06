@@ -260,7 +260,7 @@ def test_classify_call_is_local_capped_and_uses_the_master_key(ns, monkeypatch):
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHARS", "5")
     classifier = Classifier(reply="public")
     monkeypatch.setitem(ns, "_post", classifier)
-    _run(ns, _key("untrusted"), _data("abcdefghij"))
+    _run(ns, _key("untrusted"), _data("abcde"))
     call = classifier.calls[0]
     assert call["url"] == URL
     assert call["key"] == MASTER
@@ -271,4 +271,53 @@ def test_classify_call_is_local_capped_and_uses_the_master_key(ns, monkeypatch):
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     user = body["messages"][1]["content"]
     assert "abcde" in user
-    assert "fghij" not in user
+    assert user == "<text>\nabcde\n</text>"
+
+
+@pytest.mark.parametrize("text", ["x" * 16001, "x" * 16000 + " sensitive suffix"])
+def test_oversized_request_is_refused_without_classifying_a_prefix(ns, monkeypatch, text):
+    classifier = Classifier(reply="public")
+    monkeypatch.setitem(ns, "_post", classifier)
+    _refused(ns, _key("untrusted"), _data(text))
+    assert classifier.calls == []
+
+
+@pytest.mark.parametrize("tool", [False, True])
+def test_sensitive_suffix_and_tool_content_are_classified_in_full(ns, monkeypatch, tool):
+    data = _data("public prefix")
+    if tool:
+        data["messages"].extend([
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call-test", "type": "function", "function": {
+                    "name": "lookup", "arguments": '{"query": "sensitive argument"}',
+                }},
+            ]},
+            {"role": "tool", "tool_call_id": "call-test", "content": "sensitive result"},
+        ])
+    else:
+        data["messages"].append({"role": "user", "content": "sensitive suffix"})
+    calls = []
+
+    async def classify(url, key, body, timeout):
+        text = body["messages"][1]["content"]
+        calls.append(text)
+        label = "sensitive" if "sensitive" in text else "public"
+        return {"choices": [{"message": {"content": label}}]}
+
+    monkeypatch.setitem(ns, "_post", classify)
+    _refused(ns, _key("untrusted"), data)
+    assert len(calls) == 1
+    assert "public prefix" in calls[0]
+    assert ("sensitive argument" if tool else "sensitive suffix") in calls[0]
+    if tool:
+        assert "sensitive result" in calls[0]
+
+
+@pytest.mark.parametrize("kind", ["image_url", "input_audio", "file", "unknown"])
+def test_unsupported_content_is_refused_without_a_call(ns, monkeypatch, kind):
+    classifier = Classifier(reply="public")
+    monkeypatch.setitem(ns, "_post", classifier)
+    data = _data()
+    data["messages"].append({"role": "user", "content": [{"type": kind, "data": "opaque"}]})
+    _refused(ns, _key("untrusted"), data)
+    assert classifier.calls == []
