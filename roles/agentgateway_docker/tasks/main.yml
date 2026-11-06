@@ -6,6 +6,46 @@
 # converge), and deploys the single agentgateway container via Docker Compose.
 # The gateway is stateless: recovery = re-apply the LXC + re-run this role.
 
+- name: Validate agent route names
+  ansible.builtin.assert:
+    that:
+      - _agent_names | unique | list | length == _agent_names | length
+      - _agent_names | reject('match', '^[a-z0-9][a-z0-9_-]*$') | list | length == 0
+      - _roster_names | unique | list | length == _roster_names | length
+    fail_msg: Agent route names and roster entries must be unique, and route names must be path-safe.
+  vars:
+    _agent_names: >-
+      {{ (agentgateway_docker_a2a_targets + agentgateway_docker_dify_mcp_targets) | map(attribute='name') | list }}
+    _roster_names: "{{ agentgateway_docker_agent_roster | map(attribute='agent') | list }}"
+
+- name: Validate exclusive connector ownership
+  ansible.builtin.assert:
+    that:
+      - _integrations | unique | list | length == _integrations | length
+    fail_msg: Each integration must have exactly one connector owner in the agent roster.
+  vars:
+    _integrations: "{{ ai_agents | dict2items | map(attribute='value.owns', default=[]) | flatten }}"
+
+- name: Validate agent peer allowlists
+  ansible.builtin.assert:
+    that:
+      - item.agent is string
+      - item.allowed_callers is sequence and item.allowed_callers is not string and item.allowed_callers is not mapping
+      - item.allowed_callers | reject('in', agentgateway_docker_roster_keys) | list | length == 0
+    fail_msg: Agent peer allowlists must contain authenticated roster caller names.
+  loop: "{{ agentgateway_docker_agent_roster }}"
+  loop_control:
+    label: "{{ item.agent }}"
+
+- name: Validate Dify MCP target URLs
+  ansible.builtin.assert:
+    that:
+      - item.url is string
+      - item.url is match('^https?://[^/]+/.+')
+    fail_msg: Dify MCP targets require an HTTP server URL with an app-specific path.
+  loop: "{{ agentgateway_docker_dify_mcp_targets }}"
+  no_log: true
+
 - name: Validate that no caller id is in both the roster and the harness registry
   ansible.builtin.assert:
     that:
