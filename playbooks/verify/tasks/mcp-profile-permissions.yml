@@ -1,0 +1,55 @@
+---
+- name: Select the explicit read operation for the denial probe
+  ansible.builtin.include_tasks: mcp-select-probe.yml
+
+- name: List each registered server with the profile key
+  ansible.builtin.uri:
+    url: "{{ _mcp_url }}/mcp-rest/tools/list?server_id={{ item.key }}"
+    headers:
+      Authorization: "Bearer {{ _mcp_key.value }}"
+    return_content: true
+    status_code: [200, 403]
+  loop: "{{ _mcp_catalog | dict2items }}"
+  register: _mcp_profile_lists
+  changed_when: false
+  no_log: true
+
+- name: Require exact allowed tools and no tools from every other server
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (item.status == 200 and item.json.error | default(none) is none
+         and (item.json.tools | default([]) | map(attribute='name') | sort)
+             == (item.item.value.allowed_tools | sort))
+        if item.item.key in _mcp_allowed else
+        ((item.status == 403 and item.json.detail.error | default('') == 'access_denied')
+         or (item.status == 200 and item.json.error | default(none) is none
+             and item.json.tools is defined and item.json.tools == []))
+  loop: "{{ _mcp_profile_lists.results }}"
+  no_log: true
+
+# The probe names an explicit read operation independently of catalog order.
+- name: Call a real tool on a registered server outside the profile grant
+  ansible.builtin.uri:
+    url: "{{ _mcp_url }}/mcp-rest/tools/call"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _mcp_key.value }}"
+    body_format: json
+    body:
+      server_id: "{{ _mcp_forbidden }}"
+      name: "{{ _mcp_probe.name }}"
+      arguments: "{{ _mcp_probe.arguments }}"
+    return_content: true
+    status_code: 403
+  register: _mcp_denied_call
+  changed_when: false
+  no_log: true
+
+- name: Require an authorization denial rather than a missing tool or invalid key
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _mcp_denied_call.json.detail.error | default('') == 'access_denied'
+  no_log: true
