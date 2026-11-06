@@ -37,23 +37,19 @@ def _validate_policy(policy: dict[str, Any], today: date) -> None:
 
 
 def model_policy_entry(
-    model_ids: list[str], policy: dict[str, Any], today: date | None = None
+    model_id: str, policy: dict[str, Any], today: date | None = None
 ) -> dict[str, Any]:
     """Resolve one policy record and enforce its upstream age and dossier."""
     today = today or datetime.now(timezone.utc).date()
     _validate_policy(policy, today)
-    matches = []
-    for model_id in model_ids:
-        matches = [entry for entry in policy["models"]
-                   if isinstance(entry, dict) and entry.get("id") == model_id]
-        if matches:
-            break
+    matches = [entry for entry in policy["models"]
+               if isinstance(entry, dict) and entry.get("id") == model_id]
     if len(matches) != 1:
         raise ValueError("Model must resolve to exactly one shared policy record")
     entry = matches[0]
     if not isinstance(entry.get("upstream_id"), str) or not entry["upstream_id"]:
         raise ValueError("Model policy requires an upstream_id")
-    if set(model_ids + [entry["upstream_id"]]).intersection(denied_ids(policy)):
+    if {model_id, entry["upstream_id"]}.intersection(denied_ids(policy)):
         raise ValueError("Model or upstream is denied by the shared policy")
     created = policy_date(entry.get("upstream_created"))
     if not 0 <= (today - created).days <= policy["max_age_days"]:
@@ -68,7 +64,7 @@ def registry_policy_allowed(model: dict[str, Any], policy: dict[str, Any]) -> bo
     if model.get("lifecycle") == "old":
         return False
     try:
-        model_policy_entry([model["client_model_id"], model["upstream_model_id"]], policy)
+        model_policy_entry(model.get("upstream_model_id", ""), policy)
     except ValueError:
         return False
     return True

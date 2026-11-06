@@ -217,7 +217,7 @@ def select_model_trial(
     policy = rules.get("llm_model_trial_policy_data", {})
     ancestors = rules.get("llm_model_trial_upstream_infos", {})
     upstream_dates = _POLICY.upstream_dates(info, ancestors)
-    entry = _POLICY.model_policy_entry([info.get("id", "")], policy)
+    entry = _POLICY.model_policy_entry(info.get("id", ""), policy)
     if set([info["id"]] + list(ancestors)).intersection(_POLICY.denied_ids(policy)):
         raise ValueError("Model or upstream is denied by the shared policy")
     upstream_id, upstream_created = min(upstream_dates, key=lambda item: item[1])
