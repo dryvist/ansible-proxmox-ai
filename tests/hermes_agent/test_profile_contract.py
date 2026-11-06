@@ -136,7 +136,9 @@ def test_profile_env_lists_never_grant_a_forbidden_credential_section() -> None:
 def test_profile_mcp_lists_never_grant_a_forbidden_server() -> None:
     forbidden_mcp = {
         "splunk-admin": {"codex", "context7", "vikunja", "nautobot"},
-        "homelab-admin": {"splunk", "codex", "context7", "vikunja"},
+        # Vikunja is read-only at the gateway. homelab-admin uses it only for
+        # the scheduled backlog review; it receives no write token or skill.
+        "homelab-admin": {"splunk", "codex", "context7"},
         "github-maint": {"splunk", "codex", "context7", "vikunja", "nautobot"},
     }
     for profile in _profiles():

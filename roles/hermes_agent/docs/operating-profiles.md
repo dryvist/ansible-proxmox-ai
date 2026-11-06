@@ -55,7 +55,7 @@ treated as private to it.
 | --- | --- | --- | --- |
 | `default` | Cross-domain, board-meta, write-bearing GitHub | broad tool scope; no ordinary-call Kanban | — |
 | `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Docs MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
-| `homelab-admin` | Incidents + fabric health | Docs MCP, `zammad-incidents` skill | Splunk, Vikunja, GitHub, other MCP/skills |
+| `homelab-admin` | Incidents, fabric health, backlog review | Docs and read-only Vikunja MCP, Zammad skill | Splunk, GitHub, other MCP/skills |
 | `github-maint` | Read-only repo review + proposals | Docs MCP, `github-issues` skill, read-only token | GitHub writes, `docs-pr`, Splunk, Zammad, other |
 | `orchestrator` | Kanban decomposition and assignment | Vikunja + Docs MCP; follow-up card creation | Operational MCP servers and credentials |
 | `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |
