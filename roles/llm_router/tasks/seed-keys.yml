@@ -53,6 +53,19 @@
   loop_control:
     label: "{{ item.alias }}"
 
+- name: Validate caller priority tiers before team or key writes
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - item.priority_tier | default(llm_router_priority_default_tier) in [0, 1, 2]
+    fail_msg: "Key alias {{ item.alias }} must use priority tier 0, 1, or 2."
+  loop: "{{ _llm_router_virtual_keys_without_values }}"
+  loop_control:
+    label: "{{ item.alias }}"
+
+- name: Seed priority teams before assigning caller keys
+  ansible.builtin.import_tasks: seed-priority-teams.yml
+
 - name: Read the virtual keys the proxy already carries
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/list?page=1&size=100&return_full_object=true"
@@ -155,17 +168,11 @@
     body:
       key: "{{ item.value }}"
       key_alias: "{{ item.alias }}"
+      team_id: "{{ item.team_id | default(omit) }}"
       models: "{{ item.models }}"
       object_permission: "{{ item.object_permission | default(llm_router_mcp_default_object_permission) }}"
-      # Attribution contract (docs/LLM_KEY_ATTRIBUTION_CONTRACT.md): every key
-      # carries at minimum `app` (its own alias, so no per-entry edit is ever
-      # needed to keep this in sync) and `tier` (derived, never hand-listed —
-      # a key with a positive daily budget is `subscription`; a budget-less
-      # key draws on the local/free serving tier, which this router never
-      # meters). `device`/`host`/`agent`/`session`/`zdr` are request-time
-      # fields (the caller's own X-Litellm-Tags/metadata on each call) — this
-      # key-level default is the fallback a request that omits them still
-      # rolls up under.
+      # Key attribution carries the consumer alias and numeric priority tier.
+      # Device, agent, session, and privacy fields come from request metadata.
       metadata: >-
         {%- set _metadata = item.metadata | default({}) -%}
         {%- set _metadata_tags = ((_metadata.get('tags', []) | default([], true) | list)
@@ -175,8 +182,8 @@
         {{ _metadata | combine(
           {
             'app': item.alias,
-            'tier': item.tier | default(
-              'subscription' if (item.daily_budget | default(0) | float > 0) else 'local'),
+            'tier': item.priority_tier | default(item.tier | default(
+              'subscription' if (item.daily_budget | default(0) | float > 0) else 'local')),
           },
           recursive=true,
         ) | combine({'tags': _metadata_tags}, recursive=true)

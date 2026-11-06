@@ -1,0 +1,62 @@
+---
+- name: Read each priority team's policy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/team/info?team_id={{ item.team_id }}"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: [200, 404]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ llm_router_priority_tiers }}"
+  loop_control:
+    label: "{{ item.team_id }}"
+  register: _llm_router_priority_team_info
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Create absent priority teams
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/team/new"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      team_id: "{{ item.item.team_id }}"
+      team_alias: "{{ item.item.team_id }}"
+      metadata:
+        tags: "{{ ['&' ~ item.item.team_id] + (['&local'] if item.item.tier == 2 else []) }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ _llm_router_priority_team_info.results }}"
+  loop_control:
+    label: "{{ item.item.team_id }}"
+  when: item.status == 404
+  no_log: true
+
+- name: Reconcile existing priority team tags
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/team/update"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      team_id: "{{ item.item.team_id }}"
+      metadata: "{{ _live_metadata | combine({'tags': _tags}) }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  vars:
+    _live_metadata: "{{ item.json.team_info.metadata | default({}, true) }}"
+    _tags: >-
+      {{ ((_live_metadata.tags | default([], true))
+          | reject('match', '^([&!])?tier-[0-9]+$') | list)
+         + ['&' ~ item.item.team_id] + (['&local'] if item.item.tier == 2 else [])
+         | unique | list }}
+  loop: "{{ _llm_router_priority_team_info.results }}"
+  loop_control:
+    label: "{{ item.item.team_id }}"
+  when:
+    - item.status == 200
+    - _live_metadata.tags | default([], true) != _tags
+  no_log: true

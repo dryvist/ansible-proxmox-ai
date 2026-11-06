@@ -54,7 +54,7 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: The recorder fails fast while judge uses the standard ZDR chain
+    - name: The recorder fails fast and the tier-2 judge key stays local
       ansible.builtin.assert:
         quiet: true
         that:
@@ -66,19 +66,24 @@
           - _judge.role not in _fallback_names
           - _judge.fallbacks | length <= llm_router_max_fallbacks | int
           - _judge.fallbacks | intersect(_unsafe_rungs) | length == 0
-          - _judge_key.allowed_classes == _llm_router_consumer_classes_zdr
+          - _judge_key.allowed_classes == ['local']
           - >-
             (_judge_key.models | unique | sort)
             == (([llm_router_small_model, llm_router_small_capability_name, _judge.role]
-                 + llm_router_d1_zdr_ladder_groups) | unique | sort)
+                 + (llm_router_d1_zdr_ladder_groups | select('in', _local_names) | list)) | unique | sort)
           - "'&zdr' in _judge_key.tags"
           - "'!free' in _judge_key.tags"
           - "'!retains' in _judge_key.tags"
-          - "'&local' not in _judge_key.tags"
+          - "'&local' in _judge_key.tags"
+          - _judge_key.team_id == 'tier-2'
+          - _judge_key.router_settings.fallbacks == []
         fail_msg: >-
           recorder={{ _recorder }}, judge={{ _judge }}, judge key={{ _judge_key }}.
-        success_msg: "Recorder stays local-only and judge reaches only the standard ZDR chain."
+        success_msg: "Recorder stays local-only and the tier-2 judge key has no cloud fallback."
       vars:
+        _local_names: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | selectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
         _local_roles: >-
           {{ llm_router_role_deployments | selectattr('fallbacks', 'equalto', [])
              | map(attribute='role') | list }}
