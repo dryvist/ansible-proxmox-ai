@@ -109,6 +109,7 @@ Key and team metadata carry required tier tags. Tier 2 also requires `local`,
 disables key fallback maps, and receives deployment `timeout` and `stream_timeout`
 of 43200 seconds with `keepalive_seconds: 15`. Cloud deployments carry only
 tiers 0 and 1 and retain their privacy tags.
+Hermes agent endpoints carry all priority tier tags and retain `sensitivity:public`.
 
 The LiteLLM release pinned in `files/requirements.in`, checked 2026-11-06,
 supports deployment keepalives in
