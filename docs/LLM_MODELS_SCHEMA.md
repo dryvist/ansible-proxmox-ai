@@ -53,6 +53,10 @@ Required on every entry:
   enabled           false removes the entry from the rendered config entirely.
 
 Optional:
+  enabled_var         Role input name that supplies the enabled state.
+                      `llm_router_4080_profiles_enabled` defaults to false;
+                      enabling it admits the small lane only after the existing
+                      `probe_before_render` serving probe passes.
   lifecycle           `old` records a superseded model identity for history.
                       It has no render effect, but an OLD entry MUST also have
                       `enabled: false`; the registry/render parity test

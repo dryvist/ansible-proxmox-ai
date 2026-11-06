@@ -46,9 +46,12 @@
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
-    - name: Enable the Studio profiles for the local-class fixture
-      ansible.builtin.set_fact:
-        llm_router_studio_profiles_enabled: true
+    - name: Studio participation is enabled by default and the small lane remains opt-in
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_studio_profiles_enabled | bool
+          - not (llm_router_4080_profiles_enabled | bool)
 
     - name: Load the model registry through the role
       ansible.builtin.include_role:
@@ -61,6 +64,26 @@
     - name: Render the fully credentialed config
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Studio candidates participate in local fallback selection with catalog concurrency
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _studio_candidates | length > 0
+          - _studio_candidates | difference(llm_router_hermes_local_fallback_models) | length == 0
+          - _studio_deployments | length > 0
+          - _studio_deployments | map(attribute='litellm_params.max_parallel_requests') | unique | list == [1]
+          - llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list | length == 0
+          - llm_router_vllm_models | length == 0
+      vars:
+        _studio_candidates: >-
+          {{ llm_router_capability_members | selectattr('tier', 'equalto', 'local-large')
+             | selectattr('route_group', 'in',
+                 [llm_router_small_model, llm_router_primary_model, llm_router_large_model]) | list }}
+        _studio_deployments: >-
+          {{ _config.model_list | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_large_base_url)
+             | rejectattr('model_name', 'equalto', '*') | list }}
 
     - name: Capability aliases do not create duplicate model-list deployments
       ansible.builtin.assert:
