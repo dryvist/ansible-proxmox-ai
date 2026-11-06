@@ -21,13 +21,18 @@
         keys:
           - key_alias: authoritative-narrow
             models: [fixture-small, stale-model]
-            metadata: {tags: ['&sensitivity:sensitive']}
+            metadata: {tags: [operator-note, '!zdr', '&sensitivity:sensitive']}
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: malformed-live
+            team_id: null
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: mcp-reader
             models: [fixture-small]
-            metadata: {tags: ['&sensitivity:sensitive']}
+            metadata: {tags: ['&zdr', '&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+          - key_alias: public-opt-in
+            models: [fixture-public]
+            metadata: {tags: [operator-note, '&zdr', '&sensitivity:sensitive']}
             object_permission: {mcp_servers: [no-mcp-servers]}
 
     llm_router_virtual_keys:
@@ -43,11 +48,16 @@
         value: "sk-{{ 'c' * 20 }}"
         models: [fixture-small]
         object_permission: {mcp_servers: [zammad, slack]}
+      - alias: public-opt-in
+        value: "sk-{{ 'd' * 20 }}"
+        models: [fixture-public]
+        sensitivity_tag: '&sensitivity:public'
 
     _llm_router_live_key_aliases:
       - authoritative-narrow
       - malformed-live
       - mcp-reader
+      - public-opt-in
 
   tasks:
     - name: Extract the committed policy diff expression
@@ -77,13 +87,17 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _initial_updates | map(attribute='alias') | sort == ['authoritative-narrow', 'malformed-live', 'mcp-reader']
+          - >-
+            _initial_updates | map(attribute='alias') | sort
+            == ['authoritative-narrow', 'malformed-live', 'mcp-reader', 'public-opt-in']
           - "_initial_mcp.body.object_permission == {'mcp_servers': ['zammad', 'slack']}"
           - "'models' not in _initial_mcp.body"
           - "'allowed_routes' not in _initial_mcp.body"
           - "'metadata' not in _initial_mcp.body"
           - _initial_narrow.body.models == ['fixture-small']
-          - _initial_malformed.body.metadata.tags == ['&sensitivity:sensitive']
+          - _initial_narrow.body.metadata.tags == ['operator-note', '&zdr', '&sensitivity:sensitive']
+          - _initial_malformed.body.metadata.tags == ['&zdr', '&sensitivity:sensitive']
+          - _initial_public.body.metadata.tags == ['operator-note', '&sensitivity:public']
           - "'models' not in _initial_malformed.body"
           - "'allowed_routes' not in _initial_malformed.body"
         fail_msg: >-
@@ -96,3 +110,44 @@
           {{ _initial_updates | selectattr('alias', 'equalto', 'authoritative-narrow') | first }}
         _initial_malformed: >-
           {{ _initial_updates | selectattr('alias', 'equalto', 'malformed-live') | first }}
+        _initial_public: >-
+          {{ _initial_updates | selectattr('alias', 'equalto', 'public-opt-in') | first }}
+
+    - name: Apply the rendered policy updates to the existing-key fixture
+      ansible.builtin.set_fact:
+        llm_router_existing_keys: >-
+          {%- set ns = namespace(keys=[]) -%}
+          {%- for key in llm_router_existing_keys.json['keys'] -%}
+          {%- set update = _initial_updates | selectattr('alias', 'equalto', key.key_alias) | first -%}
+          {%- set ns.keys = ns.keys + [key | combine(update.body)] -%}
+          {%- endfor -%}
+          {{ {'json': {'keys': ns.keys}} }}
+
+    - name: Verify policy reconciliation is idempotent
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - lookup('ansible.builtin.template', _diff_template_file.path) == []
+
+    - name: Render the create request metadata expression
+      ansible.builtin.copy:
+        dest: "{{ _diff_template_file.path }}"
+        content: >-
+          {{ (lookup('ansible.builtin.file', _role_dir ~ '/tasks/seed-keys.yml') | from_yaml
+              | selectattr('name', 'search', '^Create the caller keys') | first)
+             ['ansible.builtin.uri']['body']['metadata'] }}
+        mode: "0600"
+
+    - name: New key metadata carries the same privacy policy as reconciled keys
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _created.tags == _expected_tags
+      vars:
+        _created: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
+        _expected_tags: >-
+          {{ ['&sensitivity:public'] if item.sensitivity_tag | default('') == '&sensitivity:public'
+             else ['&sensitivity:sensitive', '&zdr'] }}
+      loop: "{{ llm_router_virtual_keys }}"
+      loop_control:
+        label: "{{ item.alias }}"

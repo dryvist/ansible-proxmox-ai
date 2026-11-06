@@ -74,6 +74,14 @@
         quiet: true
         that:
           - _default_tags == ['&zdr', '&sensitivity:sensitive']
+          - >-
+            _config.litellm_settings.default_key_generate_params.models | sort
+            == ([llm_router_primary_model] + llm_router_d1_standard_key_groups) | unique | sort
+          - _config.litellm_settings.default_key_generate_params.models | intersect(_unsafe_names) | length == 0
+          - _config.general_settings.enforce_fallback_model_access | bool
+          - llm_router_d1_standard_key_groups | length > 0
+          - llm_router_d1_all_key_groups == llm_router_d1_standard_key_groups
+          - llm_router_d1_all_key_groups | intersect(_active_zdr_unasserted_terminal_rungs) | length == 0
           - _config.router_settings.enable_tag_filtering | bool
           - _compatible_rows | length > 0
           - _compatible_rows | selectattr('litellm_params.tags', 'contains', 'free') | length == 0
@@ -102,6 +110,7 @@
              | intersect(_config.router_settings.default_fallbacks) }}
         _sensitive_unsafe_rows: >-
           {{ _unsafe_rows | selectattr('litellm_params.tags', 'contains', 'sensitivity:sensitive') | list }}
+        _unsafe_names: "{{ _unsafe_rows | map(attribute='model_name') | unique | list }}"
 
     - name: Explicitly public keys retain free and retaining deployment access
       ansible.builtin.assert:
@@ -110,8 +119,9 @@
           - _free_rows | length > 0
           - _retaining_rows | length > 0
           - _public_unsafe_rows | length == (_free_rows + _retaining_rows) | length
-          - _public_groups | intersect(llm_router_d1_all_key_groups) | length > 0
-          - _free_groups | difference(llm_router_d1_all_key_groups) | length == 0
+          - _public_groups | intersect(llm_router_d1_public_key_groups) | length > 0
+          - _free_groups | difference(llm_router_d1_public_key_groups) | length == 0
+          - _free_groups | intersect(llm_router_d1_all_key_groups) | length == 0
         fail_msg: "Explicit public opt-in lost free or retaining deployment access."
       vars:
         _free_rows: "{{ _config.model_list | selectattr('litellm_params.tags', 'contains', 'free') | list }}"
