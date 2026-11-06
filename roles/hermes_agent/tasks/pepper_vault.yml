@@ -21,8 +21,11 @@
 
 - name: Remove retained evidence refresh credentials when disabled
   ansible.builtin.file:
-    path: /etc/hermes-pepper-vault.env
+    path: "{{ item }}"
     state: absent
+  loop:
+    - /etc/hermes-pepper-vault.env
+    - /etc/hermes-pepper-vault.gitconfig
   when: not (hermes_agent_pepper_vault_enabled | bool)
 
 - name: Prepare the Pepper evidence checkout
@@ -35,8 +38,8 @@
         that:
           - hermes_agent_pepper_vault_repo_url is match('^https://[^/@?#]+/[^?#]+$')
           - hermes_agent_pepper_vault_read_token not in hermes_agent_pepper_vault_repo_url
-          - hermes_agent_pepper_vault_path is match('^/[^\n\r%]+$')
-          - hermes_agent_pepper_vault_path != '/'
+          - hermes_agent_pepper_vault_path is match('^/var/lib/pepper-evidence/[A-Za-z0-9_-]+$')
+          - hermes_agent_pepper_vault_path | dirname == '/var/lib/pepper-evidence'
       no_log: true
 
     - name: Install the existing Node.js and npm stdio runtime pattern
@@ -52,51 +55,53 @@
         group: root
         mode: "0755"
 
-    - name: Resolve the evidence repository default branch
-      ansible.builtin.command:
-        argv:
-          - /usr/bin/git
-          - ls-remote
-          - --symref
-          - "{{ hermes_agent_pepper_vault_repo_url }}"
-          - HEAD
-      environment: "{{ hermes_agent_pepper_vault_git_environment }}"
-      register: hermes_agent_pepper_vault_remote_head
-      changed_when: false
-      no_log: true
+    - name: Create the dedicated evidence refresh account
+      ansible.builtin.user:
+        name: pepper-evidence
+        system: true
+        create_home: false
+        home: /nonexistent
+        shell: /usr/sbin/nologin
 
-    # Git's environment config applies only to the process, never .git/config.
-    - name: Clone or refresh Pepper evidence with the read-only credential
-      ansible.builtin.git:
-        repo: "{{ hermes_agent_pepper_vault_repo_url }}"
-        dest: "{{ hermes_agent_pepper_vault_path }}"
-        version: >-
-          {{ hermes_agent_pepper_vault_remote_head.stdout_lines[0].split()[1]
-             | regex_replace('^refs/heads/', '') }}
-        update: true
-        force: false
-        umask: "0022"
-      environment: "{{ hermes_agent_pepper_vault_git_environment }}"
-      no_log: true
-
-    - name: Make the evidence checkout root-owned and read-only to Hermes
+    - name: Keep the evidence checkout writable only by its refresh account
       ansible.builtin.file:
         path: "{{ hermes_agent_pepper_vault_path }}"
         state: directory
-        recurse: true
-        follow: false
-        owner: root
-        group: root
-        mode: u=rwX,go=rX
+        owner: pepper-evidence
+        group: pepper-evidence
+        mode: "0755"
 
-    - name: Store daily refresh authentication outside the evidence checkout
-      ansible.builtin.template:
-        src: hermes-pepper-vault.env.j2
-        dest: /etc/hermes-pepper-vault.env
+    - name: Initialize the evidence checkout without executing repository content
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/git
+          - -c
+          - core.hooksPath=/dev/null
+          - init
+          - --initial-branch=evidence
+          - "{{ hermes_agent_pepper_vault_path }}"
+        creates: "{{ hermes_agent_pepper_vault_path }}/.git"
+      become: true
+      become_user: pepper-evidence
+
+    - name: Store refresh authentication in a root-only Git config
+      ansible.builtin.copy:
+        content: |
+          [credential]
+              helper =
+          [http]
+              extraHeader = Authorization: Basic {{
+              ('x-access-token:' ~ hermes_agent_pepper_vault_read_token) | b64encode }}
+        dest: /etc/hermes-pepper-vault.gitconfig
         owner: root
         group: root
         mode: "0600"
       no_log: true
+
+    - name: Remove legacy environment authentication
+      ansible.builtin.file:
+        path: /etc/hermes-pepper-vault.env
+        state: absent
 
     - name: Deploy the Pepper evidence refresh units using the brain-sync pattern
       ansible.builtin.template:
@@ -115,3 +120,8 @@
         enabled: true
         state: started
         daemon_reload: true
+
+    - name: Refresh evidence through the same sandbox used by the timer
+      ansible.builtin.systemd:
+        name: hermes-pepper-vault.service
+        state: started

@@ -74,10 +74,15 @@ def test_youtrack_rendering_is_pepper_only_and_uses_environment_substitution():
     for identity in ['pepper', 'hermes', 'donna']:
         rendered = env.from_string(src).render(context, hermes_agent_id=identity)
         servers = (yaml.safe_load(rendered) or {}).get('mcp_servers', {})
-        assert set(servers) == ({'youtrack'} if identity == 'pepper' else set())
+        assert set(servers) == ({'youtrack', 'youtrack_intake'} if identity == 'pepper' else set())
         assert 'fixture-token' not in rendered
         if identity == 'pepper':
             assert servers['youtrack']['headers']['Authorization'] == 'Bearer ${YOUTRACK_MCP_TOKEN}'
+            assert servers['youtrack_intake']['tools']['include'] == ['search_issues']
+            assert servers['youtrack_intake']['tools']['resources'] is False
+            assert servers['youtrack_intake']['tools']['prompts'] is False
+            assert servers['youtrack_intake']['resources'] is False
+            assert servers['youtrack_intake']['prompts'] is False
     context['hermes_agent_youtrack_mcp_token'] = ''
     assert not yaml.safe_load(env.from_string(src).render(context, hermes_agent_id='pepper'))
 
@@ -268,5 +273,11 @@ def test_pepper_intake_requests_only_bounded_metadata():
     assert 'at most 10 new Kanban cards' in prompt
     assert '<issue-key>' in prompt
     assert 'longest unchecked' not in prompt
-    assert ('# shortcut: the 10-card cap is prompt-enforced, add a per-run counter if intake ever reads issue text.'
-            in (ROLE / 'defaults/main/40-assistant-identity-prompts.yml').read_text())
+    source = (ROLE / 'defaults/main/40-assistant-identity-prompts.yml').read_text()
+    assert ('# shortcut: search_issues returns issue text and the 10-card cap is prompt-enforced;'
+            in source)
+    assert 'the intake has only Kanban and YouTrack read tools' in source
+    assert 'so add a per-run counter if abuse appears.' in source
+    jobs = role_defaults(ROLE)['hermes_agent_direct_cron_jobs_assistant']
+    intake = next(j for j in jobs if j['name'] == 'pepper-nightly-intake')
+    assert intake['enabled_toolsets'] == ['kanban', 'youtrack_intake']
