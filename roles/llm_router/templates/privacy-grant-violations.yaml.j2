@@ -1,0 +1,24 @@
+{%- set ns = namespace(violations=[]) -%}
+{%- for record in _llm_router_privacy_records -%}
+{%- set metadata = record.metadata | default({}, true) -%}
+{%- set tags = metadata.get('tags', []) | default([], true) -%}
+{%- set privacy = record.privacy_class | default(metadata.get('privacy_class',
+      'public' if record.sensitivity_tag | default('') == '&sensitivity:public'
+      or '&sensitivity:public' in tags else 'sensitive')) -%}
+{%- set models = record.models | default([], true) -%}
+{%- set grants = namespace(names=models | list) -%}
+{%- for model in models if model in llm_router_model_group_aliases -%}
+{%- set grants.names = grants.names + [llm_router_model_group_aliases[model]] -%}
+{%- endfor -%}
+{%- set unsafe = grants.names | intersect(llm_router_zdr_unasserted_terminal_rungs) -%}
+{%- set unrestricted = not models or 'all-proxy-models' in models
+      or models | select('search', '[*?]') | list | length > 0 -%}
+{%- if privacy != 'public' and (unsafe or unrestricted) -%}
+{%- set ns.violations = ns.violations + [{
+      'alias': record.alias | default(record.key_alias | default(record.team_id | default(none)), true)
+          | default('unnamed-key-' ~ loop.index, true),
+      'grants': ['unrestricted'] if unrestricted else unsafe | sort,
+    }] -%}
+{%- endif -%}
+{%- endfor -%}
+{{ ns.violations }}
