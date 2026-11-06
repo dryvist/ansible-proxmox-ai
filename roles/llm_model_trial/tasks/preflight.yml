@@ -24,6 +24,9 @@
           auto/vllm/llama_cpp, a positive context, and positive slots.
         quiet: true
 
+    - name: Load the shared model admission policy
+      ansible.builtin.import_tasks: model-policy.yml
+
     - name: Confirm the fixed target resolves to one inventory host
       ansible.builtin.assert:
         that:
@@ -44,7 +47,7 @@
       ansible.builtin.command:
         argv: >-
           {{ ['hf', 'models', 'info', hf_repo, '--json', '--expand',
-              'author,sha,likes,downloads,private,gated,gguf,createdAt,lastModified']
+              'id,author,sha,likes,downloads,private,gated,gguf,createdAt,lastModified,cardData']
              + (['--revision', revision] if revision is defined else []) }}
       environment:
         HF_HUB_DISABLE_IMPLICIT_TOKEN: '1'
@@ -54,6 +57,15 @@
     - name: Parse the resolved Hub model facts
       ansible.builtin.set_fact:
         llm_model_trial_hub_info: "{{ llm_model_trial_hub_info_raw.stdout | from_json }}"
+
+    - name: Initialize the upstream model metadata graph
+      ansible.builtin.set_fact:
+        llm_model_trial_upstream_infos: {}
+        llm_model_trial_upstream_pending: "{{ llm_model_trial_hub_info | llm_model_trial_base_models }}"
+
+    - name: Resolve the base model creation dates
+      ansible.builtin.include_tasks: upstream.yml
+      when: llm_model_trial_upstream_pending | length > 0
 
     - name: Enforce repository visibility, trust, popularity, and immutable revision gates
       ansible.builtin.assert:

@@ -1,0 +1,21 @@
+---
+- name: Verify shared model policy loading on the controller
+  hosts: localhost
+  gather_facts: false
+  vars:
+    llm_model_trial_policy: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/fixtures/model-policy.json') | from_json }}
+  tasks:
+    - name: Load the model admission policy through the production task file
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: model-policy.yml
+        public: true
+
+    - name: Verify the selected policy and registered filter
+      ansible.builtin.assert:
+        that:
+          - llm_model_trial_policy_data.deny == (expected_deny | default([]))
+          - >-
+            ({'client_model_id': 'example/quantized', 'upstream_model_id': 'example/base'}
+             | llm_model_policy_allowed(llm_model_trial_policy_data)) == (expected_allowed | default(true))
