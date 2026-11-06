@@ -56,7 +56,10 @@ Optional:
   enabled_var         Role input name that supplies the enabled state.
                       `llm_router_4080_profiles_enabled` defaults to false;
                       enabling it admits the small lane only after the existing
-                      `probe_before_render` serving probe passes.
+                      `probe_before_render` model listing and one-token completion
+                      probes pass. HTTP 200 with a choice is required.
+                      Studio shared candidates use the same load-and-serve gate;
+                      failed or unreachable lanes are excluded and reported.
   lifecycle           `old` records a superseded model identity for history.
                       It has no render effect, but an OLD entry MUST also have
                       `enabled: false`; the registry/render parity test

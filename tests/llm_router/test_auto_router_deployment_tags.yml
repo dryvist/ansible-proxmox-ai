@@ -58,6 +58,31 @@
         name: llm_router
         tasks_from: registry.yml
 
+    - name: Render shared candidates before a Studio completion has passed
+      ansible.builtin.set_fact:
+        _unprobed_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Studio shared candidates fail closed without a completion result
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (llm_router_studio_precheck_passed | bool)
+          - llm_router_studio_shared_models | length == 0
+          - llm_router_capability_members | selectattr('tier', 'equalto', 'local-large') | list | length == 0
+          - llm_router_hermes_local_fallback_models | selectattr('tier', 'equalto', 'local-large') | list | length == 0
+          - >-
+            _unprobed_config.model_list
+            | selectattr('model_name', 'in', llm_router_large_models | map(attribute='route_group') | list)
+            | selectattr('litellm_params.api_base', 'defined')
+            | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_large_base_url) | list | length == 0
+
+    - name: Model a successful Studio load-and-serve gate for this render
+      ansible.builtin.set_fact:
+        llm_router_studio_precheck_passed: true
+
+    - name: Refresh the admitted Studio candidate projections
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
     - name: Model the trusted callers these projections assume
       ansible.builtin.import_tasks: "{{ playbook_dir }}/tasks/trust_fixture_callers.yml"
 

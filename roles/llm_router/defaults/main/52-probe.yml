@@ -23,6 +23,7 @@ llm_router_readiness_path: "{{ tofu_data.constants.llm_router_probe_paths.readin
 # Bounded so an unreachable endpoint costs seconds rather than a converge.
 # Short deliberately: this probe must never be why a rolling converge stalls.
 llm_router_probe_timeout: 10
+llm_router_probe_completion_tokens: 1
 
 # Model-listing endpoints for tiers whose entry does not name its own upstream.
 # An entry carrying `api_base` needs no line here — that IS the endpoint.
@@ -62,13 +63,16 @@ _llm_router_probe_targets: >-
   {%- set ns = namespace(out=[]) -%}
   {%- for m in _llm_router_probe_candidates -%}
   {%- set cred = m.credential_env | default('', true) -%}
-  {%- set url = (m.api_base ~ '/models') if m.api_base is defined
+  {%- set studio = m.tier == 'local-large' and m.servable | default(false) | bool
+       and llm_router_studio_profiles_enabled | bool -%}
+  {%- set url = (llm_router_llm_large_base_url ~ '/models') if studio
+       else (m.api_base ~ '/models') if m.api_base is defined
        else (llm_router_llm_vllm_base_url ~ '/models')
          if (m.probe_before_render | default(false) | bool)
             and (groups['llm_vllm_group'] | default([]) | length > 0)
        else llm_router_probe_model_list_urls.get(m.provider,
             llm_router_probe_model_list_urls.get(m.tier, '')) -%}
-  {%- if cred | length > 0 or m.probe_before_render | default(false) | bool -%}
+  {%- if cred | length > 0 or m.probe_before_render | default(false) | bool or studio -%}
   {%- set field = m.key_field | default('') -%}
   {%- set ns.out = ns.out + [{
         'endpoint': url,
@@ -77,7 +81,7 @@ _llm_router_probe_targets: >-
         'key_field': field,
         'has_credential': (bao_local_llm_secrets | default({}, true))[field]
           | default(lookup('env', cred), true) | trim | length > 0 if cred | length > 0 else false,
-        'precheck': m.probe_before_render | default(false) | bool,
+        'precheck': studio or m.probe_before_render | default(false) | bool,
         'tier': m.tier,
         'first_byte_timeout': m.first_byte_timeout | default(llm_router_probe_timeout),
         'route_name': m.route_group | default(m.client_model_id),
@@ -91,6 +95,7 @@ llm_router_probe_prechecks: >-
      | rejectattr('endpoint', 'equalto', '') | list }}
 
 llm_router_vllm_precheck_passed: false
+llm_router_studio_precheck_passed: false
 
 # The probe plan: one query per endpoint, carrying every id registered against
 # it. Grouped so a tier with six models costs one round trip, not six.
