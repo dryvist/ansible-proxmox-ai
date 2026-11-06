@@ -2,6 +2,34 @@
 
 Deploys the Dify LLMOps platform as a Docker Compose stack in an LXC.
 
+## Batch runtime inputs
+
+| Input | Default | Runtime setting |
+| --- | --- | --- |
+| `dify_docker_workflow_max_execution_time` | `43200` seconds (12 hours) | `WORKFLOW_MAX_EXECUTION_TIME` |
+| `dify_docker_redis_appendonly` | `true` | Redis `--appendonly yes`, persisted on the Redis data mount |
+| `dify_docker_celery_worker_amount` | `ai_agent_default_concurrency` | `CELERY_WORKER_AMOUNT`, with `CELERY_AUTO_SCALE=false` |
+| `dify_docker_workflow_schedule_poller_enabled` | `true` | `ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK` |
+| `dify_docker_trigger_provider_refresh_enabled` | `true` | `ENABLE_TRIGGER_PROVIDER_REFRESH_TASK` |
+| `dify_docker_trigger_url` | `dify_docker_public_url` | `TRIGGER_URL`, the public webhook base URL |
+| `dify_docker_otel_endpoint` | `ai_orchestration_otel_endpoint` | `OTLP_BASE_ENDPOINT`, the Cribl OpenTelemetry collector base URL |
+
+Celery concurrency applies per worker container across its subscribed queues.
+Additional worker replicas multiply the active task capacity. `GRAPH_ENGINE_MAX_WORKERS`
+remains the per-workflow engine limit, derived from `ai_agent_default_concurrency`.
+The API, worker, and scheduler share the runtime environment, including enabled
+OpenTelemetry export over HTTP/protobuf.
+
+Dify 1.18 registers webhook routes without a separate enable flag. `TRIGGER_URL`
+sets their advertised base URL; the schedule poller runs through `worker_beat`.
+Nginx forwards `/triggers` to the API. The worker subscribes to Dify's native
+workflow and trigger queues.
+
+Runtime names verified against Dify 1.18.0 on 2026-11-06:
+[workflow and schedule settings](https://github.com/langgenius/dify/blob/1.18.0/api/configs/feature/__init__.py),
+[trigger URL](https://github.com/langgenius/dify/blob/1.18.0/docker/.env.example), and
+[worker concurrency and queues](https://github.com/langgenius/dify/blob/1.18.0/api/docker/entrypoint.sh).
+
 ## Installation
 
 This role ships in the `ansible-proxmox-ai` repository and is applied via
