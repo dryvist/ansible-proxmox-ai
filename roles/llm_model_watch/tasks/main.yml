@@ -1,0 +1,52 @@
+---
+- name: Inspect the existing watcher timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/llm-model-watch.timer
+  register: llm_model_watch_timer
+
+- name: Stop a previously configured watcher when disabled
+  ansible.builtin.systemd_service:
+    name: llm-model-watch.timer
+    enabled: false
+    state: stopped
+  when:
+    - not llm_model_watch_enabled | bool
+    - llm_model_watch_timer.stat.exists
+
+- name: Install the enabled controller watcher
+  when: llm_model_watch_enabled | bool
+  block:
+    - name: Require configured accelerator capabilities
+      ansible.builtin.assert:
+        that:
+          - llm_model_watch_accelerators | length > 0
+          - llm_model_watch_playbook_bin is match('^/')
+        quiet: true
+
+    - name: Install the watcher units
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: '0644'
+      loop:
+        - llm-model-watch.service
+        - llm-model-watch.timer
+      register: llm_model_watch_units
+
+    - name: Persist watcher configuration for scheduled runs
+      ansible.builtin.copy:
+        dest: /etc/llm-model-watch.yml
+        mode: '0600'
+        content: >-
+          {{ {'llm_model_watch_enabled': true,
+              'llm_model_watch_orgs': llm_model_watch_orgs,
+              'llm_model_watch_accelerators': llm_model_watch_accelerators,
+              'llm_model_watch_limit_per_org': llm_model_watch_limit_per_org,
+              'llm_model_watch_queue_dir': llm_model_watch_queue_dir} | to_nice_yaml }}
+
+    - name: Enable the daily watcher timer
+      ansible.builtin.systemd_service:
+        name: llm-model-watch.timer
+        daemon_reload: "{{ llm_model_watch_units.changed }}"
+        enabled: true
+        state: started

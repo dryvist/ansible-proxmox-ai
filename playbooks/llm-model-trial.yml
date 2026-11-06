@@ -11,6 +11,18 @@
   vars:
     ansible_become: false
   tasks:
+    - name: Read a queued model trial request
+      ansible.builtin.include_vars:
+        file: "{{ llm_model_trial_request_file }}"
+        name: llm_model_trial_request
+      when: llm_model_trial_request_file is defined
+
+    - name: Bind the queued immutable model revision
+      ansible.builtin.set_fact:
+        hf_repo: "{{ llm_model_trial_request.hf_repo }}"
+        revision: "{{ llm_model_trial_request.revision }}"
+      when: llm_model_trial_request_file is defined
+
     - name: Require exactly one GPU trial host in the inventory
       ansible.builtin.assert:
         that:
@@ -24,6 +36,15 @@
       ansible.builtin.include_role:
         name: llm_model_trial
         tasks_from: preflight.yml
+
+    - name: Require the queued quantization to match the validated trial plan
+      ansible.builtin.assert:
+        that:
+          - llm_model_trial_request.accelerator | string == llm_model_trial_host | string
+          - llm_model_trial_selected.quantization == llm_model_trial_request.quantization
+          - llm_model_trial_selected.resolved_sha == llm_model_trial_request.revision
+        quiet: true
+      when: llm_model_trial_request_file is defined
 
 - name: Serve one run-scoped candidate on the fixed 6000 GPU host
   hosts: llm_gpu_group

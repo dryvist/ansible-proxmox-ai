@@ -1,0 +1,26 @@
+---
+- name: Read immutable model facts with weight sizes
+  ansible.builtin.uri:
+    url: >-
+      https://huggingface.co/api/models/{{ llm_model_watch_model.id }}/revision/{{
+      llm_model_watch_model.sha }}?blobs=true
+    return_content: true
+    timeout: 60
+  register: llm_model_watch_detail
+
+- name: Read quantization metadata at the same immutable revision
+  ansible.builtin.uri:
+    url: >-
+      https://huggingface.co/{{ llm_model_watch_model.id }}/resolve/{{ llm_model_watch_model.sha }}/config.json
+    return_content: true
+    timeout: 60
+  register: llm_model_watch_config
+  when: >-
+    llm_model_watch_detail.json.siblings | selectattr('rfilename', 'equalto', 'config.json') | list | length > 0
+
+- name: Gather sized model facts and pinned quantization metadata
+  ansible.builtin.set_fact:
+    llm_model_watch_models: >-
+      {{ llm_model_watch_models + [llm_model_watch_detail.json | combine(
+          {'config': (llm_model_watch_config.content | from_json)
+              if llm_model_watch_config.content is defined else {}})] }}

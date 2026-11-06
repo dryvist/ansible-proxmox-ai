@@ -1,0 +1,75 @@
+---
+- name: Collect public model releases and write trial proposals
+  when: llm_model_watch_enabled | bool
+  block:
+    - name: Require accelerator capabilities and Slack delivery
+      ansible.builtin.assert:
+        that:
+          - llm_model_watch_accelerators | length > 0
+          - llm_model_watch_webhook_url is match('^https://')
+          - llm_model_watch_limit_per_org | int > 0
+        quiet: true
+      no_log: true
+
+    - name: Reset collected Hub facts
+      ansible.builtin.set_fact:
+        llm_model_watch_models: []
+        llm_model_watch_requests: []
+
+    - name: Read recent releases for each watched organization
+      ansible.builtin.uri:
+        url: >-
+          https://huggingface.co/api/models?author={{ item | urlencode }}&sort=lastModified&direction=-1&limit={{
+          llm_model_watch_limit_per_org | int }}&full=true
+        return_content: true
+        timeout: 60
+      loop: "{{ llm_model_watch_orgs }}"
+      register: llm_model_watch_lists
+
+    - name: Resolve release sizes and quantization at each immutable revision
+      ansible.builtin.include_tasks: detail.yml
+      loop: "{{ llm_model_watch_lists.results | map(attribute='json') | flatten }}"
+      loop_control:
+        loop_var: llm_model_watch_model
+        label: "{{ llm_model_watch_model.id }}"
+      when:
+        - llm_model_watch_model.private is defined and llm_model_watch_model.private is false
+        - llm_model_watch_model.gated is defined and llm_model_watch_model.gated is false
+        - llm_model_watch_model.id is match('^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$')
+        - llm_model_watch_model.sha | default('') is match('^[a-f0-9]{40}$')
+
+    - name: Select candidates that fit each accelerator
+      ansible.builtin.set_fact:
+        llm_model_watch_requests: >-
+          {{ llm_model_watch_models
+             | llm_model_watch_select(llm_model_watch_accelerators, llm_model_watch_orgs) }}
+
+    - name: Create the persistent proposal ledger
+      ansible.builtin.file:
+        path: "{{ llm_model_watch_queue_dir }}"
+        state: directory
+        mode: '0700'
+
+    - name: Queue each unseen revision and accelerator once
+      ansible.builtin.copy:
+        dest: "{{ llm_model_watch_queue_dir }}/{{ item.key }}.json"
+        content: "{{ item | to_nice_json }}\n"
+        force: false
+        mode: '0600'
+      loop: "{{ llm_model_watch_requests }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: llm_model_watch_queued
+
+    - name: Post the daily one-line Slack summary
+      ansible.builtin.uri:
+        url: "{{ llm_model_watch_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          text: >-
+            Model watch: {{ llm_model_watch_queued.results | selectattr('changed') | list | length }} new trial
+            requests queued; {{ llm_model_watch_requests | length }} fitting candidates; serving unchanged.
+        timeout: 30
+        status_code: 200
+      no_log: true

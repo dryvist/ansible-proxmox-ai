@@ -90,6 +90,7 @@ ROLE_TESTS = {
     "nvidia_gpu_guest": GPU_PYTEST,
     "llm_gpu_serving": GPU_PYTEST,
     "llm_model_trial": {"tests/llm_model_trial/"},
+    "llm_model_watch": {"tests/llm_model_trial/"},
     "phoenix_docker": set(),
     "llamaindex": set(),
     "qdrant_docker": {"tests/qdrant_docker/"},
