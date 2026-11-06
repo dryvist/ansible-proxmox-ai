@@ -1,0 +1,61 @@
+---
+- name: Select the intended service grant and a registered forbidden server
+  ansible.builtin.set_fact:
+    _mcp_allowed: >-
+      {{ llm_router_mcp_hermes_object_permission.mcp_servers if _mcp_key.profile != 'eval' else [] }}
+    _mcp_forbidden: >-
+      {{ (_llm_router_app_agent_matrix | selectattr('enabled') | first).server_id
+         if _mcp_key.profile != 'eval' else llm_router_mcp_zammad_server_id }}
+
+- name: List each registered server with the profile key
+  ansible.builtin.uri:
+    url: "{{ _mcp_url }}/mcp-rest/tools/list?server_id={{ item.key }}"
+    headers:
+      Authorization: "Bearer {{ _mcp_key.value }}"
+    return_content: true
+    status_code: [200, 403]
+  loop: "{{ _mcp_catalog | dict2items }}"
+  register: _mcp_profile_lists
+  changed_when: false
+  no_log: true
+
+- name: Require exact allowed tools and no tools from every other server
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (item.status == 200 and item.json.error | default(none) is none
+         and (item.json.tools | default([]) | map(attribute='name') | sort)
+             == (item.item.value.allowed_tools | sort))
+        if item.item.key in _mcp_allowed else
+        ((item.status == 403 and item.json.detail.error | default('') == 'access_denied')
+         or (item.status == 200 and item.json.error | default(none) is none
+             and item.json.tools is defined and item.json.tools == []))
+  loop: "{{ _mcp_profile_lists.results }}"
+  no_log: true
+
+# The first allowed tool on an app tier is a read operation. If authorization
+# regresses, this probe cannot create or modify an object.
+- name: Call a real tool on a registered server outside the profile grant
+  ansible.builtin.uri:
+    url: "{{ _mcp_url }}/mcp-rest/tools/call"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _mcp_key.value }}"
+    body_format: json
+    body:
+      server_id: "{{ _mcp_forbidden }}"
+      name: "{{ _mcp_catalog[_mcp_forbidden].allowed_tools | first }}"
+      arguments: "{{ {'subcommand': 'list'} if _mcp_forbidden is match('^vikunja_') else {} }}"
+    return_content: true
+    status_code: 403
+  register: _mcp_denied_call
+  changed_when: false
+  no_log: true
+
+- name: Require an authorization denial rather than a missing tool or invalid key
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _mcp_denied_call.json.detail.error | default('') == 'access_denied'
+  no_log: true

@@ -1,0 +1,31 @@
+---
+- name: Render the real server catalog and profile grants
+  ansible.builtin.set_fact:
+    _catalog: >-
+      {{ (lookup('ansible.builtin.template', _role_dir ~ '/templates/mcp-servers.yaml.j2')
+          | from_yaml).mcp_servers }}
+    _profiles: "{{ _llm_router_hermes_profile_keys }}"
+  no_log: true
+
+- name: Require exact registration parity and unchanged service permissions
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _catalog.keys() | sort == llm_router_mcp_registered_server_ids | sort
+      - _profiles | map(attribute='alias') | sort == ['hermes-default', 'hermes-eval', 'hermes-orchestrator']
+      - >-
+        (_profiles | selectattr('alias', 'equalto', 'hermes-eval') | first).object_permission
+        == llm_router_mcp_default_object_permission
+      - >-
+        _profiles | rejectattr('alias', 'equalto', 'hermes-eval')
+        | map(attribute='object_permission.mcp_servers') | list
+        == [llm_router_mcp_hermes_object_permission.mcp_servers] * 2
+      - >-
+        _profiles | map(attribute='object_permission.mcp_servers') | flatten
+        | difference(_catalog.keys() | list + llm_router_mcp_default_object_permission.mcp_servers)
+        | length == 0
+      - >-
+        _profiles | map(attribute='object_permission.mcp_servers') | flatten
+        | intersect(_llm_router_app_agent_matrix | map(attribute='server_id') | list) | length == 0
+      - _catalog.values() | selectattr('allow_all_keys') | list | length == 0
+    fail_msg: Profile grants must contain only registered intended servers or the explicit deny sentinel.

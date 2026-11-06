@@ -1,0 +1,53 @@
+---
+- name: Reconcile profile grants with the finite router catalog
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      hermes_default_llm_router_key: fixture-default
+      hermes_orchestrator_llm_router_key: fixture-orchestrator
+      hermes_eval_llm_router_key: fixture-eval
+    hermes_agent_profiles:
+      - name: orchestrator
+      - name: eval
+    hermes_agent_identity: hermes
+    hermes_brain_model: brain
+    llm_large_serving_host: ""
+    llm_router_external_terminal_rungs: []
+    llm_router_zdr_unasserted_terminal_rungs: []
+    _llm_router_directly_callable_ladder_names: []
+    # Enable an app tier without broadening any profile's grants.
+    openbao_secrets_by_domain:
+      app-agent-vikunja-read:
+        VIKUNJA_AGENT_READ_TOKEN: fixture-read
+  tasks:
+    - name: Load production defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load catalog-backed model projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+        public: true
+
+    - name: Load the repository package pin
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/load-app-agent-package-pin.yml"
+
+    - name: Check both optional-server states
+      ansible.builtin.include_tasks: assert_mcp_effective_permissions.yml
+      loop: [false, true]
+      loop_control:
+        loop_var: _slack_enabled
+      vars:
+        llm_router_mcp_slack_enabled: "{{ _slack_enabled }}"

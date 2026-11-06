@@ -1,0 +1,74 @@
+---
+# Run with the same non-secret configuration/presence inputs as the router.
+# Supply keys through LLM_ROUTER_{DEFAULT,ORCHESTRATOR,EVAL,MASTER}_KEY and
+# the endpoint through LLM_ROUTER_URL. Requires one enabled app tier to prove
+# server-level denial for default/orchestrator without attempting a write.
+- name: Verify effective MCP permissions for default orchestrator and eval
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _mcp_url: "{{ lookup('env', 'LLM_ROUTER_URL') | trim | regex_replace('/+$', '') }}"
+    _mcp_master: "{{ lookup('env', 'LLM_ROUTER_MASTER_KEY') | trim }}"
+    _mcp_keys:
+      - profile: default
+        value: "{{ lookup('env', 'LLM_ROUTER_DEFAULT_KEY') | trim }}"
+      - profile: orchestrator
+        value: "{{ lookup('env', 'LLM_ROUTER_ORCHESTRATOR_KEY') | trim }}"
+      - profile: eval
+        value: "{{ lookup('env', 'LLM_ROUTER_EVAL_KEY') | trim }}"
+  tasks:
+    - name: Load the production router defaults
+      ansible.builtin.include_vars:
+        dir: "{{ playbook_dir }}/../../roles/llm_router/defaults/main"
+
+    - name: Load the repository package pin
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/load-app-agent-package-pin.yml
+
+    - name: Render the expected finite server catalog
+      ansible.builtin.set_fact:
+        _mcp_catalog: >-
+          {{ (lookup('template', playbook_dir ~ '/../../roles/llm_router/templates/mcp-servers.yaml.j2')
+              | from_yaml).mcp_servers }}
+      no_log: true
+
+    - name: Require endpoint credentials and a registered denied target
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _mcp_url | length > 0
+          - _mcp_master | length > 0
+          - _mcp_keys | map(attribute='value') | select('equalto', '') | list | length == 0
+          - _mcp_keys | map(attribute='value') | unique | length == 3
+          - _mcp_master not in (_mcp_keys | map(attribute='value') | list)
+          - _llm_router_app_agent_matrix | selectattr('enabled') | list | length > 0
+        fail_msg: Supply distinct profile keys, master key, URL, and an enabled app tier.
+      no_log: true
+
+    - name: Verify every registered server exists with exactly the expected tools
+      ansible.builtin.uri:
+        url: "{{ _mcp_url }}/mcp-rest/tools/list?server_id={{ item.key }}"
+        headers:
+          Authorization: "Bearer {{ _mcp_master }}"
+        return_content: true
+        status_code: 200
+      loop: "{{ _mcp_catalog | dict2items }}"
+      register: _mcp_registered
+      changed_when: false
+      no_log: true
+
+    - name: Require a usable catalog before testing authorization
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.json.error | default(none) is none
+          - item.json.tools | map(attribute='name') | sort == item.item.value.allowed_tools | sort
+      loop: "{{ _mcp_registered.results }}"
+      no_log: true
+
+    - name: Verify each profile through the live MCP endpoints
+      ansible.builtin.include_tasks: tasks/mcp-profile-permissions.yml
+      loop: "{{ _mcp_keys }}"
+      loop_control:
+        loop_var: _mcp_key
+        label: "{{ _mcp_key.profile }}"
