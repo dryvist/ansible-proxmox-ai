@@ -85,7 +85,7 @@ def model_policy_entry(
     if any((match.get("upstream_created"), match.get("dossier")) !=
            (entry.get("upstream_created"), entry.get("dossier")) for match in matches):
         raise ValueError("Model upstream_id has conflicting shared policy records")
-    if {entry.get("id"), upstream_id}.intersection(denied_ids(policy)):
+    if upstream_id in denied_ids(policy):
         raise ValueError("Model or upstream is denied by the shared policy")
     created = policy_date(entry.get("upstream_created"))
     if not 0 <= (today - created).days <= policy["max_age_days"]:
