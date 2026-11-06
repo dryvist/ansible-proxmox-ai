@@ -12,6 +12,9 @@
             ~ (_llm_router_probe_report.gate_ids | length) ~ ' served id(s): '
             ~ (_llm_router_probe_report.gate_ids | join(', ')))
            if _llm_router_probe_report.gate == 'verified'
+           else 'EXCLUDED from local candidates; missing listed model(s): ['
+                ~ (llm_router_servable_models | difference(_llm_router_probe_report.gate_ids) | join(', ')) ~ ']'
+           if _llm_router_probe_report.gate == 'excluded'
            else 'NOT CHECKED, so the registry claim that ['
                 ~ (llm_router_servable_models | join(', ')) ~ '] is served stands unverified' }}
       - "Remote endpoints verified: {{ _llm_router_probe_report.verified | join(', ') | default('none', true) }}"
@@ -46,3 +49,12 @@
         Tiers with no model listing this role can parse:
         {{ _llm_router_probe_report.unsupported | join(', ') | default('none', true) }}
   changed_when: false
+
+- name: Report missing models on excluded local listing endpoints
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.labels | join(', ') }}: excluded from local candidates;
+      missing listed model(s): {{ item.missing | join(', ') | default('none', true) }}.
+  loop: "{{ _llm_router_remote_probe_results | selectattr('state', 'equalto', 'excluded') | list }}"
+  loop_control:
+    label: "{{ item.labels | join(', ') }}"

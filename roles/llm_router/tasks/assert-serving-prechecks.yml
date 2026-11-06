@@ -1,0 +1,42 @@
+---
+- name: Classify local load-and-serve results
+  ansible.builtin.set_fact:
+    _llm_router_serving_precheck_passed_tiers: >-
+      {%- set ns = namespace(tiers=[]) -%}
+      {%- for tier in llm_router_probe_prechecks | map(attribute='tier') | unique -%}
+      {%- set expected = llm_router_probe_prechecks | selectattr('tier', 'equalto', tier)
+           | map(attribute='model') | unique | list -%}
+      {%- set passed = namespace(models=[]) -%}
+      {%- for result in _llm_router_completion_precheck_responses.results | default([])
+           | selectattr('item.tier', 'equalto', tier) -%}
+      {%- if result.status | default(0) | int == 200
+            and result.json | default(none) is mapping
+            and (result.json | default({}, true)).get('choices', []) is sequence
+            and (result.json | default({}, true)).get('choices', []) is not string
+            and (result.json | default({}, true)).get('choices', []) is not mapping
+            and (result.json | default({}, true)).get('choices', []) | length > 0
+            and result.json.choices[0] is mapping -%}
+      {%- set passed.models = passed.models + [result.item.model] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if expected | length > 0 and expected | difference(passed.models) | length == 0 -%}
+      {%- set ns.tiers = ns.tiers + [tier] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.tiers }}
+  no_log: true
+
+- name: Apply local load-and-serve admission gates
+  ansible.builtin.set_fact:
+    llm_router_vllm_precheck_passed: "{{ 'vllm' in _llm_router_serving_precheck_passed_tiers }}"
+    llm_router_studio_precheck_passed: "{{ 'local-large' in _llm_router_serving_precheck_passed_tiers }}"
+
+- name: Report each local lane admission decision
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.route_name }} ({{ item.tier }}):
+      {{ 'eligible after load-and-serve probe' if item.tier in _llm_router_serving_precheck_passed_tiers
+         else 'excluded: model listing or load-and-serve probe failed or unreachable' }}
+  loop: "{{ llm_router_probe_prechecks }}"
+  loop_control:
+    label: "{{ item.route_name }}"

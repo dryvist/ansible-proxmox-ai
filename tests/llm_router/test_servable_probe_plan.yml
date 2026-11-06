@@ -50,6 +50,7 @@
     bao_local_llm_secrets:
       OPENROUTER_API_KEY: fixture-key-not-a-secret
     bao_apps_secrets: {}
+    llm_large_serving_host: llm-large
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -83,12 +84,14 @@
         quiet: true
         that:
           - _disabled_precheck_models | length > 0
-          - llm_router_probe_prechecks | length == _precheck_models | length
+          - llm_router_probe_prechecks | length == (_precheck_models + _studio_models) | length
           - >-
             llm_router_probe_prechecks | map(attribute='model') | list
-            == _precheck_models | map(attribute='upstream_model_id') | list
+            | symmetric_difference((_precheck_models + _studio_models) | map(attribute='upstream_model_id') | list)
+            | length == 0
           - >-
-            llm_router_probe_prechecks | map(attribute='first_byte_timeout') | list
+            llm_router_probe_prechecks | selectattr('tier', 'equalto', 'vllm')
+            | map(attribute='first_byte_timeout') | list
             == _precheck_models | map(attribute='first_byte_timeout') | list
           - llm_router_probe_prechecks | rejectattr('endpoint') | list | length == 0
           - >-
@@ -102,6 +105,9 @@
           planned={{ llm_router_probe_prechecks }}.
         success_msg: The probe plan follows active registry opt-ins and excludes disabled opt-ins.
       vars:
+        _studio_models: >-
+          {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'local-large')
+             | selectattr('servable', 'defined') | selectattr('servable') | list }}
         _precheck_models: >-
           {{ llm_router_registry_enabled | selectattr('probe_before_render', 'defined')
              | selectattr('probe_before_render') | list }}
@@ -255,3 +261,64 @@
         _route_groups: >-
           {{ llm_router_model_registry | selectattr('route_group', 'defined')
              | map(attribute='route_group') | unique | list }}
+
+- name: Local shared lanes require load-and-serve evidence for every planned model
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Supply a local probe plan independent of the previous play's defaults
+      ansible.builtin.set_fact:
+        llm_router_probe_prechecks:
+          - {tier: local-large, model: fixture-studio, route_name: fixture-medium}
+          - {tier: vllm, model: fixture-small, route_name: fixture-small}
+
+    - name: Exercise admission with successful and failed completions
+      ansible.builtin.include_tasks: tasks/serving_precheck_case.yml
+      loop:
+        - name: both lanes serve
+          studio: {status: 200, json: {choices: [{index: 0}]}}
+          small: {status: 200, json: {choices: [{index: 0}]}}
+          expected: [local-large, vllm]
+        - name: Studio unreachable after a prior success
+          studio: {status: -1}
+          small: {status: 200, json: {choices: [{index: 0}]}}
+          expected: [vllm]
+        - name: Small completion fails after a prior success
+          studio: {status: 200, json: {choices: [{index: 0}]}}
+          small: {status: 503}
+          expected: [local-large]
+        - name: Listing alone admits neither lane
+          studio: {skipped: true}
+          small: {skipped: true}
+          expected: []
+        - name: Successful HTTP without choices admits neither lane
+          studio: {status: 200, json: {choices: []}}
+          small: {status: 200, json: {data: [{id: fixture-small}]}}
+          expected: []
+        - name: Missing response bodies admit neither lane
+          studio: {status: 200}
+          small: {status: 200, json: null}
+          expected: []
+        - name: Invalid choices admit neither lane
+          studio: {status: 200, json: {choices: invalid}}
+          small: {status: 200, json: {choices: null}}
+          expected: []
+      loop_control:
+        loop_var: probe_case
+        label: "{{ probe_case.name }}"
+
+    - name: Add another planned Studio model without a completion result
+      ansible.builtin.set_fact:
+        llm_router_probe_prechecks: >-
+          {{ llm_router_probe_prechecks + [
+             {'tier': 'local-large', 'model': 'fixture-second-studio', 'route_name': 'fixture-large'}] }}
+
+    - name: Admit the small lane while the Studio has an unchecked model
+      ansible.builtin.include_tasks: tasks/serving_precheck_case.yml
+      vars:
+        probe_case:
+          studio: {status: 200, json: {choices: [{index: 0}]}}
+          small: {status: 200, json: {choices: [{index: 0}]}}
+          expected: [vllm]
