@@ -56,11 +56,25 @@
       {%- set live_tags = actual.tags | default([]) | list -%}
       {%- set desired_tags = ((live_tags | reject('in', _class_tags) | list)
             + target_tags) | unique | list -%}
-      {%- if live_tags | sort != desired_tags | sort -%}
+      {%- set _priority_previous = (live.model_info | default({})).get('priority_policy', {}) -%}
+      {%- set projection = lookup('template', (_role_dir | default(role_path))
+            ~ '/templates/role-priority-policy.json.j2', template_vars={
+              '_priority_role': role, '_priority_params': actual,
+              '_priority_tags': desired_tags,
+              '_priority_previous': _priority_previous}) | from_json -%}
+      {%- set info = live.model_info | combine({'priority_policy': projection.provenance}) -%}
+      {%- if actual != projection.params or info != live.model_info -%}
+      {%- set patch = {} -%}
+      {%- for field in ['tags', 'extra_body', 'timeout', 'stream_timeout', 'keepalive_seconds'] -%}
+      {%- if field in projection.params and projection.params[field] != actual.get(field) -%}
+      {%- set _ = patch.update({field: projection.params[field]}) -%}
+      {%- endif -%}
+      {%- endfor -%}
       {%- set _discard = ns.updates.append({
             'role': role.role,
             'model_id': live.model_info.id | default(''),
-            'tags': desired_tags,
+            'tags': projection.params.tags, 'params': projection.params,
+            'patch': patch, 'model_info': info,
           }) -%}
       {%- endif -%}
       {%- endif -%}

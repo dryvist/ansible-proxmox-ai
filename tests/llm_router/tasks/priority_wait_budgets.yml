@@ -1,0 +1,60 @@
+---
+- name: Load shared tier 2 timeout inputs
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../inventory/group_vars/all/00-core.yml"
+
+- name: Tier 2 permits twelve hours of waiting plus execution
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - ai_tier_2_wait_timeout_seconds == 43200
+      - ai_tier_2_router_request_timeout_seconds == 45600
+      - ai_tier_2_client_timeout_seconds == 45000
+      - llm_router_priority_policy_by_tier['2'].router_settings.timeout == ai_tier_2_router_request_timeout_seconds
+      - "'timeout' not in llm_router_priority_policy_by_tier['0'].router_settings"
+      - "'timeout' not in llm_router_priority_policy_by_tier['1'].router_settings"
+      - ai_router_request_timeout_seconds == 2400
+      - ai_stream_read_timeout_seconds == 1800
+      - _config.router_settings.timeout == ai_router_request_timeout_seconds
+
+- name: Catalog admission distinguishes execution slots from waiters
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _profile.execution_width == 8
+      - _profile.admitted_waiters == 56
+      - _profile.max_parallel_requests == _profile.execution_width + _profile.admitted_waiters
+      - _members | length == llm_router_priority_tiers | length
+      - >-
+        _members | map(attribute='litellm_params.max_parallel_requests')
+        | unique | list == [_profile.max_parallel_requests]
+  vars:
+    _profile: "{{ llm_router_model_registry | selectattr('profile', 'defined')
+      | selectattr('profile', 'equalto', llm_active_profile) | first }}"
+    _members: >-
+      {{ _local | selectattr('model_name', 'equalto', _profile.route_group)
+         | selectattr('litellm_params.api_base', 'equalto', _endpoint) | list }}
+    _endpoint: "{{ llm_router_gpu_profile_base_urls[llm_active_profile] }}"
+
+- name: Small local lane accounts for execution without reserved waiters
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _lane.execution_width == 2
+      - _lane.admitted_waiters == 0
+      - _lane.max_parallel_requests == _lane.execution_width + _lane.admitted_waiters
+  vars:
+    _lane: "{{ llm_router_model_registry | selectattr('tier', 'equalto', 'vllm') | first }}"
+
+- name: Load the tier 2 service's native client budgets
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../inventory/group_vars/hindsight_group.yml"
+
+- name: The tier 2 client and worker allow waiting plus execution
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hindsight_docker_retain_llm_timeout == ai_tier_2_client_timeout_seconds
+      - hindsight_docker_consolidation_llm_timeout == ai_tier_2_client_timeout_seconds
+      - hindsight_docker_retain_wall_timeout == ai_tier_2_router_request_timeout_seconds
+      - hindsight_docker_consolidation_wall_timeout == ai_tier_2_router_request_timeout_seconds

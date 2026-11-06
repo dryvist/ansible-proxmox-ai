@@ -24,6 +24,7 @@
     body:
       team_id: "{{ item.item.team_id }}"
       team_alias: "{{ item.item.team_id }}"
+      router_settings: "{{ llm_router_priority_policy_by_tier[item.item.tier | string].router_settings }}"
       metadata:
         tags: "{{ ['&' ~ item.item.team_id] + (['&local'] if item.item.tier == 2 else []) }}"
     status_code: [200, 201]
@@ -44,10 +45,14 @@
     body:
       team_id: "{{ item.item.team_id }}"
       metadata: "{{ _live_metadata | combine({'tags': _tags}) }}"
+      router_settings: "{{ _settings }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
   vars:
     _live_metadata: "{{ item.json.team_info.metadata | default({}, true) }}"
+    _live_settings: "{{ item.json.team_info.router_settings | default({}, true) }}"
+    _settings: >-
+      {{ _live_settings | combine(llm_router_priority_policy_by_tier[item.item.tier | string].router_settings) }}
     _tags: >-
       {{ ((_live_metadata.tags | default([], true))
           | reject('match', '^([&!])?tier-[0-9]+$') | list)
@@ -58,5 +63,5 @@
     label: "{{ item.item.team_id }}"
   when:
     - item.status == 200
-    - _live_metadata.tags | default([], true) != _tags
+    - _live_metadata.tags | default([], true) != _tags or _settings != _live_settings
   no_log: true

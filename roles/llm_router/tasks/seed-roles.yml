@@ -74,16 +74,14 @@
     body_format: json
     body:
       model_name: "{{ item.role }}"
-      litellm_params: "{{ _llm_router_role_params[item.model]
-         | combine(item.litellm_params | default({}))
-         | combine({'tags': _llm_router_role_params[item.model].tags
-                    | reject('match', '^telemetry_') | list}) }}"
+      litellm_params: "{{ _llm_router_role_seed_policy[item.role].params }}"
       # Carried explicitly for the same reason the rendered deployments carry
       # it: a null max_input_tokens makes every caller compress its context to
       # death instead of failing (tasks/assert.yml). `seed_model` records the
       # Git seed target on the row, so a /v2/model/info reader can tell an
       # Admin UI retarget from the seed.
-      model_info: "{{ _llm_router_role_model_info[item.model] | combine({'seed_model': item.model}) }}"
+      model_info: "{{ _llm_router_role_model_info[item.model] | combine({'seed_model': item.model,
+        'priority_policy': _llm_router_role_seed_policy[item.role].provenance}) }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
   # Absent roles whose TARGET the proxy actually serves. A credential-gated
@@ -211,11 +209,9 @@
     body_format: json
     body:
       model_name: "{{ item.role }}"
-      litellm_params: "{{ _llm_router_role_params[item.model]
-         | combine(item.litellm_params | default({}))
-         | combine({'tags': _llm_router_role_params[item.model].tags
-                    | reject('match', '^telemetry_') | list}) }}"
-      model_info: "{{ _llm_router_role_model_info[item.model] | combine({'seed_model': item.model}) }}"
+      litellm_params: "{{ _llm_router_role_seed_policy[item.role].params }}"
+      model_info: "{{ _llm_router_role_model_info[item.model] | combine({'seed_model': item.model,
+        'priority_policy': _llm_router_role_seed_policy[item.role].provenance}) }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
   loop: "{{ _llm_router_roles_to_rebuild }}"
@@ -269,8 +265,9 @@
       Authorization: "Bearer {{ llm_router_master_key }}"
     body_format: json
     body:
-      litellm_params:
-        tags: "{{ item.tags }}"
+      litellm_params: "{{ item.patch }}"
+      model_info:
+        priority_policy: "{{ item.model_info.priority_policy }}"
     status_code: [200]
     timeout: "{{ llm_router_seed_request_timeout }}"
   loop: "{{ _llm_router_role_tag_updates }}"

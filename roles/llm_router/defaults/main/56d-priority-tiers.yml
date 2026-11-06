@@ -4,7 +4,10 @@ llm_router_priority_tiers:
   - {tier: 1, team_id: tier-1, priority: 10}
   - {tier: 2, team_id: tier-2, priority: 20}
 
-llm_router_tier_2_timeout_seconds: 43200
+llm_router_tier_2_timeout_seconds: >-
+  {{ ai_tier_2_router_request_timeout_seconds | default(
+       (ai_tier_2_wait_timeout_seconds | default(43200) | int)
+       + (ai_router_request_timeout_seconds | default(2400) | int)) }}
 llm_router_tier_2_keepalive_seconds: 15
 
 # Keys can declare priority_tier; otherwise this input maps consumer aliases.
@@ -36,3 +39,20 @@ llm_router_priority_key_tiers:
   hermes-eval: 2
 
 llm_router_priority_default_tier: 1
+
+# Shared projection for key creation, reconciliation, and DB role deployments.
+llm_router_priority_policy_by_tier: >-
+  {%- set out = {} -%}
+  {%- for tier in llm_router_priority_tiers -%}
+  {%- set settings = {'enable_tag_filtering': true} -%}
+  {%- if tier.tier == 2 -%}
+  {%- set settings = settings | combine({'fallbacks': [],
+        'context_window_fallbacks': [], 'content_policy_fallbacks': [],
+        'timeout': llm_router_tier_2_timeout_seconds}) -%}
+  {%- endif -%}
+  {%- set _ = out.update({tier.tier | string: {
+        'tier': tier.tier, 'priority': tier.priority,
+        'tags': ['&' ~ tier.team_id] + (['&local'] if tier.tier == 2 else []),
+        'router_settings': settings}}) -%}
+  {%- endfor -%}
+  {{ out }}
