@@ -1,0 +1,157 @@
+---
+- name: Validate the judge input contract
+  ansible.builtin.assert:
+    that:
+      - langfuse_docker_judge.name | length > 0
+      - langfuse_docker_judge.prompt_name is match('^judge-.+')
+      - langfuse_docker_judge.model | length > 0
+      - >-
+        langfuse_docker_judge.model in
+        (llm_router_model_registry | selectattr('tier', 'in', llm_router_local_registry_tiers)
+         | map(attribute='client_model_id') | list)
+        + (llm_router_model_registry | selectattr('tier', 'in', llm_router_local_registry_tiers)
+           | selectattr('route_group', 'defined') | map(attribute='route_group') | list)
+      - langfuse_docker_judge.target.agent | length > 0
+      - langfuse_docker_judge.target.tier in [0, 1, 2]
+      - langfuse_docker_judge.sampling_rate | default(0.1) is number
+      - langfuse_docker_judge.sampling_rate | default(0.1) >= 0
+      - langfuse_docker_judge.sampling_rate | default(0.1) <= 1
+
+- name: Fetch the released judge prompt by name and label
+  ansible.builtin.uri:
+    url: >-
+      {{ langfuse_docker_public_api_url }}/v2/prompts/{{ langfuse_docker_judge.prompt_name | urlencode
+      }}?label={{ langfuse_docker_judge.prompt_label | default('production') | urlencode }}
+    status_code: 200
+  register: langfuse_docker_judge_prompt
+  retries: 3
+  delay: 1
+  until: langfuse_docker_judge_prompt.status | default(-1) == 200
+  changed_when: false
+
+- name: Resolve the judge output schema and prompt variables
+  ansible.builtin.set_fact:
+    langfuse_docker_judge_schema: >-
+      {{ langfuse_docker_judge.output_schema | default(langfuse_docker_judge_output_schema) }}
+    langfuse_docker_judge_variables: >-
+      {{ (langfuse_docker_judge_prompt.json.prompt | to_json)
+         | regex_findall('\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}') | unique | list }}
+
+- name: Validate native numeric score output and variable sources
+  ansible.builtin.assert:
+    that:
+      - langfuse_docker_judge_schema.properties.score.type == 'number'
+      - langfuse_docker_judge_schema.properties.reasoning.type == 'string'
+      - langfuse_docker_judge_schema.properties.score.minimum <= langfuse_docker_judge_schema.properties.score.maximum
+      - >-
+        langfuse_docker_judge_variables
+        | difference(['input', 'output', 'metadata', 'tool_calls',
+                      'expected_output', 'experiment_item_metadata']) | length == 0
+    fail_msg: Judge prompts must use native variable sources and a numeric score with string reasoning.
+
+- name: Define native judge configuration
+  ansible.builtin.set_fact:
+    langfuse_docker_judge_body:
+      name: "{{ langfuse_docker_judge.name }}"
+      type: llm_as_judge
+      prompt: >-
+        {{ langfuse_docker_judge_prompt.json.prompt
+           if langfuse_docker_judge_prompt.json.type == 'chat'
+           else [{'role': 'user', 'content': langfuse_docker_judge_prompt.json.prompt}] }}
+      modelConfig:
+        provider: litellm-router
+        model: "{{ langfuse_docker_judge.model }}"
+      outputDefinition:
+        dataType: NUMERIC
+        minValue: "{{ langfuse_docker_judge_schema.properties.score.minimum }}"
+        maxValue: "{{ langfuse_docker_judge_schema.properties.score.maximum }}"
+      variableMapping: >-
+        {%- set ns = namespace(mappings=[]) -%}
+        {%- for variable in langfuse_docker_judge_variables -%}
+        {%- set ns.mappings = ns.mappings + [{'variable': variable, 'source': variable, 'jsonPath': none}] -%}
+        {%- endfor -%}
+        {{ ns.mappings }}
+    langfuse_docker_api_resource: evaluators
+    langfuse_docker_api_cursor: ''
+    langfuse_docker_cursor_rows: []
+
+- name: Read existing native evaluators
+  ansible.builtin.include_tasks: read-native-cursor-page.yml
+
+- name: Select judge evaluator by name
+  ansible.builtin.set_fact:
+    langfuse_docker_judge_matches: >-
+      {{ langfuse_docker_cursor_rows | selectattr('name', 'equalto', langfuse_docker_judge.name) | list }}
+
+- name: Require an unambiguous judge evaluator
+  ansible.builtin.assert:
+    that:
+      - langfuse_docker_judge_matches | length <= 1
+      - langfuse_docker_judge_matches | length == 0 or langfuse_docker_judge_matches[0].type == 'llm_as_judge'
+
+- name: Create or update native judge evaluator when configuration changes
+  ansible.builtin.uri:
+    url: >-
+      {{ langfuse_docker_public_api_url }}/v2/evaluators{{
+      '/' ~ langfuse_docker_judge_matches[0].id if langfuse_docker_judge_matches | length else '' }}
+    method: "{{ 'PATCH' if langfuse_docker_judge_matches | length else 'POST' }}"
+    body: "{{ langfuse_docker_judge_body }}"
+    status_code: [200, 201]
+  register: langfuse_docker_judge_write
+  when: >-
+    langfuse_docker_judge_matches | length == 0
+    or langfuse_docker_judge_matches[0].prompt != langfuse_docker_judge_body.prompt
+    or langfuse_docker_judge_matches[0].modelConfig != langfuse_docker_judge_body.modelConfig
+    or langfuse_docker_judge_matches[0].outputDefinition != langfuse_docker_judge_body.outputDefinition
+    or langfuse_docker_judge_matches[0].variableMapping != langfuse_docker_judge_body.variableMapping
+  changed_when: true
+
+- name: Define sampled rule for agent and tier tags
+  ansible.builtin.set_fact:
+    langfuse_docker_rule_body:
+      name: "{{ langfuse_docker_judge.name }}"
+      enabled: true
+      sampling: "{{ langfuse_docker_judge.sampling_rate | default(0.1) }}"
+      filter:
+        - type: arrayOptions
+          column: tags
+          operator: all of
+          value:
+            - "agent:{{ langfuse_docker_judge.target.agent }}"
+            - "tier:{{ langfuse_docker_judge.target.tier }}"
+      evaluatorAssignments:
+        - evaluatorId: >-
+            {{ langfuse_docker_judge_write.json.id if langfuse_docker_judge_write is not skipped
+               else langfuse_docker_judge_matches[0].id }}
+          variableMapping: null
+    langfuse_docker_api_resource: evaluation-rules
+    langfuse_docker_api_cursor: ''
+    langfuse_docker_cursor_rows: []
+
+- name: Read existing native evaluation rules
+  ansible.builtin.include_tasks: read-native-cursor-page.yml
+
+- name: Select native sampling rule by name
+  ansible.builtin.set_fact:
+    langfuse_docker_rule_matches: >-
+      {{ langfuse_docker_cursor_rows | selectattr('name', 'equalto', langfuse_docker_judge.name) | list }}
+
+- name: Require an unambiguous sampling rule
+  ansible.builtin.assert:
+    that: langfuse_docker_rule_matches | length <= 1
+
+- name: Create or update native sampling rule when configuration changes
+  ansible.builtin.uri:
+    url: >-
+      {{ langfuse_docker_public_api_url }}/v2/evaluation-rules{{
+      '/' ~ langfuse_docker_rule_matches[0].id if langfuse_docker_rule_matches | length else '' }}
+    method: "{{ 'PATCH' if langfuse_docker_rule_matches | length else 'POST' }}"
+    body: "{{ langfuse_docker_rule_body }}"
+    status_code: [200, 201]
+  when: >-
+    langfuse_docker_rule_matches | length == 0
+    or langfuse_docker_rule_matches[0].enabled != langfuse_docker_rule_body.enabled
+    or langfuse_docker_rule_matches[0].sampling != langfuse_docker_rule_body.sampling
+    or langfuse_docker_rule_matches[0].filter != langfuse_docker_rule_body.filter
+    or langfuse_docker_rule_matches[0].evaluatorAssignments != langfuse_docker_rule_body.evaluatorAssignments
+  changed_when: true

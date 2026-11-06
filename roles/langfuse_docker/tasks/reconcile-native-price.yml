@@ -1,0 +1,38 @@
+---
+- name: Validate model price units and values
+  ansible.builtin.assert:
+    that:
+      - langfuse_docker_price.model_pattern | length > 0
+      - langfuse_docker_price.unit in ['TOKENS', 'CHARACTERS', 'MILLISECONDS', 'SECONDS', 'IMAGES', 'REQUESTS']
+      - langfuse_docker_price.input_price is number
+      - langfuse_docker_price.output_price is number
+      - langfuse_docker_price.input_price >= 0
+      - langfuse_docker_price.output_price >= 0
+
+- name: Select the latest custom model price definition
+  ansible.builtin.set_fact:
+    langfuse_docker_existing_prices: >-
+      {{ langfuse_docker_api_rows
+         | rejectattr('isLangfuseManaged')
+         | selectattr('matchPattern', 'equalto', langfuse_docker_price.model_pattern)
+         | sort(attribute='createdAt', reverse=true) | list }}
+    langfuse_docker_price_body:
+      modelName: "{{ langfuse_docker_price.model_pattern }}"
+      matchPattern: "{{ langfuse_docker_price.model_pattern }}"
+      unit: "{{ langfuse_docker_price.unit }}"
+      inputPrice: "{{ langfuse_docker_price.input_price }}"
+      outputPrice: "{{ langfuse_docker_price.output_price }}"
+      startDate: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%S.%fZ') }}"
+
+- name: Create a model price definition when absent or changed
+  ansible.builtin.uri:
+    url: "{{ langfuse_docker_public_api_url }}/models"
+    method: POST
+    body: "{{ langfuse_docker_price_body }}"
+    status_code: 200
+  when: >-
+    langfuse_docker_existing_prices | length == 0
+    or langfuse_docker_existing_prices[0].unit != langfuse_docker_price.unit
+    or langfuse_docker_existing_prices[0].inputPrice != langfuse_docker_price.input_price
+    or langfuse_docker_existing_prices[0].outputPrice != langfuse_docker_price.output_price
+  changed_when: true
