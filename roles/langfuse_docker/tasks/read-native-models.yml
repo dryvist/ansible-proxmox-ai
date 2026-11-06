@@ -1,0 +1,19 @@
+---
+- name: Read model price page
+  ansible.builtin.uri:
+    url: "{{ langfuse_docker_public_api_url }}/models?limit=100&page={{ langfuse_docker_api_page }}"
+    status_code: 200
+  register: langfuse_docker_model_page
+  retries: 3
+  delay: 1
+  until: langfuse_docker_model_page.status | default(-1) == 200
+  changed_when: false
+
+- name: Accumulate model price page
+  ansible.builtin.set_fact:
+    langfuse_docker_api_rows: "{{ langfuse_docker_api_rows + langfuse_docker_model_page.json.data }}"
+    langfuse_docker_api_page: "{{ langfuse_docker_api_page | int + 1 }}"
+
+- name: Read remaining model price pages
+  ansible.builtin.include_tasks: read-native-models.yml
+  when: langfuse_docker_api_page | int <= langfuse_docker_model_page.json.meta.totalPages | int

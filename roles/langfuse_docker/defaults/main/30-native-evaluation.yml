@@ -1,0 +1,31 @@
+---
+# Native public APIs; the Stage 0 code-evaluator flags remain independent.
+langfuse_docker_native_evaluation_enabled: true
+langfuse_docker_datasets:
+  - name: "{{ langfuse_docker_stage0_dataset_name }}-train"
+  - name: "{{ langfuse_docker_stage0_dataset_name }}-holdout"
+
+# USD per usage unit.
+# shortcut: zero price, replace with measured power cost
+langfuse_docker_local_unit_price: 0
+langfuse_docker_model_prices: >-
+  {%- set ns = namespace(prices=[]) -%}
+  {%- for name in llm_router_model_registry
+        | selectattr('tier', 'in', llm_router_local_registry_tiers)
+        | map(attribute='client_model_id') | unique | sort -%}
+  {%- set ns.prices = ns.prices + [{
+        'model_pattern': '^' ~ (name | regex_escape) ~ '$',
+        'unit': 'TOKENS',
+        'input_price': langfuse_docker_local_unit_price,
+        'output_price': langfuse_docker_local_unit_price}] -%}
+  {%- endfor -%}
+  {{ ns.prices }}
+
+langfuse_docker_judge_output_schema:
+  type: object
+  properties:
+    score: {type: number, minimum: 0, maximum: 1}
+    reasoning: {type: string}
+  required: [score, reasoning]
+
+langfuse_docker_public_api_url: "http://127.0.0.1:{{ langfuse_docker_web_port }}/api/public"
