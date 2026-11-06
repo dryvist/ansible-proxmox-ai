@@ -45,10 +45,16 @@ x-shared-env: &dify-api-worker-env
   REDIS_DB: "0"
   REDIS_USE_SSL: "false"
   CELERY_BROKER_URL: "redis://:{{ dify_docker_redis_password }}@redis:{{ dify_docker_redis_port }}/1"
-  # One shared agent-side cap; the LiteLLM router absorbs model-tier overload.
-  CELERY_WORKER_AMOUNT: "{{ ai_agent_default_concurrency }}"
+  # Active tasks per worker container; graph workers are per workflow engine.
+  CELERY_WORKER_AMOUNT: "{{ dify_docker_celery_worker_amount }}"
   CELERY_AUTO_SCALE: "false"
   GRAPH_ENGINE_MAX_WORKERS: "{{ ai_agent_default_concurrency }}"
+  WORKFLOW_MAX_EXECUTION_TIME: "{{ dify_docker_workflow_max_execution_time }}"
+  GUNICORN_TIMEOUT: "{{ dify_docker_workflow_max_execution_time }}"
+  PLUGIN_DAEMON_TIMEOUT: "{{ dify_docker_plugin_max_execution_timeout }}"
+  ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK: "{{ dify_docker_workflow_schedule_poller_enabled | bool | lower }}"
+  ENABLE_TRIGGER_PROVIDER_REFRESH_TASK: "{{ dify_docker_trigger_provider_refresh_enabled | bool | lower }}"
+  TRIGGER_URL: "{{ dify_docker_trigger_url }}"
   BROKER_USE_SSL: "false"
   # Vector store — bundled Weaviate (NOT the external qdrant).
   VECTOR_STORE: "weaviate"
@@ -80,7 +86,7 @@ x-shared-env: &dify-api-worker-env
   OPENAI_API_KEY: "{{ dify_docker_model_api_key }}"
   # OpenTelemetry export to the homelab collector (group_var, reference only).
   ENABLE_OTEL: "true"
-  OTLP_BASE_ENDPOINT: "{{ ai_orchestration_otel_endpoint }}"
+  OTLP_BASE_ENDPOINT: "{{ dify_docker_otel_endpoint }}"
   OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
   # CORS — internal-only deployment behind the homelab reverse proxy.
   WEB_API_CORS_ALLOW_ORIGINS: "*"
@@ -175,7 +181,7 @@ services:
     image: {{ dify_docker_redis_image }}
     restart: {{ dify_docker_restart_policy }}
     logging: *dify_docker_logging
-    command: redis-server --requirepass {{ dify_docker_redis_password }}
+    command: redis-server --requirepass {{ dify_docker_redis_password }} --appendonly {{ 'yes' if dify_docker_redis_appendonly | bool else 'no' }}
     volumes:
       - {{ dify_docker_data_dir }}/redis:/data
 
@@ -254,7 +260,9 @@ services:
       PLUGIN_REMOTE_INSTALLING_PORT: "5003"
       PLUGIN_WORKING_PATH: "/app/storage/cwd"
       PYTHON_ENV_INIT_TIMEOUT: "120"
-      PLUGIN_MAX_EXECUTION_TIMEOUT: "600"
+      PLUGIN_MAX_EXECUTION_TIMEOUT: "{{ dify_docker_plugin_max_execution_timeout }}"
+      DIFY_INVOCATION_CONNECTION_IDLE_TIMEOUT: "{{ dify_docker_plugin_max_execution_timeout }}"
+      DIFY_BACKWARDS_INVOCATION_READ_TIMEOUT: "{{ dify_docker_plugin_max_execution_timeout | int * 1000 }}"
       PLUGIN_STORAGE_TYPE: "local"
       PLUGIN_STORAGE_LOCAL_ROOT: "/app/storage"
     depends_on:
