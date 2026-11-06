@@ -1,0 +1,142 @@
+---
+- name: Reconcile priority teams and existing key policy without service access
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_seed_mode: initial
+    llm_router_mcp_default_object_permission:
+      mcp_servers: [no-mcp-servers]
+  tasks:
+    - name: Load priority inputs
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/56d-priority-tiers.yml"
+
+    - name: Allocate temporary policy expressions
+      ansible.builtin.tempfile:
+        state: directory
+      register: _fixture
+
+    - name: Exercise the production policy expressions
+      block:
+        - name: Copy the key and team expressions into render fixtures
+          ansible.builtin.copy:
+            dest: "{{ _fixture.path }}/{{ item.name }}.j2"
+            content: "{{ item.expression }}"
+            mode: '0600'
+          loop:
+            - name: key
+              expression: >-
+                {{ (lookup('file', _role_dir ~ '/tasks/reconcile-seeded-key-policy.yml') | from_yaml | first)
+                   ['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
+            - name: team-create
+              expression: >-
+                {{ (lookup('file', _role_dir ~ '/tasks/seed-priority-teams.yml') | from_yaml)[1]
+                   ['ansible.builtin.uri']['body']['metadata']['tags'] }}
+            - name: team-update
+              expression: >-
+                {{ (lookup('file', _role_dir ~ '/tasks/seed-priority-teams.yml') | from_yaml)[2]['vars']['_tags'] }}
+          loop_control:
+            label: "{{ item.name }}"
+
+        - name: Teams carry their required tier and tier 2 requires local capacity
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - _created == _expected
+              - _updated == ['ui-team-tag'] + _expected
+          loop: "{{ llm_router_priority_tiers }}"
+          loop_control:
+            loop_var: _tier
+            label: "{{ _tier.team_id }}"
+          vars:
+            item:
+              item: "{{ _tier }}"
+            _live_metadata:
+              tags: [ui-team-tag, '&tier-9']
+            _expected: "{{ ['&' ~ _tier.team_id] + (['&local'] if _tier.tier == 2 else []) }}"
+            _created: "{{ lookup('template', _fixture.path ~ '/team-create.j2') }}"
+            _updated: "{{ lookup('template', _fixture.path ~ '/team-update.j2') }}"
+
+        - name: Build declared and existing key fixtures for every tier
+          ansible.builtin.set_fact:
+            llm_router_virtual_keys: >-
+              {%- set out = [] -%}
+              {%- for tier in llm_router_priority_tiers -%}
+              {%- set settings = {'enable_tag_filtering': true} -%}
+              {%- if tier.tier == 2 -%}
+              {%- set settings = settings | combine({'fallbacks': [],
+                    'context_window_fallbacks': [], 'content_policy_fallbacks': []}) -%}
+              {%- endif -%}
+              {%- set _ = out.append({'alias': tier.team_id, 'team_id': tier.team_id,
+                    'priority_tier': tier.tier, 'value': 'sk-fixture-priority-key', 'models': ['fixture-local'],
+                    'router_settings': settings, 'metadata': {'trace_defaults': {'tier': tier.tier}}}) -%}
+              {%- endfor -%}
+              {{ out }}
+            _existing_keys: >-
+              {%- set out = [] -%}
+              {%- for tier in llm_router_priority_tiers -%}
+              {%- set _ = out.append({'key_alias': tier.team_id, 'models': ['fixture-local'],
+                    'router_settings': {'num_retries': 3, 'fallbacks': [{'fixture-local': ['fixture-cloud']}]},
+                    'object_permission': llm_router_mcp_default_object_permission,
+                    'metadata': {'ui': 'preserved', 'tags': ['ui-key-tag', 'agent-priority', '&tier-9']}}) -%}
+              {%- endfor -%}
+              {{ out }}
+
+        - name: Compute the actual initial-mode key updates
+          ansible.builtin.set_fact:
+            _updates: "{{ lookup('template', _fixture.path ~ '/key.j2') }}"
+          vars:
+            _llm_router_live_key_aliases: "{{ llm_router_priority_tiers | map(attribute='team_id') | list }}"
+            llm_router_existing_keys:
+              json:
+                keys: "{{ _existing_keys }}"
+
+        - name: Existing keys acquire teams and required tags while retaining UI settings
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - _updates | length == llm_router_priority_tiers | length
+              - item.body.team_id == item.alias
+              - "('&' ~ item.alias) in item.body.metadata.tags"
+              - "'agent-priority' not in item.body.metadata.tags"
+              - "'&tier-9' not in item.body.metadata.tags"
+              - "'ui-key-tag' in item.body.metadata.tags"
+              - item.body.metadata.ui == 'preserved'
+              - item.body.metadata.tier == item.body.metadata.trace_defaults.tier
+              - item.body.router_settings.num_retries == 3
+              - item.body.router_settings.enable_tag_filtering | bool
+              - item.alias == 'tier-2' or item.body.router_settings.fallbacks | length == 1
+              - item.alias != 'tier-2' or item.body.router_settings.fallbacks == []
+              - item.alias != 'tier-2' or item.body.router_settings.context_window_fallbacks == []
+              - item.alias != 'tier-2' or item.body.router_settings.content_policy_fallbacks == []
+              - item.alias != 'tier-2' or '&local' in item.body.metadata.tags
+          loop: "{{ _updates }}"
+          loop_control:
+            label: "{{ item.alias }}"
+
+        - name: Model the key API readback after policy updates
+          ansible.builtin.set_fact:
+            _updated_keys: >-
+              {%- set out = [] -%}
+              {%- for live in _existing_keys -%}
+              {%- set update = _updates | selectattr('alias', 'equalto', live.key_alias) | first -%}
+              {%- set _ = out.append(live | combine(update.body)) -%}
+              {%- endfor -%}
+              {{ out }}
+
+        - name: An identical policy readback needs no further writes
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - lookup('template', _fixture.path ~ '/key.j2') == []
+          vars:
+            _llm_router_live_key_aliases: "{{ llm_router_priority_tiers | map(attribute='team_id') | list }}"
+            llm_router_existing_keys:
+              json:
+                keys: "{{ _updated_keys }}"
+      always:
+        - name: Remove temporary policy expressions
+          ansible.builtin.file:
+            path: "{{ _fixture.path }}"
+            state: absent

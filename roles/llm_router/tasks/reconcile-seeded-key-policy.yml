@@ -14,7 +14,7 @@
 #
 # A seed entry that names a settings entry with `router_settings_ref` has those
 # router settings (its own fallback map) replaced in every mode; entries
-# without a reference keep whatever settings they were created with.
+# without a reference preserve live settings while enforcing their priority policy.
 #
 # In rebuild mode routes are replaced outright with the seed value, and only
 # for a key that declares allowed_routes at all. Object permissions are always
@@ -45,7 +45,12 @@
               | map(attribute='router_settings', default={}) | first | default({}, true)) -%}
       {%- set _authoritative = _k.models_authoritative | default(true) -%}
       {%- set _router_settings_target = (llm_router_review_key_router_settings[_k.router_settings_ref]
-            if _k.router_settings_ref is defined else {}) -%}
+            if _k.router_settings_ref is defined else _live_router_settings if _k.priority_tier is defined else {})
+            | combine((_k.router_settings | default({})) if _k.priority_tier is defined else {}) -%}
+      {%- set _live_team = (llm_router_existing_keys.json['keys'] | default([])
+              | selectattr('key_alias', 'equalto', _k.alias)
+              | map(attribute='team_id', default=none) | first | default(none, true)) -%}
+      {%- set _team_changed = _k.team_id is defined and _live_team != _k.team_id -%}
       {%- set _models_target = _k.models if _authoritative else ((_live_models + _k.models) | unique | list) -%}
       {%- set _models_changed = ((_live_models | sort) != (_models_target | sort))
             if _authoritative else (_k.models | difference(_live_models) | length > 0) -%}
@@ -64,11 +69,20 @@
       {%- set _sensitivity_tag = _k.sensitivity_tag | default('&sensitivity:sensitive') -%}
       {%- set _desired_tags = (_live_tags | reject('match', '^([&!])?sensitivity:') | list)
             + [_sensitivity_tag] -%}
+      {%- if _k.priority_tier is defined -%}
+      {%- set _desired_tags = (_desired_tags
+            | reject('equalto', 'agent-priority')
+            | reject('match', '^([&!])?tier-[0-9]+$') | list)
+            + ['&tier-' ~ _k.priority_tier]
+            + (['&local'] if _k.priority_tier == 2 else []) -%}
+      {%- set _desired_tags = _desired_tags | unique | list -%}
+      {%- endif -%}
       {%- set _live_sensitivity_tags = _live_tags | select('match', '^([&!])?sensitivity:') | list -%}
       {%- set _metadata_target = (_k.metadata | default({}))
             | combine((_llm_router_key_trust_metadata | default({})).get(_k.alias, {})) | combine({
               'app': _k.alias,
-              'tier': (_k.tier | default('local' if (_k.daily_budget | default(0) | float == 0) else 'subscription')),
+              'tier': _k.priority_tier | default(_k.tier | default(
+                'local' if (_k.daily_budget | default(0) | float == 0) else 'subscription')),
               'tags': _desired_tags,
             }, recursive=true) -%}
       {#- Additive only: an operator-set or request-time metadata field this
@@ -77,7 +91,8 @@
          live. -#}
       {%- set _metadata_changed = (_live_metadata | combine(_metadata_target)) != _live_metadata -%}
       {%- set _trace_target = dict(_metadata_target.items()
-            | selectattr('0', 'in', ['trace_defaults', 'trace_required']) | list)
+            | selectattr('0', 'in', ['trace_defaults', 'trace_required']
+                + (['tier'] if _k.priority_tier is defined else [])) | list)
             | combine((_llm_router_key_trust_metadata | default({})).get(_k.alias, {})) -%}
       {%- set _trace_changed = (_live_metadata | combine(_trace_target, recursive=true)) != _live_metadata -%}
       {#- Pass-through grants are capability, not attribution: reconciled in every mode, like object_permission. -#}
@@ -85,14 +100,18 @@
             (_k.metadata | default({})).get('allowed_passthrough_routes', [])} -%}
       {%- set _passthrough_changed = ((_live_metadata.get('allowed_passthrough_routes', []) | default([], true) | sort)
             != (_passthrough_target.allowed_passthrough_routes | sort)) -%}
-      {%- set _sensitivity_changed = _live_sensitivity_tags != [_sensitivity_tag] -%}
+      {%- set _sensitivity_changed = _live_sensitivity_tags != [_sensitivity_tag]
+            or (_k.priority_tier is defined and (_live_tags | sort) != (_desired_tags | sort)) -%}
       {%- set _permission_changed = _live_permission != _permission_target -%}
       {%- set _rebuild_fields_changed = (_models_changed or _routes_changed or _metadata_changed) -%}
-      {%- if _permission_changed or _trace_changed or _sensitivity_changed or _passthrough_changed
+      {%- if _permission_changed or _trace_changed or _sensitivity_changed or _passthrough_changed or _team_changed
             or (_authoritative and _models_changed)
             or _router_settings_changed
             or (llm_router_seed_mode == 'rebuild' and _rebuild_fields_changed) -%}
       {%- set _body = {'key': _k.value, 'object_permission': _permission_target} -%}
+      {%- if _team_changed -%}
+      {%- set _body = _body | combine({'team_id': _k.team_id}) -%}
+      {%- endif -%}
       {%- if _router_settings_changed -%}
       {%- set _body = _body | combine({'router_settings': _router_settings_target}) -%}
       {%- endif -%}

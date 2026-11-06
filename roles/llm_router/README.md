@@ -85,13 +85,10 @@ confidential material through it).
 
 ## The vLLM tier and the Hermes local GPU leg
 
-The `vllm`-tier loop renders one base deployment per registry entry. For a
-local-key route group, it also projects a tagged twin with the same backend
-parameters and `extra_body.priority: 10`. The twin and base row address the same
-physical model; they let LiteLLM's native tag filtering send local-class agent
-keys to vLLM's priority scheduler while untagged requests select the `default`
-deployment pool. The GPU profile projection uses the same rule. This does not
-start a second model instance. The same loop also carries any `hermes-local`
+Local model groups render 3 deployment entries per backend, tagged `tier-0`,
+`tier-1`, and `tier-2`. Their `extra_body.priority` values are 1, 10, and 20.
+Each entry retains the backend's configured admission cap and order. Tier 1
+also carries `default` for requests without a tier tag. The same loop carries `hermes-local`
 entries: distinct Hermes-fallback-chain rungs over that same backend/URL/key,
 not a second physical tier. A `context_window` here is
 mandatory rather than optional (unlike other tiers) because these backend ids
@@ -105,10 +102,20 @@ a real failure would be. Its `num_retries: 0` is the same idea — a
 single-instance local leg is only ever accepting or rejecting, never worth
 retrying, since a retry just re-queues behind the same busy box.
 
-The `embed` route group currently has no `vllm`-tier entry, so its light
-embedding deployment remains a base/default row. A future vLLM embedding entry
-in a local-key route group gets the same generated twin; the pinned vLLM
-embedding request schema accepts the priority field.
+Consumer keys belong to the `tier-0`, `tier-1`, or `tier-2` team. The input map
+`llm_router_priority_key_tiers` assigns consumer aliases; an entry's
+`priority_tier` overrides that map. Unmapped keys use `llm_router_priority_default_tier`.
+Key and team metadata carry required tier tags. Tier 2 also requires `local`,
+disables key fallback maps, and receives deployment `timeout` and `stream_timeout`
+of 43200 seconds with `keepalive_seconds: 15`. Cloud deployments carry only
+tiers 0 and 1 and retain their privacy tags.
+
+The LiteLLM release pinned in `files/requirements.in`, checked 2026-11-06,
+supports deployment keepalives in
+[`proxy_server.py`](https://github.com/BerriAI/litellm/blob/ea7ca16dbc3904d9e59a9505f379a2ca3091821f/litellm/proxy/proxy_server.py)
+and resolves deployment timeouts before router defaults in
+[`router.py`](https://github.com/BerriAI/litellm/blob/ea7ca16dbc3904d9e59a9505f379a2ca3091821f/litellm/router.py).
+Explicit request timeouts take precedence over deployment timeouts.
 
 ## Retry and cooldown policy
 

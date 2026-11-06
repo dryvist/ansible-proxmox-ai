@@ -21,19 +21,43 @@ _llm_router_virtual_keys_source: >-
   {%- for k in _declared_keys
        if (k.enabled is not defined or k.enabled | bool) -%}
   {%- set _key = k -%}
+  {%- set _requested_tier = k.priority_tier | default(
+        llm_router_priority_key_tiers.get(k.alias, llm_router_priority_default_tier)) -%}
+  {%- set _priority_tier = (_requested_tier | int) if _requested_tier | string in ['0', '1', '2']
+        else undef('Unsupported priority tier for key alias ' ~ k.alias) -%}
+  {%- set _tier_tag = '&tier-' ~ _priority_tier -%}
+  {%- set _tier_tags = ((_key.tags | default([]))
+        | reject('equalto', 'agent-priority')
+        | reject('match', '^([&!])?tier-[0-9]+$') | list) + [_tier_tag] -%}
+  {%- set _tier_metadata = _key.metadata | default({}) -%}
+  {%- set _tier_metadata = _tier_metadata | combine({'tags':
+        ((_tier_metadata.tags | default([]))
+          | reject('equalto', 'agent-priority')
+          | reject('match', '^([&!])?tier-[0-9]+$') | list) + [_tier_tag]}) -%}
+  {%- set _tier_settings = (_key.router_settings | default({}))
+        | combine({'enable_tag_filtering': true}) -%}
+  {%- if _priority_tier == 2 -%}
+  {%- set _tier_tags = _tier_tags + ['&local'] -%}
+  {%- set _tier_settings = _tier_settings | combine({
+        'fallbacks': [], 'context_window_fallbacks': [], 'content_policy_fallbacks': []}) -%}
+  {%- set _key = _key | combine({'allowed_classes': ['local'], 'zdr_only': false}) -%}
+  {%- endif -%}
+  {%- set _key = _key | combine({'team_id': 'tier-' ~ _priority_tier,
+        'priority_tier': _priority_tier, 'tags': _tier_tags,
+        'metadata': _tier_metadata, 'router_settings': _tier_settings}) -%}
   {%- set _trust_clamped = false -%}
   {%- set _caller = _llm_router_trust_scoped_key_caller_ids.get(k.alias) -%}
   {%- if k.alias in _llm_router_trust_scoped_key_caller_ids -%}
   {%- set _tier = (ai_callers | default({})).get(_caller, {}).get('trust_tier', '')
         | default(agent_callers_default_tier | default(''), true) -%}
   {%- if _tier not in _llm_router_trusted_caller_tiers -%}
-  {%- set _classes = (k.allowed_classes | default([]))
+  {%- set _classes = (_key.allowed_classes | default([]))
         | select('in', _llm_router_untrusted_key_classes) | list -%}
-  {%- set _tags = ((k.tags | default([])) + _llm_router_untrusted_key_tags)
+  {%- set _tags = ((_key.tags | default([])) + _llm_router_untrusted_key_tags)
         | unique | list -%}
-  {%- set _router_settings = (k.router_settings | default({}, true))
+  {%- set _router_settings = (_key.router_settings | default({}, true))
         | combine({'enable_tag_filtering': true}, recursive=true) -%}
-  {%- set _key = k | combine({'allowed_classes': _classes, 'tags': _tags,
+  {%- set _key = _key | combine({'allowed_classes': _classes, 'tags': _tags,
         'router_settings': _router_settings}, recursive=true) -%}
   {%- set _trust_clamped = true -%}
   {%- endif -%}
@@ -107,10 +131,11 @@ _llm_router_virtual_keys_source: >-
           'runner': (_key.metadata | default({})).get('runner', _key.alias),
           'runtime': (_key.metadata | default({})).get('runtime', _key.alias),
           'purpose': _purpose,
-          'tier': (_key.metadata | default({})).get('tier', _key.tier | default('local')),
+          'tier': _priority_tier,
           'environment': 'benchmark' if _purpose == 'benchmark' else llm_router_trace_environment,
           'release': _litellm_release,
-        } | combine((_key.metadata | default({})).get('trace_defaults', {})),
+        } | combine((_key.metadata | default({})).get('trace_defaults', {}))
+          | combine({'tier': _priority_tier}),
         'trace_required': llm_router_benchmark_trace_fields}
         | combine(_router_key_metadata, recursive=true),
       }, recursive=true)) -%}
