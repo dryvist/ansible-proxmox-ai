@@ -2,6 +2,50 @@
 
 Deploys the Dify LLMOps platform as a Docker Compose stack in an LXC.
 
+## Batch runtime inputs
+
+| Input | Default | Runtime setting |
+| --- | --- | --- |
+| `dify_docker_workflow_max_execution_time` | `43200` seconds (12 hours) | `WORKFLOW_MAX_EXECUTION_TIME` |
+| `dify_docker_plugin_max_execution_timeout` | `dify_docker_workflow_max_execution_time` | `PLUGIN_MAX_EXECUTION_TIMEOUT` and `PLUGIN_DAEMON_TIMEOUT` |
+| `dify_docker_redis_appendonly` | `true` | Redis `--appendonly yes`, persisted on the Redis data mount |
+| `dify_docker_celery_worker_amount` | `ai_agent_default_concurrency` | `CELERY_WORKER_AMOUNT`, with `CELERY_AUTO_SCALE=false` |
+| `dify_docker_workflow_schedule_poller_enabled` | `true` | `ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK` |
+| `dify_docker_trigger_provider_refresh_enabled` | `true` | `ENABLE_TRIGGER_PROVIDER_REFRESH_TASK` |
+| `dify_docker_trigger_url` | `dify_docker_public_url` | `TRIGGER_URL`, the public webhook base URL |
+| `dify_docker_otel_endpoint` | `ai_orchestration_otel_endpoint` | `OTLP_BASE_ENDPOINT`, the Cribl OpenTelemetry collector base URL |
+
+Celery concurrency applies per worker container across its subscribed queues.
+Additional worker replicas multiply the active task capacity. `GRAPH_ENGINE_MAX_WORKERS`
+remains the per-workflow engine limit, derived from `ai_agent_default_concurrency`.
+The API, worker, and scheduler share the runtime environment, including enabled
+OpenTelemetry export over HTTP/protobuf.
+Gunicorn and Nginx read/send timeouts follow `dify_docker_workflow_max_execution_time`.
+The plugin input applies in seconds; the daemon callback read budget converts it
+to milliseconds for `DIFY_BACKWARDS_INVOCATION_READ_TIMEOUT`. The callback connection
+idle budget uses seconds through `DIFY_INVOCATION_CONNECTION_IDLE_TIMEOUT`.
+
+Dify 1.18 registers webhook routes without a separate enable flag. `TRIGGER_URL`
+sets their advertised base URL; the schedule poller runs through `worker_beat`.
+Nginx forwards `/triggers` to the API. The worker subscribes to Dify's native
+workflow and trigger queues.
+
+Before rendering Compose, the role enables AOF with `CONFIG SET appendonly yes`
+on an existing Redis container and waits for a successful rewrite and write status.
+Stopped containers start with their existing configuration for this conversion.
+Subsequent converges retain AOF and verify persistence before any recreation.
+The role requires an existing container when a `dump.rdb` snapshot is present.
+Fresh installations use the Compose AOF setting directly. See the
+[Redis persistence procedure](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/).
+
+Runtime names verified against Dify 1.18.0 on 2026-11-06:
+[workflow and schedule settings](https://github.com/langgenius/dify/blob/1.18.0/api/configs/feature/__init__.py),
+[trigger URL](https://github.com/langgenius/dify/blob/1.18.0/docker/.env.example), and
+[worker concurrency and queues](https://github.com/langgenius/dify/blob/1.18.0/api/docker/entrypoint.sh).
+Plugin transport settings follow the
+[Dify API client](https://github.com/langgenius/dify/blob/1.18.0/api/core/plugin/impl/base.py)
+and [daemon configuration](https://github.com/langgenius/dify-plugin-daemon/blob/0.6.12/internal/types/app/config.go).
+
 ## Installation
 
 This role ships in the `ansible-proxmox-ai` repository and is applied via

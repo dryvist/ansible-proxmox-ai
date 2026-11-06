@@ -183,10 +183,13 @@ def test_recent_activity_refreshes_every_minute_and_never_returns_content():
 
     assert (
         "REFRESH EVERY 1 MINUTE\n(\n    ts DateTime,\n    source String,\n    model String,\n"
-        "    role String,\n    chars UInt32\n)"
+        "    role String,\n    chars UInt32,\n    input_tokens UInt32,\n    output_tokens UInt32\n)"
     ) in statement
     assert "content" not in outer
-    assert "AS SELECT\n    ts,\n    source,\n    model,\n    message_role AS role,\n    chars\nFROM\n(" in statement
+    assert (
+        "AS SELECT\n    ts,\n    source,\n    model,\n    message_role AS role,\n"
+        "    chars,\n    input_tokens,\n    output_tokens\nFROM\n("
+    ) in statement
     assert "toUInt32(lengthUTF8(arrayStringConcat(msg_parts, ' '))) AS chars" in statement
     assert "lengthUTF8(content)" not in statement
     assert statement.count("UNION ALL") == len(WALL_TABLES) - 1
@@ -247,7 +250,7 @@ def test_wall_handlers_serve_two_fixed_get_queries_and_keep_the_defaults():
         assert rule.findtext("handler/query").endswith(" FORMAT JSON")
     assert rules[0].findtext("handler/query").startswith("SELECT source, word, n FROM llm.word_cloud ")
     assert rules[1].findtext("handler/query") == (
-        "SELECT ts, source, model, role, chars FROM llm.recent_activity "
+        "SELECT ts, source, model, role, chars, input_tokens, output_tokens FROM llm.recent_activity "
         "ORDER BY ts DESC LIMIT 40 FORMAT JSON"
     )
 
