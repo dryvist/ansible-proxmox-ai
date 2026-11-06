@@ -1,0 +1,118 @@
+---
+# Convert the live dataset before Compose persists --appendonly yes.
+# https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/
+- name: Check for an existing Redis snapshot
+  ansible.builtin.stat:
+    path: "{{ dify_docker_data_dir }}/redis/dump.rdb"
+  register: dify_docker_redis_snapshot
+
+- name: Check for the existing Redis Compose configuration
+  ansible.builtin.stat:
+    path: "{{ dify_docker_data_dir }}/docker-compose.yml"
+  register: dify_docker_redis_compose
+
+- name: Locate the existing Redis container without recreating it
+  ansible.builtin.command:
+    cmd: docker compose ps --all --quiet redis
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_redis_container
+  changed_when: false
+  when: dify_docker_redis_compose.stat.exists
+
+- name: Require the existing Redis container for snapshot conversion
+  ansible.builtin.assert:
+    that:
+      - >-
+        not dify_docker_redis_snapshot.stat.exists or
+        (dify_docker_redis_container.stdout | default('') | trim | length > 0)
+    fail_msg: Restore the existing Redis container and convert its snapshot before enabling AOF.
+
+- name: Convert and verify the existing Redis dataset
+  when: dify_docker_redis_container.stdout | default('') | trim | length > 0
+  block:
+    - name: Read the existing Redis container running state
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - "{{ '{{.State.Running}}' }}"
+          - "{{ dify_docker_redis_container.stdout | trim }}"
+      register: dify_docker_redis_running
+      changed_when: false
+
+    - name: Start the existing Redis container without changing its configuration
+      ansible.builtin.command:
+        argv: [docker, start, "{{ dify_docker_redis_container.stdout | trim }}"]
+      when: dify_docker_redis_running.stdout | trim != 'true'
+      changed_when: true
+
+    - name: Read the live Redis append-only setting
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - --env
+          - REDISCLI_AUTH
+          - "{{ dify_docker_redis_container.stdout | trim }}"
+          - redis-cli
+          - --raw
+          - CONFIG
+          - GET
+          - appendonly
+      environment:
+        REDISCLI_AUTH: "{{ dify_docker_redis_password }}"
+      register: dify_docker_redis_aof_config
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: dify_docker_redis_aof_config.stdout_lines in [['appendonly', 'yes'], ['appendonly', 'no']]
+      no_log: true
+
+    - name: Enable Redis AOF on the live dataset
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - --env
+          - REDISCLI_AUTH
+          - "{{ dify_docker_redis_container.stdout | trim }}"
+          - redis-cli
+          - --raw
+          - CONFIG
+          - SET
+          - appendonly
+          - 'yes'
+      environment:
+        REDISCLI_AUTH: "{{ dify_docker_redis_password }}"
+      register: dify_docker_redis_aof_enabled
+      when: dify_docker_redis_aof_config.stdout_lines == ['appendonly', 'no']
+      changed_when: true
+      failed_when: dify_docker_redis_aof_enabled.stdout | trim != 'OK'
+      no_log: true
+
+    - name: Wait for the Redis AOF rewrite to finish successfully
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - --env
+          - REDISCLI_AUTH
+          - "{{ dify_docker_redis_container.stdout | trim }}"
+          - redis-cli
+          - --raw
+          - INFO
+          - persistence
+      environment:
+        REDISCLI_AUTH: "{{ dify_docker_redis_password }}"
+      register: dify_docker_redis_aof_persistence
+      changed_when: false
+      retries: 360
+      delay: 5
+      until:
+        - "'aof_enabled:1' in dify_docker_redis_aof_persistence.stdout_lines"
+        - "'aof_rewrite_in_progress:0' in dify_docker_redis_aof_persistence.stdout_lines"
+        - "'aof_rewrite_scheduled:0' in dify_docker_redis_aof_persistence.stdout_lines"
+        - "'aof_last_bgrewrite_status:ok' in dify_docker_redis_aof_persistence.stdout_lines"
+        - "'aof_last_write_status:ok' in dify_docker_redis_aof_persistence.stdout_lines"
+      no_log: true

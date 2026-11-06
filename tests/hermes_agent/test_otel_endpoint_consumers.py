@@ -30,7 +30,7 @@ INVENTORY_CONTEXT = {
 CONSUMERS = [
     pytest.param("llm_router", "litellm.env.j2", None, id="llm_router"),
     pytest.param("agent_exec", "otel_bootstrap.py.j2", None, id="agent_exec"),
-    pytest.param("dify_docker", "docker-compose.yml.j2", None, id="dify_docker"),
+    pytest.param("dify_docker", "docker-compose.yml.j2", "dify_docker_otel_endpoint", id="dify_docker"),
     pytest.param(
         "langgraph_docker", "otel_bootstrap.py.j2", "langgraph_docker_otel_endpoint", id="langgraph_docker"
     ),

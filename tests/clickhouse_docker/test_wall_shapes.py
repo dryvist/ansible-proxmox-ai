@@ -77,4 +77,31 @@ def test_both_views_read_each_table_through_the_same_message_rows():
     recent = _statement(RECENT)
 
     for table in WALL_TABLES:
-        assert _message_rows(_branch(word_cloud, table)) == _message_rows(_branch(recent, table))
+        word_rows = _message_rows(_branch(word_cloud, table))
+        recent_rows = _message_rows(_branch(recent, table))
+        if table == 'codex':
+            # The ticker additionally accepts usage events; message derivation stays shared.
+            assert "'assistant', if(JSONExtractString(raw, 'type') = 'response_item'" in recent_rows
+            assert "JSONExtractString(raw, 'payload', 'role'), '')) AS msg_role" in recent_rows
+            assert word_rows.split('AS msg_model,', 1)[1].split('AS msg_parts', 1)[0] in recent_rows
+        else:
+            assert word_rows == recent_rows
+
+
+def test_recent_tokens_use_documented_usage_fields_and_zero_for_other_shapes():
+    recent = _statement(RECENT)
+    for field in ('input_tokens', 'output_tokens'):
+        assert (
+            f"toUInt32(JSONExtractUInt(raw, 'message', 'usage', '{field}')) AS {field}"
+        ) in _branch(recent, 'claude')
+        codex = _branch(recent, 'codex')
+        assert "JSONExtractString(raw, 'type') = 'event_msg'" in codex
+        assert "JSONExtractString(raw, 'payload', 'type') = 'token_count'" in codex
+        assert (
+            f"JSONExtractUInt(raw, 'payload', 'info', 'last_token_usage', '{field}'), 0)) AS {field}"
+        ) in codex
+        assert 'total_token_usage' not in codex
+        for table in ('antigravity', 'gemini', 'zcode', 'opencode'):
+            assert f'toUInt32(0) AS {field}' in _branch(recent, table)
+    assert recent.count('WHERE chars > 0 OR input_tokens > 0 OR output_tokens > 0') == len(WALL_TABLES)
+    assert 'token_count' not in _statement(WORD_CLOUD)
