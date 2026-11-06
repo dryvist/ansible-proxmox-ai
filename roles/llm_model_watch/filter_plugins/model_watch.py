@@ -38,7 +38,9 @@ def select_model_watch(models, accelerators, watched_orgs):
                     continue
                 match = _GGUF.search(name.rsplit("/", 1)[-1])
                 if name.lower().endswith(".gguf") and match:
-                    groups[("gguf", match[1].upper(), name.rsplit("/", 1)[0] if "/" in name else "")].append(file)
+                    shard = _SHARD.search(name)
+                    family = (name[:shard.start()], int(shard[2])) if shard else (name[:-5], 0)
+                    groups[("gguf", match[1].upper(), family)].append(file)
                 elif name.endswith(".safetensors"):
                     config = info.get("config") or {}
                     quant = config.get("quantization_config") or config.get("quantization") or {}
@@ -68,14 +70,16 @@ def select_model_watch(models, accelerators, watched_orgs):
                         continue
                 size = sum(sizes)
                 if size <= budget:
-                    choices.append((size, quant, format_name))
+                    choices.append((size, quant, format_name, sorted(file["rfilename"] for file in files)))
             if not choices:
                 continue
-            size, quant, format_name = min(choices)
-            key = hashlib.sha256(f"{repo}@{sha}:{accelerator['id']}".encode()).hexdigest()
+            size, quant, format_name, weight_files = min(choices)
+            identity = f"{repo}@{sha}:{accelerator['id']}:{weight_files}"
+            key = hashlib.sha256(identity.encode()).hexdigest()
             requests[key] = {
                 "hf_repo": repo, "revision": sha, "accelerator": accelerator["id"],
                 "quantization": quant, "format": format_name, "weight_bytes": size,
+                "weight_files": weight_files,
             }
     return [{"key": key, **value} for key, value in sorted(requests.items())]
 

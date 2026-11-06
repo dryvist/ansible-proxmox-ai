@@ -29,6 +29,46 @@ def test_fits_complete_quantized_weights_with_runtime_reserve():
     assert request["quantization"] == "Q4_K_M"
     assert request["revision"] == "a" * 40
     assert len(request["key"]) == 64
+    assert request["weight_files"] == [file["rfilename"] for file in MODELS[0]["siblings"][:2]]
+
+
+@pytest.mark.parametrize("directory", ["", "weights/"])
+def test_independent_same_quantization_files_fit_and_retain_exact_identity(directory):
+    data = copy.deepcopy(MODELS[:1])
+    data[0]["siblings"] = [
+        {"rfilename": directory + "alpha-Q4_K_M.gguf", "size": 4 * 1024**3},
+        {"rfilename": directory + "beta-Q4_K_M.gguf", "size": 5 * 1024**3},
+    ]
+    request, = select(data)
+    assert request["weight_bytes"] == 4 * 1024**3
+    assert request["weight_files"] == [directory + "alpha-Q4_K_M.gguf"]
+    data[0]["siblings"].reverse()
+    assert select(data) == [request]
+    data[0]["siblings"][1]["rfilename"] = directory + "gamma-Q4_K_M.gguf"
+    renamed, = select(data)
+    assert renamed["key"] != request["key"]
+
+
+@pytest.mark.parametrize("other", [
+    "beta-Q4_K_M-00002-of-00002.gguf",
+    "example-Q4_K_M-00002-of-00003.gguf",
+    "nested/example-Q4_K_M-00002-of-00002.gguf",
+])
+def test_shards_from_distinct_stems_families_or_directories_cannot_complete_each_other(other):
+    data = copy.deepcopy(MODELS[:1])
+    data[0]["siblings"][1]["rfilename"] = other
+    assert select(data) == []
+
+
+def test_complete_shard_family_is_independent_of_single_file_and_other_shard_families():
+    data = copy.deepcopy(MODELS[:1])
+    data[0]["siblings"].extend([
+        {"rfilename": "example-Q4_K_M.gguf", "size": 5 * 1024**3},
+        {"rfilename": "example-Q4_K_M-00001-of-00003.gguf", "size": 1024**3},
+    ])
+    request, = select(data)
+    assert request["weight_bytes"] == 4 * 1024**3
+    assert request["weight_files"] == [file["rfilename"] for file in MODELS[0]["siblings"][:2]]
 
 
 def test_each_accelerator_has_independent_format_quant_and_vram_gates():

@@ -30,7 +30,10 @@ information with file sizes and config metadata. New commits to a model are
 new candidates.
 
 Requests live under `llm_model_watch_queue_dir`. Their key includes repository,
-commit SHA, and accelerator, and `copy` with `force: false` retains existing
+commit SHA, accelerator, and the exact sorted `weight_files` paths selected.
+GGUF candidates are grouped by artifact stem, shard count, and quantization;
+independent files sharing a quantization remain separate candidates. Each request
+records the selected paths, and `copy` with `force: false` retains existing
 requests across runs. Keep these files after trials as the proposal ledger;
 removing a file permits that proposal to be queued again. The Slack summary
 reports newly queued requests and the number of fitting candidates.
