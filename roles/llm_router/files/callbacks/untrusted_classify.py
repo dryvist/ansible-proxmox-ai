@@ -7,6 +7,7 @@ Every failure on the classify path refuses the request.
 """
 
 import asyncio
+import json
 import logging
 import os
 
@@ -71,7 +72,11 @@ def _message_text(data):
     parts = []
     for key in _TEXT_KEYS:
         if key in data:
-            parts.extend(_strings(data[key]))
+            if key in {"tools", "functions"}:
+                # Definitions contain JSON Schema, not message content blocks. Keep keys and values.
+                parts.append(json.dumps(data[key], ensure_ascii=False, allow_nan=False))
+            else:
+                parts.extend(_strings(data[key]))
     return "\n".join(parts)
 
 
