@@ -1,0 +1,96 @@
+---
+- name: Keep private Donna keys local through every fallback
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    ai_agents:
+      donna:
+        router_key_class: zdr
+        trust_tier: trusted
+        owns: []
+      trusted-peer:
+        router_key_class: standard
+        trust_tier: trusted
+        owns: []
+      public-peer:
+        router_key_class: public
+        trust_tier: trusted
+        owns: []
+    openbao_secrets_by_domain:
+      llm-router-agent-keys:
+        donna_llm_router_key: fixture-donna
+        trusted_peer_llm_router_key: fixture-peer
+        public_peer_llm_router_key: fixture-public
+  tasks:
+    - name: Prepare role-backed rendered contract
+      ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+
+    - name: Select Donna for the profile key projection
+      ansible.builtin.set_fact:
+        hermes_agent_identity: donna
+
+    - name: Refresh Donna profile keys
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Require local grants and inherited deployment filtering on Donna keys
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.allowed_classes == ['local']
+          - item.models_authoritative | bool
+          - item.models | length > 0
+          - "'&local' in item.tags"
+          - "'&zdr' in item.tags"
+          - item.router_settings.enable_tag_filtering | bool
+          - item.models | intersect(_hosted_groups) | length == 0
+          - _config.general_settings.enforce_fallback_model_access | bool
+      loop: "{{ _donna_keys }}"
+      loop_control:
+        label: "{{ item.alias }}"
+      vars:
+        _donna_keys: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'in',
+             ['donna'] + (_llm_router_hermes_profile_names
+               | map('regex_replace', '^', 'hermes-') | list)) | list }}
+        _hosted_groups: >-
+          {{ llm_router_d1_rungs_by_class['sub']
+             + llm_router_d1_rungs_by_class['paid-zdr']
+             + llm_router_d1_rungs_by_class['free']
+             + llm_router_d1_rungs_by_class['retains'] }}
+
+    - name: Preserve trusted and public peer grants
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _donna | length == 1
+          - _profiles | length == _llm_router_hermes_profile_names | length
+          - _trusted.allowed_classes == _llm_router_consumer_classes_standard
+          - _trusted.models | intersect(llm_router_d1_rungs_by_class['paid-zdr']) | length > 0
+          - _public.allowed_classes == _llm_router_consumer_classes_public
+          - _public.tags == ['!zdr', '!local', '!sub', '!paid-zdr']
+          - _public.sensitivity_tag == '&sensitivity:public'
+      vars:
+        _donna: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'donna') | list }}"
+        _profiles: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'in',
+             _llm_router_hermes_profile_names | map('regex_replace', '^', 'hermes-') | list) | list }}
+        _trusted: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'trusted-peer') | first }}"
+        _public: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'public-peer') | first }}"
+
+    - name: Preserve an explicitly public Donna roster route
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _public.allowed_classes == _llm_router_consumer_classes_public
+          - _public.tags == ['!zdr', '!local', '!sub', '!paid-zdr']
+          - _public.sensitivity_tag == '&sensitivity:public'
+      vars:
+        ai_agents:
+          donna:
+            router_key_class: public
+            trust_tier: trusted
+            owns: []
+        _public: "{{ _llm_router_agent_keys | selectattr('alias', 'equalto', 'donna') | first }}"

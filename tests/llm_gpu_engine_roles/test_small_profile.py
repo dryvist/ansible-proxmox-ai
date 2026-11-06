@@ -93,6 +93,17 @@ def test_small_profile_renders_the_pinned_gguf_with_llama_cpp():
     assert "--tool-call-parser" not in exec_start
 
 
+def test_legacy_preset_profile_renders_router_without_single_model_flags():
+    profile = {**_profiles()["small"], "models_preset": "/etc/llama/models.ini"}
+    exec_start = _exec_start(_render_legacy("small", profile))
+
+    assert "--models-preset /etc/llama/models.ini" in exec_start
+    assert "--models-max 1" in exec_start
+    assert "--model " not in exec_start
+    assert "--ctx-size" not in exec_start
+    assert "--parallel" not in exec_start
+
+
 def test_legacy_role_installs_vllm_and_its_toolchain_only_for_vllm_profiles():
     tasks = yaml.safe_load((LEGACY_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
     by_name = {task["name"]: task for task in tasks}
