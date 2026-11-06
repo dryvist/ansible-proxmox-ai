@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.21.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.5...v2.21.0) (2026-11-06)
+
+
+### Features
+
+* **hermes_agent:** add authorized A2A peers derived from the roster ([#2044](https://github.com/dryvist/ansible-proxmox-ai/issues/2044)) ([c817b43](https://github.com/dryvist/ansible-proxmox-ai/commit/c817b4377a8bc6e8fb3d0cf61153ce0a399d5362))
+* **llm_router:** add grafana app router key ([#2041](https://github.com/dryvist/ansible-proxmox-ai/issues/2041)) ([9246a10](https://github.com/dryvist/ansible-proxmox-ai/commit/9246a1009554a0036b8584fef18902012e9e3b3b))
+* **llm_router:** add langflow app key and Langflow router config ([#2036](https://github.com/dryvist/ansible-proxmox-ai/issues/2036)) ([4d46b1e](https://github.com/dryvist/ansible-proxmox-ai/commit/4d46b1e79adc99ce75f8a9b855b6ac70311ce3ce))
+* support llama router preset profiles ([#2034](https://github.com/dryvist/ansible-proxmox-ai/issues/2034)) ([d829470](https://github.com/dryvist/ansible-proxmox-ai/commit/d82947091f97d2eb40fa5b60f00a45111e850bc2))
+
+
+### Bug Fixes
+
+* **hermes_agent:** align eval profile models with its review-local key ([#2043](https://github.com/dryvist/ansible-proxmox-ai/issues/2043)) ([a060f47](https://github.com/dryvist/ansible-proxmox-ai/commit/a060f47494c4bf74a0048cab43d74574c9730876))
+* **router:** classify complete bounded request text ([#2039](https://github.com/dryvist/ansible-proxmox-ai/issues/2039)) ([a70a245](https://github.com/dryvist/ansible-proxmox-ai/commit/a70a24590a768c694b0b9637643d599da72a5a31))
+
 ## [2.20.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.4...v2.20.5) (2026-11-06)
 
 
