@@ -38,17 +38,56 @@
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
+    - name: Add a synthetic small-lane member with its serving slot count
+      ansible.builtin.add_host:
+        name: llm-vllm-fixture
+        groups: llm_vllm_group
+        ansible_connection: local
+        llama_cpp_parallel: 2
+
+    - name: Enable the optional small lane without a passing probe
+      ansible.builtin.set_fact:
+        llm_router_4080_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: false
+        llm_router_studio_precheck_passed: true
+
     - name: Load registry projections
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
+
+    - name: Render the opted-in lane before its probe passes
+      ansible.builtin.set_fact:
+        _unprobed_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: The optional small lane remains absent until its probe passes
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list | length == 1
+          - llm_router_probe_prechecks | selectattr('tier', 'equalto', 'vllm') | list | length == 1
+          - >-
+            (llm_router_probe_prechecks | selectattr('tier', 'equalto', 'vllm') | first).endpoint
+            == llm_router_llm_vllm_base_url ~ '/models'
+          - not (llm_router_vllm_precheck_passed | bool)
+          - llm_router_vllm_models | length == 0
+          - >-
+            _unprobed_config.model_list | selectattr('litellm_params.api_base', 'defined')
+            | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url)
+            | list | length == 0
 
     - name: Enable profile and precheck projections for the render fixture
       ansible.builtin.set_fact:
         llm_router_gpu_profiles_enabled: true
         llm_router_llm_vllm_enabled: true
         llm_router_vllm_precheck_passed: true
-        llm_active_profile: medium-a
+        llm_active_profile: >-
+          {{ llm_router_gpu_profile_registry | selectattr('max_parallel_requests', 'defined')
+             | selectattr('max_parallel_requests', 'equalto', 11)
+             | selectattr('route_group', 'defined')
+             | selectattr('route_group', 'equalto', llm_router_primary_model)
+             | map(attribute='profile') | first }}
 
     - name: Refresh cached router projections after fixture input changes [gpu-pro6000-enabled-render-1]
       ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
@@ -56,6 +95,29 @@
     - name: Render the medium capability with its active GPU member
       ansible.builtin.set_fact:
         _medium_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Local trio deployments carry lane caps and prefer GPU members before Studio
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gpu | length == 2
+          - _gpu | map(attribute='litellm_params.max_parallel_requests') | unique | list == [11]
+          - _studio | length == 1
+          - _studio[0].litellm_params.max_parallel_requests | int == 1
+          - _gpu | map(attribute='litellm_params.order') | max < _studio[0].litellm_params.order
+          - _small | length == 2
+          - _small | map(attribute='litellm_params.max_parallel_requests') | unique | list == [2]
+          - _small | map(attribute='litellm_params.order') | unique | list == [1]
+      vars:
+        _gpu: >-
+          {{ _medium_config.model_list | selectattr('model_info.profile', 'defined')
+             | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
+        _studio: >-
+          {{ _medium_config.model_list | selectattr('model_name', 'equalto', llm_router_primary_model)
+             | rejectattr('model_info.profile', 'defined') | list }}
+        _small: >-
+          {{ _medium_config.model_list | selectattr('model_name', 'equalto', llm_router_small_model)
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url) | list }}
 
     - name: The medium capability keeps its GPU member at the first order
       ansible.builtin.assert:
@@ -91,6 +153,7 @@
     - name: Select the small profile and render its shared capability
       ansible.builtin.set_fact:
         llm_active_profile: small
+        llm_router_llm_vllm_enabled: false
 
     - name: Refresh cached router projections after fixture input changes [gpu-pro6000-enabled-render-2]
       ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml

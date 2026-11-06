@@ -3,6 +3,7 @@
   ansible.builtin.assert:
     quiet: true
     that:
+      - llm_router_safe_local_models | length > 0
       - _llm_router_required_safe_models | difference(_llm_router_safe_models) | length == 0
       - >-
         (llm_router_gpu_profiles_enabled | bool)
@@ -18,7 +19,9 @@
                         | map(attribute='client_model_id') | list))
         | length == 0
     fail_msg: >-
-      Router safety contract failed: local model(s)
+      Router safety contract failed:
+      {% if llm_router_safe_local_models | length == 0 %}no safe local chat model remains;{% endif %}
+      local model(s)
       [{{ _llm_router_required_safe_models | difference(_llm_router_safe_models) | join(', ') }}]
       lack context-window-backed local capability groups; with GPU profiles
       drained, Hermes goal judge [{{ _llm_router_goal_judge_group }}] must be a
@@ -48,7 +51,9 @@
            | selectattr('client_model_id', 'equalto', target)
            | selectattr('route_group', 'defined')
            | map(attribute='route_group') | unique | list -%}
-      {%- set ns.models = ns.models + (groups if groups else [target]) -%}
+      {%- for group in (groups if groups else [target]) -%}
+      {%- set ns.models = ns.models + [llm_router_model_group_aliases.get(group, group)] -%}
+      {%- endfor -%}
       {%- endfor -%}
       {{ ns.models | unique | list }}
     _llm_router_goal_judge_target: >-

@@ -21,9 +21,11 @@ llm_router_registry_dir: "{{ role_path | dirname | dirname }}/llm-models.d"
 # llm_gpu_group, so both the router and secret-prefetch play see the switch.
 llm_router_gpu_profiles_enabled: false
 
-# Resident registry entries remain available as direct routes, but stay out of
-# shared fallback ladders unless an operator explicitly enables them.
-llm_router_studio_profiles_enabled: false
+# Studio participation is enabled by default, subject to the load-and-serve gate.
+llm_router_studio_profiles_enabled: true
+
+# The small lane remains opt-in and requires the pre-render serving probe.
+llm_router_4080_profiles_enabled: false
 
 llm_router_model_registry: >-
   {{ _llm_registry_large + _llm_registry_large_disabled
@@ -132,6 +134,10 @@ llm_router_resolved_credentials: >-
 # bearer-authed, no cross-tier fallback.
 llm_router_large_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'local-large') | list }}
+llm_router_studio_shared_models: >-
+  {{ llm_router_large_models
+     if llm_router_studio_profiles_enabled | bool
+        and llm_router_studio_precheck_passed | bool else [] }}
 # opencode: flat-rate $10/mo subscription tier. Sunk cost exhausted before metered API tiers.
 llm_router_opencode_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'opencode') | list }}
@@ -180,7 +186,7 @@ llm_router_hermes_local_4080_id: >-
      | map(attribute='client_model_id') | list | first }}
 
 llm_router_capability_members: >-
-  {{ (llm_router_large_models + llm_router_light_models
+  {{ (llm_router_studio_shared_models + llm_router_light_models
       + llm_router_cpu_moe_models + llm_router_cpu_9b_models
       + llm_router_vllm_models + llm_router_gpu_models)
      | selectattr('route_group', 'defined')
@@ -249,7 +255,8 @@ llm_router_registry_enabled_route_names: >-
   {%- for m in llm_router_registry_enabled -%}
   {%- if m.tier not in llm_router_local_registry_tiers
         or (m.route_group is defined
-            and (m.tier != 'vllm' or llm_router_vllm_precheck_passed | default(false) | bool)) -%}
+            and (m.tier != 'vllm' or llm_router_vllm_precheck_passed | default(false) | bool)
+            and (m.tier != 'local-large' or m in llm_router_studio_shared_models)) -%}
   {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
   {%- endif -%}
   {%- endfor -%}

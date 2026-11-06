@@ -8,7 +8,8 @@
 # import the judge with hand-built fixtures and make it FAIL. A check that can
 # only ever skip where it is tested is not a check.
 #
-# Read-only, and `check_mode: false` on both probes for the same reason
+# `check_mode: false` also runs the bounded completion prechecks; listing probes
+# remain read-only for the same reason
 # assert-endpoint-dns.yml sets it: a GET against a model listing changes
 # nothing, and a check-mode run that skipped them would report a verification
 # it never performed.
@@ -26,9 +27,10 @@
 
 # Same probe plan as the normal servable verification, with an explicit
 # registry opt-in for entries that must be reached before their routes render.
-- name: Pre-render probe entries that require endpoint reachability
+- name: Pre-render probe entries that require a model listing
   ansible.builtin.uri:
     url: "{{ item.endpoint }}"
+    headers: "{{ {'Authorization': 'Bearer ' ~ llm_router_llm_large_bearer} if item.tier == 'local-large' else {} }}"
     timeout: "{{ item.first_byte_timeout }}"
   loop: "{{ llm_router_probe_prechecks }}"
   loop_control:
@@ -39,21 +41,42 @@
   check_mode: false
   no_log: true
 
-- name: Gate opted-in entries on a successful first-byte and model-list response
-  ansible.builtin.set_fact:
-    llm_router_vllm_precheck_passed: >-
-      {%- set checks = _llm_router_precheck_responses.results | default([])
-           | selectattr('item.tier', 'equalto', 'vllm') | list -%}
-      {%- set ns = namespace(matches=[]) -%}
-      {%- for result in checks -%}
-      {%- if (result.status | default(0) | int) == 200
-            and result.item.model in (result.json.data | default([])
-                                      | map(attribute='id') | list) -%}
-      {%- set ns.matches = ns.matches + [result.item.model] -%}
+- name: Pre-render load-and-serve probe for listed local models
+  ansible.builtin.uri:
+    url: "{{ item.endpoint | regex_replace('/models$', '/chat/completions') }}"
+    method: POST
+    headers: "{{ {'Authorization': 'Bearer ' ~ llm_router_llm_large_bearer} if item.tier == 'local-large' else {} }}"
+    body_format: json
+    body:
+      model: "{{ item.model }}"
+      messages:
+        - role: user
+          content: '.'
+      max_tokens: "{{ llm_router_probe_completion_tokens }}"
+      stream: false
+    timeout: "{{ item.first_byte_timeout }}"
+  loop: "{{ llm_router_probe_prechecks }}"
+  loop_control:
+    label: "{{ item.route_name }}"
+  when: item.model in _llm_router_precheck_listed_models
+  vars:
+    _llm_router_precheck_listed_models: >-
+      {%- set ns = namespace(models=[]) -%}
+      {%- for result in _llm_router_precheck_responses.results | default([]) -%}
+      {%- if result.status | default(0) | int == 200
+            and result.item.model in (result.json.data | default([]) | map(attribute='id') | list) -%}
+      {%- set ns.models = ns.models + [result.item.model] -%}
       {%- endif -%}
       {%- endfor -%}
-      {{ checks | length > 0 and ns.matches | unique | length == checks | length }}
+      {{ ns.models }}
+  register: _llm_router_completion_precheck_responses
+  changed_when: false
+  failed_when: false
+  check_mode: false
   no_log: true
+
+- name: Gate shared local lanes on their load-and-serve results
+  ansible.builtin.import_tasks: assert-serving-prechecks.yml
 
 - name: Probe the large-tier serving gate's own model listing
   ansible.builtin.uri:
