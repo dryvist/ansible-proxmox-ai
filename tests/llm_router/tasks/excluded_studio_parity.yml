@@ -1,0 +1,54 @@
+---
+- name: Restore GPU candidates while Studio remains excluded
+  ansible.builtin.set_fact:
+    llm_router_gpu_profiles_enabled: true
+
+- name: Refresh eligible local candidates
+  ansible.builtin.import_tasks: materialize_router_inputs.yml
+
+- name: Supply a Studio listing missing every claimed model
+  ansible.builtin.set_fact:
+    _llm_router_gate_models:
+      status: 200
+      json:
+        data: []
+    _llm_router_remote_models:
+      results:
+        - item: >-
+            {{ llm_router_remote_probes
+               | selectattr('endpoint', 'equalto', llm_router_llm_large_base_url ~ '/models') | first }}
+          status: 200
+          json:
+            data: []
+    _llm_router_gpu_probe_responses:
+      results:
+        - status: 200
+          json:
+            data: >-
+              {{ llm_router_gpu_models | map(attribute='upstream_model_id')
+                 | map('community.general.dict_kv', 'id') | list }}
+
+- name: Adjudicate listings after Studio exclusion
+  ansible.builtin.import_tasks: ../../../roles/llm_router/tasks/assert-servable-parity.yml
+
+- name: Evaluate the safety guard over surviving local candidates
+  ansible.builtin.import_tasks: ../../../roles/llm_router/tasks/assert-safe-models.yml
+
+- name: Render the router after excluded Studio parity checks
+  ansible.builtin.set_fact:
+    _excluded_studio_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+- name: Missing excluded Studio models are reported and GPU candidates remain deployed
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - not llm_router_studio_precheck_passed
+      - llm_router_studio_shared_models | length == 0
+      - llm_router_servable_models | length > 0
+      - _llm_router_probe_report.gate == 'excluded'
+      - _llm_router_remote_probe_results | selectattr('state', 'equalto', 'excluded') | list | length == 1
+      - _llm_router_remote_probe_results[0].missing | length > 0
+      - llm_router_gpu_models | length > 0
+      - >-
+        llm_router_gpu_models | map(attribute='route_group') | unique | list
+        | difference(_excluded_studio_config.model_list | map(attribute='model_name') | list) | length == 0
