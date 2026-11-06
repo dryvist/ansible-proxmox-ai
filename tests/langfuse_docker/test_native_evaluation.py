@@ -129,6 +129,7 @@ def test_native_reconciliation(tmp_path, scenario):
     if scenario == "invalid-sampling":
         variables["langfuse_evaluators"][0]["sampling_rate"] = 2
     if scenario == "defaults":
+        del variables["langfuse_docker_datasets"]
         del variables["langfuse_model_prices"]
         del variables["langfuse_evaluators"]
         variables["langfuse_docker_local_unit_price"] = 0.25
@@ -167,6 +168,18 @@ def test_native_reconciliation(tmp_path, scenario):
             assert len(resources["models"]) > 1
             assert all(row["inputPrice"] == row["outputPrice"] == 0.25 for row in resources["models"])
             assert resources["evaluators"] == []
+            identity = next(task for task in yaml.safe_load(
+                (ROLE / "tasks/reconcile-stage0-trace-datasets.yml").read_text()
+            ) if task.get("name") == "Require Stage 0 trace split datasets to retain their identities")
+            replay = yaml.safe_load(playbook.read_text())
+            dataset_name = yaml.safe_load(
+                (ROLE / "defaults/main/00-main.yml").read_text()
+            )["langfuse_docker_stage0_dataset_name"]
+            identity["loop"] = [{"status": 200, "item": {"split": split},
+                                 "json": resources["datasets"][f"{dataset_name}-{split}"]}
+                                for split in ("train", "holdout")]
+            replay[0]["tasks"].append(identity)
+            playbook.write_text(yaml.safe_dump(replay, sort_keys=False))
             requests.clear()
             result = run()
             assert result.returncode == 0, result.stdout + result.stderr
