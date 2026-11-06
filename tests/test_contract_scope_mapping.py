@@ -190,7 +190,11 @@ def test_changed_router_shards_are_sorted_independently_of_path_order() -> None:
     assert expected.returncode == 0, expected.stderr
     selected = json.loads(result.stdout)["llm_router_playbooks"]
     assert selected == json.loads(expected.stdout)["llm_router_playbooks"]
-    assert sorted(router_paths(selected)) == sorted(chosen)
+    expected_paths = [
+        path for entry in GENERATED_MATRIX if any(path in entry for path in chosen)
+        for path in entry
+    ]
+    assert sorted(router_paths(selected)) == sorted(expected_paths)
 
 
 @pytest.mark.parametrize(("scenario", "role"), [

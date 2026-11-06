@@ -41,11 +41,16 @@ agent:
   disabled_toolsets: {{ hermes_agent_disabled_toolsets | reject('in', _lifted_toolsets) | list | to_json }}
 {{ context_limits.tool_output_tools_delegation(hermes_agent_context_limits) }}
 
+{% set _profile_a2a_on = (hermes_agent_a2a_delegation_enabled | default(false) | bool)
+    and hermes_agent_profile.name != 'eval'
+    and hermes_agent_profile.name in (hermes_agent_a2a_delegating_profiles | default([])) %}
+{% include 'config-profile-a2a.yaml.j2' %}
+{% set _a2a_tools = ['a2a'] if _profile_a2a_on and hermes_agent_a2a_authorized_peers | default([]) | length > 0 else [] %}
 {% if hermes_agent_profile.toolsets is defined %}
 # Per-profile additions; the Cron platform inherits the shared role allowlist.
 platform_toolsets:
 {% for platform, additions in hermes_agent_profile.toolsets | dictsort %}
-  {{ platform }}: {{ (hermes_agent_cron_toolsets + additions if platform == 'cron' else additions) | to_json }}
+  {{ platform }}: {{ ((hermes_agent_cron_toolsets + additions if platform == 'cron' else additions) + _a2a_tools) | unique | list | to_json }}
 {% endfor %}
 {% endif %}
 
