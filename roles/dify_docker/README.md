@@ -25,6 +25,14 @@ sets their advertised base URL; the schedule poller runs through `worker_beat`.
 Nginx forwards `/triggers` to the API. The worker subscribes to Dify's native
 workflow and trigger queues.
 
+Before rendering Compose, the role enables AOF with `CONFIG SET appendonly yes`
+on an existing Redis container and waits for a successful rewrite and write status.
+Stopped containers start with their existing configuration for this conversion.
+Subsequent converges retain AOF and verify persistence before any recreation.
+The role requires an existing container when a `dump.rdb` snapshot is present.
+Fresh installations use the Compose AOF setting directly. See the
+[Redis persistence procedure](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/).
+
 Runtime names verified against Dify 1.18.0 on 2026-11-06:
 [workflow and schedule settings](https://github.com/langgenius/dify/blob/1.18.0/api/configs/feature/__init__.py),
 [trigger URL](https://github.com/langgenius/dify/blob/1.18.0/docker/.env.example), and
