@@ -116,3 +116,30 @@
               + _llm_router_private_zdr_model_scope
               + llm_router_review_private_chain
               + [llm_router_review_aliases.private]) | unique | list }}
+
+    - name: Rendered model access requires public opt-in on every routing path
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.general_settings.enforce_fallback_model_access | bool
+          - _ordinary | length > 0
+          - _ordinary | map(attribute='models') | flatten | intersect(_unsafe_names) | length == 0
+          - _public.models | intersect(_free_names) | length > 0
+          - _public.models | intersect(_retaining_names) | length > 0
+        fail_msg: "Rendered model grants require explicit public opt-in for free or retaining deployments."
+      vars:
+        _ordinary: "{{ _active_virtual_keys | rejectattr('sensitivity_tag', 'equalto', '&sensitivity:public') | list }}"
+        _public: "{{ _active_virtual_keys | selectattr('alias', 'equalto', 'example-public') | first }}"
+        _free_names: >-
+          {{ _config.model_list | selectattr('litellm_params.tags', 'contains', 'free')
+             | map(attribute='model_name') | unique | list }}
+        _retaining_names: >-
+          {{ _config.model_list | selectattr('litellm_params.tags', 'contains', 'retains')
+             | map(attribute='model_name') | unique | list }}
+        # Model access denies every unsafe group and alias before selection on
+        # direct, ordinary, nested, default, and context-window fallback paths.
+        _unsafe_names: >-
+          {{ (_free_names + _retaining_names
+              + (_config.router_settings.model_group_alias | dict2items
+                 | selectattr('value', 'in', _free_names + _retaining_names)
+                 | map(attribute='key') | list)) | unique | list }}

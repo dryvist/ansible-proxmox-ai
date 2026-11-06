@@ -1,6 +1,6 @@
 ---
 # Trace defaults reconcile additively in every mode. The required sensitivity
-# tag also reconciles in every mode; other existing UI tags are preserved.
+# and ZDR tags also reconcile in every mode; other existing UI tags are preserved.
 # MCP server access and model allowlists are Git-owned in every mode. Model
 # lists are projections of the registry-derived seed, so a converge replaces
 # each existing seeded key's list with that exact baseline. In `initial` mode,
@@ -90,8 +90,10 @@
               | default(llm_router_mcp_default_object_permission) -%}
       {%- set _live_tags = _live_metadata.get('tags', []) | default([], true) | list -%}
       {%- set _sensitivity_tag = _k.sensitivity_tag | default('&sensitivity:sensitive') -%}
-      {%- set _desired_tags = (_live_tags | reject('match', '^([&!])?sensitivity:') | list)
-            + [_sensitivity_tag] -%}
+      {%- set _zdr_tags = ['&zdr'] if _sensitivity_tag != '&sensitivity:public'
+            else (_k.tags | default([]) | select('match', '^([&!])?zdr$') | list) -%}
+      {%- set _desired_tags = ((_live_tags | reject('match', '^([&!])?(sensitivity:|zdr$)') | list)
+            + _zdr_tags + [_sensitivity_tag]) | unique | list -%}
       {%- if _k.priority_tier is defined -%}
       {%- if _tier_changed -%}
       {%- set _desired_tags = _desired_tags | difference(_previous.get('added_tags', [])) -%}
@@ -102,7 +104,6 @@
             + (_k.tags | default([])) + _policy.tags -%}
       {%- set _desired_tags = _desired_tags | unique | sort -%}
       {%- endif -%}
-      {%- set _live_sensitivity_tags = _live_tags | select('match', '^([&!])?sensitivity:') | list -%}
       {%- set _metadata_target = (_k.metadata | default({}))
             | combine((_llm_router_key_trust_metadata | default({})).get(_k.alias, {})) | combine({
               'app': _k.alias,
@@ -135,8 +136,7 @@
             (_k.metadata | default({})).get('allowed_passthrough_routes', [])} -%}
       {%- set _passthrough_changed = ((_live_metadata.get('allowed_passthrough_routes', []) | default([], true) | sort)
             != (_passthrough_target.allowed_passthrough_routes | sort)) -%}
-      {%- set _sensitivity_changed = _live_sensitivity_tags != [_sensitivity_tag]
-            or (_k.priority_tier is defined and (_live_tags | sort) != (_desired_tags | sort)) -%}
+      {%- set _sensitivity_changed = (_live_tags | sort) != (_desired_tags | sort) -%}
       {%- set _permission_changed = _live_permission != _permission_target -%}
       {%- set _rebuild_fields_changed = (_models_changed or _routes_changed or _metadata_changed) -%}
       {%- if _permission_changed or _trace_changed or _sensitivity_changed or _passthrough_changed or _team_changed
