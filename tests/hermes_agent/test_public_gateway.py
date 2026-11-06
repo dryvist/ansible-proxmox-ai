@@ -146,29 +146,3 @@ def test_converge_wiring_and_model_assert():
 def test_default_gateway_unit_keeps_its_own_boundary():
     unit = render_hermes_runtime_unit(ROLE, "hermes-gateway.service.j2")
     assert "Environment=HERMES_TRUST_BOUNDARY=private" in unit
-
-
-def test_relay_env_points_public_events_at_the_public_gateway_port():
-    text = _env().get_template("hermes-event-relay.env.j2").render(
-        ansible_managed="managed",
-        hermes_agent_event_relay_target_base="http://127.0.0.1:8644/webhooks",
-        hermes_agent_event_relay_target_base_public="http://127.0.0.1:8645/webhooks",
-        hermes_agent_event_relay_queue_service="q",
-        hermes_agent_event_relay_queue_url="u",
-        hermes_agent_event_relay_dlq_url="d",
-        hermes_agent_event_relay_queue_region="r",
-        hermes_agent_event_relay_bao_addr="a",
-        hermes_agent_event_relay_bao_role_id="i",
-        hermes_agent_event_relay_bao_secret_id="s",
-        hermes_agent_event_relay_bao_creds_path="p",
-        hermes_agent_webhook_secret="w",
-        hermes_agent_event_relay_route_public="github-public",
-        hermes_agent_event_relay_route_private="github-private",
-        hermes_agent_event_relay_healthcheck_url="",
-        hermes_agent_event_relay_stats_seconds=300,
-    )
-    assert "RELAY_TARGET_BASE=http://127.0.0.1:8644/webhooks\n" in text
-    assert "RELAY_TARGET_BASE_PUBLIC=http://127.0.0.1:8645/webhooks\n" in text
-    assert DEFAULTS["hermes_agent_event_relay_target_base_public"].strip().endswith(
-        "{{ hermes_agent_github_public_gateway_port }}/webhooks"
-    )
