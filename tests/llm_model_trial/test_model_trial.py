@@ -36,6 +36,7 @@ def fixture(name: str) -> dict:
         "example/base": {"id": "example/base", "createdAt": "2026-10-01T00:00:00Z", "cardData": {}},
     }
     data["policy"] = json.loads((FIXTURES / "model-policy.json").read_text())
+    data["policy"]["_dossier_root"] = str(FIXTURES / "ansible")
     return data
 
 

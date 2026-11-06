@@ -1,0 +1,23 @@
+---
+- name: Load the shared admission policy and dossier root
+  ansible.builtin.include_role:
+    name: llm_model_trial
+    tasks_from: model-policy.yml
+    public: true
+
+- name: Record model admission rejection reasons
+  ansible.builtin.set_fact:
+    llm_router_model_policy_rejections: >-
+      {%- set ns = namespace(rejections=[]) -%}
+      {%- for model in llm_router_model_registry if model.enabled | default(false) -%}
+      {%- set reason = model | llm_model_policy_reason(llm_model_trial_policy_data) -%}
+      {%- if reason -%}
+      {%- set ns.rejections = ns.rejections + [{'upstream_id': model.upstream_model_id, 'reason': reason}] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.rejections }}
+
+- name: Report models excluded by the shared admission policy
+  ansible.builtin.debug:
+    var: llm_router_model_policy_rejections
+  when: llm_router_model_policy_rejections | length > 0

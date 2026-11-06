@@ -4,7 +4,42 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
+
+import yaml
+
+
+def _validate_dossier(value: Any, root: str) -> None:
+    prefix = Path("ansible/roles/llm_model_catalog/files/dossiers")
+    if not isinstance(value, str) or not Path(value).is_relative_to(prefix):
+        raise ValueError("Model policy requires a repo-relative dossier path")
+    if not isinstance(root, str) or not root:
+        raise ValueError("Model policy requires a dossier collection root")
+    base = Path(root).resolve()
+    path = (base / Path(value).relative_to("ansible")).resolve()
+    if not path.is_relative_to(base / "roles/llm_model_catalog/files/dossiers"):
+        raise ValueError("Model dossier path escapes the dossier directory")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise ValueError(f"Model dossier file cannot be read: {value}") from error
+    if not lines or lines[0] != "---" or "---" not in lines[1:]:
+        raise ValueError("Model dossier requires YAML front matter")
+    try:
+        metadata = yaml.safe_load("\n".join(lines[1:lines.index("---", 1)]))
+    except yaml.YAMLError as error:
+        raise ValueError("Model dossier front matter is invalid YAML") from error
+    if not isinstance(metadata, dict) or metadata.get("type") != "Model Dossier":
+        raise ValueError("Model dossier type must be Model Dossier")
+    timestamp = metadata.get("timestamp")
+    try:
+        if not isinstance(timestamp, (date, datetime)):
+            datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("Model dossier requires a parseable timestamp") from error
+    if metadata.get("status") != "complete":
+        raise ValueError("Model dossier status must be complete")
 
 
 def policy_date(value: Any) -> date:
@@ -37,37 +72,44 @@ def _validate_policy(policy: dict[str, Any], today: date) -> None:
 
 
 def model_policy_entry(
-    model_id: str, policy: dict[str, Any], today: date | None = None
+    upstream_id: str, policy: dict[str, Any], today: date | None = None
 ) -> dict[str, Any]:
     """Resolve one policy record and enforce its upstream age and dossier."""
     today = today or datetime.now(timezone.utc).date()
     _validate_policy(policy, today)
     matches = [entry for entry in policy["models"]
-               if isinstance(entry, dict) and entry.get("id") == model_id]
-    if len(matches) != 1:
-        raise ValueError("Model must resolve to exactly one shared policy record")
+               if isinstance(entry, dict) and entry.get("upstream_id") == upstream_id]
+    if not upstream_id or not matches:
+        raise ValueError("Model upstream_id has no shared policy record")
     entry = matches[0]
-    if not isinstance(entry.get("upstream_id"), str) or not entry["upstream_id"]:
-        raise ValueError("Model policy requires an upstream_id")
-    if {model_id, entry["upstream_id"]}.intersection(denied_ids(policy)):
+    if any((match.get("upstream_created"), match.get("dossier")) !=
+           (entry.get("upstream_created"), entry.get("dossier")) for match in matches):
+        raise ValueError("Model upstream_id has conflicting shared policy records")
+    if {entry.get("id"), upstream_id}.intersection(denied_ids(policy)):
         raise ValueError("Model or upstream is denied by the shared policy")
     created = policy_date(entry.get("upstream_created"))
     if not 0 <= (today - created).days <= policy["max_age_days"]:
         raise ValueError("Model upstream is old or future-dated under the shared policy")
-    if not isinstance(entry.get("dossier"), (str, dict)) or not entry["dossier"]:
-        raise ValueError("Model policy requires a dossier")
+    _validate_dossier(entry.get("dossier"), policy.get("_dossier_root", ""))
     return entry
 
 
-def registry_policy_allowed(model: dict[str, Any], policy: dict[str, Any]) -> bool:
+def registry_policy_reason(model: dict[str, Any], policy: dict[str, Any]) -> str:
+    """Return the admission rejection reason, or an empty string for eligible models."""
     _validate_policy(policy, datetime.now(timezone.utc).date())
     if model.get("lifecycle") == "old":
-        return False
+        return "Model lifecycle is old"
+    if model.get("client_model_id") in denied_ids(policy):
+        return "Model is denied by the shared policy"
     try:
         model_policy_entry(model.get("upstream_model_id", ""), policy)
-    except ValueError:
-        return False
-    return True
+    except ValueError as error:
+        return str(error)
+    return ""
+
+
+def registry_policy_allowed(model: dict[str, Any], policy: dict[str, Any]) -> bool:
+    return not registry_policy_reason(model, policy)
 
 
 def base_models(info: dict[str, Any]) -> list[str]:
@@ -107,5 +149,6 @@ class FilterModule:
     def filters(self) -> dict[str, Any]:
         return {
             "llm_model_policy_allowed": registry_policy_allowed,
+            "llm_model_policy_reason": registry_policy_reason,
             "llm_model_trial_base_models": base_models,
         }

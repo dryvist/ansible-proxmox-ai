@@ -81,14 +81,14 @@ def test_registry_policy_age_boundary(age: int, allowed: bool) -> None:
     policy["models"][0]["upstream_created"] = (
         datetime.now(timezone.utc).date() - timedelta(days=age)
     ).isoformat()
-    model = {"client_model_id": "example/client", "upstream_model_id": "example/quantized"}
+    model = {"client_model_id": "example/client", "upstream_model_id": "example/base"}
     assert PLUGIN._POLICY.registry_policy_allowed(model, policy) is allowed
 
 
 @pytest.mark.parametrize("case", ["old", "undated", "denied", "unknown", "no-dossier"])
 def test_registry_projection_excludes_ineligible_models(case: str) -> None:
     policy = fixture("nvidia-qwen38.json")["policy"]
-    model = {"client_model_id": "example/client", "upstream_model_id": "example/quantized",
+    model = {"client_model_id": "example/client", "upstream_model_id": "example/base",
              "tier": "test", "enabled": True}
     if case == "old":
         model["lifecycle"] = "old"
@@ -132,24 +132,31 @@ def test_registry_matches_only_the_actual_upstream_artifact() -> None:
     policy = fixture("nvidia-qwen38.json")["policy"]
     model = {"client_model_id": "example/quantized", "upstream_model_id": "example/unlisted"}
     assert not PLUGIN._POLICY.registry_policy_allowed(model, policy)
-    model["upstream_model_id"] = "example/quantized"
+    model["upstream_model_id"] = "example/base"
     assert PLUGIN._POLICY.registry_policy_allowed(model, policy)
     policy["deny"] = [model["upstream_model_id"]]
     assert not PLUGIN._POLICY.registry_policy_allowed(model, policy)
 
 
-@pytest.mark.parametrize("installed", [False, True])
-def test_policy_loader_uses_installed_collection_before_role_input(tmp_path: Path, installed: bool) -> None:
+@pytest.mark.parametrize("installed,denied", [(False, False), (True, False), (True, True)])
+def test_policy_loader_uses_installed_collection_before_role_input(
+    tmp_path: Path, installed: bool, denied: bool
+) -> None:
     policy = fixture("nvidia-qwen38.json")["policy"]
     if installed:
-        policy["deny"] = ["example/base"]
+        policy["deny"] = ["example/base"] if denied else []
         path = tmp_path / "ansible_collections/dryvist/homelab/roles/llm_model_catalog/files/model-policy.json"
         path.parent.mkdir(parents=True)
+        dossier = path.parent / "dossiers/fixture.md"
+        dossier.parent.mkdir()
+        dossier.write_text((Path(policy["_dossier_root"]) /
+                            Path(policy["models"][0]["dossier"]).relative_to("ansible")).read_text())
+        policy.pop("_dossier_root")
         path.write_text(json.dumps(policy))
     result = subprocess.run(
         ["ansible-playbook", "-i", "localhost,", "-c", "local",
          str(Path(__file__).with_name("test_model_policy.yml")), "-e",
-         json.dumps({"expected_deny": policy["deny"], "expected_allowed": not installed})],
+         json.dumps({"expected_deny": policy["deny"], "expected_allowed": not denied})],
         cwd=ROOT, text=True, capture_output=True, timeout=60,
         env=os.environ | {"ANSIBLE_ROLES_PATH": str(ROOT / "roles"),
                           "ANSIBLE_COLLECTIONS_PATH": str(tmp_path)},
