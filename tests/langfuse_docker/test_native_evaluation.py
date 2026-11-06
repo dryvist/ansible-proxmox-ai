@@ -28,6 +28,9 @@ def test_native_reconciliation(tmp_path, scenario):
     if scenario == "unknown-variable":
         prompt = "Fixture {{unsupported}}"
     expected_auth = "Basic " + base64.b64encode(b"fixture-public:fixture-secret").decode()
+    cursor = base64.urlsafe_b64encode(json.dumps({
+        "v": 1, "lastCreatedAt": "2026-01-01T00:00:00Z", "lastId": "fixture-page",
+    }).encode()).decode().rstrip("=")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -43,7 +46,7 @@ def test_native_reconciliation(tmp_path, scenario):
             requests.append(("GET", self.path, None))
             assert self.headers.get("Authorization") == expected_auth
             path = urlsplit(self.path).path
-            query = parse_qs(urlsplit(self.path).query)
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
             if scenario == "transient" and len(requests) == 1:
                 self.respond(503, {"message": "fixture-starting"})
             elif scenario == "api-error":
@@ -70,9 +73,12 @@ def test_native_reconciliation(tmp_path, scenario):
                     self.respond(200, {"data": rows if page == 2 or scenario != "pagination" else [],
                                        "meta": {"totalPages": 2 if scenario == "pagination" else 1}})
                 else:
+                    if "cursor" in query and query["cursor"] != [cursor]:
+                        self.respond(400, {"message": "Invalid cursor format"})
+                        return
                     more = scenario == "pagination" and "cursor" not in query
                     self.respond(200, {"data": [] if more else rows,
-                                       "meta": {"cursor": "second" if more else None}})
+                                       "meta": {"cursor": cursor} if more else {}})
 
         def write_resource(self):
             assert self.headers.get("Authorization") == expected_auth
