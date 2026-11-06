@@ -39,9 +39,22 @@ _llm_router_capability_names_source: >-
      | map(attribute='route_group')
      | difference(llm_router_agent_only_groups) | unique | list }}
 llm_router_capability_names: "{{ _llm_router_m_capability_names }}"
-llm_router_primary_large_model: >-
-  {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
-      | selectattr('serving_role', 'equalto', 'primary') | first).route_group }}
+_llm_router_declared_primary: >-
+  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'primary') | first }}
+# Only eligible, context-backed chat deployments can replace an excluded lane.
+llm_router_safe_local_models: >-
+  {{ llm_router_capability_members
+     | selectattr('route_group', 'in',
+         [_llm_router_declared_primary.route_group, llm_router_small_capability_name])
+     | selectattr('context_window', 'defined')
+     | rejectattr('context_window', 'none') | list }}
+_llm_router_primary_local_model: >-
+  {{ (llm_router_safe_local_models
+      | selectattr('client_model_id', 'equalto', _llm_router_declared_primary.client_model_id)
+      | first) | default(llm_router_safe_local_models | first
+                         | default(_llm_router_declared_primary)) }}
+llm_router_primary_large_model: "{{ _llm_router_primary_local_model.route_group }}"
 llm_router_large_model: >-
   {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
       | selectattr('serving_role', 'equalto', 'large') | first
@@ -50,8 +63,7 @@ llm_router_primary_model: >-
   {{ llm_router_primary_large_model }}
 # The physical registry entry whose window backs the default route.
 llm_router_primary_serving_model: >-
-  {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
-      | selectattr('serving_role', 'equalto', 'primary') | first).client_model_id }}
+  {{ _llm_router_primary_local_model.client_model_id }}
 # The small capability's own route group, rendered or not.
 llm_router_small_capability_name: >-
   {{ (llm_router_model_registry | selectattr('tier', 'equalto', 'vllm') | first).route_group }}
@@ -176,10 +188,12 @@ llm_router_alias_pairs: >-
   {%- set ns.pairs = ns.pairs + [[_target, _alias]] -%}
   {%- endfor -%}
   {%- endfor -%}
-  {%- if llm_router_small_capability_name not in llm_router_rendered_capability_names -%}
+  {%- for _group in [_llm_router_declared_primary.route_group, llm_router_small_capability_name] | unique -%}
+  {%- if _group not in llm_router_rendered_capability_names -%}
   {%- set ns.pairs = ns.pairs
-        + [[llm_router_primary_large_model, llm_router_small_capability_name]] -%}
+        + [[llm_router_primary_large_model, _group]] -%}
   {%- endif -%}
+  {%- endfor -%}
   {{ ns.pairs + llm_router_direct_route_alias_pairs }}
 _llm_router_model_group_aliases_source: >-
   {{ dict(llm_router_alias_pairs | map(attribute=1)

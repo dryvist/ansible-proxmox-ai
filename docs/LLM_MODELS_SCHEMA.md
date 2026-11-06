@@ -60,6 +60,9 @@ Optional:
                       probes pass. HTTP 200 with a choice is required.
                       Studio shared candidates use the same load-and-serve gate;
                       failed or unreachable lanes are excluded and reported.
+                      Primary selectors and aliases resolve to a surviving,
+                      context-backed local chat deployment after exclusion.
+                      An empty local chat candidate set rejects convergence.
   lifecycle           `old` records a superseded model identity for history.
                       It has no render effect, but an OLD entry MUST also have
                       `enabled: false`; the registry/render parity test
