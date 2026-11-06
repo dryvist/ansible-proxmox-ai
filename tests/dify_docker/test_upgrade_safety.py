@@ -179,7 +179,7 @@ def test_password_pepper_is_preserved_from_existing_compose_and_rendered_only_wh
     assert existing_config["ansible.builtin.command"]["argv"][-2:] == ["--format", "json"]
     assert _task(tasks, "Keep the existing Dify PASSWORD_PEPPER value")["no_log"] is True
 
-    template = COMPOSE_TEMPLATE.read_text(encoding="utf-8")
+    template = COMPOSE_TEMPLATE.with_name("compose-shared-env.yml.j2").read_text(encoding="utf-8")
     assert "{% if dify_docker_password_pepper is defined %}" in template
     assert "PASSWORD_PEPPER: {{ dify_docker_password_pepper | tojson }}" in template
     test_play = COMPOSE_TEST.read_text(encoding="utf-8")
