@@ -7,6 +7,14 @@
     llm_router_seed_mode: initial
     llm_router_mcp_default_object_permission:
       mcp_servers: [no-mcp-servers]
+    llm_router_mcp_hermes_object_permission: {mcp_servers: []}
+    llm_router_drift_key_git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+    llm_router_drift_workstation_key_git_file: roles/llm_router/defaults/main/56b-workstation-keys.yml
+    llm_router_review_key_router_settings:
+      fixture-ref:
+        num_retries: 3
+        enable_tag_filtering: false
+        fallbacks: [{fixture-local: [fixture-cloud]}]
   tasks:
     - name: Load priority inputs
       ansible.builtin.include_vars:
@@ -135,6 +143,49 @@
             llm_router_existing_keys:
               json:
                 keys: "{{ _updated_keys }}"
+
+        - name: Exercise the same tier policies with referenced router settings
+          ansible.builtin.set_fact:
+            llm_router_virtual_keys: >-
+              {{ llm_router_virtual_keys | map('combine', {'router_settings_ref': 'fixture-ref'}) | list }}
+
+        - name: Compute the referenced key policy updates
+          ansible.builtin.set_fact:
+            _referenced_updates: "{{ lookup('template', _fixture.path ~ '/key.j2') }}"
+          vars:
+            _llm_router_live_key_aliases: "{{ llm_router_priority_tiers | map(attribute='team_id') | list }}"
+            llm_router_existing_keys:
+              json:
+                keys: "{{ _existing_keys }}"
+
+        - name: Project the expected drift policy from the same seeds
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-expected-keys.yml"
+
+        - name: Referenced settings exercise every priority tier
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - _referenced_updates | length == llm_router_priority_tiers | length
+
+        - name: Drift expects exactly the referenced settings written during reconciliation
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - _expected == item.body.router_settings
+              - _expected.enable_tag_filtering | bool
+              - _expected.num_retries == 3
+              - item.alias == 'tier-2' or _expected.fallbacks == _reference.fallbacks
+              - item.alias != 'tier-2' or _expected.fallbacks == []
+              - item.alias != 'tier-2' or _expected.context_window_fallbacks == []
+              - item.alias != 'tier-2' or _expected.content_policy_fallbacks == []
+          loop: "{{ _referenced_updates }}"
+          loop_control:
+            label: "{{ item.alias }}"
+          vars:
+            _reference: "{{ llm_router_review_key_router_settings['fixture-ref'] }}"
+            _expected: >-
+              {{ (_llm_router_drift_expected_keys | selectattr('alias', 'equalto', item.alias) | first)
+                 .flags.router_settings }}
       always:
         - name: Remove temporary policy expressions
           ansible.builtin.file:
