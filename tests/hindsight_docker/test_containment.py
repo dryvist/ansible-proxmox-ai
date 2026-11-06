@@ -135,6 +135,17 @@ def test_rendered_worker_and_inference_defaults_are_bounded_per_process():
     }
 
 
+def test_inventory_enables_native_consolidation_with_bounded_reconciliation():
+    inputs = yaml.safe_load((ROOT / "inventory/group_vars/hindsight_group.yml").read_text())
+    env = yaml.safe_load(render(inputs, strict=True))["services"]["hindsight"]["environment"]
+    assert env["HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION"] == "true"
+    assert env["HINDSIGHT_API_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS"] == "21600"
+    assert env["HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS"] == "0"
+    assert env["HINDSIGHT_API_WORKER_MAX_SLOTS"] == "1"
+    assert env["HINDSIGHT_API_CONSOLIDATION_LLM_PARALLELISM"] == "1"
+    assert env["HINDSIGHT_API_MENTAL_MODEL_REFRESH_TICK_SECONDS"] == "0"
+
+
 def test_all_replicas_and_dr_jobs_stop_before_serial_migration():
     plays = yaml.safe_load((ROOT / "playbooks/hindsight.yml").read_text())
     stopped = next(index for index, play in enumerate(plays) if play["name"].startswith("Stop every Hindsight"))
