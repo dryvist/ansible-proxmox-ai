@@ -16,27 +16,19 @@
           - llm_router_d1_class_order == ['local', 'sub', 'paid-zdr', 'free', 'retains']
           - >-
             llm_router_d1_ladder_groups ==
-            (llm_router_d1_rungs_by_class['local']
-             + llm_router_d1_rungs_by_class['sub']
-             + llm_router_d1_rungs_by_class['paid-zdr']
-             + llm_router_d1_rungs_by_class['free']
-             + llm_router_d1_rungs_by_class['retains']) | unique | list
+            (llm_router_d1_zdr_rungs_by_class['local']
+             + llm_router_d1_zdr_rungs_by_class['sub']
+             + llm_router_d1_zdr_rungs_by_class['paid-zdr']) | unique | list
           - _config.router_settings.default_fallbacks == llm_router_d1_ladder_groups
           - llm_router_model_group_aliases.auto == llm_router_primary_model
           - _hermes_fallback == _expected_hermes_fallback
           - _primary_members | length == _active_primary_members | length * llm_router_priority_tiers | length
           - _primary_orders == _expected_primary_orders
           - _complexity_router_rows | length == 0
-          # codex-api was the only retaining rung and it is disabled, so the
-          # retains class is empty. Pin that, and keep the paid-before-free order.
           - llm_router_d1_rungs_by_class['retains'] == []
           # Precondition: the ordering below reads the first paid rung, so an empty class must fail here by name.
           - llm_router_d1_rungs_by_class['paid-zdr'] | length > 0
-          - >-
-            llm_router_d1_ladder_groups.index(
-              llm_router_d1_rungs_by_class['paid-zdr'] | first)
-            < llm_router_d1_ladder_groups.index(
-              llm_router_d1_rungs_by_class['free'] | first)
+          - llm_router_d1_ladder_groups | intersect(_active_zdr_unasserted_terminal_rungs) | length == 0
           - _sub_rows | length > 0
           - _bad_non_zdr_subscriptions | length == 0
           - _all_rung_groups | difference(_config.model_list | map(attribute='model_name') | list) | length == 0
@@ -78,3 +70,57 @@
           {{ _sub_rows
              | rejectattr('litellm_params.tags', 'contains', 'zdr')
              | rejectattr('litellm_params.tags', 'contains', 'retains') | list }}
+
+    - name: Bare-key defaults exclude unsafe deployments across every fallback map
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _default_tags == ['&zdr', '&sensitivity:sensitive']
+          - _config.router_settings.enable_tag_filtering | bool
+          - _compatible_rows | length > 0
+          - _compatible_rows | selectattr('litellm_params.tags', 'contains', 'free') | length == 0
+          - _compatible_rows | selectattr('litellm_params.tags', 'contains', 'retains') | length == 0
+          - _unsafe_default_rungs | length == 0
+          - _sensitive_unsafe_rows | length == 0
+        fail_msg: "Bare-key defaults or shared fallbacks admit free or retaining deployments."
+      vars:
+        _default_tags: "{{ _config.litellm_settings.default_key_generate_params.metadata.tags }}"
+        _required_tags: "{{ _default_tags | map('regex_replace', '^&', '') | list }}"
+        # Check every rendered row, including direct names, aliases, ordinary
+        # fallbacks, nested fallbacks, and context-window escape targets.
+        _compatible_rows: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for row in _config.model_list -%}
+          {%- if _required_tags | difference(row.litellm_params.tags | default([])) | length == 0 -%}
+          {%- set ns.rows = ns.rows + [row] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _unsafe_rows: >-
+          {{ (_config.model_list | selectattr('litellm_params.tags', 'contains', 'free') | list
+              + _config.model_list | selectattr('litellm_params.tags', 'contains', 'retains') | list) | unique }}
+        _unsafe_default_rungs: >-
+          {{ _unsafe_rows | map(attribute='model_name')
+             | intersect(_config.router_settings.default_fallbacks) }}
+        _sensitive_unsafe_rows: >-
+          {{ _unsafe_rows | selectattr('litellm_params.tags', 'contains', 'sensitivity:sensitive') | list }}
+
+    - name: Explicitly public keys retain free and retaining deployment access
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _free_rows | length > 0
+          - _retaining_rows | length > 0
+          - _public_unsafe_rows | length == (_free_rows + _retaining_rows) | length
+          - _public_groups | intersect(llm_router_d1_all_key_groups) | length > 0
+          - _free_groups | difference(llm_router_d1_all_key_groups) | length == 0
+        fail_msg: "Explicit public opt-in lost free or retaining deployment access."
+      vars:
+        _free_rows: "{{ _config.model_list | selectattr('litellm_params.tags', 'contains', 'free') | list }}"
+        _retaining_rows: "{{ _config.model_list | selectattr('litellm_params.tags', 'contains', 'retains') | list }}"
+        _public_unsafe_rows: >-
+          {{ (_free_rows + _retaining_rows)
+             | selectattr('litellm_params.tags', 'contains', 'sensitivity:public') | list }}
+        _public_groups: "{{ _public_unsafe_rows | map(attribute='model_name') | unique | list }}"
+        _free_groups: >-
+          {{ llm_router_d1_rungs_by_class['free'] | difference(llm_router_sandbox_only_model_ids) }}
