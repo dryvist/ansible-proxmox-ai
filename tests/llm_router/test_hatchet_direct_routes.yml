@@ -1,0 +1,76 @@
+---
+- name: Verify Hatchet local roster keys reach the direct inference routes
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_subdomain: pve.example.test
+  tasks:
+    - name: Prepare role-backed rendered contract
+      ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+
+    - name: Set three roster consumers with their router key values
+      ansible.builtin.set_fact:
+        ai_agents:
+          gpu-fill:
+            router_key_class: local
+            native_binding_ref: hatchet/gpu-fill-worker
+          local-plain:
+            router_key_class: local
+          standard-hatchet:
+            router_key_class: standard
+            native_binding_ref: hatchet/gpu-fill-worker
+        openbao_secrets_by_domain: >-
+          {{ (openbao_secrets_by_domain | default({}, true)) | combine({
+            'llm-router-agent-keys': {
+              'gpu_fill_llm_router_key': 'fixture-gpu-fill',
+              'local_plain_llm_router_key': 'fixture-local-plain',
+              'standard_hatchet_llm_router_key': 'fixture-standard-hatchet'
+            }
+          }, recursive=true) }}
+      no_log: true
+
+    - name: Materialize the roster keys with the fixture consumers
+      ansible.builtin.set_fact:
+        _direct_roster_keys: "{{ _llm_router_agent_keys }}"
+      no_log: true
+
+    - name: Index each fixture key's models and scope by alias
+      ansible.builtin.set_fact:
+        _models_by_alias: "{{ _direct_roster_keys | items2dict(key_name='alias', value_name='models') }}"
+        _scope_by_alias: "{{ _direct_roster_keys | items2dict(key_name='alias', value_name='allowed_classes') }}"
+
+    - name: Assert the local Hatchet worker key carries every direct route
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_direct_route_aliases | length > 0
+          - _models_by_alias['gpu-fill'] | intersect(llm_router_direct_route_aliases) | sort
+            == llm_router_direct_route_aliases | sort
+          - _scope_by_alias['gpu-fill'] == _llm_router_consumer_classes_local
+        fail_msg: >-
+          The local Hatchet worker key must carry every direct route alias
+          while keeping its local allowed classes.
+        success_msg: The local Hatchet worker key carries every direct route alias
+
+    - name: Assert a local key without a Hatchet binding gets no direct route
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _models_by_alias['local-plain'] | intersect(llm_router_direct_route_aliases) | length == 0
+          - >-
+            _models_by_alias['local-plain'] | sort
+            == (_llm_router_local_agent_groups
+                | reject('in', _llm_router_agent_excluded_groups) | unique | list) | sort
+        fail_msg: A local key without a Hatchet binding must keep its previous model list
+        success_msg: A local key without a Hatchet binding keeps its previous model list
+
+    - name: Assert a non-local key with a Hatchet binding gets no direct route
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _models_by_alias['standard-hatchet'] | intersect(llm_router_direct_route_aliases) | length == 0
+        fail_msg: A non-local key must not gain the direct routes even with a Hatchet binding
+        success_msg: A non-local key with a Hatchet binding gets no direct route

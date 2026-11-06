@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.20.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.3...v2.20.4) (2026-11-06)
+
+
+### Bug Fixes
+
+* **llm_router:** give local Hatchet worker keys the direct inference routes ([#2028](https://github.com/dryvist/ansible-proxmox-ai/issues/2028)) ([f0a134c](https://github.com/dryvist/ansible-proxmox-ai/commit/f0a134ca09b35d16cd0cdd91bb1c523cd63a020f))
+
 ## [2.20.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.2...v2.20.3) (2026-11-05)
 
 
