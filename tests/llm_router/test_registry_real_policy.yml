@@ -11,19 +11,12 @@
   hosts: localhost
   gather_facts: false
   become: false
-  vars:
-    _gpu_host_vars: "{{ playbook_dir }}/../../inventory/host_vars/llm-blackwell-7-96GB-medium.yml"
   tasks:
     - name: Load the registry with the real policy
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
         public: true
-
-    - name: Read the GPU guest's selected profiles
-      ansible.builtin.include_vars:
-        file: "{{ _gpu_host_vars }}"
-        name: _gpu_guest
 
     - name: Assert the real policy admits what the estate serves
       ansible.builtin.assert:
@@ -42,9 +35,15 @@
           denied and unmarked={{ _unmarked_denied }}
       vars:
         _denied: "{{ llm_model_trial_policy_data.deny | map(attribute='id') | list }}"
+        # Every profile a guest selects in inventory, read from the committed host vars.
         _selected: >-
-          {{ [_gpu_guest.llm_active_profile]
-             + (_gpu_guest.llm_gpu_serving_co_resident_profiles | default([])) }}
+          {%- set ns = namespace(out=[]) -%}
+          {%- for f in query('ansible.builtin.fileglob', playbook_dir ~ '/../../inventory/host_vars/*.yml') -%}
+          {%- set v = lookup('ansible.builtin.file', f) | from_yaml -%}
+          {%- set ns.out = ns.out + [v.llm_active_profile | default('')]
+                + (v.llm_gpu_serving_co_resident_profiles | default([])) -%}
+          {%- endfor -%}
+          {{ ns.out | reject('equalto', '') | unique | list }}
         _gpu_entries: >-
           {{ llm_router_model_registry | selectattr('tier', 'equalto', 'gpu')
              | selectattr('profile', 'in', _selected) | list }}
