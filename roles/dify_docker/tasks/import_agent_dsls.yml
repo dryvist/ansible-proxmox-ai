@@ -86,7 +86,7 @@
     - dify_docker_import_agent_dsls | bool
   no_log: true
 
-- name: List existing Dify apps (agent DSL catalog hash check)
+- name: List first page of existing Dify apps (agent DSL catalog hash check)
   ansible.builtin.uri:
     url: "{{ dify_docker_console_api_base }}/apps?page=1&limit=100"
     method: GET
@@ -102,7 +102,68 @@
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
   changed_when: false
-  failed_when: false
+  no_log: true
+
+- name: Validate the first Dify app page
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_apps_list.json.total is integer
+      - dify_docker_dsl_apps_list.json.limit is integer
+      - dify_docker_dsl_apps_list.json.limit > 0
+      - dify_docker_dsl_apps_list.json.data is sequence
+      - dify_docker_dsl_apps_list.json.data | length <= dify_docker_dsl_apps_list.json.limit
+      - dify_docker_dsl_apps_list.json.total >= dify_docker_dsl_apps_list.json.data | length
+      - dify_docker_dsl_apps_list.json.has_more is boolean
+    fail_msg: "Dify returned an invalid paginated app list."
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  no_log: true
+
+- name: Initialize the catalog Dify app list and page count
+  ansible.builtin.set_fact:
+    dify_docker_dsl_apps_all: "{{ dify_docker_dsl_apps_list.json.data }}"
+    dify_docker_dsl_apps_total: "{{ dify_docker_dsl_apps_list.json.total | int }}"
+    dify_docker_dsl_apps_limit: "{{ dify_docker_dsl_apps_list.json.limit | int }}"
+    dify_docker_dsl_apps_page_count: >-
+      {{ ((dify_docker_dsl_apps_list.json.total | int)
+          + (dify_docker_dsl_apps_list.json.limit | int) - 1)
+         // (dify_docker_dsl_apps_list.json.limit | int) }}
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  no_log: true
+
+- name: Check the catalog Dify app page count is addressable
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_apps_page_count | int <= 99999
+    fail_msg: "Dify reported more apps than its app-list API can address."
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  no_log: true
+
+- name: List every remaining Dify app page
+  ansible.builtin.include_tasks: list_catalog_app_page.yml
+  loop: "{{ range(2, (dify_docker_dsl_apps_page_count | int) + 1) | list }}"
+  loop_control:
+    loop_var: dify_docker_dsl_page
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  no_log: true
+
+- name: Verify every Dify app was listed exactly once
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_apps_all | length == dify_docker_dsl_apps_total | int
+      - (dify_docker_dsl_apps_all | map(attribute='id') | unique | list | length)
+        == (dify_docker_dsl_apps_total | int)
+    fail_msg: "Dify app pagination did not return every app exactly once."
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
   no_log: true
 
 - name: Reconcile each catalog agent DSL

@@ -104,13 +104,17 @@ dedicated SSRF proxy's signed file and Agent Stub routes.
 The public agent list is read from `agents/dify/manifest.json` at the pinned
 `dify_docker_agent_dsl_commit`. The manifest itself and every listed DSL are
 verified against their pinned SHA-256 values before any public app is imported.
-Catalog entries are imported as listed, including driver entries. Each app
-description records its catalog SHA-256. A missing app is created; an existing
-app is overwritten in place only when its recorded SHA-256 differs or is
-missing. An unchanged SHA-256 makes no import write. Dify keeps the existing
-app ID and mode during an overwrite. Console edits are overwritten only when
-the catalog file changes. Check mode previews each create or overwrite and
-does not send import or API-key writes.
+Catalog entries are imported as listed, including driver entries. The role
+lists every Dify app page before matching catalog names. Each app description
+records its catalog SHA-256. A missing app is created; an existing app is
+overwritten in place only when its recorded SHA-256 differs or is missing. An
+unchanged SHA-256 makes no import write. Dify keeps the existing app ID and
+mode during an overwrite. Console edits are overwritten only when the catalog
+file changes. Successful workflow imports are published so API callers receive
+the catalog version. API-key provisioning also runs for unchanged apps, which
+lets a later converge repair an app whose key was not stored. Import,
+confirmation and publication failures fail the converge. Check mode names each
+app it would create or overwrite and sends no import, publish or API-key writes.
 
 `dify_docker_private_agent_dsls` (default `[]`) adds private sources alongside
 the public catalog entries, each as `name`, `url` and `sha256`. The list and

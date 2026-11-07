@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 AGENT_DSLS = ROOT / "roles/dify_docker/vars/agent_dsls.yml"
 IMPORT_LOOP = ROOT / "roles/dify_docker/tasks/import_agent_dsls.yml"
 IMPORT_ONE = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
+LIST_CATALOG_PAGE = ROOT / "roles/dify_docker/tasks/list_catalog_app_page.yml"
 
 def test_catalog_manifest_is_pinned_to_the_release_commit_and_checksum():
     pins = _yaml(AGENT_DSLS)
@@ -102,7 +103,7 @@ def test_manifest_or_public_dsl_hash_failure_stops_before_any_import(tmp_path):
     public_fetch_index, public_fetch = by_name[
         "Fetch and verify all catalog agent DSLs before importing any"
     ]
-    apps_index, _ = by_name["List existing Dify apps (agent DSL catalog hash check)"]
+    apps_index, _ = by_name["List first page of existing Dify apps (agent DSL catalog hash check)"]
     public_import_index, _ = by_name["Reconcile each catalog agent DSL"]
 
     assert "ignore_errors" not in manifest_fetch
@@ -148,14 +149,113 @@ def test_check_mode_previews_catalog_without_importing_or_provisioning_keys():
     import_task = _task(importer, "Import the catalog DSL when its checksum is new")
     confirm_task = _task(importer, "Confirm the agent DSL import (DSL version mismatch)")
     preview_task = _task(importer, "Preview the catalog app create or update")
+    publish_task = _task(importer, "Publish the changed catalog workflow for API callers")
     key_task = _task(importer, "Ensure the agent app API key is stored in OpenBao")
 
     assert "not ansible_check_mode" in import_task["when"]
     assert "not ansible_check_mode" in confirm_task["when"]
     assert "not ansible_check_mode" in key_task["when"]
-    assert "dify_docker_dsl_import_needed | bool" in key_task["when"]
+    assert "not (dify_docker_dsl_import_needed | bool)" in key_task["when"][-1]
     assert "ansible_check_mode" in preview_task["when"]
+    assert "not ansible_check_mode" in publish_task["when"]
     assert preview_task["changed_when"] is True
+    assert "dify_docker_dsl_name" in preview_task["ansible.builtin.debug"]["msg"]
+    assert "create" in preview_task["ansible.builtin.debug"]["msg"]
+    assert "overwrite" in preview_task["ansible.builtin.debug"]["msg"]
+    assert preview_task.get("no_log") is not True
+    assert not any(
+        secret_field in preview_task["ansible.builtin.debug"]["msg"]
+        for secret_field in ("cookie", "token", "api_key", "dsl_content")
+    )
+
+
+def test_catalog_app_listing_fetches_and_validates_every_page():
+    tasks = _yaml(IMPORT_LOOP)
+    page_tasks = _yaml(LIST_CATALOG_PAGE)
+    by_name = {task.get("name"): task for task in tasks}
+    first_page = by_name["List first page of existing Dify apps (agent DSL catalog hash check)"]
+    initialize = by_name["Initialize the catalog Dify app list and page count"]
+    later_pages = by_name["List every remaining Dify app page"]
+    page_loop = _task(page_tasks, "List one page of Dify apps for the agent catalog")
+    accumulate = _task(page_tasks, "Accumulate a Dify app catalog page")
+    complete_check = by_name["Verify every Dify app was listed exactly once"]
+
+    assert first_page["ansible.builtin.uri"]["url"].endswith("/apps?page=1&limit=100")
+    assert "failed_when" not in first_page
+    assert initialize["ansible.builtin.set_fact"]["dify_docker_dsl_apps_all"] == (
+        "{{ dify_docker_dsl_apps_list.json.data }}"
+    )
+    assert "json.total" in initialize["ansible.builtin.set_fact"]["dify_docker_dsl_apps_page_count"]
+    assert later_pages["ansible.builtin.include_tasks"] == "list_catalog_app_page.yml"
+    assert later_pages["loop"] == "{{ range(2, (dify_docker_dsl_apps_page_count | int) + 1) | list }}"
+    assert later_pages["loop_control"]["loop_var"] == "dify_docker_dsl_page"
+    assert "page={{ dify_docker_dsl_page }}" in page_loop["ansible.builtin.uri"]["url"]
+    assert "limit={{ dify_docker_dsl_apps_limit }}" in page_loop["ansible.builtin.uri"]["url"]
+    assert "dify_docker_dsl_apps_all + dify_docker_dsl_apps_page.json.data" in (
+        accumulate["ansible.builtin.set_fact"]["dify_docker_dsl_apps_all"]
+    )
+    assert "dify_docker_dsl_apps_total | int" in str(complete_check["ansible.builtin.assert"]["that"])
+    assert "unique" in str(complete_check["ansible.builtin.assert"]["that"])
+
+    page_count = initialize["ansible.builtin.set_fact"]["dify_docker_dsl_apps_page_count"]
+    for total, expected_pages in ((0, 0), (100, 1), (101, 2), (201, 3)):
+        rendered_count = Environment().from_string(page_count).render(
+            dify_docker_dsl_apps_list={"json": {"total": total, "limit": 100}}
+        )
+        assert int(rendered_count) == expected_pages
+    rendered_loop = Environment().from_string(later_pages["loop"]).render(
+        dify_docker_dsl_apps_page_count=3
+    )
+    assert ast.literal_eval(rendered_loop) == [2, 3]
+
+
+def test_changed_workflow_is_published_after_successful_import_and_failure_is_fatal():
+    importer = _yaml(IMPORT_ONE)
+    tasks_by_name = {task.get("name"): (index, task) for index, task in enumerate(importer)}
+    _, import_task = tasks_by_name["Import the catalog DSL when its checksum is new"]
+    _, confirm_task = tasks_by_name["Confirm the agent DSL import (DSL version mismatch)"]
+    app_id_index, app_id_task = tasks_by_name["Resolve the Dify app id returned by the catalog import"]
+    publish_index, publish_task = tasks_by_name["Publish the changed catalog workflow for API callers"]
+    key_index, key_task = tasks_by_name["Ensure the agent app API key is stored in OpenBao"]
+
+    assert import_task["failed_when"] != "false"
+    assert "completed" in import_task["failed_when"]
+    assert "completed-with-warnings" in import_task["failed_when"]
+    assert "pending" in import_task["failed_when"]
+    assert confirm_task["failed_when"] != "false"
+    assert "completed" in confirm_task["failed_when"]
+    assert "completed-with-warnings" in confirm_task["failed_when"]
+    assert "dify_docker_dsl_confirm.json" in app_id_task["ansible.builtin.set_fact"][
+        "dify_docker_dsl_imported_app_id"
+    ]
+    assert publish_index > app_id_index
+    assert publish_index < key_index
+    assert publish_task["ansible.builtin.uri"]["url"] == (
+        "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_dsl_imported_app_id }}"
+        "/workflows/publish"
+    )
+    assert publish_task["ansible.builtin.uri"]["method"] == "POST"
+    assert publish_task["ansible.builtin.uri"]["status_code"] == 200
+    assert "catalog sha256:" in publish_task["ansible.builtin.uri"]["body"]["marked_comment"]
+    assert "dify_docker_dsl_import_needed | bool" in publish_task["when"]
+    assert "not ansible_check_mode" in publish_task["when"]
+    assert publish_task["failed_when"] != "false"
+    assert "success" in publish_task["failed_when"]
+    assert publish_task["no_log"] is True
+    assert "not (dify_docker_dsl_import_needed | bool)" in key_task["when"][-1]
+
+    environment = Environment()
+    import_failure = environment.from_string("{{ " + import_task["failed_when"] + " }}")
+    confirm_failure = environment.from_string("{{ " + confirm_task["failed_when"] + " }}")
+    publish_failure = environment.from_string("{{ " + publish_task["failed_when"] + " }}")
+    for completed_status in ("completed", "completed-with-warnings"):
+        assert import_failure.render(dify_docker_dsl_import={"json": {"status": completed_status}}) == "False"
+        assert confirm_failure.render(dify_docker_dsl_confirm={"json": {"status": completed_status}}) == "False"
+    assert import_failure.render(dify_docker_dsl_import={"json": {"status": "pending"}}) == "False"
+    assert import_failure.render(dify_docker_dsl_import={"json": {"status": "failed"}}) == "True"
+    assert confirm_failure.render(dify_docker_dsl_confirm={"json": {"status": "failed"}}) == "True"
+    assert publish_failure.render(dify_docker_dsl_publish={"json": {"result": "success"}}) == "False"
+    assert publish_failure.render(dify_docker_dsl_publish={"json": {"result": "error"}}) == "True"
 
 
 def test_catalog_hash_decides_whether_to_import_and_payload_targets_existing_app():
