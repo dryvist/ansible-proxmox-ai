@@ -8,16 +8,18 @@ import yaml
 from test_model_trial import PLUGIN, fixture, select
 
 
-@pytest.mark.parametrize("change,reason", [
-    ({}, ""),
-    ({"status": "started"}, "status must be complete"),
-    ({"status": None}, "status must be complete"),
-    ({"type": "Note"}, "type must be Model Dossier"),
-    ({"timestamp": "not-a-date"}, "parseable timestamp"),
-    ({"timestamp": None}, "parseable timestamp"),
-    ({"timestamp": "2026-02-30T00:00:00Z"}, "parseable timestamp"),
+@pytest.mark.parametrize("change,trial_reason,router_reason", [
+    ({}, "", ""),
+    ({"status": "started"}, "status must be complete", ""),
+    ({"status": None}, "status must be complete", ""),
+    ({"type": "Note"}, "type must be Model Dossier", "type must be Model Dossier"),
+    ({"timestamp": "not-a-date"}, "parseable timestamp", "parseable timestamp"),
+    ({"timestamp": None}, "parseable timestamp", "parseable timestamp"),
+    ({"timestamp": "2026-02-30T00:00:00Z"}, "parseable timestamp", "parseable timestamp"),
 ])
-def test_dossier_completion_gate(tmp_path: Path, change: dict, reason: str) -> None:
+def test_dossier_gate_is_complete_for_trials_only(
+    tmp_path: Path, change: dict, trial_reason: str, router_reason: str
+) -> None:
     data = fixture("nvidia-qwen38.json")
     policy = data["policy"]
     relative = Path(policy["models"][0]["dossier"]).relative_to("ansible")
@@ -28,13 +30,40 @@ def test_dossier_completion_gate(tmp_path: Path, change: dict, reason: str) -> N
     target.write_text("---\n" + yaml.safe_dump(metadata) + "---\n")
     policy["_dossier_root"] = str(tmp_path)
     model = {"upstream_model_id": data["info"]["id"]}
-    assert PLUGIN._POLICY.registry_policy_allowed(model, policy) is (not reason)
-    assert reason in PLUGIN._POLICY.registry_policy_reason(model, policy)
-    if reason:
-        with pytest.raises(ValueError, match=reason):
+    assert PLUGIN._POLICY.registry_policy_allowed(model, policy) is (not router_reason)
+    assert router_reason in PLUGIN._POLICY.registry_policy_reason(model, policy)
+    if trial_reason:
+        with pytest.raises(ValueError, match=trial_reason):
             select(data)
     else:
         assert select(data)["upstream_id"] == "example/base"
+
+
+def test_hosted_tier_is_outside_the_self_hosted_policy() -> None:
+    policy = fixture("nvidia-qwen38.json")["policy"]
+    hosted = {"tier": "opencode", "upstream_model_id": "provider/unlisted"}
+    local = {"tier": "gpu", "upstream_model_id": "provider/unlisted"}
+    assert PLUGIN._POLICY.registry_policy_allowed(hosted, policy, ["gpu"])
+    assert not PLUGIN._POLICY.registry_policy_allowed(local, policy, ["gpu"])
+    assert not PLUGIN._POLICY.registry_policy_allowed(hosted, policy)
+
+
+def test_resolved_artifact_identity_wins_over_the_client_alias() -> None:
+    data = fixture("nvidia-qwen38.json")
+    artifact = data["policy"]["models"][0]["id"]
+    aliased = {"upstream_model_id": "alias", "policy_artifact_id": artifact}
+    assert PLUGIN._POLICY.registry_policy_allowed(aliased, data["policy"])
+    assert not PLUGIN._POLICY.registry_policy_allowed({"upstream_model_id": "alias"}, data["policy"])
+
+
+def test_replace_pending_admits_only_a_denied_incumbent() -> None:
+    policy = fixture("nvidia-qwen38.json")["policy"]
+    policy["deny"] = [{"id": "example/old", "reason": "fixture"}]
+    denied = {"policy_artifact_id": "example/old"}
+    assert not PLUGIN._POLICY.registry_policy_allowed(denied, policy)
+    assert PLUGIN._POLICY.registry_policy_allowed(denied | {"replace_pending": True}, policy)
+    unlisted = {"policy_artifact_id": "example/unlisted", "replace_pending": True}
+    assert not PLUGIN._POLICY.registry_policy_allowed(unlisted, policy)
 
 
 @pytest.mark.parametrize("dossier,reason", [

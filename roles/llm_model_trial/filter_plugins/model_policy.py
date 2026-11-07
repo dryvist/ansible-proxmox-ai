@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 
 
-def _validate_dossier(value: Any, root: str) -> None:
+def _validate_dossier(value: Any, root: str, *, require_complete: bool = True) -> None:
     prefix = Path("ansible/roles/llm_model_catalog/files/dossiers")
     if not isinstance(value, str) or not Path(value).is_relative_to(prefix):
         raise ValueError("Model policy requires a repo-relative dossier path")
@@ -38,7 +38,7 @@ def _validate_dossier(value: Any, root: str) -> None:
             datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     except (AttributeError, TypeError, ValueError) as error:
         raise ValueError("Model dossier requires a parseable timestamp") from error
-    if metadata.get("status") != "complete":
+    if require_complete and metadata.get("status") != "complete":
         raise ValueError("Model dossier status must be complete")
 
 
@@ -72,9 +72,14 @@ def _validate_policy(policy: dict[str, Any], today: date) -> None:
 
 
 def model_policy_entry(
-    artifact_id: str, policy: dict[str, Any], today: date | None = None
+    artifact_id: str, policy: dict[str, Any], today: date | None = None,
+    *, require_complete_dossier: bool = True,
 ) -> dict[str, Any]:
-    """Match the artifact's exact id, then enforce its base-model age and dossier."""
+    """Match the artifact's exact id, then enforce its base-model age and dossier.
+
+    Trials need a complete dossier. The router check passes False: it needs the
+    dated record and a readable dossier for a model that is already serving.
+    """
     today = today or datetime.now(timezone.utc).date()
     _validate_policy(policy, today)
     matches = [entry for entry in policy["models"]
@@ -91,25 +96,39 @@ def model_policy_entry(
     created = policy_date(entry.get("upstream_created"))
     if not 0 <= (today - created).days <= policy["max_age_days"]:
         raise ValueError("Model upstream is old or future-dated under the shared policy")
-    _validate_dossier(entry.get("dossier"), policy.get("_dossier_root", ""))
+    _validate_dossier(entry.get("dossier"), policy.get("_dossier_root", ""),
+                      require_complete=require_complete_dossier)
     return entry
 
 
-def registry_policy_reason(model: dict[str, Any], policy: dict[str, Any]) -> str:
-    """Return the admission rejection reason, or an empty string for eligible models."""
+def registry_policy_reason(
+    model: dict[str, Any], policy: dict[str, Any], self_hosted_tiers: list[str] | None = None
+) -> str:
+    """Return the admission rejection reason, or an empty string for eligible models.
+
+    The policy covers self-hosted weights, so a hosted tier has no weights to check.
+    Passing no tier list checks every entry.
+    """
     _validate_policy(policy, datetime.now(timezone.utc).date())
+    if self_hosted_tiers is not None and model.get("tier") not in self_hosted_tiers:
+        return ""
     if model.get("lifecycle") == "old":
         return "Model lifecycle is old"
+    # The repository holding the served weights identifies the artifact, including quantizations.
+    artifact_id = model.get("policy_artifact_id") or model.get("upstream_model_id", "")
+    if model.get("replace_pending") and artifact_id in denied_ids(policy):
+        return ""
     try:
-        # The registry's backend repository identifies the artifact, including quantizations.
-        model_policy_entry(artifact_id=model.get("upstream_model_id", ""), policy=policy)
+        model_policy_entry(artifact_id=artifact_id, policy=policy, require_complete_dossier=False)
     except ValueError as error:
         return str(error)
     return ""
 
 
-def registry_policy_allowed(model: dict[str, Any], policy: dict[str, Any]) -> bool:
-    return not registry_policy_reason(model, policy)
+def registry_policy_allowed(
+    model: dict[str, Any], policy: dict[str, Any], self_hosted_tiers: list[str] | None = None
+) -> bool:
+    return not registry_policy_reason(model, policy, self_hosted_tiers)
 
 
 def base_models(info: dict[str, Any]) -> list[str]:
