@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.24.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.23.2...v2.24.0) (2026-11-07)
+
+
+### Features
+
+* **dify-docker:** read imports from the catalog manifest ([#2107](https://github.com/dryvist/ansible-proxmox-ai/issues/2107)) ([31a104f](https://github.com/dryvist/ansible-proxmox-ai/commit/31a104f31ed5376ea4e206bde3978daa788ff005))
+
 ## [2.23.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.23.1...v2.23.2) (2026-11-07)
 
 
