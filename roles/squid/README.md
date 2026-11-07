@@ -47,6 +47,17 @@ The operational surface is therefore the allowlist below and the access log.
 `squid_egress_profiles` maps a firewall egress profile to an inventory group and
 a domain allowlist. The template turns each entry into one ACL pair:
 
+The `pepper` profile selects only the Pepper identity from the Hermes group.
+It permits the router, YouTrack, OpenBao, the configured evidence repository
+host, Slack, and the npm registry. Service hosts come from the existing endpoint
+variables. A missing evidence URL adds no evidence host. Identity profiles deny
+unmatched destinations before any shared profile can grant access.
+
+`playbooks/agent-egress.yml` prepares the shared guest proxy files and converges
+Squid before the Hermes runtime. Pepper bypasses the proxy only for loopback;
+its runtime fetches, systemd services, login shell, apt, and npm use the proxy.
+The existing pooled-guest profile retains its configured bypass list.
+
 ```squid
 acl ai_proxied_clients src <every member's DHCP reservation>
 acl ai_proxied_domains dstdomain <the allowlist>

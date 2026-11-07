@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
     (['hermes_crons'], [], True), (['hermes_runtime_install'], [], True),
     (['hermes_units_gateways'], [], True), (['hermes_content_scripts'], [], True),
     (['hermes_delivery_probe'], [], True), (['tagged'], [], True),
+    (['squid'], [], False), (['squid'], ['squid'], False), (['squid'], ['hermes_agent'], False),
     (['untagged'], [], False), (['always'], [], False),
     (['all'], ['hermes_agent'], False), (['hermes_agent'], ['ai'], False),
     (['hermes_profiles_env'], ['hermes_profiles_env'], False),
@@ -30,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
     (['all'], ['hermes_runtime_install', 'hermes_content_scripts', 'hermes_profiles_env',
                'hermes_patches', 'hermes_crons', 'hermes_units_gateways', 'hermes_delivery_probe'], False),
 ])
-def test_pepper_secret_domain_is_selected_only_for_its_runtime(identities, run_tags, skip_tags, selected):
+def test_pepper_secret_domain_is_selected_only_for_its_runtime_or_egress(identities, run_tags, skip_tags, selected):
     directory = ROOT / 'inventory/group_vars/all/openbao_secrets'
     identity_domains = yaml.safe_load((directory / '10-domains-identities.yml').read_text())
     fleet = yaml.safe_load((directory / '10-domains.yml').read_text())
@@ -45,13 +46,17 @@ def test_pepper_secret_domain_is_selected_only_for_its_runtime(identities, run_t
     env = NativeEnvironment(undefined=StrictUndefined)
     env.filters.update(intersect=lambda a, b: list(set(a) & set(b)),
                        difference=lambda a, b: list(set(a) - set(b)), bool=bool)
+    context['hermes_agent_pepper_play_tags'] = roster['hermes_agent_pepper_play_tags']
     context['hermes_agent_pepper_runtime_selected'] = env.from_string(
         roster['hermes_agent_pepper_runtime_selected']).render(context)
     assert context['hermes_agent_pepper_runtime_selected'] is selected
+    context['hermes_agent_pepper_egress_selected'] = env.from_string(
+        roster['hermes_agent_pepper_egress_selected']).render(context)
+    assert context['hermes_agent_pepper_egress_selected'] is (selected or (run_tags == ['squid'] and not skip_tags))
     domains = env.from_string(roster['openbao_secrets_domains']).render(context)
     pepper = [d for d in domains if d['name'] == 'pepper']
     assert pepper == ([{'name': 'pepper', 'paths': ['ai/pepper'], 'required': True}]
-                      if 'pepper' in identities and selected else [])
+                      if 'pepper' in identities and context['hermes_agent_pepper_egress_selected'] else [])
     assert [d for d in domains if d['name'] in {s['name'] for s in static}] == static
     assert all('ai/pepper' not in d['paths'] for d in domains if d['name'] != 'pepper')
     play = yaml.safe_load((ROOT / 'playbooks/agents.yml').read_text())[0]
@@ -72,7 +77,7 @@ def test_rollout_tag_gate_tracks_the_runtime_entry_points():
 
 
 @pytest.mark.parametrize('tags,skip,selected', [
-    ('llm_router', '', False), ('hermes_profiles_env', '', True),
+    ('llm_router', '', False), ('hermes_profiles_env', '', True), ('squid', '', False),
     ('all', 'hermes_agent', False), ('all', '', True),
 ])
 def test_cli_tag_selection_gates_always_tagged_runtime_prerequisites(tmp_path, tags, skip, selected):
