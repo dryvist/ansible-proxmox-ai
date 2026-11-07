@@ -19,11 +19,20 @@
     headers:
       Authorization: "Bearer {{ llm_router_master_key }}"
     body_format: json
-    body: "{{ item.item }}"
+    body: "{{ _target }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
   loop: "{{ _llm_router_existing_teams.results }}"
+  vars:
+    _live: "{{ item.json.team_info | default({}) }}"
+    _target: >-
+      {{ item.item | combine({
+           'metadata': (_live.metadata | default({}, true)) | combine(item.item.metadata | default({})),
+           'router_settings': (_live.router_settings | default({}, true))
+             | combine(item.item.router_settings | default({}))}) }}
   when: >-
     item.status == 404 or
-    (item.json.team_info.models | default([], true) | sort) != (item.item.models | sort)
+    (_live.models | default([], true) | sort) != (item.item.models | sort) or
+    (_live.metadata | default({}, true)) != _target.metadata or
+    (_live.router_settings | default({}, true)) != _target.router_settings
   no_log: true

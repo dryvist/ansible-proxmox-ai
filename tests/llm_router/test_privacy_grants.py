@@ -106,9 +106,11 @@ def test_default_team_seed_uses_native_api_before_key_creation():
     assert "/team/info?team_id=" in read["ansible.builtin.uri"]["url"]
     assert read["ansible.builtin.uri"]["status_code"] == [200, 404]
     assert read["check_mode"] is False
-    assert write["ansible.builtin.uri"]["body"] == "{{ item.item }}"
+    assert write["ansible.builtin.uri"]["body"] == "{{ _target }}"
     assert "'new' if item.status == 404 else 'update'" in write["ansible.builtin.uri"]["url"]
-    assert "item.json.team_info.models" in write["when"]
+    assert "_live.models" in write["when"]
+    assert "_target.metadata" in write["when"]
+    assert "_target.router_settings" in write["when"]
     assert read["no_log"] and write["no_log"]
     seed = yaml.safe_load((ROLE / "tasks/seed-keys.yml").read_text())
     team_index = next(i for i, task in enumerate(seed)
