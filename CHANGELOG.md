@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.23.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.23.0...v2.23.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **load:** consume the pinned catalog request prompt ([6b23918](https://github.com/dryvist/ansible-proxmox-ai/commit/6b2391805f4e77536f0d5819cbef3de0df7e52dc))
+* **load:** read the tier-2 request prompt from the catalog ([#2098](https://github.com/dryvist/ansible-proxmox-ai/issues/2098)) ([6b23918](https://github.com/dryvist/ansible-proxmox-ai/commit/6b2391805f4e77536f0d5819cbef3de0df7e52dc))
+
 ## [2.23.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.22.0...v2.23.0) (2026-11-07)
 
 
