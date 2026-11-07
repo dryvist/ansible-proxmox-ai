@@ -1,0 +1,40 @@
+---
+- name: Exercise one serving-host pin fixture
+  block:
+    - name: Create a temporary hosts fixture
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .hosts
+      register: _pin_hosts_fixture
+
+    - name: Seed the hosts fixture
+      ansible.builtin.copy:
+        dest: "{{ _pin_hosts_fixture.path }}"
+        content: "{{ pin_case.before }}"
+        mode: "0644"
+
+    - name: Run the serving-host pin tasks against the fixture
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/pin-llm-large-host.yml"
+      vars:
+        llm_router_hosts_file: "{{ _pin_hosts_fixture.path }}"
+
+    - name: Read the reconciled hosts fixture
+      ansible.builtin.set_fact:
+        _pin_hosts_lines: "{{ lookup('file', _pin_hosts_fixture.path).splitlines() }}"
+
+    - name: Verify one current serving-host mapping and the preserved host line
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _pin_hosts_lines | select('search', _pin_fqdn_pattern) | list | length == 1
+          - "'192.0.2.20 router-pin-fixture.example.test' in _pin_hosts_lines"
+          - pin_case.preserved_line in _pin_hosts_lines
+        fail_msg: >-
+          The hosts fixture does not contain one current serving-host mapping
+          with the unrelated line preserved.
+  always:
+    - name: Remove the temporary hosts fixture
+      ansible.builtin.file:
+        path: "{{ _pin_hosts_fixture.path }}"
+        state: absent
+      when: _pin_hosts_fixture.path is defined

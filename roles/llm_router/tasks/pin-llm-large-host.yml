@@ -26,16 +26,30 @@
       Could not resolve {{ llm_router_llm_large_fqdn }} to an IPv4 address for
       the LiteLLM /etc/hosts pin.
 
+- name: Remove duplicate serving-host mappings from /etc/hosts for LiteLLM
+  ansible.builtin.replace:
+    path: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
+    owner: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
+    group: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
+    mode: "{{ '0644' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
+    regexp: >-
+      (?m)^[^#\n]*{{ _llm_router_pin_name_rx }}[^#\n]*\n(?=[\s\S]*^[^#\n]*{{ _llm_router_pin_name_rx }})
+    replace: ""
+  vars:
+    _llm_router_pin_name_rx: >-
+      (?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[\s#]|$)
+  notify: Restart litellm
+
 - name: Pin the Mac Studio apex in /etc/hosts for LiteLLM
   # Keep a local resolver pin here so the router hosts do not depend on their
   # own DNS path before they can reach the gate.
   ansible.builtin.lineinfile:
-    path: /etc/hosts
-    owner: root
-    group: root
-    mode: "0644"
+    path: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
+    owner: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
+    group: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
+    mode: "{{ '0644' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     regexp: >-
-      ^{{ llm_router_llm_large_ip | regex_escape }}\s+.*\b{{ llm_router_llm_large_fqdn | regex_escape }}\b
+      ^\s*(?!#)[^#\s]\S*\s+[^#]*(?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[\s#]|$)[^#]*$
     line: >-
       {{ llm_router_llm_large_ip }}
       {{ llm_router_llm_large_fqdn }}

@@ -1,0 +1,50 @@
+---
+- name: Register an isolated local fixture host
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Add the fixture host without inherited connection vars
+      ansible.builtin.add_host:
+        name: pin-test-runner
+        groups: llm_router_pin_test
+        ansible_connection: local
+        ansible_become: false
+
+- name: Reconcile serving-host pins in hosts fixtures
+  hosts: llm_router_pin_test
+  gather_facts: false
+  vars:
+    ansible_become: false
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_large_serving_ip: "192.0.2.20"
+    llm_router_llm_large_fqdn: router-pin-fixture.example.test
+    _pin_fqdn_pattern: >-
+      (?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[\s#]|$)
+    _pin_cases:
+      - name: Replace a stale serving-host entry
+        before: |
+          192.0.2.19 router-pin-fixture.example.test
+          192.0.2.30 unrelated-fixture.example.test
+        preserved_line: 192.0.2.30 unrelated-fixture.example.test
+      - name: Remove duplicate stale serving-host entries
+        before: |
+          192.0.2.18 router-pin-fixture.example.test
+          192.0.2.19 router-pin-fixture.example.test
+          192.0.2.30 unrelated-fixture.example.test
+        preserved_line: 192.0.2.30 unrelated-fixture.example.test
+      - name: Preserve an unrelated host line
+        before: |
+          192.0.2.31 unrelated-fixture.example.test
+        preserved_line: 192.0.2.31 unrelated-fixture.example.test
+  tasks:
+    - name: Run each serving-host pin fixture
+      ansible.builtin.include_tasks: tasks/pin_llm_large_host_case.yml
+      loop: "{{ _pin_cases }}"
+      loop_control:
+        loop_var: pin_case
+        label: "{{ pin_case.name }}"
+
+  handlers:
+    - name: Restart litellm
+      ansible.builtin.debug:
+        msg: Fixture run queued the router restart handler.
