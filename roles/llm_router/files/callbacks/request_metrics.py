@@ -120,7 +120,7 @@ def apply_trace_contract(data, key_metadata, key_alias=None):
     metadata.update(defaults)
     metadata.update({field: value for field, value in request_attribution.items() if value not in (None, "")})
     metadata["agent"] = defaults.get("agent") or metadata.get("agent") or key_alias or defaults["client"]
-    metadata["privacy_class"] = defaults.get("privacy_class", "private")
+    metadata["privacy_class"] = "public" if (key_metadata or {}).get("privacy_class") == "public" else "private"
     # Deployment identity is assigned only after the router selects an attempt.
     deployment_fields = dict.fromkeys(("model", "accelerator"))
     metadata.update(deployment_fields)

@@ -17,9 +17,9 @@ def test_key_privacy_and_agent_reach_all_carriers(module, slot, privacy):
     data = {slot: {"agent": "fixture-agent", "tier": 0, "privacy_class": "spoofed"}}
     for carrier in CARRIERS:
         data[slot][carrier] = {"privacy_class": "spoofed", "model": "spoofed", "accelerator": "spoofed"}
-    module["apply_trace_contract"](data, {"trace_defaults": {
+    module["apply_trace_contract"](data, {"privacy_class": privacy, "trace_defaults": {
         "client": "fixture-client", "runner": "runner", "purpose": "live",
-        "privacy_class": privacy, "tier": 1,
+        "tier": 1,
     }}, "fixture-key")
     for carrier in CARRIERS:
         contract = data[slot][carrier]
@@ -30,17 +30,23 @@ def test_key_privacy_and_agent_reach_all_carriers(module, slot, privacy):
         assert contract["accelerator"] is None
 
 
-def test_missing_key_privacy_fails_closed(module):
+@pytest.mark.parametrize("privacy", [None, "", "private", "unknown"])
+def test_missing_or_invalid_key_privacy_fails_closed(module, privacy):
     data = {"metadata": {"privacy_class": "public"}}
-    module["apply_trace_contract"](data, None, "fixture-key")
-    assert data["metadata"]["requester_metadata"]["privacy_class"] == "private"
+    key = {"privacy_class": privacy, "trace_defaults": {
+        "client": "fixture-client", "runner": "runner", "purpose": "live", "privacy_class": "public",
+    }}
+    module["apply_trace_contract"](data, key, "fixture-key")
+    for carrier in CARRIERS:
+        assert data["metadata"][carrier]["privacy_class"] == "private"
     assert data["metadata"]["requester_metadata"]["agent"] == "fixture-key"
 
 
 @pytest.mark.parametrize("slot", ["metadata", "litellm_metadata"])
-def test_success_failure_retry_and_fallback_use_attempt_deployment(module, capsys, slot):
-    data = {slot: {"agent": "fixture-agent", "tier": 0}}
-    module["apply_trace_contract"](data, None, "fixture-key")
+@pytest.mark.parametrize("privacy", ["private", "public"])
+def test_success_failure_retry_and_fallback_use_attempt_deployment(module, capsys, slot, privacy):
+    data = {slot: {"agent": "fixture-agent", "tier": 0, "privacy_class": "spoofed"}}
+    module["apply_trace_contract"](data, {"privacy_class": privacy}, "fixture-key")
     callback = module["RequestMetrics"]()
     attempts = [
         ("success", "fixture/primary", "gpu-primary"),
@@ -65,7 +71,7 @@ def test_success_failure_retry_and_fallback_use_attempt_deployment(module, capsy
         assert kwargs["standard_logging_object"]["completion_tokens"] == (7 if status == "success" else 0)
         record = json.loads(capsys.readouterr().out)
         assert {key: record[key] for key in ("agent", "tier", "privacy_class", "model", "accelerator")} == {
-            "agent": "fixture-agent", "tier": 0, "privacy_class": "private", "model": model, "accelerator": accelerator,
+            "agent": "fixture-agent", "tier": 0, "privacy_class": privacy, "model": model, "accelerator": accelerator,
         }
         for target in (metadata, kwargs["standard_logging_object"]["metadata"]):
             for carrier in CARRIERS:
