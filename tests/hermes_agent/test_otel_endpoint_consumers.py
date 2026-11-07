@@ -15,22 +15,15 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from _group_vars import load_group_vars_all
 from _role_files import template_text
 from _shell_harness_shared import ROLES, defaults_of, render
 
 SENTINEL = "http://otel-sentinel.test.invalid:4318"
-INVENTORY_VARS = load_group_vars_all()
-INVENTORY_CONTEXT = {
-    "agentgateway_docker_a2a_allowed_tier": INVENTORY_VARS[
-        "agentgateway_docker_a2a_allowed_tier"
-    ],
-}
 
 CONSUMERS = [
     pytest.param("llm_router", "litellm.env.j2", None, id="llm_router"),
     pytest.param("agent_exec", "otel_bootstrap.py.j2", None, id="agent_exec"),
-    pytest.param("dify_docker", "docker-compose.yml.j2", None, id="dify_docker"),
+    pytest.param("dify_docker", "docker-compose.yml.j2", "dify_docker_otel_endpoint", id="dify_docker"),
     pytest.param(
         "langgraph_docker", "otel_bootstrap.py.j2", "langgraph_docker_otel_endpoint", id="langgraph_docker"
     ),
@@ -68,7 +61,6 @@ def test_consumer_carries_the_orchestration_endpoint(role: str, template: str, d
     context = {
         **defaults,
         **REGISTRY_PROJECTIONS,
-        **INVENTORY_CONTEXT,
         "ansible_managed": "test render",
         "ai_orchestration_otel_endpoint": SENTINEL,
     }

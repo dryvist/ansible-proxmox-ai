@@ -4,6 +4,8 @@
 - name: Verify Hermes stays local when provider credentials are absent
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - policy_fixture.yml
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     tofu_data:
@@ -52,6 +54,7 @@
         llm_router_llm_light_base_url: "http://localhost:10434/v1"
         llm_router_llm_large_base_url: "https://localhost:11434/v1"
         llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
+        llm_router_studio_precheck_passed: true
 
     - name: Load the model registry through the role
       ansible.builtin.include_role:
@@ -75,16 +78,16 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          # The primary profile stays directly addressable but never becomes
-          # a shared fallback rung; any eligible local rung remains registry-derived.
-          - llm_router_primary_model not in _local_groups
+          # The admitted Studio joins local candidates; a route's own group
+          # is omitted from its fallback tail.
+          - llm_router_primary_model in _local_groups
           - llm_router_hermes_default_fallback_chain == _local_groups
           - llm_router_hermes_default_fallback_chain | difference(_local_groups) | length == 0
-          - _hermes_fallback | length == (1 if _local_groups | length > 0 else 0)
+          - _hermes_fallback | length == (1 if _other_local_groups | length > 0 else 0)
           - >-
             _hermes_fallback | length == 0
             or _hermes_fallback[0][hermes_brain_model]
-               == llm_router_hermes_default_fallback_chain
+               == _other_local_groups
           - >-
             _hermes_fallback | length == 0
             or _hermes_fallback[0][hermes_brain_model] | difference(_local_groups) | length == 0
@@ -135,3 +138,4 @@
              | selectattr('serving_role', 'defined')
              | selectattr('serving_role', 'equalto', 'primary') | first }}
         _local_groups: "{{ llm_router_d1_rungs_by_class['local'] }}"
+        _other_local_groups: "{{ _local_groups | reject('equalto', llm_router_primary_model) | list }}"

@@ -94,6 +94,7 @@ DEFAULT_CONTEXT = {
         "hindsight_docker_retain_llm_max_backoff"
     ],
     "hindsight_docker_consolidation_llm_parallelism": 1,
+    "hindsight_docker_consolidation_llm_timeout": ROLE_DEFAULTS["hindsight_docker_consolidation_llm_timeout"],
     "hindsight_docker_run_migrations_on_startup": False,
     "hindsight_docker_retain_wall_timeout": ROLE_DEFAULTS[
         "hindsight_docker_retain_wall_timeout"

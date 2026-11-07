@@ -51,7 +51,7 @@ def test_clickhouse_inventory_contract_uses_published_ports_and_guest_tag():
     fixture = json.loads((ROOT / "tests/inventory_load/tofu_inventory.json").read_text())
     guest = fixture["containers"]["clickhouse"]
     group_vars = yaml.safe_load((ROOT / "inventory/group_vars/clickhouse_group.yml").read_text())
-    defaults = yaml.safe_load((ROOT / "roles/clickhouse_docker/defaults/main.yml").read_text())
+    defaults = yaml.safe_load((ROOT / "roles/clickhouse_docker/defaults/main/00-core.yml").read_text())
 
     assert "clickhouse" in guest["tags"]
     assert "managed-secrets" not in guest["tags"]

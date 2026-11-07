@@ -11,6 +11,10 @@
     ansible_become: false
     _template: "{{ playbook_dir }}/../../roles/dify_docker/templates/docker-compose.yml.j2"
   tasks:
+    - name: Load shared wait and execution budgets
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all/00-core.yml"
+
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         file: "{{ playbook_dir }}/../../roles/dify_docker/defaults/main.yml"
@@ -45,6 +49,78 @@
         _agent_squid: >-
           {{ lookup('ansible.builtin.template', playbook_dir ~
              '/../../roles/dify_docker/templates/squid-agent.conf.j2') }}
+
+    - name: Apply batch runtime defaults to every Celery participant
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services[item].environment.WORKFLOW_MAX_EXECUTION_TIME == '45600'
+          - _rendered.services[item].environment.WORKFLOW_MAX_EXECUTION_STEPS == '5000'
+          - _rendered.services[item].environment.CELERY_BROKER_VISIBILITY_TIMEOUT == '49200'
+          - _rendered.services[item].environment.GUNICORN_TIMEOUT == '45600'
+          - _rendered.services[item].environment.PLUGIN_DAEMON_TIMEOUT == '45600'
+          - _rendered.services[item].environment.CELERY_WORKER_AMOUNT == '2'
+          - _rendered.services[item].environment.CELERY_AUTO_SCALE == 'false'
+          - _rendered.services[item].environment.ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK == 'true'
+          - _rendered.services[item].environment.ENABLE_TRIGGER_PROVIDER_REFRESH_TASK == 'true'
+          - _rendered.services[item].environment.TRIGGER_URL == _rendered.services['web'].environment.APP_API_URL
+      loop: [api, worker, worker_beat]
+
+    - name: Export native telemetry with full sampling on API and plugin services
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services[item].environment.ENABLE_OTEL == 'true'
+          - _rendered.services[item].environment.OTEL_EXPORTER_TYPE == 'otlp'
+          - _rendered.services[item].environment.OTLP_BASE_ENDPOINT == ai_orchestration_otel_endpoint
+          - _rendered.services[item].environment.OTEL_EXPORTER_OTLP_PROTOCOL == 'http/protobuf'
+          - _rendered.services[item].environment.OTEL_SAMPLING_RATE == '1.0'
+      loop: [api, worker, worker_beat, plugin_daemon]
+
+    - name: Export Agent platform spans and native app-attributed trajectories
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _rendered.services['agent_backend'].environment.OTEL_EXPORTER_OTLP_ENDPOINT
+            == ai_orchestration_otel_endpoint
+          - _rendered.services['agent_backend'].environment.OTEL_EXPORTER_OTLP_PROTOCOL == 'http/protobuf'
+          - _rendered.services['agent_backend'].environment.DIFY_AGENT_TRAJECTORY_ENABLED == 'true'
+          - >-
+            _rendered.services['agent_backend'].environment.DIFY_AGENT_TRAJECTORY_OTLP_TRACES_ENDPOINT
+            == ai_orchestration_otel_endpoint ~ '/v1/traces'
+          - _rendered.services['agent_backend'].environment.DIFY_AGENT_TRAJECTORY_INCLUDE_CONTENT == 'false'
+          - _rendered.services['agent_backend'].environment.LOGFIRE_CONSOLE == 'false'
+
+    - name: Apply the batch plugin budget to daemon execution and callbacks
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services['plugin_daemon'].environment.PLUGIN_MAX_EXECUTION_TIMEOUT == '45600'
+          - _rendered.services['plugin_daemon'].environment.DIFY_INVOCATION_CONNECTION_IDLE_TIMEOUT == '45600'
+          - _rendered.services['plugin_daemon'].environment.DIFY_BACKWARDS_INVOCATION_READ_TIMEOUT == '45600000'
+          - >-
+            'proxy_read_timeout 45600s;' in lookup('ansible.builtin.template', playbook_dir ~
+            '/../../roles/dify_docker/templates/nginx-default.conf.j2')
+          - >-
+            'proxy_send_timeout 45600s;' in lookup('ansible.builtin.template', playbook_dir ~
+            '/../../roles/dify_docker/templates/nginx-default.conf.j2')
+
+    - name: Persist Redis queued messages on its data mount
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'--appendonly yes' in _rendered.services['redis'].command"
+          - "(dify_docker_data_dir ~ '/redis:/data') in _rendered.services['redis'].volumes"
+
+    - name: Route native webhook requests to the API
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            ('location /triggers {\n        proxy_pass http://api:' ~ dify_docker_api_port ~ ';')
+            in lookup('ansible.builtin.template', playbook_dir ~
+            '/../../roles/dify_docker/templates/nginx-default.conf.j2')
 
     - name: SSR uses the internal API while browser URLs remain public
       ansible.builtin.assert:
@@ -123,3 +199,72 @@
         that:
           - _rendered_with_password_pepper.services['api'].environment.PASSWORD_PEPPER == 'fixture-password-pepper'
           - _rendered_with_password_pepper.services['worker'].environment.PASSWORD_PEPPER == 'fixture-password-pepper'
+
+    - name: Supply runtime input overrides
+      ansible.builtin.set_fact:
+        dify_docker_workflow_max_execution_time: 50000
+        dify_docker_workflow_max_execution_steps: 7500
+        dify_docker_plugin_max_execution_timeout: 45000
+        dify_docker_celery_worker_amount: 3
+        dify_docker_workflow_schedule_poller_enabled: false
+        dify_docker_trigger_provider_refresh_enabled: false
+        dify_docker_trigger_url: "https://triggers.example.invalid"
+        dify_docker_otel_endpoint: "https://cribl.example.invalid"
+        dify_docker_otel_sampling_rate: 0.25
+        dify_docker_redis_appendonly: false
+
+    - name: Render runtime overrides
+      ansible.builtin.set_fact:
+        _overridden: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+
+    - name: Honor runtime inputs across API and Celery services
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _overridden.services[item].environment.WORKFLOW_MAX_EXECUTION_TIME == '50000'
+          - _overridden.services[item].environment.WORKFLOW_MAX_EXECUTION_STEPS == '7500'
+          - _overridden.services[item].environment.CELERY_BROKER_VISIBILITY_TIMEOUT == '53600'
+          - _overridden.services[item].environment.GUNICORN_TIMEOUT == '50000'
+          - _overridden.services[item].environment.PLUGIN_DAEMON_TIMEOUT == '45000'
+          - _overridden.services['plugin_daemon'].environment.PLUGIN_MAX_EXECUTION_TIMEOUT == '45000'
+          - _overridden.services['plugin_daemon'].environment.DIFY_INVOCATION_CONNECTION_IDLE_TIMEOUT == '45000'
+          - _overridden.services['plugin_daemon'].environment.DIFY_BACKWARDS_INVOCATION_READ_TIMEOUT == '45000000'
+          - _overridden.services[item].environment.CELERY_WORKER_AMOUNT == '3'
+          - _overridden.services[item].environment.GRAPH_ENGINE_MAX_WORKERS == '2'
+          - _overridden.services[item].environment.ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK == 'false'
+          - _overridden.services[item].environment.ENABLE_TRIGGER_PROVIDER_REFRESH_TASK == 'false'
+          - _overridden.services[item].environment.TRIGGER_URL == dify_docker_trigger_url
+          - "'--appendonly no' in _overridden.services['redis'].command"
+      loop: [api, worker, worker_beat]
+
+    - name: Honor telemetry endpoint and sampling inputs across API and plugin services
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _overridden.services[item].environment.OTLP_BASE_ENDPOINT == dify_docker_otel_endpoint
+          - _overridden.services[item].environment.OTEL_SAMPLING_RATE == '0.25'
+      loop: [api, worker, worker_beat, plugin_daemon]
+
+    - name: Derive both Agent exporters from the overridden collector endpoint
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _overridden.services['agent_backend'].environment.OTEL_EXPORTER_OTLP_ENDPOINT == dify_docker_otel_endpoint
+          - >-
+            _overridden.services['agent_backend'].environment.DIFY_AGENT_TRAJECTORY_OTLP_TRACES_ENDPOINT
+            == dify_docker_otel_endpoint ~ '/v1/traces'
+
+    - name: Supply an explicit broker visibility timeout
+      ansible.builtin.set_fact:
+        dify_docker_celery_broker_visibility_timeout: 60000
+
+    - name: Render the explicit broker visibility timeout
+      ansible.builtin.set_fact:
+        _broker_overridden: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+
+    - name: Honor the explicit broker visibility timeout on every Celery participant
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _broker_overridden.services[item].environment.CELERY_BROKER_VISIBILITY_TIMEOUT == '60000'
+      loop: [api, worker, worker_beat]

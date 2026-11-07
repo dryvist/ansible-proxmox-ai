@@ -116,7 +116,7 @@ def _render_model_list(entries: list[dict], rates: dict) -> list[dict]:
             openrouter_entries.append(rendered)
 
     empty_lists = {
-        "llm_router_large_models": [],
+        "llm_router_studio_shared_models": [],
         "llm_router_opencode_models": [],
         "llm_router_vllm_models": [],
         "llm_router_hermes_local_models": [],

@@ -21,7 +21,7 @@
    messages and where each one's role, text and model are.
 
    Neither view returns message content: word_cloud holds word counts,
-   recent_activity holds metadata and the content length. -#}
+   recent_activity holds metadata, the content length and recorded token usage. -#}
 {%- set db = clickhouse_docker_llm_database -%}
 {%- set mode = clickhouse_docker_wall_mode | default('views') -%}
 {%- set injected = ('^[[:space:]]*(' ~ (clickhouse_docker_wall_injected_prompt_patterns | join('|')) ~ ')')
@@ -104,17 +104,34 @@ JSONExtractString(raw, 'model')
 ''
 {%- endif -%}
 {%- endmacro -%}
-{#- The messages of one source table: event_time, msg_role, msg_model and
-    msg_parts for every row whose derived role is user or assistant. -#}
-{%- macro wall_rows(source, db) -%}
-SELECT event_time, msg_role, msg_model, msg_parts
+{#- Message rows and usage, plus separate Codex token_count events for recent
+    activity only. JSONExtractUInt returns zero for absent usage fields. -#}
+{%- macro wall_rows(source, db, recent=false) -%}
+SELECT event_time, msg_role, msg_model, msg_parts, input_tokens, output_tokens
 FROM
 (
     SELECT
         event_time,
+        {% if recent and source.shape == 'codex' %}
+        if(JSONExtractString(raw, 'type') = 'event_msg'
+            AND JSONExtractString(raw, 'payload', 'type') = 'token_count',
+            'assistant', {{ role_expr(source) }}) AS msg_role,
+        {% else %}
         {{ role_expr(source) }} AS msg_role,
+        {% endif %}
         {{ model_expr(source) }} AS msg_model,
-        {{ parts_expr(source) }} AS msg_parts
+        {{ parts_expr(source) }} AS msg_parts,
+        {% for field in ['input_tokens', 'output_tokens'] %}
+        {% if source.shape == 'claude' %}
+        toUInt32(JSONExtractUInt(raw, 'message', 'usage', '{{ field }}')) AS {{ field }}
+        {% elif recent and source.shape == 'codex' %}
+        toUInt32(if(JSONExtractString(raw, 'type') = 'event_msg'
+            AND JSONExtractString(raw, 'payload', 'type') = 'token_count',
+            JSONExtractUInt(raw, 'payload', 'info', 'last_token_usage', '{{ field }}'), 0)) AS {{ field }}
+        {% else %}
+        toUInt32(0) AS {{ field }}
+        {% endif %}{{ ',' if not loop.last }}
+        {% endfor %}
     FROM {{ db }}.{{ source.table }} FINAL
 )
 WHERE msg_role IN ('user', 'assistant')
@@ -157,7 +174,9 @@ SELECT
     source,
     model,
     message_role AS role,
-    chars
+    chars,
+    input_tokens,
+    output_tokens
 FROM
 (
 {% for source in clickhouse_docker_wall_sources %}
@@ -167,12 +186,14 @@ FROM
             '{{ source.name | default(source.table) }}' AS source,
             msg_model AS model,
             if(msg_role = 'user', 'user', 'assistant') AS message_role,
-            toUInt32(lengthUTF8(arrayStringConcat(msg_parts, ' '))) AS chars
+            toUInt32(lengthUTF8(arrayStringConcat(msg_parts, ' '))) AS chars,
+            input_tokens,
+            output_tokens
         FROM
         (
-            {{ wall_rows(source, db) | indent(12) }}
+            {{ wall_rows(source, db, recent=true) | indent(12) }}
         )
-        WHERE chars > 0
+        WHERE chars > 0 OR input_tokens > 0 OR output_tokens > 0
         ORDER BY event_time DESC
         LIMIT {{ clickhouse_docker_wall_recent_rows }}
     )
@@ -220,7 +241,9 @@ REFRESH EVERY {{ clickhouse_docker_wall_recent_refresh }}
     source String,
     model String,
     role String,
-    chars UInt32
+    chars UInt32,
+    input_tokens UInt32,
+    output_tokens UInt32
 )
 ENGINE = MergeTree
 ORDER BY ts

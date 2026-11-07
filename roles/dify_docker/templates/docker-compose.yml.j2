@@ -1,11 +1,8 @@
 ---
 # Rendered by Ansible (dify_docker role). Do NOT edit on the host.
-# Dify LLMOps stack — bundled Weaviate, Postgres, Redis, code/Agent sandboxes,
-# Agent backend, both SSRF proxies and Nginx. Mirrors the upstream Compose
-# structure (api/worker/worker_beat share one env via a YAML anchor), trimmed to
-# the services this homelab runs. Service names are
-# the in-network DNS identifiers, referenced directly; only IPs and ports that
-# exist in tofu_data are parametrized.
+# Dify stack with bundled data services, code/Agent sandboxes, SSRF proxies and Nginx.
+# API, worker and beat share the environment anchor. Service names resolve via
+# Compose DNS; tofu_data supplies external addresses and ports.
 # Ship stdout/stderr to journald with tag `dify` instead of the default
 # json-file driver, which stays on local disk and never reaches the SIEM.
 # Tag is a bare identifier (no ':' or whitespace) so rsyslog's syslog-header
@@ -20,74 +17,7 @@ x-logging: &dify_docker_logging
   options:
     tag: dify
 
-x-shared-env: &dify-api-worker-env
-  LOG_LEVEL: "INFO"
-  DEPLOY_ENV: "PRODUCTION"
-  SECRET_KEY: "{{ dify_docker_secret_key }}"
-  # Public URLs are derived by Dify from the request Host when left blank.
-  CONSOLE_API_URL: ""
-  CONSOLE_WEB_URL: ""
-  SERVICE_API_URL: ""
-  APP_API_URL: ""
-  APP_WEB_URL: ""
-  FILES_URL: ""
-  MIGRATION_ENABLED: "true"
-  # PostgreSQL (bundled `db` service).
-  DB_USERNAME: "{{ dify_docker_db_user }}"
-  DB_PASSWORD: "{{ dify_docker_db_password }}"
-  DB_HOST: "db"
-  DB_PORT: "{{ dify_docker_postgres_port }}"
-  DB_DATABASE: "{{ dify_docker_db_name }}"
-  # Redis (bundled `redis` service); Celery uses logical DB 1.
-  REDIS_HOST: "redis"
-  REDIS_PORT: "{{ dify_docker_redis_port }}"
-  REDIS_PASSWORD: "{{ dify_docker_redis_password }}"
-  REDIS_DB: "0"
-  REDIS_USE_SSL: "false"
-  CELERY_BROKER_URL: "redis://:{{ dify_docker_redis_password }}@redis:{{ dify_docker_redis_port }}/1"
-  # One shared agent-side cap; the LiteLLM router absorbs model-tier overload.
-  CELERY_WORKER_AMOUNT: "{{ ai_agent_default_concurrency }}"
-  CELERY_AUTO_SCALE: "false"
-  GRAPH_ENGINE_MAX_WORKERS: "{{ ai_agent_default_concurrency }}"
-  BROKER_USE_SSL: "false"
-  # Vector store — bundled Weaviate (NOT the external qdrant).
-  VECTOR_STORE: "weaviate"
-  WEAVIATE_ENDPOINT: "http://weaviate:{{ dify_docker_weaviate_port }}"
-  WEAVIATE_API_KEY: "{{ dify_docker_weaviate_api_key }}"
-  # File storage on the local bind mount (relative to /app/api).
-  STORAGE_TYPE: "opendal"
-  OPENDAL_SCHEME: "fs"
-  OPENDAL_FS_ROOT: "storage"
-  # Code-execution sandbox + its SSRF egress proxy.
-  CODE_EXECUTION_ENDPOINT: "http://sandbox:{{ dify_docker_sandbox_port }}"
-  CODE_EXECUTION_API_KEY: "{{ dify_docker_sandbox_api_key }}"
-  SSRF_PROXY_HTTP_URL: "http://ssrf_proxy:{{ dify_docker_ssrf_proxy_port }}"
-  SSRF_PROXY_HTTPS_URL: "http://ssrf_proxy:{{ dify_docker_ssrf_proxy_port }}"
-  # Plugin daemon + marketplace. On 1.x model providers ARE plugins, so the api
-  # must reach plugin_daemon or no LLM can be configured. PLUGIN_DAEMON_KEY must
-  # equal the daemon's SERVER_KEY; INNER_API_KEY_FOR_PLUGIN must equal the
-  # daemon's DIFY_INNER_API_KEY (two distinct secrets).
-  PLUGIN_DAEMON_URL: "http://plugin_daemon:{{ dify_docker_plugin_daemon_port }}"
-  PLUGIN_DAEMON_KEY: "{{ dify_docker_plugin_daemon_key }}"
-  PLUGIN_MAX_PACKAGE_SIZE: "52428800"
-  INNER_API_KEY_FOR_PLUGIN: "{{ dify_docker_inner_api_key }}"
-  MARKETPLACE_ENABLED: "true"
-  MARKETPLACE_API_URL: "https://marketplace.dify.ai"
-  ENDPOINT_URL_TEMPLATE: "http://localhost/e/{hook_id}"
-  # Legacy OpenAI SDK fallback only. Usable Dify models are provisioned through
-  # the console model-provider API after first-run setup.
-  OPENAI_API_BASE: "{{ dify_docker_model_endpoint_url }}"
-  OPENAI_API_KEY: "{{ dify_docker_model_api_key }}"
-  # OpenTelemetry export to the homelab collector (group_var, reference only).
-  ENABLE_OTEL: "true"
-  OTLP_BASE_ENDPOINT: "{{ ai_orchestration_otel_endpoint }}"
-  OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
-  # CORS — internal-only deployment behind the homelab reverse proxy.
-  WEB_API_CORS_ALLOW_ORIGINS: "*"
-  CONSOLE_CORS_ALLOW_ORIGINS: "*"
-{% if dify_docker_password_pepper is defined %}
-  PASSWORD_PEPPER: {{ dify_docker_password_pepper | tojson }}
-{% endif %}
+{% include 'compose-shared-env.yml.j2' %}
 
 services:
   api:
@@ -175,7 +105,7 @@ services:
     image: {{ dify_docker_redis_image }}
     restart: {{ dify_docker_restart_policy }}
     logging: *dify_docker_logging
-    command: redis-server --requirepass {{ dify_docker_redis_password }}
+    command: redis-server --requirepass {{ dify_docker_redis_password }} --appendonly {{ 'yes' if dify_docker_redis_appendonly | bool else 'no' }}
     volumes:
       - {{ dify_docker_data_dir }}/redis:/data
 
@@ -234,6 +164,7 @@ services:
     restart: {{ dify_docker_restart_policy }}
     logging: *dify_docker_logging
     environment:
+      <<: *dify-otel-env
       DB_HOST: "db"
       DB_PORT: "{{ dify_docker_postgres_port }}"
       DB_USERNAME: "{{ dify_docker_db_user }}"
@@ -254,7 +185,9 @@ services:
       PLUGIN_REMOTE_INSTALLING_PORT: "5003"
       PLUGIN_WORKING_PATH: "/app/storage/cwd"
       PYTHON_ENV_INIT_TIMEOUT: "120"
-      PLUGIN_MAX_EXECUTION_TIMEOUT: "600"
+      PLUGIN_MAX_EXECUTION_TIMEOUT: "{{ dify_docker_plugin_max_execution_timeout }}"
+      DIFY_INVOCATION_CONNECTION_IDLE_TIMEOUT: "{{ dify_docker_plugin_max_execution_timeout }}"
+      DIFY_BACKWARDS_INVOCATION_READ_TIMEOUT: "{{ dify_docker_plugin_max_execution_timeout | int * 1000 }}"
       PLUGIN_STORAGE_TYPE: "local"
       PLUGIN_STORAGE_LOCAL_ROOT: "/app/storage"
     depends_on:
@@ -268,6 +201,13 @@ services:
     restart: {{ dify_docker_restart_policy }}
     logging: *dify_docker_logging
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "{{ dify_docker_otel_endpoint }}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "{{ dify_docker_otel_protocol }}"
+      # The native trajectory exporter always samples and stamps dify.app_id.
+      DIFY_AGENT_TRAJECTORY_ENABLED: "true"
+      DIFY_AGENT_TRAJECTORY_OTLP_TRACES_ENDPOINT: "{{ dify_docker_otel_trace_endpoint }}"
+      DIFY_AGENT_TRAJECTORY_INCLUDE_CONTENT: "false"
+      LOGFIRE_CONSOLE: "false"
       DIFY_AGENT_REDIS_URL: "redis://:{{ dify_docker_redis_password }}@redis:{{ dify_docker_redis_port }}/2"
       DIFY_AGENT_PLUGIN_DAEMON_URL: "http://plugin_daemon:{{ dify_docker_plugin_daemon_port }}"
       DIFY_AGENT_PLUGIN_DAEMON_API_KEY: "{{ dify_docker_plugin_daemon_key }}"

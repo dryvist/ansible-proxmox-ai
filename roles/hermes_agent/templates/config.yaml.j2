@@ -38,10 +38,16 @@ model:
 
 {{ context_limits.top_level(hermes_agent_context_limits) }}
 
+{% set _pepper = hermes_agent_id | default('hermes') == 'pepper' %}
 memory:
+{% if _pepper %}
+  memory_enabled: false
+  user_profile_enabled: false
+{% else %}
   provider: {{ hermes_agent_memory_provider }}
   memory_enabled: true
   user_profile_enabled: true
+{% endif %}
 {{ context_limits.memory(hermes_agent_context_limits) }}
 
 # Minimum level for agent.log (hermes_logging.py; default INFO if unset).
@@ -61,7 +67,8 @@ agent:
   # H-17 global deny floor: toolsets NO agent this gateway spawns may load,
   # regardless of any per-platform or per-job allowlist (upstream layers this
   # on top — see defaults/main.yml for the policy rationale).
-  disabled_toolsets: {{ hermes_agent_disabled_toolsets | to_json }}
+  # v0.22.5 toolsets.py CLIENT_SURFACE_TOOLSETS: project, desktop_ui, catalog.
+  disabled_toolsets: {{ (hermes_agent_disabled_toolsets + (['terminal', 'code_execution', 'web', 'search', 'browser', 'file', 'memory', 'skills', 'delegation', 'project', 'desktop_ui', 'catalog'] if _pepper else [])) | to_json }}
 {{ context_limits.tool_output_tools_delegation(hermes_agent_context_limits) }}
 
 # Local execution backend (the LXC is the blast-radius boundary).
@@ -154,28 +161,7 @@ auxiliary:
 cron:
   wrap_response: false
 
-# Kanban dispatcher bounds. Upstream (>=v0.13) runs the dispatcher inside the
-# gateway BY DEFAULT — dispatch_in_gateway and auto_decompose both default
-# true with NO concurrency cap — so a stock gateway will decompose and spawn a
-# worker per ready card, unbounded. This block makes that implicit engine
-# explicit and BOUNDS it against the single shared serving deployment (same
-# measured-envelope rationale as gateway.api_server.max_concurrent_runs
-# below). The board only gets cards from session classes holding the opt-in
-# `kanban` toolset (see platform_toolsets) — cards, not this block, start work.
-kanban:
-  dispatch_in_gateway: true
-  orchestrator_profile: {{ hermes_agent_kanban_orchestrator_profile }}
-  # Fallback assignee profile for ready cards that carry no explicit assignee.
-  # The v0.18.0 dispatcher only spawns workers for ASSIGNED cards; without this
-  # every card is skipped_unassigned and the board never starts work. Read by
-  # the gateway dispatcher (gateway/kanban_watchers.py: kanban.default_assignee).
-  default_assignee: {{ hermes_agent_kanban_orchestrator_profile }}
-  dispatch_interval_seconds: 60
-  max_in_progress: {{ hermes_agent_kanban_max_in_progress }}
-  max_in_progress_per_profile: {{ hermes_agent_kanban_max_in_progress_per_profile }}
-  auto_decompose: true
-  auto_decompose_per_tick: 3
-  failure_limit: 2
+{% include 'config-kanban.yaml.j2' %}
 
 {% include 'config-gateway.yaml.j2' %}
 
@@ -185,12 +171,19 @@ kanban:
 # semantics. Policy rationale and the per-platform exclusions live in
 # defaults/main.yml.
 platform_toolsets:
+{% if _pepper %}
+  cli: [kanban]
+  cron: [kanban]
+  api_server: [kanban]
+  slack: [kanban]
+{% else %}
   cron: {{ hermes_agent_cron_toolsets | to_json }}
 {% if hermes_agent_api_server_key | length > 0 %}
   api_server: {{ hermes_agent_api_server_toolsets | to_json }}
 {% endif %}
 {% if hermes_agent_slack_bot_token | length > 0 %}
   slack: {{ hermes_agent_slack_toolsets | to_json }}
+{% endif %}
 {% endif %}
 
 {% if hermes_agent_a2a_peers | length > 0 %}
@@ -223,6 +216,8 @@ platforms:
 {% endif %}{% endif %}
 {% include 'config-webhook.yaml.j2' %}
 {% endif %}
+{% set _mcp_youtrack = (hermes_agent_id | default('hermes') == 'pepper') and (hermes_agent_youtrack_mcp_enabled | default(false) | bool) and (hermes_agent_youtrack_mcp_url | length > 0) and (hermes_agent_youtrack_mcp_token | length > 0) %}
+{% set _mcp_vault = (hermes_agent_id | default('hermes') == 'pepper') and (hermes_agent_pepper_vault_repo_url | default('') | trim | length > 0) and (hermes_agent_pepper_vault_read_token | default('') | trim | length > 0) %}
 {% set _mcp_splunk = (hermes_agent_splunk_access | bool) and (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
 {# Context7's hosted MCP serves unauthenticated requests (verified: keyless
    `initialize` returns 200); a key only raises the shared rate limit. So this
@@ -233,11 +228,38 @@ platforms:
 {% set _mcp_grep = (hermes_agent_grep_mcp_enabled | bool) %}
 {% set _mcp_vikunja = (hermes_agent_vikunja_mcp_enabled | bool) %}
 {% set _mcp_nautobot = (hermes_agent_nautobot_mcp_enabled | bool) %}
-{% if _mcp_splunk or _mcp_context7 or _mcp_docs or _mcp_grep or _mcp_vikunja or _mcp_nautobot %}
+{% if _mcp_vault or _mcp_youtrack or _mcp_splunk or _mcp_context7 or _mcp_docs or _mcp_grep or _mcp_vikunja or _mcp_nautobot %}
 # MCP servers. ${VARS} resolve from .env at connect time, so tokens/endpoints
 # never land in this file. The Splunk entry is omitted until its creds are
 # present; Context7 is keyless so it renders whenever enabled.
 mcp_servers:
+{% if _mcp_vault %}
+  vault:
+    command: /usr/bin/npx
+    args: {{ ['-y', '@modelcontextprotocol/server-filesystem@' ~ hermes_agent_pepper_filesystem_mcp_version, '--read-only', '--confine-roots', hermes_agent_pepper_vault_path] | to_json }}
+    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    tools:
+      include: [read_text_file, read_multiple_files, list_directory, directory_tree, search_files, get_file_info]
+    resources: false
+    prompts: false
+{% endif %}
+{% if _mcp_youtrack %}
+{% for server in ['youtrack', 'youtrack_intake'] %}
+  {{ server }}:
+    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    url: "${YOUTRACK_MCP_URL}"
+    headers:
+      Authorization: "Bearer ${YOUTRACK_MCP_TOKEN}"
+    tools:
+      include: {{ (['search_issues'] if server == 'youtrack_intake' else hermes_agent_youtrack_mcp_tools) | to_json }}
+{% if server == 'youtrack_intake' %}
+      resources: false
+      prompts: false
+{% endif %}
+    resources: false
+    prompts: false
+{% endfor %}
+{% endif %}
 {% if _mcp_splunk %}
   # Splunk MCP Server — read/search the SIEM (run_splunk_query, get_indexes, ...).
   splunk:

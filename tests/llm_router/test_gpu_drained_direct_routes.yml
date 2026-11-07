@@ -2,6 +2,8 @@
 - name: Render direct routes while GPU profiles are drained
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - policy_fixture.yml
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     tofu_data:
@@ -12,6 +14,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: cpu-small-fixture
+      containers:
+        cpu-small-fixture:
+          ip: 127.0.0.1
+          tags: [cpu-small-fixture]
     bao_apps_secrets:
       benchmark_llm_router_key: fixture-direct-key
     bao_local_llm_secrets:
@@ -50,6 +59,7 @@
         llm_router_gpu_profiles_enabled: false
         llm_router_llm_vllm_enabled: false
         llm_router_vllm_precheck_passed: false
+        llm_router_studio_precheck_passed: true
         llm_active_profile: medium-a
 
     - name: Refresh cached router projections after fixture input changes [gpu-drained-direct-routes-1]
@@ -69,7 +79,7 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - not (llm_router_studio_profiles_enabled | bool)
+          - llm_router_studio_profiles_enabled | bool
           - llm_router_gpu_models | length == 0
           - llm_router_direct_gpu_models | length == 0
           - llm_router_direct_route_aliases == _studio_direct_aliases
@@ -107,6 +117,13 @@
     - name: Keep the safe-model assertion active with GPU profiles drained
       ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-safe-models.yml
 
+    - name: Drain Studio profiles explicitly
+      ansible.builtin.set_fact:
+        llm_router_studio_profiles_enabled: false
+
+    - name: Refresh cached router projections after the Studio drain
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
     - name: Render the router with Studio profiles drained
       ansible.builtin.set_fact:
         _studio_drained_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
@@ -135,3 +152,81 @@
         _studio_direct_aliases: >-
           {{ llm_router_direct_studio_models
              | map(attribute='direct_route_aliases') | flatten | list }}
+
+    - name: Add a surviving local chat endpoint
+      ansible.builtin.add_host:
+        name: cpu-small-fixture
+        groups: llm_cpu_9b_group
+        ansible_connection: local
+
+    - name: Enable Studio profiles for the failed-probe case
+      ansible.builtin.set_fact:
+        llm_router_studio_profiles_enabled: true
+
+    - name: Supply a failed Studio completion with GPU profiles drained
+      ansible.builtin.set_fact:
+        _llm_router_completion_precheck_responses:
+          results:
+            - item: "{{ llm_router_probe_prechecks | selectattr('tier', 'equalto', 'local-large') | first }}"
+              status: 503
+              json:
+                choices: []
+
+    - name: Apply the real serving admission gates
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-serving-prechecks.yml
+
+    - name: Refresh projections after the Studio probe failure
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Keep pre-probe consumer inputs safe through the refreshed aliases
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-safe-models.yml
+
+    - name: Resolve consumer inputs after lane exclusion
+      ansible.builtin.import_tasks: ../../playbooks/tasks/resolve_llm_router_model_inputs.yml
+
+    - name: Evaluate safety after GPU and Studio exclusion
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-safe-models.yml
+
+    - name: Render the surviving local candidates
+      ansible.builtin.set_fact:
+        _probe_failed_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Failed Studio admission leaves safe local consumers and aliases
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not llm_router_studio_precheck_passed
+          - llm_router_gpu_models | length == 0
+          - llm_router_studio_shared_models | length == 0
+          - llm_router_primary_model == llm_router_small_capability_name
+          - ai_default_model == llm_router_primary_model
+          - hermes_brain_model == llm_router_primary_model
+          - >-
+            llm_router_model_group_aliases.values() | list
+            | difference(_probe_failed_config.model_list | map(attribute='model_name') | list)
+            | length == 0
+
+    - name: Verify excluded Studio listing parity with surviving GPU candidates
+      ansible.builtin.import_tasks: tasks/excluded_studio_parity.yml
+
+    - name: Reject convergence when only non-chat local deployments remain
+      block:
+        - name: Drain the remaining CPU chat endpoint
+          ansible.builtin.set_fact:
+            llm_router_cpu_pool_backend_urls_by_tier: {}
+            llm_router_gpu_profiles_enabled: false
+
+        - name: Refresh projections with no local chat candidate
+          ansible.builtin.include_tasks: tasks/materialize_router_inputs.yml
+
+        - name: Evaluate the real safety guard without a local chat model
+          ansible.builtin.include_tasks: ../../roles/llm_router/tasks/assert-safe-models.yml
+
+        - name: Require the safety guard to reject the empty local chat set
+          ansible.builtin.fail:
+            msg: Safety guard accepted an empty local chat set.
+      rescue:
+        - name: Confirm the local availability guard caused the rejection
+          ansible.builtin.assert:
+            that:
+              - "'no safe local chat model remains' in ansible_failed_result.msg"

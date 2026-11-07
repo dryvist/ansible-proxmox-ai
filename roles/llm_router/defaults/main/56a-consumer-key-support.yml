@@ -102,7 +102,8 @@ _llm_router_hermes_local_only_profiles: [eval]
 
 _llm_router_hermes_profile_keys: >-
   {%- set _items = [] -%}
-  {%- for _name in _llm_router_hermes_profile_names -%}
+  {%- for _name in _llm_router_hermes_profile_names
+        if hermes_agent_identity | default('hermes') != 'pepper' -%}
   {%- set _field = 'hermes_' ~ (_name | replace('-', '_'))
      ~ '_llm_router_key' -%}
   {%- set _value = (bao_apps_secrets | default({})).get(_field, '') -%}
@@ -128,10 +129,12 @@ _llm_router_hermes_profile_keys: >-
           'tags': ['agent-priority'],
         },
         'router_settings': {'enable_tag_filtering': true},
-        'object_permission': {'mcp_servers': (
+        'object_permission': {'mcp_servers': ((
           _llm_router_hermes_profile_object_permissions.get(
             _name, {'mcp_servers': []}).mcp_servers
-          + llm_router_mcp_hermes_object_permission.mcp_servers) | unique | list},
+          + llm_router_mcp_hermes_object_permission.mcp_servers)
+          | select('in', llm_router_mcp_registered_server_ids) | unique | list)
+          or llm_router_mcp_default_object_permission.mcp_servers},
         'daily_budget': _llm_router_hermes_profile_daily_budget,
       } -%}
   {%- if hermes_agent_identity | default('hermes') == 'donna' -%}
@@ -178,7 +181,7 @@ _llm_router_agent_keys: >-
         .get('llm-router-agent-keys', {}) -%}
   {%- set _base_models = [llm_router_small_model, llm_router_primary_model,
         llm_router_large_model] -%}
-  {%- for _name, _agent in _agents.items() -%}
+  {%- for _name, _agent in _agents.items() if _name != 'pepper' -%}
   {#- Private Donna work stays local regardless of the roster's cloud ceiling. -#}
   {%- set _class = 'local' if _name == 'donna' and _agent.router_key_class != 'public'
         else _agent.router_key_class -%}

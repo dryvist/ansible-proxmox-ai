@@ -1,0 +1,236 @@
+---
+- name: Render priority deployments and caller teams without service access
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - policy_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
+    bao_local_llm_secrets:
+      OPENAI_API_KEY: fixture-openai
+      GEMINI_API_KEY: fixture-gemini
+      DASHSCOPE_API_KEY: fixture-dashscope
+      OPENROUTER_API_KEY: fixture-openrouter
+      CHATGPT_LOGIN_FILE: /dev/null
+    bao_apps_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: localhost
+    llm_router_subdomain: example.test
+    llm_router_master_key: sk-fixture-master
+    llm_router_llm_large_bearer: fixture-bearer
+    llm_router_llm_fast_base_url: http://localhost:10434/v1
+    llm_router_llm_large_base_url: http://localhost:11434/v1
+    llm_router_llm_light_base_url: http://localhost:10434/v1
+    llm_router_llm_vllm_base_url: http://localhost:10434/v1
+    llm_router_large_passthrough_enabled: true
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: medium
+    hermes_goal_judge_model: judge
+    hindsight_retain_model: qwen3-4b
+  tasks:
+    - name: Add an inventory-backed profile backend
+      ansible.builtin.add_host:
+        name: llm-gpu-fixture
+        groups: llm_gpu_group
+        ansible_connection: local
+
+    - name: Load role defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load registry projections through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Enable each local deployment path in the fixture
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_router_llm_fast_enabled: true
+        llm_router_llm_large_standby_base_url: http://localhost:12434/v1
+        llm_active_profile: medium-a
+
+    - name: Refresh projections for the complete fixture
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render the complete router configuration
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Collect local and cloud deployments
+      ansible.builtin.set_fact:
+        _local: "{{ _config.model_list | selectattr('litellm_params.tags', 'contains', 'local') | list }}"
+        _cloud: "{{ _config.model_list | rejectattr('litellm_params.tags', 'contains', 'local') | list }}"
+
+    - name: Each tier has the same local backends and its own priority and patience
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _members | length > 0
+          - _members | length * llm_router_priority_tiers | length == _local | length
+          - _bad | length == 0
+          - _identities | sort == _baseline | sort
+      loop: "{{ llm_router_priority_tiers }}"
+      loop_control:
+        label: "{{ item.team_id }}"
+      vars:
+        _members: "{{ _local | selectattr('litellm_params.tags', 'contains', item.team_id) | list }}"
+        _baseline: >-
+          {{ _local | selectattr('litellm_params.tags', 'contains', 'tier-1')
+             | map(attribute='litellm_params') | map('dict2items')
+             | map('rejectattr', 'key', 'in', ['tags', 'extra_body', 'timeout', 'stream_timeout', 'keepalive_seconds'])
+             | map('list') | map('items2dict') | map('to_json', sort_keys=true) | list }}
+        _identities: >-
+          {{ _members | map(attribute='litellm_params') | map('dict2items')
+             | map('rejectattr', 'key', 'in', ['tags', 'extra_body', 'timeout', 'stream_timeout', 'keepalive_seconds'])
+             | map('list') | map('items2dict') | map('to_json', sort_keys=true) | list }}
+        _bad: >-
+          {%- set out = [] -%}
+          {%- for d in _members -%}
+          {%- set p = d.litellm_params -%}
+          {%- if p.extra_body.priority != item.priority or p.extra_body.priority == 0
+                or (item.tier == 2 and (p.timeout != llm_router_tier_2_timeout_seconds
+                    or p.stream_timeout != llm_router_tier_2_timeout_seconds
+                    or p.keepalive_seconds != llm_router_tier_2_keepalive_seconds))
+                or (item.tier != 2 and (p.timeout > llm_router_local_request_timeout_seconds
+                    or p.stream_timeout > llm_router_local_stream_timeout_seconds
+                    or p.keepalive_seconds is defined)) -%}
+          {%- set _ = out.append(d.model_name) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Cloud entries admit tiers 0 and 1 only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cloud | length > 0
+          - _cloud | selectattr('litellm_params.tags', 'contains', 'tier-2') | list | length == 0
+          - >-
+            _cloud | selectattr('litellm_params.tags', 'contains', 'tier-0')
+            | list | length == _cloud | length
+          - >-
+            _cloud | selectattr('litellm_params.tags', 'contains', 'tier-1')
+            | list | length == _cloud | length
+          - _config.router_settings.enable_tag_filtering | bool
+
+    - name: Supply representative caller declarations to the real key projection
+      ansible.builtin.set_fact:
+        _llm_router_declared_virtual_keys: >-
+          {%- set out = [] -%}
+          {%- for alias, tier in llm_router_priority_key_tiers.items() -%}
+          {%- set _ = out.append({'alias': alias, 'value': 'sk-fixture-priority-key',
+                'tags': ['&zdr', '!retains'] + (['&local'] if tier == 2 else []),
+                'metadata': {'trace_defaults': {'tier': 'stale'}},
+                'models': llm_router_d1_all_key_groups,
+                'allowed_classes': ['local', 'sub', 'paid-zdr', 'free', 'retains']}) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Resolve caller key policy
+      ansible.builtin.set_fact:
+        _tier_keys: "{{ _llm_router_virtual_keys_source }}"
+
+    - name: Caller teams and tags select the requested tier without broadening privacy
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.team_id == 'tier-' ~ (llm_router_priority_key_tiers[item.alias] | string)
+          - "('&' ~ item.team_id) in item.tags"
+          - item.tags | unique | length == item.tags | length
+          - item.router_settings.enable_tag_filtering | bool
+          - item.metadata.trace_defaults.tier == llm_router_priority_key_tiers[item.alias]
+          - "'&zdr' in item.tags"
+          - "'!retains' in item.tags"
+          - item.priority_tier != 2 or item.allowed_classes == ['local']
+          - item.priority_tier != 2 or '&local' in item.tags
+          - item.priority_tier != 2 or item.router_settings.fallbacks == []
+          - item.priority_tier != 2 or item.router_settings.context_window_fallbacks == []
+          - item.priority_tier != 2 or item.models | intersect(_cloud_groups) | length == 0
+      loop: "{{ _tier_keys }}"
+      loop_control:
+        label: "{{ item.alias }}"
+      vars:
+        _cloud_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
+
+    - name: Shadow and background services use tier 2 and dashboards use tier 0
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (_tier_keys | selectattr('alias', 'equalto', 'langflow') | first).team_id == 'tier-2'
+          - (_tier_keys | selectattr('alias', 'equalto', 'hindsight') | first).team_id == 'tier-2'
+          - (_tier_keys | selectattr('alias', 'equalto', 'grafana') | first).team_id == 'tier-0'
+
+    - name: Verify DB role tier policy
+      ansible.builtin.import_tasks: tasks/priority_role_policy.yml
+
+    - name: Verify execution, waiter, and timeout budgets
+      ansible.builtin.import_tasks: tasks/priority_wait_budgets.yml
+
+    - name: Supply explicit and default consumer tier fixtures
+      ansible.builtin.set_fact:
+        _llm_router_declared_virtual_keys:
+          - alias: github-actions
+            priority_tier: 0
+            models: []
+          - alias: fixture-default-consumer
+            models: []
+
+    - name: Explicit tier input overrides the alias map and unknown consumers use tier 1
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _override.priority_tier == 0
+          - _override.team_id == 'tier-0'
+          - _default.priority_tier == 1
+          - _default.team_id == 'tier-1'
+      vars:
+        _keys: "{{ _llm_router_virtual_keys_source }}"
+        _override: "{{ _keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
+        _default: "{{ _keys | selectattr('alias', 'equalto', 'fixture-default-consumer') | first }}"
+
+    - name: Supply an unsupported consumer tier
+      ansible.builtin.set_fact:
+        _llm_router_declared_virtual_keys:
+          - alias: fixture-invalid-consumer
+            priority_tier: invalid
+            models: []
+
+    - name: Reject unsupported priority tier inputs
+      block:
+        - name: Resolve the unsupported tier
+          ansible.builtin.set_fact:
+            _invalid_key: "{{ _llm_router_virtual_keys_source }}"
+          no_log: true
+
+        - name: Fail if an unsupported tier was accepted
+          ansible.builtin.fail:
+            msg: Unsupported tier was accepted.
+      rescue:
+        - name: Require the priority input validation error
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Unsupported priority tier for key alias fixture-invalid-consumer' in ansible_failed_result.msg"

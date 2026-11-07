@@ -1,0 +1,71 @@
+---
+- name: Assign one stored deployment to each effective caller tier
+  ansible.builtin.set_fact:
+    _llm_router_role_tier_plan: >-
+      {%- set ns = namespace(updates=[], creates=[]) -%}
+      {%- for role in llm_router_role_deployments -%}
+      {%- set sources = _llm_router_role_policy_sources
+            | selectattr('role', 'equalto', role.role) | list -%}
+      {%- if sources -%}
+      {%- set assigned = [] -%}
+      {%- set tiers = sources[0].entries | map(attribute='provenance.tier') | list -%}
+      {%- for tier in tiers -%}
+      {%- set available = sources | rejectattr('live.model_info.id', 'in', assigned) | list -%}
+      {%- set slot = namespace(source=none) -%}
+      {%- for source in available if slot.source is none -%}
+      {%- if source.live.model_info.get('priority_policy', {}).get('tier') == tier -%}
+      {%- set slot.source = source -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- for source in available if slot.source is none -%}
+      {%- if source.live.model_info.get('priority_policy', {}).get('tier') not in tiers -%}
+      {%- set slot.source = source -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set source = slot.source if slot.source is not none else sources[0] -%}
+      {%- set entry = source.entries | selectattr('provenance.tier', 'equalto', tier) | first -%}
+      {%- set live = source.live -%}
+      {%- set info = live.model_info | combine({'priority_policy': entry.provenance}) -%}
+      {%- if slot.source is none -%}
+      {%- set info = info | dict2items | rejectattr('key', 'in', ['id', 'db_model']) | items2dict -%}
+      {%- set params = entry.params -%}
+      {%- if 'api_key' not in params and 'litellm_credential_name' not in params
+            and 'api_key' in source.transport -%}
+      {%- set params = params | combine({'api_key': source.transport.api_key}) -%}
+      {%- endif -%}
+      {%- set _ = ns.creates.append({'role': role.role, 'params': params, 'model_info': info}) -%}
+      {%- else -%}
+      {%- set _ = assigned.append(live.model_info.id) -%}
+      {%- if live.litellm_params != entry.params or live.model_info != info -%}
+      {%- set patch = {} -%}
+      {%- for field in ['tags', 'extra_body', 'timeout', 'stream_timeout', 'keepalive_seconds'] -%}
+      {%- if field in entry.params and entry.params[field] != live.litellm_params.get(field) -%}
+      {%- set _ = patch.update({field: entry.params[field]}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set _ = ns.updates.append({'role': role.role, 'model_id': live.model_info.id,
+            'tags': entry.params.tags, 'params': entry.params, 'patch': patch, 'model_info': info}) -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {#- Keep surplus DB rows and their UI settings, without granting a stale tier. -#}
+      {%- for source in sources | rejectattr('live.model_info.id', 'in', assigned) -%}
+      {%- set live = source.live -%}
+      {%- set tags = live.litellm_params.tags | default([])
+            | reject('match', '^tier-[0-9]+$') | reject('equalto', 'default') | list -%}
+      {%- if tags != live.litellm_params.tags | default([]) -%}
+      {%- set _ = ns.updates.append({'role': role.role, 'model_id': live.model_info.id,
+            'tags': tags, 'params': live.litellm_params | combine({'tags': tags}),
+            'patch': {'tags': tags}, 'model_info': live.model_info}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ {'updates': ns.updates, 'creates': ns.creates} }}
+  no_log: true
+
+- name: Publish the per-tier role operations
+  ansible.builtin.set_fact:
+    _llm_router_role_tag_updates: "{{ _llm_router_role_tier_plan.updates }}"
+    _llm_router_role_tier_creates: "{{ _llm_router_role_tier_plan.creates }}"
+  no_log: true

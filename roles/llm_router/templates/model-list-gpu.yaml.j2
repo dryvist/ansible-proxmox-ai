@@ -3,14 +3,11 @@
 {% from 'model-list-extra-body.yaml.j2' import local_extra_body with context %}
   {% set _deployment_tags_by_entry = _deployment_tags_by_entry | default(llm_router_deployment_tags_by_entry) -%}# --- Pro6000 profiles: separate models on one inventory-backed guest ---
 {% for m in llm_router_gpu_models %}
-{% set _agent_priority_twin = m.provider == 'hosted_vllm'
-     and m.tier in (llm_router_local_registry_tiers | default([]))
-     and (m.route_group | default(m.client_model_id)) in (_llm_router_local_agent_groups | default([])) %}
-{% for _agent_priority in ([false, true] if _agent_priority_twin else [false]) %}
+{% for priority_tier in llm_router_priority_tiers %}
   - model_name: {{ m.route_group | default(m.client_model_id) }}
     litellm_params:
       model: {{ litellm_model(m) }}
-      tags: {{ deployment_tags(m, routing_tag='agent-priority' if _agent_priority else '') }}
+      tags: {{ deployment_tags(m, priority_tier=priority_tier) }}
       api_base: {{ llm_router_gpu_profile_base_urls[m.get('profile', '')] }}
       api_key: {{ llm_router_light_api_key }}
       use_chat_completions_api: true
@@ -18,8 +15,8 @@
 {% if m.order is defined %}
       order: {{ m.order }}
 {% endif %}
-{{ local_bounds(m) }}
-{{ local_extra_body(m, _agent_priority) }}
+{{ local_bounds(m, priority_tier) }}
+{{ local_extra_body(m, priority_tier.priority) }}
       input_cost_per_token: {{ m.input_cost_per_token | default(0) }}
       output_cost_per_token: {{ m.output_cost_per_token | default(0) }}
     model_info:

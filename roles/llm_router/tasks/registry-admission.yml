@@ -1,0 +1,50 @@
+---
+- name: Read execution widths from the existing serving profile catalog
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/../{{ item }}"
+    name: "_llm_router_admission_profiles_{{ profile_index }}"
+  loop:
+    - llm_gpu_serving/defaults/main/10-profiles.yml
+    - vllm_serving/defaults/main/10-profiles.yml
+    - vllm_serving/defaults/main/11-profile-families.yml
+    - llamacpp_serving/defaults/main/10-profiles.yml
+    - sglang_serving/defaults/main/10-profiles.yml
+  loop_control:
+    index_var: profile_index
+
+- name: Separate local execution width from admitted waiters
+  ansible.builtin.set_fact:
+    llm_router_model_registry: >-
+      {%- set profiles = _llm_router_admission_profiles_0.llm_profiles
+          | combine(_llm_router_admission_profiles_1.vllm_serving_profiles_core,
+                    _llm_router_admission_profiles_2.vllm_serving_profiles_specialized,
+                    _llm_router_admission_profiles_3.llamacpp_serving_profiles,
+                    _llm_router_admission_profiles_4.sglang_serving_profiles) -%}
+      {%- set out = [] -%}
+      {%- for model in llm_router_model_registry -%}
+      {%- set width = none -%}
+      {%- if model.tier == 'gpu' -%}
+      {%- set width = profiles[model.profile].max_num_seqs | int -%}
+      {%- elif model.tier == 'vllm' -%}
+      {%- set host = (groups['llm_vllm_group'] | default([]) | first | default('')) -%}
+      {%- set width = hostvars[host].llama_cpp_parallel | default(model.max_parallel_requests) | int -%}
+      {%- endif -%}
+      {%- if width is not none -%}
+      {%- set model = model | combine({'execution_width': width,
+            'admitted_waiters': (model.max_parallel_requests | int) - width}) -%}
+      {%- endif -%}
+      {%- set _ = out.append(model) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Require local admission to cover execution width
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - item.execution_width | int > 0
+      - item.admitted_waiters | int >= 0
+      - item.max_parallel_requests | int == (item.execution_width | int) + (item.admitted_waiters | int)
+    fail_msg: Local admission must account for execution slots and admitted waiters independently.
+  loop: "{{ llm_router_model_registry | selectattr('execution_width', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.client_model_id }}"

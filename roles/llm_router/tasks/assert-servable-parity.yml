@@ -32,7 +32,8 @@
   ansible.builtin.set_fact:
     _llm_router_gate_probe:
       state: >-
-        {{ 'verified' if (_llm_router_gate_models.status | default(0) | int) == 200
+        {{ 'excluded' if not _llm_router_studio_probe_eligible else
+           'verified' if (_llm_router_gate_models.status | default(0) | int) == 200
            else ('rejected'
                  if (_llm_router_gate_models.status | default(0) | int) in [401, 403]
                  else ('not_found'
@@ -85,12 +86,20 @@
             'labels': r.item.labels,
             'expected': r.item.models,
             'status': st,
-            'state': 'verified' if st == 200
+            'state': 'excluded' if not _llm_router_studio_probe_eligible
+                       and r.item.labels | select('match', '^local-large/') | list | length > 0
+                     else 'verified' if st == 200
                      else ('rejected' if st in [401, 403]
                            else ('not_found' if st == 404 else 'unreachable')),
             'missing': r.item.models | difference(served)}] -%}
       {%- endfor -%}
       {{ ns.out }}
+  vars:
+    # Standalone parity fixtures omit admission inputs; the role defaults both
+    # switches before real probes run.
+    _llm_router_studio_probe_eligible: >-
+      {{ (llm_router_studio_profiles_enabled | default(true) | bool)
+         and (llm_router_studio_precheck_passed | default(true) | bool) }}
 
 - name: Classify the Pro6000 model-listing probe
   ansible.builtin.import_tasks: assert-servable-gpu-probe.yml

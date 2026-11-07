@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import fnmatch
+import importlib.util
 import re
 from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+_POLICY_SPEC = importlib.util.spec_from_file_location(
+    "model_policy", Path(__file__).with_name("model_policy.py")
+)
+assert _POLICY_SPEC and _POLICY_SPEC.loader
+_POLICY = importlib.util.module_from_spec(_POLICY_SPEC)
+_POLICY_SPEC.loader.exec_module(_POLICY)
 
 
 _CONTEXT_RE = re.compile(
@@ -203,6 +214,17 @@ def select_model_trial(
     """Validate recorded Hub facts and select one engine/weight set without network access."""
     if info.get("private") is not False or info.get("gated") is not False:
         raise ValueError("Only public, ungated model repositories are accepted")
+    policy = rules.get("llm_model_trial_policy_data", {})
+    ancestors = rules.get("llm_model_trial_upstream_infos", {})
+    upstream_dates = _POLICY.upstream_dates(info, ancestors)
+    upstream_id, upstream_created = min(upstream_dates, key=lambda item: item[1])
+    entry = _POLICY.model_policy_entry(artifact_id=info["id"], policy=policy)
+    today = datetime.now(timezone.utc).date()
+    if any(not 0 <= (today - created).days <= policy["max_age_days"]
+           for _, created in upstream_dates):
+        raise ValueError("Hub upstream model is old or future-dated under the shared policy")
+    if entry["upstream_id"] != upstream_id or _POLICY.policy_date(entry["upstream_created"]) != upstream_created:
+        raise ValueError("Shared policy upstream does not match the Hub base_model chain")
     author = str(info.get("author") or "").casefold()
     trusted = {str(value).casefold() for value in rules["llm_model_trial_trusted_authors"]}
     if author not in trusted and not (
@@ -291,11 +313,6 @@ def select_model_trial(
     metadata = _metadata_paths(files)
     selected_names = sorted(set(weight_files + metadata))
     selected_files = [files[name] for name in selected_names]
-    commit_dates = [
-        str(file["last_commit_date"])
-        for file in files.values()
-        if file.get("last_commit_date")
-    ]
     return {
         "rule_version": int(rules["llm_model_trial_engine_rules_version"]),
         "resolved_sha": sha,
@@ -304,7 +321,9 @@ def select_model_trial(
         "downloads": int(info.get("downloads") or 0),
         "created_at": info.get("createdAt"),
         "last_modified": info.get("lastModified"),
-        "release_date": info.get("lastModified") or (max(commit_dates) if commit_dates else None),
+        "release_date": upstream_created.isoformat(),
+        "upstream_id": upstream_id,
+        "dossier": entry["dossier"],
         "format": "safetensors" if selected[0]["format"] == "safetensors" else "gguf",
         "quantization": quantization,
         "architecture": architecture,

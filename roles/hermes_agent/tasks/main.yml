@@ -23,8 +23,15 @@
 - name: Keep operational profiles off the private identity
   ansible.builtin.set_fact:
     hermes_agent_profiles: []
-  when: (hermes_agent_id | default('hermes')) == 'hermes-private'
+  when: (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) in ['hermes-private', 'pepper']
   tags: always
+
+- name: Reject inherited Pepper profile homes before any runtime changes
+  ansible.builtin.import_tasks: pepper_profiles.yml
+  when: (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) == 'pepper'
+  tags:
+    - always
+    - "{{ hermes_agent_entry_point_task_tags['pepper_profiles.yml'] }}"
 
 # Read-only probe mode: report cron delivery routing, then stop this host
 # before any converge task (defaults/main/195-delivery-probe.yml).
@@ -120,6 +127,11 @@
   tags:
     - "{{ hermes_agent_entry_point_task_tags['bundle_build.yml'] }}"
     - "{{ hermes_agent_entry_point_task_tags['public_gateway.yml'] }}"
+
+- name: Prepare Pepper read-only evidence before enabling its MCP server
+  ansible.builtin.import_tasks: pepper_vault.yml
+  when: hermes_agent_id == 'pepper'
+  tags: "{{ hermes_agent_entry_point_task_tags['pepper_vault.yml'] }}"
 
 - name: Deploy secrets, config.yaml, persona content, and Hindsight provider config
   ansible.builtin.import_tasks: config_and_content.yml
@@ -228,7 +240,7 @@
       - name: HERMES_TRUST_BOUNDARY
         value: "{{ hermes_agent_github_trust_boundary_default }}"
       - name: HERMES_CRON_GOAL_JOBS
-        value: "{{ hermes_agent_cron_goal_mode_jobs | join(',') }}"
+        value: "{{ (hermes_agent_cron_goal_mode_jobs if hermes_agent_id != 'pepper' else []) | join(',') }}"
       - name: HERMES_CRON_GOAL_MAX_TURNS
         value: "{{ hermes_agent_kanban_goal_max_turns }}"
     # The dashboard resolves its config from the sticky active profile when one is
@@ -263,9 +275,10 @@
   ansible.builtin.import_tasks: brain_sync.yml
   tags: "{{ hermes_agent_entry_point_task_tags['brain_sync.yml'] }}"
 
-- name: Deploy the optional event relay
-  ansible.builtin.import_tasks: event_relay.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['event_relay.yml'] }}"
+- name: Clean up the retired event relay
+  ansible.builtin.import_tasks: event_relay_cleanup.yml
+  when: hermes_agent_event_relay_cleanup | bool
+  tags: "{{ hermes_agent_entry_point_task_tags['event_relay_cleanup.yml'] }}"
 
 - name: Ship logs, flush handlers, and run the post-converge verification gate
   ansible.builtin.import_tasks: finalize.yml

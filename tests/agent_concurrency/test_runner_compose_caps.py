@@ -4,6 +4,7 @@ from pathlib import Path
 
 import jinja2
 import yaml
+from ansible.plugins.filter.core import to_bool
 from jinja2 import meta
 
 from _group_vars import load_group_vars_all
@@ -16,11 +17,26 @@ AGENT_CAP = int(ALL_VARS["ai_agent_default_concurrency"])
 
 def _render_compose(role: str) -> dict:
     template_path = REPO_ROOT / "roles" / role / "templates/docker-compose.yml.j2"
-    env = jinja2.Environment(undefined=jinja2.StrictUndefined, autoescape=False)
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(template_path.parent),
+        undefined=jinja2.StrictUndefined,
+        autoescape=False,
+    )
+    env.filters["bool"] = to_bool
     source = template_path.read_text()
     names = meta.find_undeclared_variables(env.parse(source))
+    for included in meta.find_referenced_templates(env.parse(source)):
+        included_source = env.loader.get_source(env, included)[0]
+        names.update(meta.find_undeclared_variables(env.parse(included_source)))
     context = {name: "fixture" for name in names}
     context["ai_agent_default_concurrency"] = AGENT_CAP
+    if role == "dify_docker":
+        context.update(
+            dify_docker_celery_worker_amount=AGENT_CAP,
+            dify_docker_redis_appendonly=True,
+            dify_docker_workflow_schedule_poller_enabled=True,
+            dify_docker_trigger_provider_refresh_enabled=True,
+        )
     if role == "langflow_docker":
         context.update(
             langflow_docker_db_service="postgres",

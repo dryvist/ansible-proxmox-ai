@@ -1,0 +1,75 @@
+---
+- name: Define a tier 2 key and its new tier policy
+  ansible.builtin.set_fact:
+    llm_router_virtual_keys:
+      - "{{ _desired | combine({'router_settings_ref': 'fixture-ref'} if _case.2 else {}) }}"
+    _transition_live:
+      key_alias: fixture-transition
+      team_id: tier-2
+      models: [fixture-local]
+      object_permission: "{{ llm_router_mcp_default_object_permission }}"
+      metadata:
+        tier: 2
+        tags: ['&tier-2', '&local', '&zdr', '!retains', ui-key-tag]
+        priority_policy:
+          tier: 2
+          added_tags: "{{ ['&tier-2'] + ([] if _case.3 else ['&local']) }}"
+          settings: "{{ llm_router_priority_policy_by_tier['2'].router_settings }}"
+          settings_before:
+            enable_tag_filtering: {present: true, value: true}
+            fallbacks: {present: false, value: null}
+            context_window_fallbacks: {present: false, value: null}
+            content_policy_fallbacks: {present: false, value: null}
+      router_settings:
+        enable_tag_filtering: true
+        num_retries: 3
+        fallbacks: []
+        context_window_fallbacks: []
+        content_policy_fallbacks: []
+  vars:
+    _desired:
+      alias: fixture-transition
+      value: sk-fixture-priority-key
+      priority_tier: "{{ _case.0 }}"
+      team_id: "tier-{{ _case.0 }}"
+      tags: "{{ ['&zdr', '!retains'] + (['&local'] if _case.3 else []) }}"
+      models: [fixture-local]
+      router_settings:
+        enable_tag_filtering: true
+      metadata:
+        trace_defaults:
+          tier: "{{ _case.0 }}"
+
+- name: Render the transition policy
+  ansible.builtin.set_fact:
+    _transition_updates: "{{ lookup('template', _fixture.path ~ '/key.j2') }}"
+  vars:
+    _llm_router_live_key_aliases: [fixture-transition]
+    llm_router_existing_keys:
+      json:
+        keys: ["{{ _transition_live }}"]
+
+- name: The new tier restores fallback inheritance and retains declared privacy
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _transition_updates | length == 1
+      - _body.team_id == 'tier-' ~ _case.0
+      - "('&tier-' ~ _case.0) in _body.metadata.tags"
+      - "'&tier-2' not in _body.metadata.tags"
+      - "('&local' in _body.metadata.tags) == _case.3"
+      - "['&zdr', '!retains', 'ui-key-tag'] | difference(_body.metadata.tags) == []"
+      - _body.router_settings.enable_tag_filtering | bool
+      - _body.router_settings.num_retries == 3
+      - "'context_window_fallbacks' not in _body.router_settings"
+      - "'content_policy_fallbacks' not in _body.router_settings"
+      - _body.router_settings.get('fallbacks') == (_reference.fallbacks if _case.2 else none)
+      - lookup('template', _fixture.path ~ '/key.j2') == []
+    fail_msg: "Transition {{ _case }}: repeated update {{ lookup('template', _fixture.path ~ '/key.j2') }}"
+  vars:
+    _body: "{{ _transition_updates[0].body }}"
+    _reference: "{{ llm_router_review_key_router_settings['fixture-ref'] }}"
+    _llm_router_live_key_aliases: [fixture-transition]
+    llm_router_existing_keys:
+      json:
+        keys: ["{{ _transition_live | combine(_body) }}"]

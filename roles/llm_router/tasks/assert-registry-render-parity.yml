@@ -115,20 +115,23 @@
     # name no enabled entry owns still fails.
     #
     # VLLM deployments require both the explicit switch and a successful
-    # registry-driven /models precheck. Route groups with another active member
+    # registry-driven load-and-serve precheck. Studio shared deployments also
+    # require their own successful precheck. Groups with another active member
     # remain expected when this backend is held out.
     _llm_router_switched_off_names: >-
       {%- set _all = llm_router_registry_enabled | list -%}
-      {%- set _held = _all | selectattr('tier', 'in', ['vllm', 'hermes-local'])
+      {%- set _held_tiers =
+           ([] if llm_router_llm_vllm_enabled | bool and llm_router_vllm_precheck_passed | bool
+               else ['vllm', 'hermes-local'])
+           + ([] if llm_router_studio_profiles_enabled | bool and llm_router_studio_precheck_passed | bool
+                  else ['local-large']) -%}
+      {%- set _held = _all | selectattr('tier', 'in', _held_tiers)
            | selectattr('route_group', 'defined') | list -%}
       {%- set _held_names = _held | map(attribute='route_group') | unique | list -%}
-      {%- set _other_names = _all | rejectattr('tier', 'in', ['vllm', 'hermes-local'])
+      {%- set _other_names = _all | rejectattr('tier', 'in', _held_tiers)
            | selectattr('route_group', 'defined')
            | map(attribute='route_group') | unique | list -%}
-      {{ (_held_names | difference(_other_names))
-         if (not (llm_router_llm_vllm_enabled | bool)
-              or not (llm_router_vllm_precheck_passed | default(false) | bool))
-         else [] }}
+      {{ _held_names | difference(_other_names) }}
     _llm_router_parity_expected: >-
       {%- set _entries = llm_router_registry_enabled
            | rejectattr('tier', 'in', ['openrouter', 'opencode', 'hermes-cloud'])

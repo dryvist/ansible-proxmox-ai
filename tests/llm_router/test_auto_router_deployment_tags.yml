@@ -2,6 +2,8 @@
 - name: Verify capability aliases preserve sensitivity scopes and fallback chains
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - policy_fixture.yml
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     tofu_data:
@@ -46,14 +48,43 @@
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
-    - name: Enable the Studio profiles for the local-class fixture
-      ansible.builtin.set_fact:
-        llm_router_studio_profiles_enabled: true
+    - name: Studio participation is enabled by default and the small lane remains opt-in
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_studio_profiles_enabled | bool
+          - not (llm_router_4080_profiles_enabled | bool)
 
     - name: Load the model registry through the role
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
+
+    - name: Render shared candidates before a Studio completion has passed
+      ansible.builtin.set_fact:
+        _unprobed_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Studio shared candidates fail closed without a completion result
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (llm_router_studio_precheck_passed | bool)
+          - llm_router_studio_shared_models | length == 0
+          - _unprobed_config.model_list | selectattr('model_name', 'equalto', '*') | list | length == 0
+          - llm_router_capability_members | selectattr('tier', 'equalto', 'local-large') | list | length == 0
+          - llm_router_hermes_local_fallback_models | selectattr('tier', 'equalto', 'local-large') | list | length == 0
+          - >-
+            _unprobed_config.model_list
+            | selectattr('model_name', 'in', llm_router_large_models | map(attribute='route_group') | list)
+            | selectattr('litellm_params.api_base', 'defined')
+            | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_large_base_url) | list | length == 0
+
+    - name: Model a successful Studio load-and-serve gate for this render
+      ansible.builtin.set_fact:
+        llm_router_studio_precheck_passed: true
+
+    - name: Refresh the admitted Studio candidate projections
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
 
     - name: Model the trusted callers these projections assume
       ansible.builtin.import_tasks: "{{ playbook_dir }}/tasks/trust_fixture_callers.yml"
@@ -62,6 +93,26 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
+    - name: Studio candidates participate in local fallback selection with catalog concurrency
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _studio_candidates | length > 0
+          - _studio_candidates | difference(llm_router_hermes_local_fallback_models) | length == 0
+          - _studio_deployments | length > 0
+          - _studio_deployments | map(attribute='litellm_params.max_parallel_requests') | unique | list == [1]
+          - llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list | length == 0
+          - llm_router_vllm_models | length == 0
+      vars:
+        _studio_candidates: >-
+          {{ llm_router_capability_members | selectattr('tier', 'equalto', 'local-large')
+             | selectattr('route_group', 'in',
+                 [llm_router_small_model, llm_router_primary_model, llm_router_large_model]) | list }}
+        _studio_deployments: >-
+          {{ _config.model_list | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_large_base_url)
+             | rejectattr('model_name', 'equalto', '*') | list }}
+
     - name: Capability aliases do not create duplicate model-list deployments
       ansible.builtin.assert:
         quiet: true
@@ -69,7 +120,7 @@
           - llm_router_model_group_aliases.auto == llm_router_primary_model
           - llm_router_model_group_aliases[_hermes_default_alias] == llm_router_primary_model
           - _medium_deployments | length > 0
-          - _medium_orders | unique | length == _medium_orders | length
+          - _medium_orders | unique | length * llm_router_priority_tiers | length == _medium_orders | length
           - _complexity_router_entries | length == 0
           - _legacy_deployments | length == 0
         fail_msg: >-
