@@ -8,7 +8,6 @@ from test_finetune_contract import DEFAULTS, REPO_ROOT, ROLE, _find_task, _load_
 
 CLASSIFY_HOST_VARS_PATH = REPO_ROOT / "inventory/host_vars/llm-ada-lovelace-6X-16GB-classify.yml"
 PEER_HOST_VARS_PATH = REPO_ROOT / "inventory/host_vars/llm-ada-lovelace-6X-16GB-embed.yml"
-NVIDIA_DEFAULTS_PATH = REPO_ROOT / "roles/nvidia_gpu_guest/defaults/main/00-core.yml"
 
 
 def test_gpu_peer_stops_only_when_active_and_train_has_a_bound_and_device_selection() -> None:
@@ -42,33 +41,28 @@ def test_gpu_peer_stops_only_when_active_and_train_has_a_bound_and_device_select
     assert not any("GPU peer" in task.get("name", "") for task in tasks)
 
 
-def test_peer_unit_and_health_url_are_derived_from_inventory_and_tofu_constants() -> None:
+def test_peer_unit_is_llama_server_and_health_url_uses_the_tofu_port() -> None:
     classify = yaml.safe_load(CLASSIFY_HOST_VARS_PATH.read_text())
     peer = yaml.safe_load(PEER_HOST_VARS_PATH.read_text())
-    nvidia_defaults = yaml.safe_load(NVIDIA_DEFAULTS_PATH.read_text())
     peer_host = classify["laya_systemone_finetune_gpu_peer_host"]
     assert peer_host == "llm-ada-lovelace-6X-16GB-embed"
 
     environment = jinja2.Environment()
     context = {
         "laya_systemone_finetune_gpu_peer_host": peer_host,
-        "nvidia_gpu_guest_unit_prefix": nvidia_defaults["nvidia_gpu_guest_unit_prefix"],
         "hostvars": {peer_host: {**peer, "ansible_facts": {"default_ipv4": {"address": "192.0.2.10"}}}},
-        "tofu_data": {"constants": {"service_ports": {peer["llm_gpu_serving_api_port_key"]: 12345}}},
+        "tofu_data": {"constants": {"service_ports": {"llm_fast_api": 12345}}},
     }
-    unit = environment.from_string(classify["laya_systemone_finetune_gpu_peer_unit"]).render(**context)
+    unit = classify["laya_systemone_finetune_gpu_peer_unit"]
     health_url = environment.from_string(
         classify["laya_systemone_finetune_gpu_peer_health_url"]
     ).render(**context)
 
-    assert unit == (
-        f"{nvidia_defaults['nvidia_gpu_guest_unit_prefix']}-{peer['llm_active_profile']}.service"
-    )
-    # The serving unit binds the listen host, else the peer's default IPv4 (llamacpp-serving.service.j2:23).
+    assert unit == "llama-server.service"
+    # The peer's llama.cpp server binds every address on the light lane port (llama-server.service.j2).
     assert health_url == "http://192.0.2.10:12345/v1/models"
     assert "nvidia_gpu_guest_listen_host" in classify["laya_systemone_finetune_gpu_peer_health_url"]
-    assert "llm_gpu_serving_api_port_key" in classify["laya_systemone_finetune_gpu_peer_health_url"]
-    assert "tofu_data.constants.service_ports" in classify["laya_systemone_finetune_gpu_peer_health_url"]
+    assert "tofu_data.constants.service_ports.llm_fast_api" in classify["laya_systemone_finetune_gpu_peer_health_url"]
 
 
 def test_gpu_peer_defaults_are_inert_until_a_host_names_a_peer() -> None:

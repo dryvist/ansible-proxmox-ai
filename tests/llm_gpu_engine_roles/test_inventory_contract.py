@@ -161,7 +161,7 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
     assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
 
 
-def test_ada_agent_long_context_profile_keeps_the_light_lane_and_selects_its_cache():
+def test_ada_small_profile_keeps_the_light_lane_and_selects_its_cache():
     host_vars = _load(
         REPO_ROOT / "inventory/host_vars/llm-ada-lovelace-6X-16GB-embed.yml"
     )
@@ -173,7 +173,7 @@ def test_ada_agent_long_context_profile_keeps_the_light_lane_and_selects_its_cac
     )
     groups = add_host["groups"]
 
-    assert host_vars["llm_active_profile"] == "qwen38-27b-131k-1"
+    assert host_vars["llm_active_profile"] == "small"
     assert host_vars["llm_gpu_serving_model_cache_mount_path"] == "/var/lib/llm"
     assert groups.count("'llm-gpu-small-router' in (item.value.tags | default([]))") == 2
     assert "['llm_gpu_legacy_group', 'llm_gpu_group']" in groups
