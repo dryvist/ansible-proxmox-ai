@@ -38,7 +38,14 @@ def test_api_key_provisioning_is_wired_after_each_agent_dsl():
     )
 
     assert provision["ansible.builtin.include_tasks"] == "ensure_agent_app_api_key.yml"
-    assert provision["when"] == ["dify_docker_dsl_name | length > 0", "not ansible_check_mode"]
+    assert provision["when"] == [
+        "dify_docker_dsl_name | length > 0",
+        "dify_docker_dsl_content | length > 0",
+        "dify_docker_dsl_import_needed | bool",
+        "dify_docker_dsl_app_matches | length == 0",
+        "not ansible_check_mode",
+        "(dify_docker_dsl_confirm.json | default(dify_docker_dsl_import.json | default({}))) .status | default('') in ['completed', 'completed-with-warnings']",
+    ]
     assert provision["no_log"] is True
 
 

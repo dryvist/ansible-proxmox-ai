@@ -15,7 +15,7 @@ IMPORT_LOOP = ROOT / "roles/dify_docker/tasks/import_agent_dsls.yml"
 IMPORT_ONE = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
 
 FETCH_TASK = "Fetch the pinned agent DSL and verify its sha256"
-PRIVATE_LOOP_TASK = "Import each private agent DSL (skips existing app names)"
+PRIVATE_LOOP_TASK = "Reconcile each private agent DSL"
 TOKEN = "fixture-token"
 
 
@@ -45,7 +45,7 @@ def test_pinned_sources_file_does_not_override_supplied_private_values():
 
 def test_private_sources_remain_a_separate_import_loop_after_catalog_entries():
     tasks = _yaml(IMPORT_LOOP)
-    public = _task(tasks, "Import each catalog agent DSL (skips existing app names)")
+    public = _task(tasks, "Reconcile each catalog agent DSL")
     private = _task(tasks, PRIVATE_LOOP_TASK)
 
     assert public["loop"] == "{{ dify_docker_agent_dsls }}"

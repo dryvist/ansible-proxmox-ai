@@ -35,9 +35,9 @@ def test_manifest_entries_keep_their_url_and_sha256_through_public_import():
     manifest_read = _task(tasks, "Read the verified agent DSL catalog manifest")
     build_list = _task(tasks, "Build agent DSL URLs from every catalog manifest entry")
     public_fetch = _task(tasks, "Fetch and verify all catalog agent DSLs before importing any")
-    public_import = _task(tasks, "Import each catalog agent DSL (skips existing app names)")
+    public_import = _task(tasks, "Reconcile each catalog agent DSL")
     importer = _yaml(IMPORT_ONE)
-    import_task = _task(importer, "Import the agent DSL (skipped when its app name already exists)")
+    import_task = _task(importer, "Import the catalog DSL when its checksum is new")
 
     assert manifest_fetch["ansible.builtin.get_url"]["url"] == (
         "{{ dify_docker_agent_dsl_base }}/agents/dify/manifest.json"
@@ -87,8 +87,9 @@ def test_manifest_entries_keep_their_url_and_sha256_through_public_import():
     )
     assert public_import["loop"] == "{{ dify_docker_agent_dsls }}"
     assert public_import["ansible.builtin.include_tasks"] == "import_agent_dsl.yml"
-    assert "dify_docker_dsl_name not in" in str(importer)
-    assert import_task["ansible.builtin.uri"]["body"]["mode"] == "yaml-content"
+    assert "dify_docker_dsl_import_needed | bool" in import_task["when"]
+    assert "app_id" in str(importer)
+    assert import_task["ansible.builtin.uri"]["body"] == "{{ dify_docker_dsl_import_body }}"
     assert "dify_docker_agent_dsl.mode" not in str(importer)
 
 
@@ -101,8 +102,8 @@ def test_manifest_or_public_dsl_hash_failure_stops_before_any_import(tmp_path):
     public_fetch_index, public_fetch = by_name[
         "Fetch and verify all catalog agent DSLs before importing any"
     ]
-    apps_index, _ = by_name["List existing Dify apps (agent DSL import idempotency check)"]
-    public_import_index, _ = by_name["Import each catalog agent DSL (skips existing app names)"]
+    apps_index, _ = by_name["List existing Dify apps (agent DSL catalog hash check)"]
+    public_import_index, _ = by_name["Reconcile each catalog agent DSL"]
 
     assert "ignore_errors" not in manifest_fetch
     assert "failed_when" not in manifest_fetch
@@ -144,10 +145,76 @@ def test_manifest_or_public_dsl_hash_failure_stops_before_any_import(tmp_path):
 
 def test_check_mode_previews_catalog_without_importing_or_provisioning_keys():
     importer = _yaml(IMPORT_ONE)
-    import_task = _task(importer, "Import the agent DSL (skipped when its app name already exists)")
+    import_task = _task(importer, "Import the catalog DSL when its checksum is new")
     confirm_task = _task(importer, "Confirm the agent DSL import (DSL version mismatch)")
+    preview_task = _task(importer, "Preview the catalog app create or update")
     key_task = _task(importer, "Ensure the agent app API key is stored in OpenBao")
 
     assert "not ansible_check_mode" in import_task["when"]
     assert "not ansible_check_mode" in confirm_task["when"]
     assert "not ansible_check_mode" in key_task["when"]
+    assert "dify_docker_dsl_import_needed | bool" in key_task["when"]
+    assert "ansible_check_mode" in preview_task["when"]
+    assert preview_task["changed_when"] is True
+
+
+def test_catalog_hash_decides_whether_to_import_and_payload_targets_existing_app():
+    importer = _yaml(IMPORT_ONE)
+    decision_task = _task(importer, "Decide whether the catalog app needs an import")
+    payload_task = _task(importer, "Prepare the Dify import payload with its catalog hash")
+    import_task = _task(importer, "Import the catalog DSL when its checksum is new")
+    environment = Environment()
+    environment.filters["combine"] = lambda base, extra: {**base, **extra}
+    digest = "a" * 64
+    old_digest = "b" * 64
+
+    decision = decision_task["ansible.builtin.set_fact"]["dify_docker_dsl_import_needed"]
+    unchanged = environment.from_string(decision).render(
+        dify_docker_dsl_app_matches=[
+            {"id": "app-1", "description": f"notes [catalog sha256:{digest}]"}
+        ],
+        dify_docker_agent_dsl={"sha256": digest},
+        dify_docker_dsl_existing_app={
+            "id": "app-1", "description": f"notes [catalog sha256:{digest}]"
+        },
+    )
+    changed = environment.from_string(decision).render(
+        dify_docker_dsl_app_matches=[
+            {"id": "app-1", "description": f"notes [catalog sha256:{old_digest}]"}
+        ],
+        dify_docker_agent_dsl={"sha256": digest},
+        dify_docker_dsl_existing_app={
+            "id": "app-1", "description": f"notes [catalog sha256:{old_digest}]"
+        },
+    )
+    created = environment.from_string(decision).render(
+        dify_docker_dsl_app_matches=[],
+        dify_docker_agent_dsl={"sha256": digest},
+        dify_docker_dsl_existing_app={},
+    )
+    assert unchanged == "False"
+    assert changed == "True"
+    assert created == "True"
+
+    payload_expression = payload_task["ansible.builtin.set_fact"]["dify_docker_dsl_import_body"]
+    update_payload = ast.literal_eval(
+        environment.from_string(payload_expression).render(
+            dify_docker_dsl_content="version: 0.1.0",
+            dify_docker_dsl_document={"app": {"description": "Catalog description"}},
+            dify_docker_agent_dsl={"sha256": digest},
+            dify_docker_dsl_existing_app={"id": "app-1"},
+        )
+    )
+    create_payload = ast.literal_eval(
+        environment.from_string(payload_expression).render(
+            dify_docker_dsl_content="version: 0.1.0",
+            dify_docker_dsl_document={"app": {"description": "Catalog description"}},
+            dify_docker_agent_dsl={"sha256": digest},
+            dify_docker_dsl_existing_app={},
+        )
+    )
+    assert update_payload["app_id"] == "app-1"
+    assert update_payload["description"].endswith(f"[catalog sha256:{digest}]")
+    assert "app_id" not in create_payload
+    assert create_payload["description"].endswith(f"[catalog sha256:{digest}]")
+    assert import_task["ansible.builtin.uri"]["body"] == "{{ dify_docker_dsl_import_body }}"
