@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.23.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.22.0...v2.23.0) (2026-11-07)
+
+
+### Features
+
+* **langfuse:** reconcile native evaluation resources ([#2073](https://github.com/dryvist/ansible-proxmox-ai/issues/2073)) ([d0f79ae](https://github.com/dryvist/ansible-proxmox-ai/commit/d0f79aefd2eef82a32aed207214e0781861ee364))
+* **llm-router:** tag every run with agent, tier, privacy class, model and accelerator ([#2075](https://github.com/dryvist/ansible-proxmox-ai/issues/2075)) ([94088b9](https://github.com/dryvist/ansible-proxmox-ai/commit/94088b965d3217ee7f257664077bfe6507237ce8))
+
+
+### Bug Fixes
+
+* **router:** default shared routing to zdr groups ([#2067](https://github.com/dryvist/ansible-proxmox-ai/issues/2067)) ([48bec76](https://github.com/dryvist/ansible-proxmox-ai/commit/48bec76ae487cde1e0b2af988b9c36999c6a47d9))
+
 ## [2.22.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.21.0...v2.22.0) (2026-11-07)
 
 
