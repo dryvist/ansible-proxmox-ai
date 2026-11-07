@@ -101,6 +101,19 @@ def test_rendered_restart_policy_tracks_containment(enabled, restart):
     assert compose["services"]["hindsight"]["volumes"] == ["hindsight-cache:/home/hindsight/.cache"]
 
 
+def test_image_upgrade_uses_a_separate_stable_cache_without_downloads():
+    scenario = yaml.safe_load((ROOT / "molecule/hindsight/molecule.yml").read_text())
+    legacy_image = scenario["provisioner"]["inventory"]["group_vars"]["all"]["hindsight_fixture_legacy_image"]
+    legacy = yaml.safe_load(render({"hindsight_docker_image": legacy_image}, strict=True))
+    target = yaml.safe_load(render(strict=True))
+    repeated = yaml.safe_load(render(strict=True))
+    assert target["volumes"]["hindsight-cache"]["name"] != legacy["volumes"]["hindsight-cache"]["name"]
+    assert target["volumes"] == repeated["volumes"]
+    assert target["services"]["hindsight"]["volumes"] == legacy["services"]["hindsight"]["volumes"]
+    assert target["services"]["hindsight"]["environment"]["HF_HUB_OFFLINE"] == "1"
+    assert target["services"]["hindsight"]["environment"]["TRANSFORMERS_OFFLINE"] == "1"
+
+
 def test_rendered_worker_and_inference_defaults_are_bounded_per_process():
     env = yaml.safe_load(render(strict=True))["services"]["hindsight"]["environment"]
     assert {

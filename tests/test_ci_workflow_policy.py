@@ -33,11 +33,11 @@ def test_agent_ci_fix_runs_only_for_pull_request_ci_gate_runs() -> None:
 
 
 @pytest.mark.parametrize("workflow", ["agent-ci-fix.yml", "agent-pr-review-responder.yml"])
-def test_agent_workflows_use_the_central_v1_callee(workflow: str) -> None:
+def test_agent_workflows_use_the_central_v2_callee(workflow: str) -> None:
     jobs = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"].values()
     uses = [job["uses"] for job in jobs if "uses" in job]
     assert uses
-    assert all(re.fullmatch(r"JacobPEvans/.github-ai/\.github/workflows/[\w.-]+@v1", ref)
+    assert all(re.fullmatch(r"JacobPEvans/.github-ai/\.github/workflows/[\w.-]+@v2", ref)
                for ref in uses), uses
 
 

@@ -7,6 +7,7 @@ tests itself, only imported by the ones that need it).
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -129,6 +130,7 @@ def render(
     env.filters["string"] = str
     env.filters["lower"] = str.lower
     env.filters["to_json"] = json.dumps
+    env.filters["hash"] = lambda value, algorithm: hashlib.new(algorithm, value.encode()).hexdigest()
     env.filters["bool"] = lambda value: (
         value if isinstance(value, bool) else str(value).lower() in {"1", "true", "yes", "on"}
     )
