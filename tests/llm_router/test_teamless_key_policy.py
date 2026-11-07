@@ -35,7 +35,7 @@ def team_api(team_info=None, keys=None):
             if self.path == "/key/update":
                 key = keys[body["key"]]
                 models = key.get("models", [])
-                if body.get("team_id") == "default-settings" and set(models) - set(team_models):
+                if body.get("team_id") and set(models) - set(team_models):
                     status = 400
                 else:
                     key.update(body)
@@ -101,6 +101,27 @@ def test_team_api_rejects_retaining_grants_on_transfer():
         with pytest.raises(HTTPError, match="400"):
             urlopen(request, timeout=5)
     assert "team_id" not in key
+
+
+def test_managed_teamless_key_narrows_before_combined_seed_update(tmp_path):
+    key = {"token": MARKER, "key_alias": "fixture-managed", "models": ["fixture-retaining"]}
+    desired = {"alias": key["key_alias"], "value": MARKER,
+               "team_id": "tier-0", "models": ["fixture-local"]}
+    with team_api(keys=[key]) as (port, writes):
+        variables = {
+            "llm_router_api_port": port, "llm_router_master_key": "sk-fixture-master",
+            "llm_router_virtual_keys": [desired], "llm_router_existing_keys": {"json": {"keys": [key]}},
+            "llm_router_mcp_default_object_permission": {"mcp_servers": []},
+            "_llm_router_key_trust_metadata": {},
+        }
+        result = run_tasks(tmp_path, [], "reconcile-teamless-keys.yml", **variables)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert writes == [("/key/update", {"key": MARKER, "models": ["fixture-local"]})]
+        result = run_tasks(tmp_path, [], "reconcile-seeded-key-policy.yml", **variables)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert key["team_id"] == "tier-0"
+        assert key["models"] == ["fixture-local"]
+        assert MARKER not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("exists", [False, True])
