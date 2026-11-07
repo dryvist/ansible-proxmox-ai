@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.23.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.23.1...v2.23.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **llm-router:** pin effort for CI aliases ([#2104](https://github.com/dryvist/ansible-proxmox-ai/issues/2104)) ([5c5ef68](https://github.com/dryvist/ansible-proxmox-ai/commit/5c5ef68331dbec74a2404c458331976932273adb))
+
 ## [2.23.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.23.0...v2.23.1) (2026-11-07)
 
 
