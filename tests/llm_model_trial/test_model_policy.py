@@ -104,7 +104,8 @@ def test_registry_projection_excludes_ineligible_models(case: str) -> None:
     env = jinja2.Environment(undefined=jinja2.StrictUndefined)
     env.filters["llm_model_policy_allowed"] = PLUGIN._POLICY.registry_policy_allowed
     template = env.from_string(defaults["_llm_router_registry_enabled_source"])
-    inputs = {"llm_router_model_registry": [model], "llm_model_trial_policy_data": policy}
+    inputs = {"llm_router_model_registry": [model], "llm_model_trial_policy_data": policy,
+              "llm_router_local_registry_tiers": ["local-large", model["tier"]]}
     assert template.render(**inputs) == "[]"
     eligible = deepcopy(model)
     eligible.pop("lifecycle", None)

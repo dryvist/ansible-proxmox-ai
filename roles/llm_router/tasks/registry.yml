@@ -68,9 +68,6 @@
       {%- endfor -%}
       {{ ns.entries }}
 
-- name: Load the shared model admission policy
-  ansible.builtin.import_tasks: model-policy.yml
-
 - name: Load the shared model catalog
   ansible.builtin.include_role:
     name: dryvist.homelab.llm_model_catalog
@@ -194,6 +191,29 @@
 - name: Replace the raw registry with its catalog limit projection
   ansible.builtin.set_fact:
     llm_router_model_registry: "{{ (_llm_router_catalog_projection | from_json).entries }}"
+
+# The policy records repositories. An artifact reference wins because it names
+# what this entry serves; a catalog row covers entries with no artifact.
+- name: Resolve each entry to the repository that holds its weights
+  ansible.builtin.set_fact:
+    llm_router_model_registry: >-
+      {%- set ns = namespace(entries=[]) -%}
+      {%- for model in llm_router_model_registry -%}
+      {%- set artifact = llm_router_model_artifacts_by_id.get(model.artifact_id | default(''), {}) -%}
+      {%- set rows = llm_model_catalog_models
+           | selectattr('name', 'equalto', model.catalog_model_name | default('')) | list -%}
+      {%- set row = rows[0] if rows else {} -%}
+      {%- set stage0 = row.stage0 | default({}) -%}
+      {%- set repo = artifact.hf_repo | default(row.hf_repo | default(
+            ((stage0.serving | default({})).converted_artifact | default({})).repo_id | default(
+              (stage0.source_checkpoint | default({})).repo_id | default(
+                row.name | default(model.upstream_model_id, true), true), true), true), true) -%}
+      {%- set ns.entries = ns.entries + [model | combine({'policy_artifact_id': repo})] -%}
+      {%- endfor -%}
+      {{ ns.entries }}
+
+- name: Load the shared model admission policy
+  ansible.builtin.import_tasks: model-policy.yml
 
 - name: Assert the registry loaded and is non-empty
   ansible.builtin.assert:

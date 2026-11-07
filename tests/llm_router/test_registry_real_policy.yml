@@ -1,0 +1,89 @@
+---
+# The other router contracts supply a synthetic admission policy. This one loads
+# the real policy from the pinned collection, so a registry entry the real policy
+# rejects fails here rather than at the next converge.
+#
+# Run from the repository root with the router contract environment in
+# .github/workflows/_llm-router-contract.yml.
+
+- name: Verify the real model policy admits the registry
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    # An entry behind this switch is enabled by inventory, so the contract reads the committed value.
+    llm_router_4080_profiles_enabled: >-
+      {{ (lookup('ansible.builtin.file', playbook_dir ~ '/../../inventory/group_vars/all/00-core.yml')
+          | from_yaml).llm_router_4080_profiles_enabled | default(false) }}
+  tasks:
+    - name: Load the registry with the real policy
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+        public: true
+
+    - name: Assert the real policy admits what the estate serves
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_model_trial_policy_data.models | length > 0
+          - llm_router_model_policy_rejections | length == 0
+          - _gpu_entries | length > 0
+          - _gpu_rejections | length == 0
+          - _stale_marks | length == 0
+          - _unmarked_denied | length == 0
+        fail_msg: >-
+          enabled rejections={{ llm_router_model_policy_rejections }},
+          GPU rejections={{ _gpu_rejections }},
+          replace_pending on undenied weights={{ _stale_marks }},
+          denied and unmarked={{ _unmarked_denied }}
+      vars:
+        _denied: "{{ llm_model_trial_policy_data.deny | map(attribute='id') | list }}"
+        # Every profile a guest selects in inventory, read from the committed host vars.
+        _selected: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for f in query('ansible.builtin.fileglob', playbook_dir ~ '/../../inventory/host_vars/*.yml') -%}
+          {%- set v = lookup('ansible.builtin.file', f) | from_yaml -%}
+          {%- set ns.out = ns.out + [v.llm_active_profile | default('')]
+                + (v.llm_gpu_serving_co_resident_profiles | default([])) -%}
+          {%- endfor -%}
+          {{ ns.out | reject('equalto', '') | unique | list }}
+        _gpu_entries: >-
+          {{ llm_router_model_registry | selectattr('tier', 'equalto', 'gpu')
+             | selectattr('profile', 'in', _selected) | list }}
+        _gpu_rejections: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for m in _gpu_entries -%}
+          {%- set why = m | llm_model_policy_reason(llm_model_trial_policy_data, llm_router_local_registry_tiers) -%}
+          {%- if why -%}{%- set ns.out = ns.out + [m.client_model_id ~ ': ' ~ why] -%}{%- endif -%}
+          {%- endfor -%}
+          {{ ns.out }}
+        _stale_marks: >-
+          {{ llm_router_model_registry | selectattr('replace_pending', 'defined')
+             | rejectattr('policy_artifact_id', 'in', _denied)
+             | map(attribute='client_model_id') | list }}
+        _unmarked_denied: >-
+          {{ llm_router_model_registry | selectattr('enabled')
+             | selectattr('tier', 'in', llm_router_local_registry_tiers)
+             | rejectattr('replace_pending', 'defined')
+             | selectattr('policy_artifact_id', 'in', _denied)
+             | map(attribute='client_model_id') | list }}
+
+    - name: Assert hosted tiers stay outside the self-hosted policy
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _hosted | length > 0
+          - _hosted_rejections | length == 0
+        fail_msg: "hosted rejections={{ _hosted_rejections }}"
+      vars:
+        _hosted: >-
+          {{ llm_router_model_registry | selectattr('enabled')
+             | rejectattr('tier', 'in', llm_router_local_registry_tiers) | list }}
+        _hosted_rejections: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for m in _hosted -%}
+          {%- set why = m | llm_model_policy_reason(llm_model_trial_policy_data, llm_router_local_registry_tiers) -%}
+          {%- if why -%}{%- set ns.out = ns.out + [m.client_model_id ~ ': ' ~ why] -%}{%- endif -%}
+          {%- endfor -%}
+          {{ ns.out }}
