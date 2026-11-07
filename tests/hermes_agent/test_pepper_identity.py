@@ -1,47 +1,14 @@
 """Offline Pepper boundary regressions using the shipped inventory expressions."""
 import json
-from pathlib import Path
 
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
 from jinja2.nativetypes import NativeEnvironment
 
+from _pepper_identity_shared import ROOT, ROLE, resolve
 from _role_files import role_defaults
 from test_context_limits import _render
-
-ROOT = Path(__file__).resolve().parents[2]
-ROLE = ROOT / 'roles/hermes_agent'
-
-
-def resolve(name, context):
-    values = role_defaults(ROLE)
-    for path in sorted((ROOT / 'inventory/group_vars/hermes_agent_group').glob('*.yml')):
-        values.update(yaml.safe_load(path.read_text()))
-    values.update(context)
-    env = Environment(undefined=StrictUndefined)
-    env.filters['mandatory'] = lambda value, message='': value
-    env.filters.update(bool=bool, trim=lambda x: str(x).strip())
-    env.globals['lookup'] = lambda kind, key: context.get('environment', {}).get(key, '')
-
-    # Jinja copies mappings: resolve dependencies explicitly without evaluating
-    # unrelated defaults that require live infrastructure.
-    import re
-    def evaluate(key, stack=()):
-        if key in context:
-            return context[key]
-        value = values[key]
-        if not isinstance(value, str) or '{{' not in value:
-            return value
-        deps = set(re.findall(r'\bhermes_agent_\w+', value)) - {key}
-        deps.update(set(re.findall(r'\b(?:bao_local_llm_secrets|bao_apps_secrets|openbao_secrets_by_domain)\b', value)))
-        ctx = dict(context)
-        for dep in deps:
-            if dep not in stack and dep in values:
-                ctx[dep] = evaluate(dep, (*stack, key))
-        return env.from_string(value).render(ctx)
-    return evaluate(name)
-
 
 def test_pepper_bundle_is_release_and_commit_pinned():
     import re
@@ -281,47 +248,3 @@ def test_pepper_intake_requests_only_bounded_metadata():
     jobs = role_defaults(ROLE)['hermes_agent_direct_cron_jobs_assistant']
     intake = next(j for j in jobs if j['name'] == 'pepper-nightly-intake')
     assert intake['enabled_toolsets'] == ['kanban', 'youtrack_intake']
-
-
-@pytest.mark.parametrize(('identity', 'prefix'), [('pepper', 'PEPPER'), ('donna', 'DONNA')])
-def test_pepper_and_donna_read_shared_slack_fields_from_their_identity_view(identity, prefix):
-    context = dict(
-        hermes_agent_id=identity,
-        hermes_agent_identity=identity,
-        hermes_agent_env_prefix=prefix,
-        hermes_agent_bao={
-            'SLACK_BOT_TOKEN': f'{identity}-identity-bot',
-            'SLACK_APP_TOKEN': f'{identity}-identity-app',
-            f'SLACK_{prefix}_BOT_TOKEN': 'stale-prefixed-bot',
-            f'SLACK_{prefix}_APP_TOKEN': 'stale-prefixed-app',
-        },
-        environment={
-            f'SLACK_{prefix}_BOT_TOKEN': f'{identity}-environment-bot',
-            f'SLACK_{prefix}_APP_TOKEN': f'{identity}-environment-app',
-        },
-    )
-
-    assert resolve('hermes_agent_slack_bot_token', context) == f'{identity}-identity-bot'
-    assert resolve('hermes_agent_slack_app_token', context) == f'{identity}-identity-app'
-
-    context['hermes_agent_bao'] = {}
-    assert resolve('hermes_agent_slack_bot_token', context) == f'{identity}-environment-bot'
-    assert resolve('hermes_agent_slack_app_token', context) == f'{identity}-environment-app'
-
-
-def test_other_slack_identities_keep_prefixed_identity_view_fields():
-    context = dict(
-        hermes_agent_id='hermes-private',
-        hermes_agent_identity='hermes-private',
-        hermes_agent_env_prefix='HERMES_PRIVATE',
-        hermes_agent_bao={
-            'SLACK_BOT_TOKEN': 'generic-bot',
-            'SLACK_APP_TOKEN': 'generic-app',
-            'SLACK_HERMES_PRIVATE_BOT_TOKEN': 'private-bot',
-            'SLACK_HERMES_PRIVATE_APP_TOKEN': 'private-app',
-        },
-        environment={},
-    )
-
-    assert resolve('hermes_agent_slack_bot_token', context) == 'private-bot'
-    assert resolve('hermes_agent_slack_app_token', context) == 'private-app'
