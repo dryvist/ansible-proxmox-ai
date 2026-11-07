@@ -22,7 +22,7 @@ def raw_defaults(role=ROLE):
 
 
 def render_hashes(tmp_path, catalog_path, *, role=ROLE, identity="fixture", overrides=None,
-                  include_parts=False):
+                  include_parts=False, tags=None):
     defaults = raw_defaults(role)
     literal = role_defaults(role)
     keys = json.loads((ROOT / "tests/hermes_agent/fixtures/catalog-prompt-sha256.json").read_text())
@@ -67,21 +67,47 @@ def render_hashes(tmp_path, catalog_path, *, role=ROLE, identity="fixture", over
     }
     for task in loaders:
         task["no_log"] = True
-    tasks = loaders + [
+    (tmp_path / "loaders.yml").write_text(yaml.safe_dump(loaders, sort_keys=False))
+    entry = next(task for task in yaml.safe_load((role / "tasks/main.yml").read_text())
+                 if task.get("ansible.builtin.import_tasks") == "prompt_catalog.yml")
+    entry["ansible.builtin.import_tasks"] = str(tmp_path / "loaders.yml")
+    tasks = [
         {"name": "Hash each resolved prompt", "ansible.builtin.set_fact": {
             "prompt_hashes": "{{ prompt_hashes | combine({item: lookup('vars', item) | hash('sha256')}) }}"},
          "loop": list(keys), "no_log": True},
-        {"name": "Render every cron body", "ansible.builtin.include_tasks": str(tmp_path / "direct.yml"),
+        {"name": "Render every cron body", "ansible.builtin.include_tasks": {
+            "file": str(tmp_path / "direct.yml"), "apply": {"tags": [tags or "all"]}},
          "loop": jobs, "loop_control": {"label": "{{ item.name }}"}},
+    ]
+    if tags:
+        tasks.append({"name": "Render the enabled GitHub webhook configuration",
+                      "ansible.builtin.set_fact": {
+                          "webhook_config": "{{ lookup('ansible.builtin.template', '"
+                          + str(role / "templates/config-webhook.yaml.j2") + "') | from_yaml }}"},
+                      "vars": {"_webhook_on": True, "_slack_on": False,
+                               "hermes_agent_webhook_port": 8644,
+                               "hermes_agent_github_route_private_enabled": True,
+                               "hermes_agent_github_route_bot_login": "example-bot[bot]"},
+                      "no_log": True})
+        tasks.append({"name": "Check the catalog prompt in the rendered route",
+                      "ansible.builtin.assert": {"that": [
+                          "webhook_config.webhook.extra.routes[hermes_agent_github_route_private_name]"
+                          ".prompt | hash('sha256') == prompt_hashes.hermes_agent_github_route_prompt"]},
+                      "no_log": True})
+    tasks += [
         {"name": "Save hashes", "ansible.builtin.copy": {
             "content": "{{ {'prompts': prompt_hashes, 'crons': cron_hashes} | to_json }}",
             "dest": str(tmp_path / "hashes.json"), "mode": "0600"}},
     ]
+    if tags:
+        for task in tasks:
+            task["tags"] = [tags]
     play = [{"name": "Render prompt catalog", "hosts": "localhost", "gather_facts": False,
-             "vars": context, "tasks": tasks}]
+             "vars": context, "tasks": [entry, *tasks]}]
     (tmp_path / "play.yml").write_text(yaml.safe_dump(play, sort_keys=False))
     result = subprocess.run(
-        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml")],
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml"),
+         *(["--tags", tags] if tags else [])],
         cwd=ROOT, capture_output=True, text=True, timeout=180,
         env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path / "ansible-local")},
     )

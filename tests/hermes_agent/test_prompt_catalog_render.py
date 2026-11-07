@@ -58,7 +58,8 @@ def test_defaults_hold_prompt_references_with_only_the_five_private_exceptions()
 
 
 @pytest.mark.parametrize("identity", ["fixture", "alternate"])
-def test_every_rendered_cron_body_matches_the_before_migration_hashes(tmp_path, identity):
+@pytest.mark.parametrize("tags", [None, "hermes_profiles_env", "hermes_units_gateways"])
+def test_every_rendered_cron_body_matches_the_before_migration_hashes(tmp_path, identity, tags):
     defaults = raw_defaults()
     catalog = tmp_path / "catalog"
     catalog.mkdir()
@@ -74,7 +75,7 @@ def test_every_rendered_cron_body_matches_the_before_migration_hashes(tmp_path, 
     if identity != "fixture":
         for index, value in crons[identity].items():
             expected["crons"][int(index)] = value
-    actual = render_hashes(tmp_path, catalog, identity=identity, include_parts=True)
+    actual = render_hashes(tmp_path, catalog, identity=identity, include_parts=True, tags=tags)
     jobs = [job for job in role_defaults(ROLE)["hermes_agent_direct_cron_jobs"]
             if any(key in job for key in ("prompt_var", "prompt_file", "prompt_files"))]
     stats = next(index for index, job in enumerate(jobs)
