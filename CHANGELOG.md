@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.28.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.27.0...v2.28.0) (2026-11-07)
+
+
+### Features
+
+* **llm-router:** enable the 4080 and the Studio small fallback ([#2119](https://github.com/dryvist/ansible-proxmox-ai/issues/2119)) ([bbb963b](https://github.com/dryvist/ansible-proxmox-ai/commit/bbb963bba4126ae99b7bef1ac708770e92e2e8ec))
+
 ## [2.27.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.26.0...v2.27.0) (2026-11-07)
 
 
