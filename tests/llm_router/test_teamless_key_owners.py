@@ -6,6 +6,36 @@ from test_privacy_grants import MARKER, run_tasks
 from test_teamless_key_policy import team_api
 
 
+@pytest.mark.parametrize("tier", [0, 1, 2])
+def test_owned_public_key_adds_destination_member_before_team_change(tmp_path, tier):
+    key = {"token": MARKER, "key_alias": "fixture-public", "models": ["fixture-retaining"],
+           "user_id": "fixture-owner", "team_id": f"tier-{tier}",
+           "metadata": {"privacy_class": "public"}}
+    target = f"tier-{tier}-public"
+    desired = {"alias": key["key_alias"], "value": MARKER, "team_id": target,
+               "models": key["models"], "privacy_class": "public"}
+    with team_api(team_info={"models": ["fixture-local", "fixture-retaining"]},
+                  keys=[key], users=[key["user_id"]]) as (port, writes):
+        variables = {
+            "llm_router_api_port": port, "llm_router_master_key": "sk-fixture-master",
+            "llm_router_virtual_keys": [desired],
+            "llm_router_existing_keys": {"json": {"keys": [key]}},
+        }
+        result = run_tasks(tmp_path, [], "reconcile-teamless-keys.yml", **variables)
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert key["team_id"] == target
+        member = ("/team/member_add", {"team_id": target, "member": {"role": "user", "user_id": key["user_id"]}})
+        transfer = ("/key/update", {"key": MARKER, "team_id": target})
+        assert writes.index(member) < writes.index(transfer)
+        assert "Added owner membership" in output
+        assert MARKER not in output
+        count = len(writes)
+        result = run_tasks(tmp_path, [], "reconcile-teamless-keys.yml", **variables)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert len(writes) == count
+
+
 @pytest.mark.parametrize("managed", [False, True])
 def test_owned_teamless_key_adds_member_before_transfer(tmp_path, managed):
     key = {"token": MARKER, "key_alias": "fixture-owned", "models": ["fixture-retaining"],
