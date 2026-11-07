@@ -30,6 +30,7 @@ def _render(expression, **context):
         pattern, replacement, str(value)
     )
     env.tests["failed"] = lambda result: bool(result.get("failed"))
+    env.filters["hash"] = lambda value, algorithm="sha1": hashlib.new(algorithm, str(value).encode()).hexdigest()
     return env.from_string(expression).render(context)
 
 
@@ -175,6 +176,26 @@ def test_check_mode_previews_private_app_name_without_printing_private_content()
         dify_docker_dsl_import={},
     )
     assert result_message.startswith("agent DSL agent-file:")
+    failed_report = _task(importer, "Report a DSL that failed its pin or fetch")
+    failed_message = _render(
+        failed_report["ansible.builtin.debug"]["msg"],
+        dify_docker_agent_dsl={"url": "https://example.test/agent-file.dsl.yml", "private": True},
+        dify_docker_dsl_preview_name="agent-file",
+    )
+    assert failed_message.startswith("agent DSL agent-file:")
+
+    # A non-200 response fails the fetch even when its body matches the pinned hash.
+    fetch = _task(importer, "Fetch the pinned agent DSL and verify its sha256 without redirects")
+    body = "pinned body"
+    pinned = {"url": "https://example.test/agent-file.dsl.yml", "private": True,
+              "sha256": hashlib.sha256(body.encode()).hexdigest()}
+    for status, expected in ((200, False), (404, True)):
+        failed = _condition_matches(
+            fetch["failed_when"],
+            dify_docker_dsl_fetch={"status": status, "content": body},
+            dify_docker_agent_dsl=pinned,
+        )
+        assert failed is expected, (status, failed)
 
     for task in importer:
         if task is preview:
