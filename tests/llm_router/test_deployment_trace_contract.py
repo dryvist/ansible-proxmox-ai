@@ -54,6 +54,8 @@ def test_success_failure_retry_and_fallback_use_attempt_deployment(module, capsy
         ("success", "fixture/primary", "gpu-primary"),
         ("failure", "fixture/primary", "gpu-primary"),
         ("success", "fixture/fallback", "mac-primary"),
+        ("success", "fixture/agent", "agent"),
+        ("success", "fixture/inner-inference", "gpu-secondary"),
     ]
     for status, model, accelerator in attempts:
         # Router._update_kwargs_with_deployment replaces these on every attempt.
