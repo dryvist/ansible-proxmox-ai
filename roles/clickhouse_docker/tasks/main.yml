@@ -2,9 +2,8 @@
 # Dedicated ClickHouse server, Docker Compose in an LXC.
 #
 # Serves a Langfuse application database plus read-only access for downstream
-# consumers (Grafana, HyperDX, Splunk). Only the ClickHouse server is deployed
-# here — the OpenTelemetry collector and the OTEL table schema are a
-# deliberate follow-up (a separate PR), not built or stubbed in this role.
+# consumers (Grafana, HyperDX, Splunk). A companion OpenTelemetry Collector
+# derives span and service-graph metrics without storing or forwarding traces.
 #
 # Docker itself (docker-ce + compose plugin, fuse-overlayfs, the fuse-overlayfs
 # daemon.json) is installed by the docker_engine meta dependency (meta/main.yml).
@@ -92,9 +91,16 @@
   ansible.builtin.include_role:
     name: dryvist.homelab.openbao_secrets
     tasks_from: assert_nonempty.yml
+    apply:
+      tags: otel_collector
   vars:
     openbao_secrets_required_vars:
       - clickhouse_docker_app_password
+  tags: otel_collector
+
+- name: Configure the trace metrics collector
+  ansible.builtin.import_tasks: otelcol.yml
+  tags: otel_collector
 
 # =============================================================================
 # ClickHouse step upgrade
@@ -225,20 +231,22 @@
     group: root
     mode: "0600"  # contains the app credential
   no_log: true
-  notify: Restart clickhouse
+  tags: otel_collector
 
 - name: Deploy ClickHouse via docker compose
   community.docker.docker_compose_v2:
     project_src: "{{ clickhouse_docker_data_dir }}"
     state: present
+    remove_orphans: true
     wait: true
     wait_timeout: 300
   register: clickhouse_docker_compose_result
   changed_when: >-
     (clickhouse_docker_compose_result.actions | default([]))
-    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building', 'Removing'])
     | list | length > 0
   no_log: true
+  tags: otel_collector
 
 # =============================================================================
 # Users and databases
