@@ -45,6 +45,7 @@ def test_serving_converge_includes_the_device_check_after_health() -> None:
     assert main.index("file: health.yml") < main.index("file: assert-gpu.yml")
 
 
-def test_finetune_collection_ends_with_the_device_check() -> None:
-    collect = (ROLE / "tasks/finetune-collect.yml").read_text()
-    assert collect.index("finetune-report-failure.yml") < collect.index("assert-gpu.yml")
+def test_finetune_recovery_keeps_state_until_laya_computes_on_the_card() -> None:
+    restore = (ROLE / "tasks/finetune-restore-laya.yml").read_text()
+    assert restore.index("file: read-device.yml") < restore.index("laya_systemone_finetune_services_ready: >-")
+    assert "laya_systemone_device_read.json.device | default('') is match('cuda')" in restore
