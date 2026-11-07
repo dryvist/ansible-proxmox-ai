@@ -133,3 +133,53 @@ def test_empty_role_preflight_is_first_dify_action_and_has_clear_failure():
         for task in provider_tasks
         if task.get("name") in {"Create missing Dify LLM model credentials", "Update existing Dify LLM model credentials"}
     )
+
+
+def test_unlisted_provider_model_is_removed_and_listed_model_is_kept():
+    provider_tasks = yaml.safe_load(MODEL_PROVIDER_TASKS.read_text(encoding="utf-8"))
+    preview_task = next(
+        task for task in provider_tasks if task.get("name") == "Report unlisted Dify provider models in check mode"
+    )
+    delete_task = next(
+        task
+        for task in provider_tasks
+        if task.get("name") == "Remove unlisted Dify provider models and their credentials"
+    )
+    assert next(
+        task for task in provider_tasks if task.get("name") == "Read current Dify provider models before removing unlisted entries"
+    )["check_mode"] is False
+    assert delete_task["ansible.builtin.uri"]["method"] == "DELETE"
+    assert delete_task["ansible.builtin.uri"]["status_code"] == 204
+    task_names = [task.get("name") for task in provider_tasks]
+    assert task_names.index(delete_task["name"]) > task_names.index("Set Dify default LLM model")
+
+    def variables_for(model, *, check_mode):
+        return {
+            "ansible_check_mode": check_mode,
+            "dify_docker_provision_model_provider": True,
+            "dify_docker_model_provider_api_base": "provider-api",
+            "dify_docker_llm_models": [{"name": "medium"}, {"name": "small"}, {"name": "recorder-medium"}],
+            "item": model,
+        }
+
+    def applies(task, model, *, check_mode):
+        variables = variables_for(model, check_mode=check_mode)
+        conditions = task["when"]
+        if isinstance(conditions, str):
+            conditions = [conditions]
+        return all(_render("{{ " + condition + " }}", variables) for condition in conditions)
+
+    stale_model = {"model": "legacy-model", "model_type": "llm"}
+    listed_model = {"model": "medium", "model_type": "llm"}
+
+    assert applies(delete_task, stale_model, check_mode=False)
+    assert _render(delete_task["ansible.builtin.uri"]["url"], variables_for(stale_model, check_mode=False)) == (
+        "provider-api/models?model=legacy-model&model_type=llm"
+    )
+    assert not applies(delete_task, listed_model, check_mode=False)
+    assert not applies(delete_task, stale_model, check_mode=True)
+    assert applies(preview_task, stale_model, check_mode=True)
+    assert not applies(preview_task, listed_model, check_mode=True)
+    embedding_model = {"model": "hand-added-embedding", "model_type": "text-embedding"}
+    assert not applies(delete_task, embedding_model, check_mode=False)
+    assert not applies(preview_task, embedding_model, check_mode=True)
