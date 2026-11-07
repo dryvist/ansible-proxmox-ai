@@ -171,6 +171,8 @@ def test_check_mode_previews_private_app_name_without_printing_private_content()
         result["ansible.builtin.debug"]["msg"],
         dify_docker_agent_dsl={"url": "https://example.test/agent-file.dsl.yml", "private": True},
         dify_docker_dsl_preview_name="agent-file",
+        dify_docker_dsl_confirm={},
+        dify_docker_dsl_import={},
     )
     assert result_message.startswith("agent DSL agent-file:")
 
