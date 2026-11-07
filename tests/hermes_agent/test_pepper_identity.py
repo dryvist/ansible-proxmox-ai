@@ -43,6 +43,20 @@ def resolve(name, context):
     return evaluate(name)
 
 
+def test_pepper_bundle_is_release_and_commit_pinned():
+    import re
+    from urllib.parse import parse_qs, urlsplit
+
+    ref = resolve('hermes_agent_bundle_flake_ref', dict(hermes_agent_id='pepper'))
+    source = urlsplit(ref)
+    query = parse_qs(source.query)
+    assert source.path == 'dryvist/nix-hermes'
+    assert source.fragment == 'pepper-bundle'
+    assert re.fullmatch(r'nix-hermes-v\d+\.\d+\.\d+', query['ref'][0])
+    assert re.fullmatch(r'[0-9a-f]{40}', query['rev'][0])
+    assert resolve('hermes_agent_bundle_flake_ref', dict(hermes_agent_id='hermes')).endswith('#hermes-bundle')
+
+
 def test_polluted_controller_cannot_supply_shared_credentials():
     context = dict(hermes_agent_identity='pepper', hermes_agent_id='pepper',
                    hermes_agent_env_prefix='PEPPER', hermes_agent_bao={},
