@@ -1,0 +1,25 @@
+---
+- name: Reset skipped teamless aliases for this reconciliation
+  ansible.builtin.set_fact:
+    _llm_router_teamless_skipped_aliases: []
+  no_log: true
+
+- name: Reconcile ownership for every key changing teams independently
+  ansible.builtin.include_tasks: reconcile-teamless-key.yml
+  loop: "{{ llm_router_existing_keys.json['keys'] | default([]) }}"
+  loop_control:
+    loop_var: _teamless_key
+    index_var: _teamless_key_index
+    label: teamless key
+  when: >-
+    not (_teamless_key.team_id | default(none, true)) or
+    (_managed_key.team_id is defined and _teamless_key.team_id != _teamless_target_team)
+  vars:
+    _managed_key: >-
+      {{ llm_router_virtual_keys | rejectattr('value', 'equalto', '')
+         | selectattr('alias', 'equalto', _teamless_key.key_alias | default('')) | first | default({}) }}
+    _teamless_target_team: "{{ _managed_key.team_id | default(llm_router_default_team_id) }}"
+    _default_team_models: >-
+      {{ (llm_router_default_team_settings
+          | selectattr('team_id', 'equalto', llm_router_default_team_id) | first).models }}
+  no_log: true

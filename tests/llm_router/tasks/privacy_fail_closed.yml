@@ -1,0 +1,37 @@
+---
+- name: Empty or unknown request tags cannot reopen a nonlocal fallback for a local key
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _available | length > 0
+      - _unsafe | length > 0
+      - _eligible | length == 0
+      - _fail_open | length == 0
+    fail_msg: "Local exhaustion must refuse rather than discard inherited privacy requirements."
+  loop:
+    - {name: empty-tags, tags: []}
+    - {name: empty-tag, tags: ['']}
+    - {name: unknown-tag, tags: [fixture-unknown]}
+    - {name: unavailable-local, tags: ['&local']}
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    # The primary local lane has exhausted. Inspect every possible fallback,
+    # including targets with explicit model grants; inherited constraints stay.
+    _available: >-
+      {{ _config.model_list | rejectattr('litellm_params.tags', 'contains', 'local') | list }}
+    _unsafe: >-
+      {{ (_available | selectattr('litellm_params.tags', 'contains', 'retains') | list)
+         + (_available | selectattr('litellm_params.tags', 'contains', 'free') | list) }}
+    _required: >-
+      {{ (item.tags + ['&local', '&zdr', '&sensitivity:pii'])
+         | select('match', '^&.+$') | map('regex_replace', '^&', '') | unique | list }}
+    _eligible: >-
+      {%- set out = [] -%}
+      {%- for row in _available -%}
+      {%- if _required | difference(row.litellm_params.tags) | length == 0 -%}
+      {%- set _ = out.append(row.model_name) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+    _fail_open: "{{ _available | selectattr('model_info.allow_fail_open', 'equalto', true) | list }}"

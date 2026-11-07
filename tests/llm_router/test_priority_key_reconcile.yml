@@ -10,6 +10,8 @@
     llm_router_mcp_hermes_object_permission: {mcp_servers: []}
     llm_router_drift_key_git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
     llm_router_drift_workstation_key_git_file: roles/llm_router/defaults/main/56b-workstation-keys.yml
+    llm_router_zdr_asserted_group_names: [fixture-local]
+    llm_router_zdr_unasserted_terminal_rungs: [fixture-retaining, fixture-free]
     llm_router_review_key_router_settings:
       fixture-ref:
         num_retries: 3
@@ -19,6 +21,10 @@
     - name: Load priority inputs
       ansible.builtin.include_vars:
         file: "{{ _role_dir }}/defaults/main/56d-priority-tiers.yml"
+
+    - name: Load team grant projections
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/59a-privacy-defaults.yml"
 
     - name: Allocate temporary policy expressions
       ansible.builtin.tempfile:
@@ -40,7 +46,7 @@
             - name: team-create
               expression: >-
                 {{ (lookup('file', _role_dir ~ '/tasks/seed-priority-teams.yml') | from_yaml)[1]
-                   ['ansible.builtin.uri']['body']['metadata']['tags'] }}
+                   ['ansible.builtin.uri']['body']['metadata'] }}
             - name: team-update
               expression: >-
                 {{ (lookup('file', _role_dir ~ '/tasks/seed-priority-teams.yml') | from_yaml)[2]['vars']['_tags'] }}
@@ -53,7 +59,7 @@
             that:
               - _created == _expected
               - _updated == ['ui-team-tag'] + _expected
-          loop: "{{ llm_router_priority_tiers }}"
+          loop: "{{ llm_router_priority_team_settings }}"
           loop_control:
             loop_var: _tier
             label: "{{ _tier.team_id }}"
@@ -62,8 +68,8 @@
               item: "{{ _tier }}"
             _live_metadata:
               tags: [ui-team-tag, '&tier-9']
-            _expected: "{{ ['&' ~ _tier.team_id] + (['&local'] if _tier.tier == 2 else []) }}"
-            _created: "{{ lookup('template', _fixture.path ~ '/team-create.j2') }}"
+            _expected: "{{ llm_router_priority_policy_by_tier[_tier.tier | string].tags }}"
+            _created: "{{ lookup('template', _fixture.path ~ '/team-create.j2').tags }}"
             _updated: "{{ lookup('template', _fixture.path ~ '/team-update.j2') }}"
 
         - name: Build declared and existing key fixtures for every tier

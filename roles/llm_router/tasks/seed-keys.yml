@@ -3,7 +3,7 @@
 # reconcile from the Git seed on every converge; routes and attribution
 # other attribution metadata stay UI-owned in `initial` mode and are
 # reconciled only by the explicit `rebuild` mode. Required sensitivity tags
-# reconcile in every mode while preserving unrelated live tags.
+# and ZDR tags reconcile in every mode while preserving unrelated live tags.
 #
 # The router does not MINT these. /key/generate accepts a caller-supplied value,
 # so each key is registered with a value generated at the consumer's own tier
@@ -42,6 +42,9 @@
 # either, but it turns the next occurrence into a message naming the alias
 # instead of a second log-platform trip.
 
+- name: Validate privacy grants before standalone consumer seeding
+  ansible.builtin.import_tasks: assert-privacy-grants.yml
+
 - name: Validate every key's declared sensitivity class before key reads or writes
   ansible.builtin.assert:
     quiet: true
@@ -65,6 +68,9 @@
 
 - name: Seed priority teams before assigning caller keys
   ansible.builtin.import_tasks: seed-priority-teams.yml
+
+- name: Seed validated team grants before creating keys
+  ansible.builtin.import_tasks: seed-teams.yml
 
 - name: Read the virtual keys the proxy already carries
   ansible.builtin.uri:
@@ -145,6 +151,12 @@
 - name: Include every existing key in policy reconciliation
   ansible.builtin.import_tasks: seed-key-pages.yml
 
+- name: Report privacy grants across all existing key pages
+  ansible.builtin.import_tasks: report-key-privacy.yml
+
+- name: Assign team ownership to existing teamless keys
+  ansible.builtin.import_tasks: reconcile-teamless-keys.yml
+
 - name: Collect the aliases of every key the proxy already carries
   ansible.builtin.set_fact:
     _llm_router_live_key_aliases: >-
@@ -179,6 +191,9 @@
               + (item.tags | default([]) | list))
               | reject('match', '^([&!])?sensitivity:') | unique | list
               + [item.sensitivity_tag | default('&sensitivity:sensitive')] -%}
+        {%- if item.sensitivity_tag | default('&sensitivity:sensitive') != '&sensitivity:public' -%}
+        {%- set _metadata_tags = (_metadata_tags | reject('match', '^([&!])?zdr$') | list) + ['&zdr'] -%}
+        {%- endif -%}
         {{ _metadata | combine(
           {
             'app': item.alias,

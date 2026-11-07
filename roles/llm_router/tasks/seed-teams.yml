@@ -1,0 +1,38 @@
+---
+- name: Read managed team model grants
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/team/info?team_id={{ item.team_id | urlencode }}"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: [200, 404]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ llm_router_default_team_settings }}"
+  register: _llm_router_existing_teams
+  check_mode: false
+  no_log: true
+
+- name: Seed managed team model grants through the native team API
+  ansible.builtin.uri:
+    url: >-
+      http://127.0.0.1:{{ llm_router_api_port }}/team/{{ 'new' if item.status == 404 else 'update' }}
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body: "{{ _target }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ _llm_router_existing_teams.results }}"
+  vars:
+    _live: "{{ item.json.team_info | default({}) }}"
+    _target: >-
+      {{ item.item | combine({
+           'metadata': (_live.metadata | default({}, true)) | combine(item.item.metadata | default({})),
+           'router_settings': (_live.router_settings | default({}, true))
+             | combine(item.item.router_settings | default({}))}) }}
+  when: >-
+    item.status == 404 or
+    (_live.models | default([], true) | sort) != (item.item.models | sort) or
+    (_live.metadata | default({}, true)) != _target.metadata or
+    (_live.router_settings | default({}, true)) != _target.router_settings
+  no_log: true
