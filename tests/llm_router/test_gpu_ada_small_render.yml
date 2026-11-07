@@ -7,6 +7,8 @@
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     _ada_host: llm-ada-lovelace-6X-16GB-embed
+    # The agent lane's render contract, independent of what this guest selects today.
+    _ada_agent_profile: qwen38-27b-131k-1
     _pro6000_host: pro6000-fixture
     _ct503040_host: llm-blackwell-7-96GB-small
     tofu_data:
@@ -48,7 +50,7 @@
         name: "{{ _ada_host }}"
         groups: [llm_gpu_group, llm_gpu_legacy_group, llm_fast_group]
         ansible_connection: local
-        llm_active_profile: "{{ _ada_inventory.llm_active_profile }}"
+        llm_active_profile: "{{ _ada_agent_profile }}"
         llm_gpu_serving_api_port_key: "{{ _ada_inventory.llm_gpu_serving_api_port_key }}"
 
     - name: Add the existing Pro6000 member on the default light-lane port
@@ -96,7 +98,7 @@
           - groups['llm_gpu_group'] | sort == [_ada_host, _pro6000_host] | sort
           - _ct503040_host not in groups['llm_gpu_group']
           - _agent_long_context_deployments | length == llm_router_priority_tiers | length
-          - _agent_long_context_deployments[0].model_info.profile == _ada_inventory.llm_active_profile
+          - _agent_long_context_deployments[0].model_info.profile == _ada_agent_profile
           - >-
             _agent_long_context_deployments
             | selectattr('litellm_params.tags', 'contains', 'default') | list | length == 1
@@ -119,7 +121,7 @@
             | intersect(_config.router_settings.fallbacks | default([])
                 | map('dict2items') | flatten | map(attribute='value') | flatten) | length == 0
           - >-
-            llm_router_gpu_deployment_targets | selectattr('profile', 'equalto', _ada_inventory.llm_active_profile)
+            llm_router_gpu_deployment_targets | selectattr('profile', 'equalto', _ada_agent_profile)
             | map(attribute='api_base') | list == [_ada_url]
           - _pro6000_deployments | length >= 1
           - _pro6000_deployments | map(attribute='litellm_params.api_base') | unique | list == [_pro6000_url]

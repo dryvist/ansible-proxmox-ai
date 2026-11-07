@@ -10,7 +10,7 @@
     llm_router_model_policy_rejections: >-
       {%- set ns = namespace(rejections=[]) -%}
       {%- for model in llm_router_model_registry if model.enabled | default(false) -%}
-      {%- set reason = model | llm_model_policy_reason(llm_model_trial_policy_data) -%}
+      {%- set reason = model | llm_model_policy_reason(llm_model_trial_policy_data, llm_router_local_registry_tiers) -%}
       {%- if reason -%}
       {%- set ns.rejections = ns.rejections + [{'artifact_id': model.upstream_model_id, 'reason': reason}] -%}
       {%- endif -%}
@@ -21,3 +21,11 @@
   ansible.builtin.debug:
     var: llm_router_model_policy_rejections
   when: llm_router_model_policy_rejections | length > 0
+
+- name: Report denied models that stay until their replacement is ready
+  ansible.builtin.debug:
+    msg: >-
+      replace_pending: {{ llm_router_model_registry | selectattr('enabled')
+         | selectattr('replace_pending', 'defined')
+         | map(attribute='policy_artifact_id') | list }}
+  when: llm_router_model_registry | selectattr('enabled') | selectattr('replace_pending', 'defined') | list | length > 0

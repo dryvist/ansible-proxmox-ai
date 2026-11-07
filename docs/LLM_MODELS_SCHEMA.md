@@ -63,6 +63,10 @@ Optional:
                       Primary selectors and aliases resolve to a surviving,
                       context-backed local chat deployment after exclusion.
                       An empty local chat candidate set rejects convergence.
+  replace_pending     true keeps a self-hosted entry rendering while the shared
+                      policy denies its weights, until a replacement passes
+                      dossier and eval. The deny record must state the upstream
+                      date. Stale marks fail the real-policy contract.
   lifecycle           `old` records a superseded model identity for history.
                       It has no render effect, but an OLD entry MUST also have
                       `enabled: false`; the registry/render parity test

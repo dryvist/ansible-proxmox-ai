@@ -90,6 +90,18 @@ def test_the_converge_time_size_guard_is_still_wired() -> None:
     assert "rejectattr('param_billions', 'defined') | list | length) == 0" in REACHABLE_TASKS
 
 
+def test_retired_units_stop_before_llama_server_starts() -> None:
+    """A unit from an earlier serving path holds the same port and the card, so
+    it must stop before the first task that starts llama-server."""
+    names = [t["name"] for t in TASKS_YAML]
+    assert names.index("Retire other serving units on this guest") < names.index("Enable and start llama-server")
+    assert DEFAULTS["llama_cpp_retired_units"] == []
+    retire = yaml.safe_load((ROLE / "tasks" / "retire-units.yml").read_text())
+    stop = next(t for t in retire if t["name"] == "Stop and disable the retired serving units")
+    assert stop["ansible.builtin.systemd_service"]["state"] == "stopped"
+    assert stop["ansible.builtin.systemd_service"]["enabled"] is False
+
+
 def test_retire_llama_swap_removes_exactly_the_known_paths() -> None:
     """llama-swap (retired 2026-09-19) is not self-cleaning: a stray unit left
     on a host binds llama_cpp_api_port on the next boot alongside llama-server,

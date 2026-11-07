@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.29.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.28.0...v2.29.0) (2026-11-07)
+
+
+### Features
+
+* **llm-models:** serve the small baseline on the 4080 lane ([#2128](https://github.com/dryvist/ansible-proxmox-ai/issues/2128)) ([9022ee4](https://github.com/dryvist/ansible-proxmox-ai/commit/9022ee40dfdc17460b72d0b6aeeb563c6e3c4ef4))
+
 ## [2.28.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.27.0...v2.28.0) (2026-11-07)
 
 
