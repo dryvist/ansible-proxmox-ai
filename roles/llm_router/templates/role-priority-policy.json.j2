@@ -11,7 +11,6 @@
 {%- endfor -%}
 {%- set tiers = callers.tiers | unique | sort
       if callers.tiers else [tier] -%}
-{%- set policy = llm_router_priority_policy_by_tier[tier | string] -%}
 {%- set params = _priority_params.copy() -%}
 {%- for field, injected in previous.get('settings', {}).items() -%}
 {%- if params.get(field) == injected -%}
@@ -32,14 +31,15 @@
 {%- set tags = (_priority_tags | reject('match', '^tier-[0-9]+$')
       | reject('equalto', 'default') | list) -%}
 {%- set local = 'local' in tags -%}
+{%- set entries = [] -%}
+{%- for caller_tier in tiers -%}
+{%- set policy = llm_router_priority_policy_by_tier[caller_tier | string] -%}
+{%- set tier_tags = tags + (['tier-' ~ caller_tier] if local or caller_tier != 2 else []) -%}
 {%- set settings = {} -%}
-{%- for caller_tier in tiers if local or caller_tier != 2 -%}
-{%- set _ = tags.append('tier-' ~ caller_tier) -%}
-{%- endfor -%}
 {%- if local -%}
 {%- set settings = {'extra_body': (params.extra_body | default({}))
       | combine({'priority': policy.priority}), 'keepalive_seconds': 0} -%}
-{%- if 2 in tiers -%}
+{%- if caller_tier == 2 -%}
 {%- set settings = settings | combine({
       'timeout': llm_router_tier_2_timeout_seconds,
       'stream_timeout': llm_router_tier_2_timeout_seconds,
@@ -50,6 +50,8 @@
 {%- for field in settings -%}
 {%- set _ = before.update({field: {'present': field in params, 'value': params.get(field)}}) -%}
 {%- endfor -%}
-{{ {'params': params | combine(settings, {'tags': tags | unique | list}),
-    'provenance': {'tier': tier, 'tiers': tiers,
-                   'settings': settings, 'settings_before': before}} | to_json }}
+{%- set _ = entries.append({'params': params | combine(settings, {'tags': tier_tags | unique | list}),
+    'provenance': {'tier': caller_tier, 'tiers': [caller_tier],
+                   'settings': settings, 'settings_before': before}}) -%}
+{%- endfor -%}
+{{ entries | to_json }}

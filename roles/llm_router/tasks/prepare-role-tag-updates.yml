@@ -3,22 +3,23 @@
 # the actual stored target so a UI retarget cannot carry stale privacy classes.
 - name: Derive sensitivity and privacy tag updates for existing role targets
   ansible.builtin.set_fact:
-    _llm_router_role_tag_updates: >-
+    _llm_router_role_policy_sources: >-
       {%- set ns = namespace(updates=[]) -%}
       {%- set _class_tags = (llm_router_deployment_class_by_model.values() | list)
             + ['zdr', 'retains', 'sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii'] -%}
       {%- for role in llm_router_role_deployments -%}
-      {%- set live = (_llm_router_roles_for_tag_sync.json.data | default([])
-            | selectattr('model_name', 'equalto', role.role) | first | default({})) -%}
-      {%- if live and ((live.model_info | default({})).db_model | default(false)) -%}
+      {%- for live in _llm_router_roles_for_tag_sync.json.data | default([])
+            | selectattr('model_name', 'equalto', role.role) -%}
+      {%- if ((live.model_info | default({})).db_model | default(false)) -%}
       {%- set actual = live.litellm_params | default({}) -%}
       {%- set _capability_groups = llm_router_capability_members
             | map(attribute='route_group') | unique | list -%}
-      {%- set candidates = namespace(entries=[]) -%}
+      {%- set candidates = namespace(entries=[], params=[]) -%}
       {%- for member in _llm_router_capability_member_params -%}
       {%- if (member.params.model | default('')) == (actual.model | default(''))
             and (member.params.api_base | default('')) == (actual.api_base | default('')) -%}
       {%- set candidates.entries = candidates.entries + [member.entry] -%}
+      {%- set candidates.params = candidates.params + [member.params] -%}
       {%- endif -%}
       {%- endfor -%}
       {#- Preserve non-capability targets such as the native Hermes router. -#}
@@ -30,6 +31,7 @@
             | selectattr('client_model_id', 'equalto', entry.key) | first | default(none)) -%}
       {%- if target_entry is not none -%}
       {%- set candidates.entries = candidates.entries + [target_entry] -%}
+      {%- set candidates.params = candidates.params + [entry.value] -%}
       {%- endif -%}
       {%- endif -%}
       {%- endfor -%}
@@ -62,22 +64,12 @@
               '_priority_role': role, '_priority_params': actual,
               '_priority_tags': desired_tags,
               '_priority_previous': _priority_previous}) | from_json -%}
-      {%- set info = live.model_info | combine({'priority_policy': projection.provenance}) -%}
-      {%- if actual != projection.params or info != live.model_info -%}
-      {%- set patch = {} -%}
-      {%- for field in ['tags', 'extra_body', 'timeout', 'stream_timeout', 'keepalive_seconds'] -%}
-      {%- if field in projection.params and projection.params[field] != actual.get(field) -%}
-      {%- set _ = patch.update({field: projection.params[field]}) -%}
-      {%- endif -%}
-      {%- endfor -%}
       {%- set _discard = ns.updates.append({
-            'role': role.role,
-            'model_id': live.model_info.id | default(''),
-            'tags': projection.params.tags, 'params': projection.params,
-            'patch': patch, 'model_info': info,
+            'role': role.role, 'live': live, 'entries': projection,
+            'transport': candidates.params | first | default({}),
           }) -%}
       {%- endif -%}
-      {%- endif -%}
+      {%- endfor -%}
       {%- endfor -%}
       {{ ns.updates }}
   no_log: true
@@ -86,8 +78,11 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - _llm_router_role_tag_updates | selectattr('model_id', 'equalto', '') | list | length == 0
+      - _llm_router_role_policy_sources | selectattr('live.model_info.id', 'undefined') | list | length == 0
+      - _llm_router_role_policy_sources | selectattr('live.model_info.id', 'equalto', '') | list | length == 0
     fail_msg: >-
       A role deployment needs its stored model id before LiteLLM tags can be
-      reconciled: {{ _llm_router_role_tag_updates | selectattr('model_id', 'equalto', '')
-      | map(attribute='role') | list }}.
+      reconciled.
+
+- name: Project per-tier role creates and policy updates
+  ansible.builtin.import_tasks: prepare-role-priority-updates.yml

@@ -2,7 +2,7 @@
 type: reference
 description: Priority teams, deployment tags, and timeout precedence for router consumers.
 tags: [llm-router, routing]
-timestamp: 2026-11-07T00:09:05Z
+timestamp: 2026-11-07T00:38:00Z
 ---
 
 # Priority tiers
@@ -35,10 +35,11 @@ values. Reconciliation restores unchanged tier-owned values and retains explicit
 seed restrictions, pre-existing operator policy, and subsequent operator edits.
 Rows without provenance retain their existing restrictions until ownership is
 recorded. DB role creation, rebuild, and live updates use one tier projection;
-each role advertises the union of its authorized keys' effective tiers, including
-explicit key overrides. Roles without declared callers use their owning key's mapped tier.
-Shared roles retain their owning key's effective priority and tier-2 patience
-when any authorized caller uses tier 2. Stored targets and
+each role has one deployment per authorized keys' effective tier, including
+explicit key overrides. Each entry carries only its own tier tag, priority, and
+timeout policy. Roles without declared callers use their owning key's mapped tier.
+Live reconciliation adds missing tier entries on the stored target and removes
+stale tier grants from surplus rows. Stored targets and
 custom parameters survive policy updates. Tier-2 roles retargeted to cloud carry
 no tier-2 deployment grant.
 

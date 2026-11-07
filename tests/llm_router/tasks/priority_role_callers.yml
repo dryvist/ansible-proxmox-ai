@@ -21,22 +21,37 @@
   ansible.builtin.set_fact:
     _override_seed: "{{ _llm_router_role_seed_policy }}"
 
-- name: Shared DB roles admit the union of effective authorized caller tiers
+- name: Shared DB roles render a separate deployment for each effective caller tier
   ansible.builtin.assert:
     quiet: true
     that:
-      - _seed.provenance.tiers == [0, 2]
-      - "'tier-0' in _seed.params.tags"
-      - "'tier-2' in _seed.params.tags"
-      - "'tier-1' not in _seed.params.tags"
-      - _seed.params.timeout == llm_router_tier_2_timeout_seconds
-      - _seed.params.stream_timeout == llm_router_tier_2_timeout_seconds
-      - _seed.params.keepalive_seconds == llm_router_tier_2_keepalive_seconds
-      - _seed.params.extra_body.priority == llm_router_priority_policy_by_tier['2'].priority
-      - _seed.params.turn_off_message_logging
+      - _seeds | length == 2
+      - _interactive.provenance.tiers == [0]
+      - _background.provenance.tiers == [2]
+      - _interactive.params.tags | select('match', '^tier-') | list == ['tier-0']
+      - _background.params.tags | select('match', '^tier-') | list == ['tier-2']
+      - _interactive.params.extra_body.priority == 1
+      - _background.params.extra_body.priority == 20
+      - _interactive.params.timeout == llm_router_local_request_timeout_seconds
+      - _interactive.params.keepalive_seconds == 0
+      - _background.params.timeout == llm_router_tier_2_timeout_seconds
+      - _background.params.stream_timeout == llm_router_tier_2_timeout_seconds
+      - _background.params.keepalive_seconds == llm_router_tier_2_keepalive_seconds
+      - _interactive.params.turn_off_message_logging
+      - _background.params.turn_off_message_logging
+      - item in _interactive_key.models
+      - item in _background_key.models
+      - "('&' ~ _interactive_key.team_id) in _interactive_key.tags"
+      - "('&' ~ _background_key.team_id) in _background_key.tags"
   loop: [recorder, recorder-medium]
   vars:
-    _seed: "{{ _override_seed[item] }}"
+    _seeds: "{{ _override_seed[item] }}"
+    _interactive_key: >-
+      {{ _llm_router_virtual_keys_without_values | selectattr('alias', 'equalto', 'open-webui') | first }}
+    _background_key: >-
+      {{ _llm_router_virtual_keys_without_values | selectattr('alias', 'equalto', 'recorder') | first }}
+    _interactive: "{{ _seeds | selectattr('params.tags', 'contains', _interactive_key.team_id) | first }}"
+    _background: "{{ _seeds | selectattr('params.tags', 'contains', _background_key.team_id) | first }}"
 
 - name: Reconcile a shared role previously admitting tiers 0 and 1
   ansible.builtin.set_fact:
@@ -44,11 +59,15 @@
       json:
         data:
           - model_name: recorder
-            litellm_params: "{{ _role_seed.recorder.params }}"
+            litellm_params: >-
+              {{ _role_seed.recorder[1].params
+                 | combine({'tags': _role_seed.recorder | map(attribute='params.tags') | flatten | unique | list,
+                            'temperature': 0.25})
+                 | dict2items | rejectattr('key', 'equalto', 'api_key') | items2dict }}
             model_info:
               id: recorder-fixture
               db_model: true
-              priority_policy: "{{ _role_seed.recorder.provenance }}"
+              priority_policy: "{{ _role_seed.recorder[1].provenance }}"
 
 - name: Project the new authorized caller union onto the existing DB role
   ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/prepare-role-tag-updates.yml"
@@ -58,13 +77,25 @@
     quiet: true
     that:
       - _llm_router_role_tag_updates | length == 1
-      - _update.params.tags | sort == _override_seed.recorder.params.tags | sort
+      - _llm_router_role_tier_creates | length == 1
+      - _update.params.tags | sort == _interactive.params.tags | sort
       - >-
-        _update.params | combine({'tags': []}) == _override_seed.recorder.params | combine({'tags': []})
-      - _update.model_info.priority_policy.tiers == _override_seed.recorder.provenance.tiers
-      - _update.model_info.priority_policy.settings == _override_seed.recorder.provenance.settings
+        _update.params | combine({'tags': [], 'api_key': none})
+        == _interactive.params | combine({'tags': [], 'temperature': 0.25, 'api_key': none})
+      - _update.model_info.priority_policy.tiers == [0]
+      - _update.model_info.priority_policy.settings == _interactive.provenance.settings
+      - _create.params.extra_body.priority == 20
+      - _create.params.tags | select('match', '^tier-') | list == ['tier-2']
+      - _create.params.timeout == llm_router_tier_2_timeout_seconds
+      - _create.params.temperature == 0.25
+      - _create.params.model == _role_seed.recorder[1].params.model
+      - _create.params.api_key == _llm_router_role_params[llm_router_small_model].api_key
+      - "'id' not in _create.model_info"
+      - "'db_model' not in _create.model_info"
   vars:
     _update: "{{ _llm_router_role_tag_updates | first }}"
+    _interactive: "{{ _override_seed.recorder | selectattr('provenance.tier', 'equalto', 0) | first }}"
+    _create: "{{ _llm_router_role_tier_creates | first }}"
 
 - name: Model the shared role readback with its updated policy ownership
   ansible.builtin.set_fact:
@@ -74,6 +105,10 @@
           - model_name: recorder
             litellm_params: "{{ (_llm_router_role_tag_updates | first).params }}"
             model_info: "{{ (_llm_router_role_tag_updates | first).model_info }}"
+          - model_name: recorder
+            litellm_params: "{{ (_llm_router_role_tier_creates | first).params }}"
+            model_info: "{{ (_llm_router_role_tier_creates | first).model_info
+              | combine({'id': 'recorder-background-fixture', 'db_model': true}) }}"
 
 - name: Recompute the shared role policy
   ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/prepare-role-tag-updates.yml"
@@ -83,3 +118,30 @@
     quiet: true
     that:
       - _llm_router_role_tag_updates == []
+      - _llm_router_role_tier_creates == []
+
+- name: Move the remaining background caller to the interactive tier
+  ansible.builtin.set_fact:
+    _llm_router_declared_virtual_keys: >-
+      {{ _llm_router_declared_virtual_keys | map('combine', {'priority_tier': 0}) | list }}
+
+- name: Resolve the caller transition
+  ansible.builtin.set_fact:
+    _llm_router_m_virtual_keys: "{{ _llm_router_virtual_keys_source }}"
+
+- name: Reconcile the surplus background deployment
+  ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/prepare-role-tag-updates.yml"
+
+- name: Surplus rows retain stored parameters and lose their stale tier grant
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_role_tier_creates == []
+      - _llm_router_role_tag_updates | length == 1
+      - _update.model_id == 'recorder-background-fixture'
+      - _update.tags | select('match', '^tier-') | list == []
+      - _update.patch.keys() | list == ['tags']
+      - _update.params.temperature == 0.25
+      - _update.params.model == _role_seed.recorder[1].params.model
+  vars:
+    _update: "{{ _llm_router_role_tag_updates | first }}"

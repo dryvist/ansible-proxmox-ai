@@ -74,14 +74,14 @@
     body_format: json
     body:
       model_name: "{{ item.role }}"
-      litellm_params: "{{ _llm_router_role_seed_policy[item.role].params }}"
+      litellm_params: "{{ item.params }}"
       # Carried explicitly for the same reason the rendered deployments carry
       # it: a null max_input_tokens makes every caller compress its context to
       # death instead of failing (tasks/assert.yml). `seed_model` records the
       # Git seed target on the row, so a /v2/model/info reader can tell an
       # Admin UI retarget from the seed.
       model_info: "{{ _llm_router_role_model_info[item.model] | combine({'seed_model': item.model,
-        'priority_policy': _llm_router_role_seed_policy[item.role].provenance}) }}"
+        'priority_policy': item.provenance}) }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
   # Absent roles whose TARGET the proxy actually serves. A credential-gated
@@ -89,7 +89,7 @@
   # role onto one would advertise a name that answers with an auth error
   # instead of not existing — the honest-empty contract the rest of this role
   # follows. The role arms itself on the converge after the key lands.
-  loop: "{{ _llm_router_roles_to_create }}"
+  loop: "{{ _llm_router_role_entries_to_create }}"
   loop_control:
     label: "{{ item.role }} -> {{ item.model }}"
   register: llm_router_seeded
@@ -190,14 +190,15 @@
     body_format: json
     body:
       id: >-
-        {{ llm_router_existing_models.json.data
-           | selectattr('model_name', 'equalto', item.role)
-           | map(attribute='model_info.id') | first }}
+        {{ item.model_info.id }}
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: "{{ _llm_router_roles_to_rebuild }}"
+  loop: >-
+    {{ llm_router_existing_models.json.data
+       | selectattr('model_name', 'in', _llm_router_roles_to_rebuild | map(attribute='role') | list)
+       | selectattr('model_info.db_model', 'defined') | selectattr('model_info.db_model') | list }}
   loop_control:
-    label: "{{ item.role }}"
+    label: "{{ item.model_name }}"
   no_log: true
 
 - name: Recreate it on the target the registry declares
@@ -209,12 +210,12 @@
     body_format: json
     body:
       model_name: "{{ item.role }}"
-      litellm_params: "{{ _llm_router_role_seed_policy[item.role].params }}"
+      litellm_params: "{{ item.params }}"
       model_info: "{{ _llm_router_role_model_info[item.model] | combine({'seed_model': item.model,
-        'priority_policy': _llm_router_role_seed_policy[item.role].provenance}) }}"
+        'priority_policy': item.provenance}) }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: "{{ _llm_router_roles_to_rebuild }}"
+  loop: "{{ _llm_router_role_entries_to_rebuild }}"
   loop_control:
     label: "{{ item.role }} -> {{ item.model }}"
   no_log: true
@@ -242,7 +243,7 @@
 
 # Existing role targets stay UI-owned, but their privacy tags must track the
 # actual target. Read after create/recreate so this also covers rows changed in
-# this run; PATCH only `litellm_params.tags` and preserve the role and ladder.
+# this run; PATCH policy fields and preserve the role target and ladder.
 - name: Read current role deployments for privacy tag reconciliation
   ansible.builtin.uri:
     url: "http://localhost:{{ llm_router_api_port }}/model/info"
@@ -257,6 +258,24 @@
 - name: Prepare role tag reconciliation from live deployment targets
   ansible.builtin.import_tasks: prepare-role-tag-updates.yml
 
+- name: Add missing caller-tier entries on the stored role target
+  ansible.builtin.uri:
+    url: "http://localhost:{{ llm_router_api_port }}/model/new"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      model_name: "{{ item.role }}"
+      litellm_params: "{{ item.params }}"
+      model_info: "{{ item.model_info }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ _llm_router_role_tier_creates }}"
+  loop_control:
+    label: "{{ item.role }} tier {{ item.model_info.priority_policy.tier }}"
+  no_log: true
+
 - name: Reconcile role deployment policy tags without changing its UI-owned target or ladder
   ansible.builtin.uri:
     url: "http://localhost:{{ llm_router_api_port }}/model/{{ item.model_id }}/update"
@@ -267,7 +286,7 @@
     body:
       litellm_params: "{{ item.patch }}"
       model_info:
-        priority_policy: "{{ item.model_info.priority_policy }}"
+        priority_policy: "{{ item.model_info.priority_policy | default({}) }}"
     status_code: [200]
     timeout: "{{ llm_router_seed_request_timeout }}"
   loop: "{{ _llm_router_role_tag_updates }}"

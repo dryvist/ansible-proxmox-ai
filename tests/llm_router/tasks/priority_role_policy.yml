@@ -21,17 +21,16 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - "'tier-2' in _role_seed.judge.params.tags"
-      - _role_seed.judge.params.timeout == llm_router_tier_2_timeout_seconds
-      - _role_seed.judge.params.stream_timeout == llm_router_tier_2_timeout_seconds
-      - _role_seed.judge.params.keepalive_seconds == llm_router_tier_2_keepalive_seconds
-      - _role_seed.judge.params.extra_body.priority == llm_router_priority_policy_by_tier['2'].priority
-      - not _role_seed.judge.params.extra_body.chat_template_kwargs.enable_thinking
-      - "'tier-1' in _role_seed.recorder.params.tags"
-      - "'tier-0' in _role_seed.recorder.params.tags"
-      - "'tier-1' in _role_seed['recorder-medium'].params.tags"
-      - "'tier-0' in _role_seed['recorder-medium'].params.tags"
-      - _role_seed.recorder.params.turn_off_message_logging
+      - _role_seed.judge | length == 1
+      - "'tier-2' in _role_seed.judge[0].params.tags"
+      - _role_seed.judge[0].params.timeout == llm_router_tier_2_timeout_seconds
+      - _role_seed.judge[0].params.stream_timeout == llm_router_tier_2_timeout_seconds
+      - _role_seed.judge[0].params.keepalive_seconds == llm_router_tier_2_keepalive_seconds
+      - _role_seed.judge[0].params.extra_body.priority == llm_router_priority_policy_by_tier['2'].priority
+      - not _role_seed.judge[0].params.extra_body.chat_template_kwargs.enable_thinking
+      - _role_seed.recorder | map(attribute='provenance.tier') | list == [0, 1]
+      - _role_seed['recorder-medium'] | map(attribute='provenance.tier') | list == [0, 1]
+      - _role_seed.recorder[0].params.turn_off_message_logging
 
 - name: Model the DB readback with its provenance and a UI-owned parameter
   ansible.builtin.set_fact:
@@ -39,12 +38,12 @@
       json:
         data:
           - model_name: judge
-            litellm_params: "{{ _role_seed.judge.params
+            litellm_params: "{{ _role_seed.judge[0].params
               | combine({'temperature': 0.25, 'api_key': 'fixture-redacted-key'}) }}"
             model_info:
               id: judge-fixture
               db_model: true
-              priority_policy: "{{ _role_seed.judge.provenance }}"
+              priority_policy: "{{ _role_seed.judge[0].provenance }}"
     llm_router_priority_key_tiers: "{{ llm_router_priority_key_tiers | combine({'judge': 0}) }}"
 
 - name: Resolve the transitioned caller tier
@@ -61,11 +60,11 @@
       - _llm_router_role_tag_updates | length == 1
       - "'tier-0' in _update.params.tags"
       - "'tier-2' not in _update.params.tags"
-      - _update.params.model == _role_seed.judge.params.model
+      - _update.params.model == _role_seed.judge[0].params.model
       - _update.params.temperature == 0.25
       - not _update.params.extra_body.chat_template_kwargs.enable_thinking
       - _update.params.extra_body.priority == llm_router_priority_policy_by_tier['0'].priority
-      - _update.params.timeout == _role_seed.judge.provenance.settings_before.timeout.value
+      - _update.params.timeout == _role_seed.judge[0].provenance.settings_before.timeout.value
       - _update.params.keepalive_seconds == 0
       - "'api_key' not in _update.patch"
       - "'model' not in _update.patch"
@@ -105,11 +104,11 @@
       json:
         data:
           - model_name: judge
-            litellm_params: "{{ _role_seed.judge.params | combine({'model': 'fixture/unknown-target'}) }}"
+            litellm_params: "{{ _role_seed.judge[0].params | combine({'model': 'fixture/unknown-target'}) }}"
             model_info:
               id: judge-fixture
               db_model: true
-              priority_policy: "{{ _role_seed.judge.provenance }}"
+              priority_policy: "{{ _role_seed.judge[0].provenance }}"
 
 - name: Reconcile the UI retarget through the same role policy
   ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/prepare-role-tag-updates.yml"
