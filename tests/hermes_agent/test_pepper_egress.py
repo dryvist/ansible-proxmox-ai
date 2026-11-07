@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 import subprocess
 from threading import Thread
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
@@ -13,21 +14,50 @@ import yaml
 from _role_files import render_hermes_runtime_unit, role_defaults
 
 ROOT = Path(__file__).resolve().parents[2]
+MISSING_ENDPOINT_ERROR = "Pepper proxy requires both client endpoint URLs from Pepper's identity domain"
+INVALID_HOST_ERROR = 'Pepper egress requires a DNS hostname'
 
 
 @pytest.fixture
 def endpoint_store():
-    """Exercise the native lookup against a loopback-only KV v2 fixture."""
-    state = dict(data={}, status=200, requests=[])
+    """Exercise the shared AppRole reader against a loopback-only KV v2 fixture."""
+    state = dict(data={}, status=200, requests=[], role_logins=[], read_tokens=[])
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             state['requests'].append(self.path)
-            assert self.headers.get('X-Vault-Token') == 'fixture-token'
-            if self.path == '/v1/auth/token/lookup-self':
+            path = urlsplit(self.path).path
+            if path == '/v1/sys/health':
+                status, data = 200, {'initialized': True, 'sealed': False, 'standby': False}
+            elif path == '/v1/auth/token/lookup-self':
+                assert self.headers.get('X-Vault-Token') == 'fixture-approle-token'
                 status, data = 200, {'data': {'policies': ['fixture-reader']}}
-            elif self.path == '/v1/secret/data/ai/pepper':
+            elif path == '/v1/secret/data/ai/pepper':
+                state['read_tokens'].append(self.headers.get('X-Vault-Token'))
+                assert self.headers.get('X-Vault-Token') == 'fixture-approle-token'
                 status, data = state['status'], {'data': {'data': state['data'], 'metadata': {}}}
+            else:
+                status, data = 404, {'errors': ['Unexpected fixture path']}
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode())
+
+        def do_POST(self):
+            path = urlsplit(self.path).path
+            content_length = int(self.headers.get('Content-Length', '0'))
+            body = self.rfile.read(content_length)
+            state['requests'].append(self.path)
+            if path == '/v1/auth/approle/login':
+                state['role_logins'].append(json.loads(body))
+                status, data = 200, {'auth': {
+                    'client_token': 'fixture-approle-token',
+                    'accessor': 'fixture-accessor',
+                    'policies': ['fixture-reader'],
+                    'token_policies': ['fixture-reader'],
+                    'lease_duration': 3600,
+                    'renewable': True,
+                }}
             else:
                 status, data = 404, {'errors': ['Unexpected fixture path']}
             self.send_response(status)
@@ -60,22 +90,23 @@ def test_egress_tag_paths_resolve_endpoints_before_preparation_and_render(
                                'https://issues.example.test/mcp', True, tags, limit, prepared, rendered)
 
 
-@pytest.mark.parametrize('vault,youtrack,valid', [
-    ('https://evidence.example.test/repository.git', 'https://issues.example.test/mcp', True),
+@pytest.mark.parametrize('vault,youtrack,valid,expected_error', [
+    ('https://evidence.example.test/repository.git', 'https://issues.example.test/mcp', True, None),
     ('https://fixture-user:fixture-password@evidence.example.test/repository.git',
-     'https://issues.example.test/mcp?token=fixture-query', True),
-    ('', 'https://issues.example.test/mcp', False),
-    ('https://evidence.example.test/repository.git', '', False),
-    ('https://evidence.example.test/repository.git', 'https://.example.test/mcp', False),
-    ('https://evidence.example.test/repository.git', 'https://192.0.2.1/mcp', False),
+     'https://issues.example.test/mcp?token=fixture-query', True, None),
+    ('', 'https://issues.example.test/mcp', False, MISSING_ENDPOINT_ERROR),
+    ('https://evidence.example.test/repository.git', '', False, MISSING_ENDPOINT_ERROR),
+    ('https://evidence.example.test/repository.git', 'https://.example.test/mcp', False, INVALID_HOST_ERROR),
+    ('https://evidence.example.test/repository.git', 'https://192.0.2.1/mcp', False, INVALID_HOST_ERROR),
 ])
-def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, endpoint_store, vault, youtrack, valid):
+def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(
+        tmp_path, endpoint_store, vault, youtrack, valid, expected_error):
     _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid,
-                               ['squid'], 'squid_group,localhost')
+                               ['squid'], 'squid_group,localhost', expected_error=expected_error)
 
 
 def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid, tags, limit,
-                                prepared=False, rendered=True):
+                                prepared=False, rendered=True, expected_error=None):
     address, store = endpoint_store
     store['data'] = dict(PEPPER_VAULT_REPO_URL=vault, YOUTRACK_MCP_URL=youtrack,
                          PEPPER_VAULT_READ_TOKEN='fixture-private-token')
@@ -156,21 +187,35 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
         ['ansible-playbook', str(playbook), '-i', str(inventory), '-c', 'local']
         + (['--tags', ','.join(tags)] if tags else []) + (['--limit', limit] if limit else []),
         env=dict(os.environ, ANSIBLE_LOCAL_TEMP=str(tmp_path / 'local'),
-                 SECRET_STORE_ADDR=address, BAO_TOKEN='fixture-token',
+                 SECRET_STORE_ADDR=address, SECRET_STORE_PEPPER_ROLE_ID='',
+                 SECRET_STORE_PEPPER_SECRET_ID='',
+                 OPENBAO_APPROLE_PEPPER_ROLE_ID='fixture-role-id',
+                 OPENBAO_APPROLE_PEPPER_SECRET_ID='fixture-secret-id',
+                 BAO_TOKEN='fixture-converge-token',
                  ANSIBLE_OPENTELEMETRY_ENABLED='true',
                  ANSIBLE_OPENTELEMETRY_STORE_SPANS_IN_FILE='/dev/null'),
         text=True, capture_output=True, check=False)
     assert result.returncode == (0 if valid else 2), result.stdout + result.stderr
-    assert store['requests'].count('/v1/secret/data/ai/pepper') == 2 * (int(prepared) + int(rendered))
+    expected_reads = int(prepared) + int(rendered)
+    assert sum(urlsplit(path).path == '/v1/secret/data/ai/pepper' for path in store['requests']) == expected_reads
+    assert len(store['role_logins']) == expected_reads
+    assert store['role_logins'] == [
+        {'role_id': 'fixture-role-id', 'secret_id': 'fixture-secret-id'}
+    ] * expected_reads
+    assert store['read_tokens'] == ['fixture-approle-token'] * expected_reads
     if valid:
         assert ('Check the identity boundary and shared environment' in result.stdout) is rendered
         preparation = result.stdout.split('PLAY [Verify Pepper egress]')[0]
         assert ('Validate and project each Pepper hostname' in preparation) is prepared
-    assert set(store['requests']) <= {'/v1/secret/data/ai/pepper', '/v1/auth/token/lookup-self'}
+    assert all(urlsplit(path).path in {
+        '/v1/sys/health', '/v1/auth/approle/login', '/v1/secret/data/ai/pepper',
+        '/v1/auth/token/lookup-self',
+    } for path in store['requests'])
     assert 'fixture-password' not in result.stdout + result.stderr
     assert 'fixture-private-token' not in result.stdout + result.stderr
-    if not valid:
-        assert 'Pepper egress requires a DNS hostname' in result.stdout
+    assert 'fixture-converge-token' not in result.stdout + result.stderr
+    if expected_error:
+        assert expected_error in result.stdout
 
 
 def test_proxy_precedes_runtime_and_uses_the_shared_guest_role():
@@ -203,8 +248,20 @@ def test_unavailable_client_endpoint_refuses_the_proxy_render(tmp_path, endpoint
     roster = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/11-roster-domains.yml').read_text())
     task_file = ROOT / 'playbooks/tasks/pepper_egress_endpoints.yml'
     read = yaml.safe_load(task_file.read_text())[0]['block'][0]
-    assert read['delegate_to'] == 'localhost' and read['no_log'] is True
-    assert read['become'] is False and read['vars']['ansible_become'] is False
+    assert read['ansible.builtin.include_role']['name'] == 'dryvist.homelab.openbao_secrets'
+    assert read['ansible.builtin.include_role']['apply']['delegate_to'] == 'localhost'
+    assert read['ansible.builtin.include_role']['apply']['become'] is False
+    assert 'delegate_to' not in read and 'become' not in read
+    assert read['vars']['ansible_become'] is False
+    assert read['vars']['openbao_secrets_domains'] == [{
+        'name': 'pepper',
+        'role_id_env': 'OPENBAO_APPROLE_PEPPER_ROLE_ID',
+        'secret_id_env': 'OPENBAO_APPROLE_PEPPER_SECRET_ID',
+        'paths': ['{{ openbao_secrets_pepper_path }}'],
+        'required': True,
+    }]
+    assert read['vars']['openbao_secrets_operator_domains'] == []
+    assert 'BAO_TOKEN' not in task_file.read_text()
     playbook = tmp_path / 'verify.yml'
     playbook.write_text(yaml.safe_dump([dict(
         name='Verify unavailable Pepper endpoints', hosts='localhost', gather_facts=False,
@@ -214,7 +271,13 @@ def test_unavailable_client_endpoint_refuses_the_proxy_render(tmp_path, endpoint
     result = subprocess.run(
         ['ansible-playbook', str(playbook), '-i', 'localhost,', '-c', 'local'],
         env=dict(os.environ, ANSIBLE_LOCAL_TEMP=str(tmp_path / 'local'),
-                 SECRET_STORE_ADDR=address, BAO_TOKEN='fixture-token'),
+                 SECRET_STORE_ADDR=address, SECRET_STORE_PEPPER_ROLE_ID='',
+                 SECRET_STORE_PEPPER_SECRET_ID='',
+                 OPENBAO_APPROLE_PEPPER_ROLE_ID='fixture-role-id',
+                 OPENBAO_APPROLE_PEPPER_SECRET_ID='fixture-secret-id',
+                 BAO_TOKEN='fixture-converge-token',
+                 ANSIBLE_OPENTELEMETRY_ENABLED='true',
+                 ANSIBLE_OPENTELEMETRY_STORE_SPANS_IN_FILE='/dev/null'),
         text=True, capture_output=True, check=False)
     assert result.returncode == 2, result.stdout + result.stderr
     assert 'Refusing to render the allowlist' in result.stdout
