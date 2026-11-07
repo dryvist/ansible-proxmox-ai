@@ -49,6 +49,17 @@ def endpoint_store():
         server.server_close()
 
 
+@pytest.mark.parametrize('tags,limit,prepared,rendered', [
+    ([tag], '', True, True) for tag in yaml.safe_load((ROOT / 'playbooks/agent-egress.yml').read_text())[1]['tags']
+] + [([], '', True, True), (['squid'], 'squid_group,localhost', False, True),
+     (['hermes_units_gateways'], '', True, False), (['llm_router'], '', False, False)])
+def test_egress_tag_paths_resolve_endpoints_before_preparation_and_render(
+        tmp_path, endpoint_store, tags, limit, prepared, rendered):
+    _verify_pepper_proxy_policy(tmp_path, endpoint_store,
+                               'https://evidence.example.test/repository.git',
+                               'https://issues.example.test/mcp', True, tags, limit, prepared, rendered)
+
+
 @pytest.mark.parametrize('vault,youtrack,valid', [
     ('https://evidence.example.test/repository.git', 'https://issues.example.test/mcp', True),
     ('https://fixture-user:fixture-password@evidence.example.test/repository.git',
@@ -59,6 +70,12 @@ def endpoint_store():
     ('https://evidence.example.test/repository.git', 'https://192.0.2.1/mcp', False),
 ])
 def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, endpoint_store, vault, youtrack, valid):
+    _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid,
+                               ['squid'], 'squid_group,localhost')
+
+
+def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid, tags, limit,
+                                prepared=False, rendered=True):
     address, store = endpoint_store
     store['data'] = dict(PEPPER_VAULT_REPO_URL=vault, YOUTRACK_MCP_URL=youtrack,
                          PEPPER_VAULT_READ_TOKEN='fixture-private-token')
@@ -81,14 +98,20 @@ def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, endp
     inventory.write_text(yaml.safe_dump(dict(all=dict(children=dict(
         hermes_agent_group=dict(hosts={
             'fixture-pepper': dict(hermes_agent_identity='pepper',
-                                   container_reserved_ip='fixture-pepper-address', **endpoints),
+                                   container_reserved_ip='fixture-pepper-address', ansible_connection='local', **endpoints),
             'fixture-ordinary': dict(hermes_agent_identity='hermes',
                                      container_reserved_ip='fixture-ordinary-address')}),
         ai_agent_pool_group=dict(hosts={'fixture-pepper': {}, 'fixture-ordinary': {}}),
         squid_group=dict(hosts={'proxy-fixture': dict(ansible_connection='local')}),
     )))))
-    # Only the squid play runs: no facts or secrets have been prepared on either agent.
-    proxy_play = yaml.safe_load((ROOT / 'playbooks/agent-egress.yml').read_text())[1]
+    prep, proxy_play = yaml.safe_load((ROOT / 'playbooks/agent-egress.yml').read_text())
+    # Keep both production plays' selection and endpoint reads. Exercise the
+    # preparation's domain projection without writing guest files or services.
+    prep.pop('become')
+    prep['vars'] = defaults
+    for task in prep.get('pre_tasks', []):
+        task['ansible.builtin.include_tasks'] = str(ROOT / 'playbooks' / task['ansible.builtin.include_tasks'])
+    prep['tasks'][0]['ansible.builtin.include_role']['tasks_from'] = 'egress_domains'
     fetch = proxy_play['tasks'][0]['block'][0].copy()
     fetch['ansible.builtin.include_tasks'] = str(ROOT / 'playbooks' / fetch['ansible.builtin.include_tasks'])
     resolver = yaml.safe_load((ROOT / 'roles/squid/tasks/main.yml').read_text())[0]
@@ -125,19 +148,24 @@ def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, endp
     ]
     playbook = tmp_path / 'verify.yml'
     playbook.write_text(yaml.safe_dump([
+        prep,
         dict(name='Verify Pepper egress', hosts='squid_group', gather_facts=False,
              vars=defaults, tasks=tasks, tags=proxy_play['tags']),
     ]))
     result = subprocess.run(
-        ['ansible-playbook', str(playbook), '-i', str(inventory), '-c', 'local',
-         '--tags', 'squid', '--limit', 'squid_group,localhost'],
+        ['ansible-playbook', str(playbook), '-i', str(inventory), '-c', 'local']
+        + (['--tags', ','.join(tags)] if tags else []) + (['--limit', limit] if limit else []),
         env=dict(os.environ, ANSIBLE_LOCAL_TEMP=str(tmp_path / 'local'),
                  SECRET_STORE_ADDR=address, BAO_TOKEN='fixture-token',
                  ANSIBLE_OPENTELEMETRY_ENABLED='true',
                  ANSIBLE_OPENTELEMETRY_STORE_SPANS_IN_FILE='/dev/null'),
         text=True, capture_output=True, check=False)
     assert result.returncode == (0 if valid else 2), result.stdout + result.stderr
-    assert store['requests'].count('/v1/secret/data/ai/pepper') == 2
+    assert store['requests'].count('/v1/secret/data/ai/pepper') == 2 * (int(prepared) + int(rendered))
+    if valid:
+        assert ('Check the identity boundary and shared environment' in result.stdout) is rendered
+        preparation = result.stdout.split('PLAY [Verify Pepper egress]')[0]
+        assert ('Validate and project each Pepper hostname' in preparation) is prepared
     assert set(store['requests']) <= {'/v1/secret/data/ai/pepper', '/v1/auth/token/lookup-self'}
     assert 'fixture-password' not in result.stdout + result.stderr
     assert 'fixture-private-token' not in result.stdout + result.stderr
