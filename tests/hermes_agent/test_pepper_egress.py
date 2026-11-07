@@ -11,33 +11,43 @@ from _role_files import role_defaults
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize('vault,valid', [
-    ('', True), ('https://evidence.example.test/repository.git', True),
-    ('http://evidence.example.test/repository.git', False),
-    ('https://fixture-user:fixture-password@evidence.example.test/repository.git', False),
+@pytest.mark.parametrize('vault,youtrack,valid', [
+    ('', 'https://issues.example.test/mcp', True),
+    ('https://evidence.example.test/repository.git', 'https://issues.example.test/mcp', True),
+    ('http://evidence.example.test/repository.git', 'https://issues.example.test/mcp', False),
+    ('https://fixture-user:fixture-password@evidence.example.test/repository.git', 'https://issues.example.test/mcp', False),
+    ('', '', False),
 ])
-def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vault, valid):
+def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vault, youtrack, valid):
     defaults = role_defaults(ROOT / 'roles/agent_guest')
     defaults.update(yaml.safe_load((ROOT / 'roles/squid/defaults/main.yml').read_text()))
-    defaults.update(
-        hermes_agent_model_base_url='https://router.example.test/v1',
-        hermes_agent_youtrack_mcp_url='https://issues.example.test/mcp',
+    endpoints = dict(
+        hermes_agent_youtrack_mcp_url=youtrack,
         hermes_agent_github_identity_bao_addr='https://secrets.example.test',
         hermes_agent_pepper_vault_repo_url=vault,
+    )
+    defaults.update(
         agent_guest_proxy_host='proxy.example.test', agent_guest_proxy_port=3128,
         agent_guest_no_proxy='{{ agent_guest_loopback_no_proxy }}',
-        ansible_managed='fixture', inventory_hostname='proxy-fixture',
+        ansible_managed='fixture',
         tofu_data={'constants': {'service_ports': {'squid_proxy': 3128}}},
     )
-    tasks = yaml.safe_load((ROOT / 'roles/hermes_agent/tasks/egress.yml').read_text())[:2]
+    inventory = tmp_path / 'inventory.yml'
+    inventory.write_text(yaml.safe_dump(dict(all=dict(children=dict(
+        hermes_agent_group=dict(hosts={
+            'fixture-pepper': dict(hermes_agent_identity='pepper',
+                                   container_reserved_ip='fixture-pepper-address', **endpoints),
+            'fixture-ordinary': dict(hermes_agent_identity='hermes',
+                                     container_reserved_ip='fixture-ordinary-address')}),
+        ai_agent_pool_group=dict(hosts={'fixture-pepper': {}, 'fixture-ordinary': {}}),
+        squid_group=dict(hosts={'proxy-fixture': dict(ansible_connection='local')}),
+    )))))
+    # Only the squid play runs: no facts have been prepared on either agent.
+    resolver = yaml.safe_load((ROOT / 'roles/squid/tasks/main.yml').read_text())[0]
+    tasks = [dict(name='Resolve the production squid inputs', **{'ansible.builtin.include_role': dict(
+        name='squid', tasks_from='pepper_egress')},
+        **{k: v for k, v in resolver.items() if k in ('loop', 'loop_control', 'when')})]
     tasks += [
-        dict(name='Add the Pepper fixture client', **{'ansible.builtin.add_host': dict(
-            name='fixture-pepper', groups=['hermes_agent_group', 'ai_agent_pool_group'],
-            hermes_agent_identity='pepper', container_reserved_ip='fixture-pepper-address',
-            hermes_agent_pepper_egress_domains='{{ hermes_agent_pepper_egress_domains }}')}),
-        dict(name='Add the ordinary fixture client', **{'ansible.builtin.add_host': dict(
-            name='fixture-ordinary', groups=['hermes_agent_group', 'ai_agent_pool_group'],
-            hermes_agent_identity='hermes', container_reserved_ip='fixture-ordinary-address')}),
         dict(name='Render the production proxy templates', **{'ansible.builtin.set_fact': dict(
             _squid="{{ lookup('template', '" + str(ROOT / 'roles/squid/templates/squid.conf.j2') + "') }}",
             _manager="{{ lookup('template', '" + str(ROOT / 'roles/agent_guest/templates/proxy/systemd-proxy.conf.j2')
@@ -59,22 +69,27 @@ def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vaul
             "('noproxy=' ~ agent_guest_loopback_no_proxy) in _npm",
         ]}}, vars=dict(
             _pepper_domains="{{ (_squid.split('acl pepper_domains dstdomain ')[1].split('\n')[0]).split() }}",
-            _expected_domains=['.slack.com', '{{ squid_npm_registry_domain }}', 'router.example.test',
+            _expected_domains=['.slack.com', '{{ squid_npm_registry_domain }}', 'llm.pve.example.test',
                                'issues.example.test', 'secrets.example.test']
                               + (['evidence.example.test'] if vault else []))),
     ]
     playbook = tmp_path / 'verify.yml'
-    playbook.write_text(yaml.safe_dump([dict(name='Verify Pepper egress', hosts='localhost',
-                                           gather_facts=False, vars=defaults, tasks=tasks)]))
+    playbook.write_text(yaml.safe_dump([
+        dict(name='Verify Pepper egress', hosts='squid_group', gather_facts=False,
+             vars=defaults, tasks=tasks, tags=['squid']),
+    ]))
     result = subprocess.run(
-        ['ansible-playbook', str(playbook), '-i', 'localhost,', '-c', 'local'],
+        ['ansible-playbook', str(playbook), '-i', str(inventory), '-c', 'local',
+         '--tags', 'squid', '--limit', 'squid_group,localhost'],
         env=dict(os.environ, ANSIBLE_LOCAL_TEMP=str(tmp_path / 'local'),
                  ANSIBLE_OPENTELEMETRY_ENABLED='true',
                  ANSIBLE_OPENTELEMETRY_STORE_SPANS_IN_FILE='/dev/null'),
         text=True, capture_output=True, check=False)
     assert result.returncode == (0 if valid else 2), result.stdout + result.stderr
     if not valid:
-        assert vault not in result.stdout + result.stderr
+        if vault:
+            assert vault not in result.stdout + result.stderr
+        assert 'Pepper egress requires resolvable HTTPS' in result.stdout
 
 
 def test_proxy_precedes_runtime_and_uses_the_shared_guest_role():

@@ -53,6 +53,10 @@ host, Slack, and the npm registry. Service hosts come from the existing endpoint
 variables. A missing evidence URL adds no evidence host. Identity profiles deny
 unmatched destinations before any shared profile can grant access.
 
+The Squid play resolves service hosts from each identity's inventory and the
+shared Hermes role defaults, including during Squid-only limited runs. Required
+endpoints must resolve to HTTPS URLs without embedded credentials.
+
 `playbooks/agent-egress.yml` prepares the shared guest proxy files and converges
 Squid before the Hermes runtime. Pepper bypasses the proxy only for loopback;
 its runtime fetches, systemd services, login shell, apt, and npm use the proxy.
