@@ -101,6 +101,18 @@ def model_policy_entry(
     return entry
 
 
+def _kept_incumbent_reason(artifact_id: str, policy: dict[str, Any]) -> str:
+    """A replace_pending mark keeps only an artifact whose deny record dates its upstream."""
+    reasons = [entry.get("reason") for entry in policy["deny"]
+               if isinstance(entry, dict) and entry.get("id") == artifact_id]
+    match = re.match(r"upstream_created (\d{4}-\d{2}-\d{2});", str(reasons[0])) if reasons else None
+    try:
+        policy_date(match.group(1) if match else None)
+    except ValueError as error:
+        return str(error)
+    return ""
+
+
 def registry_policy_reason(
     model: dict[str, Any], policy: dict[str, Any], self_hosted_tiers: list[str] | None = None
 ) -> str:
@@ -117,7 +129,7 @@ def registry_policy_reason(
     # The repository holding the served weights identifies the artifact, including quantizations.
     artifact_id = model.get("policy_artifact_id") or model.get("upstream_model_id", "")
     if model.get("replace_pending") and artifact_id in denied_ids(policy):
-        return ""
+        return _kept_incumbent_reason(artifact_id, policy)
     try:
         model_policy_entry(artifact_id=artifact_id, policy=policy, require_complete_dossier=False)
     except ValueError as error:

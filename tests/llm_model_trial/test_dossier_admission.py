@@ -56,14 +56,20 @@ def test_resolved_artifact_identity_wins_over_the_client_alias() -> None:
     assert not PLUGIN._POLICY.registry_policy_allowed({"upstream_model_id": "alias"}, data["policy"])
 
 
-def test_replace_pending_admits_only_a_denied_incumbent() -> None:
+def test_replace_pending_admits_only_a_dated_denied_incumbent() -> None:
     policy = fixture("nvidia-qwen38.json")["policy"]
-    policy["deny"] = [{"id": "example/old", "reason": "fixture"}]
+    policy["deny"] = [
+        {"id": "example/old", "reason": "upstream_created 2025-01-02; age exceeds 365 days"},
+        {"id": "example/undated", "reason": "undated"},
+        {"id": "example/bad-date", "reason": "upstream_created 2025-13-45; age exceeds 365 days"},
+        "example/no-reason",
+    ]
     denied = {"policy_artifact_id": "example/old"}
     assert not PLUGIN._POLICY.registry_policy_allowed(denied, policy)
     assert PLUGIN._POLICY.registry_policy_allowed(denied | {"replace_pending": True}, policy)
-    unlisted = {"policy_artifact_id": "example/unlisted", "replace_pending": True}
-    assert not PLUGIN._POLICY.registry_policy_allowed(unlisted, policy)
+    for artifact in ("example/unlisted", "example/undated", "example/bad-date", "example/no-reason"):
+        marked = {"policy_artifact_id": artifact, "replace_pending": True}
+        assert not PLUGIN._POLICY.registry_policy_allowed(marked, policy)
 
 
 @pytest.mark.parametrize("dossier,reason", [
