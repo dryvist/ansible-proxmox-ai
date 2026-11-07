@@ -1,44 +1,16 @@
 ---
-- name: Resolve and validate Pepper service endpoints
-  block:
-    - name: Start the shared endpoint projection
-      ansible.builtin.set_fact:
-        _hermes_agent_pepper_egress_endpoints: []
+- name: Start the shared hostname projection
+  ansible.builtin.set_fact:
+    hermes_agent_pepper_egress_domains: []
 
-    - name: Resolve each endpoint from inventory with the shared role default
-      ansible.builtin.set_fact:
-        _hermes_agent_pepper_egress_endpoints: >-
-          {{ _hermes_agent_pepper_egress_endpoints + [_hermes_agent_egress_endpoint] }}
-      vars:
-        _hermes_agent_egress_endpoint: >-
-          {{ (hermes_agent_egress_inventory | default({}))[item.name]
-             | default(lookup('ansible.builtin.vars', item.name)) }}
-      loop:
-        - {name: hermes_agent_model_base_url, required: true}
-        - {name: hermes_agent_youtrack_mcp_url, required: true}
-        - {name: hermes_agent_github_identity_bao_addr, required: true}
-        - {name: hermes_agent_pepper_vault_repo_url, required: false}
-      when: item.required or _hermes_agent_egress_endpoint | length > 0
-      no_log: true
-
-    - name: Validate Pepper service endpoints before preparing egress
-      ansible.builtin.assert:
-        that:
-          - item | ansible.builtin.urlsplit('scheme') == 'https'
-          - item | ansible.builtin.urlsplit('hostname') | default('', true) | length > 0
-          - item | ansible.builtin.urlsplit('username') is none
-          - item | ansible.builtin.urlsplit('password') is none
-      loop: "{{ _hermes_agent_pepper_egress_endpoints }}"
-      no_log: true
-
-    - name: Publish only Pepper service hostnames for the proxy policy
-      ansible.builtin.set_fact:
-        hermes_agent_pepper_egress_domains: >-
-          {{ _hermes_agent_pepper_egress_endpoints | map('ansible.builtin.urlsplit', 'hostname') | unique | list }}
-      no_log: true
-  rescue:
-    - name: Stop when Pepper service endpoints cannot define a restrictive allowlist
-      ansible.builtin.fail:
-        msg: >-
-          Pepper egress requires resolvable HTTPS router, YouTrack and OpenBao endpoints,
-          and an HTTPS evidence repository URL when configured; embedded credentials are forbidden.
+- name: Validate and project each non-secret Pepper hostname
+  vars:
+    _hermes_agent_egress_host: >-
+      {{ (hermes_agent_egress_inventory | default({}))[item]
+         | default(lookup('ansible.builtin.vars', item)) }}
+  loop:
+    - hermes_agent_pepper_router_host
+    - hermes_agent_pepper_youtrack_host
+    - hermes_agent_pepper_openbao_host
+    - hermes_agent_pepper_vault_host
+  ansible.builtin.include_tasks: egress_host.yml

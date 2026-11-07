@@ -12,12 +12,6 @@ hermes_agent_pepper_runtime_selected: >-
      and ((run_tags | intersect(['all', 'tagged'] + play_tags) | length > 0 and selected_tasks | length > 0)
           or run_tags | intersect(selected_tasks) | length > 0) }}
 
-hermes_agent_pepper_egress_selected: >-
-  {{ hermes_agent_pepper_runtime_selected | bool
-     or (ansible_run_tags | default(['all']) | intersect(['squid']) | length > 0
-         and ansible_skip_tags | default([])
-             | intersect(['all', 'tagged', 'squid'] + hermes_agent_pepper_play_tags) | length == 0) }}
-
 # Each roster identity gets its own AppRole domain; the shared role derives its
 # OPENBAO_APPROLE_<NAME>_ROLE_ID/_SECRET_ID variables from the domain name.
 # The agentgateway-agent-keys reader domain covers every gateway caller
@@ -66,10 +60,10 @@ openbao_secrets_domains: >-
     {%- set _ = legacy_domain.update({'paths': paths}) -%}
     {%- set _ = domains.append(legacy_domain) -%}
   {%- endfor -%}
-  {#- Pepper's domain is required for its runtime or egress policy, never by another identity or the router. -#}
+  {#- Pepper's domain is required only for its runtime, never for the proxy policy. -#}
   {%- for host in ansible_play_hosts_all | default([]) -%}
     {%- if hostvars[host].hermes_agent_identity | default('') == 'pepper'
-           and hermes_agent_pepper_egress_selected | bool
+           and hermes_agent_pepper_runtime_selected | bool
            and 'pepper' not in domains | map(attribute='name') | list -%}
       {%- set _ = domains.append({'name': 'pepper', 'paths': ['ai/pepper'], 'required': true}) -%}
     {%- endif -%}
