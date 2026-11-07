@@ -276,3 +276,52 @@
   when: dify_docker_provision_model_provider | bool
   changed_when: false
   no_log: true
+
+- name: Read current Dify provider models before removing unlisted entries
+  ansible.builtin.uri:
+    url: "{{ dify_docker_model_provider_api_base }}/models"
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_model_provider_models
+  when: dify_docker_provision_model_provider | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Report unlisted Dify provider models in check mode
+  ansible.builtin.debug:
+    msg: >-
+      Would remove Dify model {{ item.model }} ({{ item.model_type }}) because it is not listed.
+  loop: "{{ dify_docker_model_provider_models.json.data | default([]) }}"
+  loop_control:
+    label: "{{ item.model }}"
+  when:
+    - ansible_check_mode
+    - dify_docker_provision_model_provider | bool
+    - item.model_type == 'llm'
+    - item.model not in (dify_docker_llm_models | map(attribute='name') | list)
+  changed_when: ansible_check_mode
+
+- name: Remove unlisted Dify provider models and their credentials
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_model_provider_api_base }}/models?model={{ item.model | urlencode
+      }}&model_type={{ item.model_type | urlencode }}
+    method: DELETE
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 204
+  loop: "{{ dify_docker_model_provider_models.json.data | default([]) }}"
+  loop_control:
+    label: "{{ item.model }}"
+  when:
+    - not ansible_check_mode
+    - dify_docker_provision_model_provider | bool
+    - item.model_type == 'llm'
+    - item.model not in (dify_docker_llm_models | map(attribute='name') | list)
+  no_log: true

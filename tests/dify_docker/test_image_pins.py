@@ -1,16 +1,10 @@
 """Dify images follow 1.18.0 Compose while retaining the deployed Weaviate pin."""
 
-from pathlib import Path
-
-import yaml
-
-
-ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
+from _defaults import load_defaults
 
 
 def test_dify_118_images_follow_upstream_except_deployed_weaviate():
-    defaults = yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))
+    defaults = load_defaults()
 
     assert defaults["dify_docker_api_image"] == "langgenius/dify-api:1.18.0"
     assert defaults["dify_docker_web_image"] == "langgenius/dify-web:1.18.0"
@@ -22,7 +16,7 @@ def test_dify_118_images_follow_upstream_except_deployed_weaviate():
 
 
 def test_existing_infrastructure_image_pins_are_unchanged():
-    defaults = yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))
+    defaults = load_defaults()
 
     assert defaults["dify_docker_postgres_image"] == (
         "postgres:15-alpine@sha256:a8e042598834300dfaa17a54f695b87b7f25d3490433bbbe2ef3bffbb9747f24"

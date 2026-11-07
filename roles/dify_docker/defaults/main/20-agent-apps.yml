@@ -1,0 +1,42 @@
+---
+# Headless first-run setup (POST /console/api/setup creates the admin and
+# finishes installation), so the UI never shows the /install wizard. The
+# instance's OpenBao leaf is authoritative — storage_and_secret.yml seeds the
+# fields and reads the stored values back, so login_with_reset.yml re-asserts
+# them on every converge — and the environment is the caller fallback. On a
+# production host whose leaf lacks DIFY_ADMIN_EMAIL, the role discovers the
+# existing owner account's email on the guest before the seed (same task
+# file); a fresh install with no owner yet falls back to the caller value.
+dify_docker_admin_email: >-
+  {{ (bao_local_llm_secrets | default({}, true)).get('DIFY_ADMIN_EMAIL', '')
+     or lookup('env', 'DIFY_ADMIN_EMAIL')
+     or (dify_docker_admin_email_discovered | default('')) }}
+dify_docker_admin_password: >-
+  {{ (bao_local_llm_secrets | default({}, true)).get('DIFY_ADMIN_PASSWORD', '')
+     or lookup('env', 'DIFY_ADMIN_PASSWORD') }}
+
+# Seed a minimal chat app on first run so there is something to open immediately.
+# Best-effort + idempotent (skipped if an app of this name already exists) and
+# non-fatal (the console app-create shape drifts across Dify minors). Requires
+# model-provider provisioning (it reuses that console session + default model).
+dify_docker_seed_app: true
+dify_docker_seed_app_name: "Homelab Assistant"
+
+# Import the agent DSLs into the console so the operator can view and tune them.
+# Import only: an app whose name already exists is skipped, so edits made in the
+# console are never overwritten. The pinned catalog manifest supplies public
+# DSL paths and sha256 values; all public files are verified before any import.
+# Requires model-provider provisioning (console session).
+dify_docker_import_agent_dsls: false
+
+# Private agent DSL sources. Empty here and never committed: the list is supplied
+# at converge time from a private source (extra vars or inventory), not from
+# vars/agent_dsls.yml, whose include_vars would override a supplied value.
+# Each entry has the same shape as a catalog-derived public DSL entry (name,
+# url, sha256), with the commit pin carried in its url. Entries are fetched
+# with the bearer token below, verified against their sha256, and imported like
+# the public DSLs: an app whose name already exists is skipped.
+dify_docker_private_agent_dsls: []
+# Read-only token for the private sources, supplied the same way. Private
+# entries are not fetched while it is empty. The token only reaches no_log tasks.
+dify_docker_private_agent_dsl_token: ""

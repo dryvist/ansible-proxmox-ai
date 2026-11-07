@@ -1,0 +1,86 @@
+---
+# Model-provider provisioning. Dify 1.x model providers are plugins; the
+# legacy OPENAI_API_BASE env var alone does not configure usable models.
+dify_docker_provision_model_provider: true
+dify_docker_model_provider_plugin_id: langgenius/openai_api_compatible
+dify_docker_model_provider_plugin_unique_identifier: >-
+  langgenius/openai_api_compatible:0.0.53@a0dfb462961a03c6a6415d4185043185b01017c64da93cf82a9e5ecaf59f8ed0
+dify_docker_model_provider_id: langgenius/openai_api_compatible/openai_api_compatible
+dify_docker_model_endpoint_url: "{{ ai_orchestration_ollama_base_url }}"
+# Own scoped router key (56-virtual-keys.yml alias: dify) — every consumer
+# gets its own key, never the shared master key.
+dify_docker_model_api_key: >-
+  {{ bao_apps_secrets.dify_llm_router_key
+     | mandatory('dify_llm_router_key is not seeded: run the apps openbao provisioning first') }}
+# Dify offers router capability names and database roles, never model IDs.
+# Context defaults only when the router has no served model context for a role.
+dify_docker_default_llm_model: medium
+dify_docker_default_llm_context_size: "32768"
+
+_dify_docker_chat_route_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for model in (llm_router_model_registry | default([], true)) -%}
+  {%- if model.route_group is defined and model.route_group is not none
+        and not (model.embedding | default(false) | bool)
+        and (model.serving_role | default('')) != 'ocr' -%}
+  {%- set ns.groups = ns.groups + [model.route_group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups | unique | list }}
+
+_dify_docker_chat_capability_roles: >-
+  {%- set ns = namespace(roles=[]) -%}
+  {%- set aliases = llm_router_model_group_aliases | default({}, true) -%}
+  {%- for name in (llm_router_capability_names | default([], true)) -%}
+  {%- if aliases.get(name, name) in _dify_docker_chat_route_groups -%}
+  {%- set ns.roles = ns.roles + [name] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.roles | unique | list }}
+
+_dify_docker_chat_declared_roles: >-
+  {%- set ns = namespace(roles=[]) -%}
+  {%- set aliases = llm_router_model_group_aliases | default({}, true) -%}
+  {%- for role in (llm_router_role_deployments | default([], true)) -%}
+  {%- set target = aliases.get(role.model, role.model) -%}
+  {%- if target in _dify_docker_chat_route_groups -%}
+  {%- set ns.roles = ns.roles + [role.role] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.roles | unique | list }}
+
+dify_docker_llm_models: >-
+  {%- set ns = namespace(models=[]) -%}
+  {%- set aliases = llm_router_model_group_aliases | default({}, true) -%}
+  {%- set key_scope = (_llm_router_static_virtual_keys | default([], true)
+        | selectattr('alias', 'equalto', 'dify') | map(attribute='models') | first)
+        | default([], true) -%}
+  {%- set role_deployments = llm_router_role_deployments | default([], true) -%}
+  {%- set roles = (_dify_docker_chat_capability_roles
+                   + _dify_docker_chat_declared_roles) | unique | list -%}
+  {%- for name in roles if name in key_scope -%}
+  {%- set deployments = role_deployments | selectattr('role', 'equalto', name) | list -%}
+  {%- set source_group = deployments[0].model if deployments else name -%}
+  {%- set target_group = aliases.get(source_group, source_group) -%}
+  {%- set served = (llm_router_capability_members | default([], true)
+        | selectattr('route_group', 'defined')
+        | selectattr('route_group', 'equalto', target_group)
+        | selectattr('context_window', 'defined')
+        | rejectattr('context_window', 'none') | list | first)
+        | default({}, true) -%}
+  {%- set registered = (llm_router_model_registry | default([], true)
+        | selectattr('route_group', 'defined')
+        | selectattr('route_group', 'equalto', target_group)
+        | selectattr('context_window', 'defined')
+        | rejectattr('context_window', 'none') | list | first)
+        | default({}, true) -%}
+  {%- set context_size = served.context_window
+        | default(registered.context_window
+                  | default(dify_docker_default_llm_context_size), true) -%}
+  {%- set ns.models = ns.models + [{
+        'name': name,
+        'display_name': name,
+        'context_size': context_size | string
+      }] -%}
+  {%- endfor -%}
+  {{ ns.models }}
