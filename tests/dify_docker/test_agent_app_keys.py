@@ -5,9 +5,10 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment
 
+from _defaults import load_defaults
+
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 IMPORT_TASKS = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
 API_KEY_TASKS = ROOT / "roles/dify_docker/tasks/ensure_agent_app_api_key.yml"
 APP_PAGE_TASKS = ROOT / "roles/dify_docker/tasks/list_agent_app_page.yml"
@@ -309,7 +310,7 @@ def test_exact_name_uniqueness_uses_apps_aggregated_from_all_pages():
 
 
 def test_api_key_leaf_is_derived_from_the_dify_openbao_base_path():
-    defaults = _yaml(DEFAULTS)
+    defaults = load_defaults()
 
     assert defaults["dify_docker_agent_app_api_key_path"] == (
         "{{ dify_docker_openbao_path }}/agent-apps/{{ dify_docker_dsl_name }}"

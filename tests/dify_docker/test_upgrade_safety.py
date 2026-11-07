@@ -5,12 +5,13 @@ import re
 
 import yaml
 
+from _defaults import load_defaults
+
 
 ROOT = Path(__file__).resolve().parents[2]
 TASK_DIR = ROOT / "roles/dify_docker/tasks"
 MAIN_TASKS = TASK_DIR / "main.yml"
 UPGRADE_TASKS = TASK_DIR / "upgrade_safety.yml"
-DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 COMPOSE_TEMPLATE = ROOT / "roles/dify_docker/templates/docker-compose.yml.j2"
 CONFIG_TASKS = TASK_DIR / "config_and_deploy.yml"
 COMPOSE_TEST = ROOT / "tests/dify_docker/test_compose_ssr_api_url.yml"
@@ -142,7 +143,7 @@ def test_backup_preflight_and_all_live_backups_precede_drain():
     assert block_tasks.index(retention) > block_tasks.index(
         _task(block_tasks, "Verify the cold Weaviate pre-upgrade archive integrity")
     )
-    defaults = yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))
+    defaults = load_defaults()
     assert defaults["dify_docker_upgrade_backup_retention_count"] == 3
 
     timeout = defaults["dify_docker_stop_timeout_seconds"]

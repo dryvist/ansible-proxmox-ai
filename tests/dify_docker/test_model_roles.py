@@ -6,9 +6,10 @@ import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 
+from _defaults import load_defaults, load_defaults_text
+
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 MAIN_TASKS = ROOT / "roles/dify_docker/tasks/main.yml"
 PREFLIGHT_TASKS = ROOT / "roles/dify_docker/tasks/assert-model-roles.yml"
 MODEL_PROVIDER_TASKS = ROOT / "roles/dify_docker/tasks/model_provider.yml"
@@ -80,7 +81,7 @@ def _router_fixture():
 
 
 def test_provider_models_render_chat_roles_with_served_context_sizes():
-    defaults = yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))
+    defaults = load_defaults()
     variables = {**defaults, **_router_fixture()}
     models = _render(defaults["dify_docker_llm_models"], variables)
     by_name = {model["name"]: model for model in models}
@@ -94,7 +95,7 @@ def test_provider_models_render_chat_roles_with_served_context_sizes():
     assert not {"embedding-role", "ocr-role"} & by_name.keys()
     assert not source_model_ids & by_name.keys()
     assert not {"gpt-oss-120b", "qwen3-coder", "hermes-4-14b"} & by_name.keys()
-    defaults_text = DEFAULTS.read_text(encoding="utf-8")
+    defaults_text = load_defaults_text()
     assert not any(
         model_id in defaults_text
         for model_id in ("gpt-oss-120b", "qwen3-coder", "hermes-4-14b")
@@ -107,7 +108,7 @@ def test_provider_models_render_chat_roles_with_served_context_sizes():
 
 
 def test_empty_role_preflight_is_first_dify_action_and_has_clear_failure():
-    defaults = yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))
+    defaults = load_defaults()
     main_tasks = yaml.safe_load(MAIN_TASKS.read_text(encoding="utf-8"))
     preflight_tasks = yaml.safe_load(PREFLIGHT_TASKS.read_text(encoding="utf-8"))
     provider_tasks = yaml.safe_load(MODEL_PROVIDER_TASKS.read_text(encoding="utf-8"))

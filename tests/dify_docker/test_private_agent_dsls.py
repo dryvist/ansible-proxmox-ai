@@ -6,10 +6,10 @@ from pathlib import Path
 from jinja2 import Environment
 
 from _agent_dsl_shared import _task, _yaml
+from _defaults import load_defaults
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 AGENT_DSLS = ROOT / "roles/dify_docker/vars/agent_dsls.yml"
 IMPORT_LOOP = ROOT / "roles/dify_docker/tasks/import_agent_dsls.yml"
 IMPORT_ONE = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
@@ -28,7 +28,7 @@ def _render(expression, **context):
 
 
 def test_private_list_and_token_are_empty_by_default():
-    defaults = _yaml(DEFAULTS)
+    defaults = load_defaults()
 
     assert defaults["dify_docker_private_agent_dsls"] == []
     assert defaults["dify_docker_private_agent_dsl_token"] == ""
