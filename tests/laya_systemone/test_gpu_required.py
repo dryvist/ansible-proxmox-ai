@@ -8,6 +8,7 @@ import yaml
 
 ROLE = Path(__file__).resolve().parents[2] / "roles/laya_systemone"
 TASKS = yaml.safe_load((ROLE / "tasks/assert-gpu.yml").read_text())
+READ = yaml.safe_load((ROLE / "tasks/read-device.yml").read_text())[0]
 
 
 def _named(name: str) -> dict:
@@ -23,9 +24,8 @@ def test_unit_refuses_to_start_until_the_card_is_visible() -> None:
 
 
 def test_device_read_is_authenticated_and_does_not_log_the_key() -> None:
-    read = _named("Read where Laya computes")
-    assert read["ansible.builtin.uri"]["headers"]["Authorization"] == "Bearer {{ laya_systemone_api_key }}"
-    assert read["no_log"] is True
+    assert READ["ansible.builtin.uri"]["headers"]["Authorization"] == "Bearer {{ laya_systemone_api_key }}"
+    assert READ["no_log"] is True
 
 
 def test_cpu_device_restarts_once_then_fails_closed() -> None:
