@@ -24,13 +24,18 @@
 - name: Load Hermes prompt references from the immutable catalog
   ansible.builtin.set_fact:
     "{{ item.key }}": >-
-      {{ query('ansible.builtin.template', *hermes_agent_catalog_prompt_paths,
-               keep_trailing_newline=true)
-         | map('regex_replace', '(?s)^---\n.*?\n---\n', '') | join('') }}
+      {{ (hermes_agent_catalog_prompt_rendered | trim)
+         if item.value.template_vars is defined
+         else hermes_agent_catalog_prompt_rendered }}
   vars:
     hermes_agent_catalog_prompt_paths: >-
       {{ (item.value.prompt_files | default([item.value.prompt_file | default('')]))
          | map('regex_replace', '^', hermes_agent_prompts_path ~ '/') | list }}
+    hermes_agent_catalog_prompt_rendered: >-
+      {{ query('ansible.builtin.template', *hermes_agent_catalog_prompt_paths,
+               template_vars=item.value.template_vars | default({}),
+               keep_trailing_newline=true)
+         | map('regex_replace', '(?s)^---\n.*?\n---\n', '') | join('') }}
   loop: "{{ hermes_agent_catalog_prompt_sources | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
