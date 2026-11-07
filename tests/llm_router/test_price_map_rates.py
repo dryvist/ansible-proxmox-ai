@@ -158,6 +158,7 @@ def _render_model_list(entries: list[dict], rates: dict) -> list[dict]:
             "OPENAI_API_KEY": "fixture",
         },
         llm_router_price_rates=rates,
+        llm_router_cloud_accelerator="cloud",
         llm_router_deployment_tags_by_entry={},
         llm_router_deployment_tags_by_model={},
         llm_router_llm_vllm_enabled=False,

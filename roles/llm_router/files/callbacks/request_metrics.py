@@ -65,7 +65,7 @@ def build_record(kwargs, response_obj, start_time, end_time):
         "ts": end if isinstance(end, (int, float)) else start,
         "event": "llm_request",
         "model_group": payload.get("model_group"),
-        "model": payload.get("model"),
+        "model": contract.get("model") or payload.get("model"),
         "api_base": _host_only(payload.get("api_base")),
         "status": payload.get("status"),
         "error_class": error_info.get("error_class"),
@@ -80,6 +80,7 @@ def build_record(kwargs, response_obj, start_time, end_time):
     }
     # Emit only the explicit contract, never arbitrary metadata or credentials.
     safe_fields = (
+        "agent", "privacy_class", "accelerator",
         "client", "runtime", "runner", "purpose", "tier", "environment", "release",
         "session_id", "trace_user_id", "trace_name", "generation_name", "tool_category", "tool_name",
         "engine", "profile", "quant", "kv_dtype", "ctx_per_slot", "slots", "concurrency",
@@ -89,24 +90,40 @@ def build_record(kwargs, response_obj, start_time, end_time):
     return record
 
 
+def apply_deployment_contract(kwargs):
+    """Use the router-stamped deployment for every attempt, including fallbacks."""
+    params = kwargs.get("litellm_params") or {}
+    metadata = params.get("litellm_metadata") or params.get("metadata") or {}
+    payload = kwargs.get("standard_logging_object") or {}
+    model_info = metadata.get("model_info") or {}
+    selected = {
+        "model": metadata.get("deployment"),
+        "accelerator": model_info.get("accelerator"),
+    }
+    for target in (metadata, payload.setdefault("metadata", {})):
+        for carrier in ("requester_metadata", "spend_logs_metadata", "trace_metadata"):
+            contract = target.setdefault(carrier, {})
+            contract.update(selected)
+        target.update(selected)
+    return kwargs
+
+
 def apply_trace_contract(data, key_metadata, key_alias=None):
     """Fill key defaults, preserve request attribution, and validate benchmarks."""
     slot = "litellm_metadata" if "litellm_metadata" in data else "metadata"
     metadata = data.setdefault(slot, {})
     authenticated_alias = key_alias if isinstance(key_alias, str) else None
-    # Failure callbacks also run when later trace validation rejects a request.
-    for carrier in ("requester_metadata", "spend_logs_metadata", "trace_metadata"):
-        existing = metadata.get(carrier)
-        metadata[carrier] = {
-            **(existing if isinstance(existing, dict) else {}),
-            "key_alias": authenticated_alias,
-        }
     defaults = (key_metadata or {}).get("trace_defaults") or {}
     if not defaults:
         defaults = {"client": key_alias or "unattributed", "runner": "unattributed", "purpose": "unattributed"}
     request_attribution = {field: metadata.get(field) for field in ("runner", "purpose", "tier")}
     metadata.update(defaults)
     metadata.update({field: value for field, value in request_attribution.items() if value not in (None, "")})
+    metadata["agent"] = defaults.get("agent") or metadata.get("agent") or key_alias or defaults["client"]
+    metadata["privacy_class"] = "public" if (key_metadata or {}).get("privacy_class") == "public" else "private"
+    # Deployment identity is assigned only after the router selects an attempt.
+    deployment_fields = dict.fromkeys(("model", "accelerator"))
+    metadata.update(deployment_fields)
     session = data.get("litellm_session_id") or metadata.get("session_id")
     metadata["session_id"] = session or metadata.get("run_id") or data.get("litellm_trace_id") or metadata.get("trace_id") or uuid4().hex
     for field, fallback in {
@@ -122,6 +139,17 @@ def apply_trace_contract(data, key_metadata, key_alias=None):
     if not data.get("user"):
         data["user"] = metadata["trace_user_id"]
     required = (key_metadata or {}).get("trace_required") or []
+    fields = list(defaults) + ["agent", "tier", "privacy_class", "model", "accelerator",
+                               "session_id", "trace_user_id", "trace_name", "generation_name", "trace_release", "trace_version",
+                               "tool_category", "tool_name"] + required
+    contract = {field: metadata[field] for field in fields if metadata.get(field) is not None}
+    # Attribution comes from the authenticated key, even when callers supplied metadata.
+    contract["key_alias"] = authenticated_alias
+    contract.update(deployment_fields)
+    # Failure exporters also see trusted attribution when validation rejects a call.
+    for carrier in ("requester_metadata", "spend_logs_metadata", "trace_metadata"):
+        existing = metadata.get(carrier)
+        metadata[carrier] = {**(existing if isinstance(existing, dict) else {}), **contract}
     if defaults.get("purpose") == "benchmark":
         if not required:
             raise HTTPException(status_code=400, detail="Missing benchmark trace requirements")
@@ -129,14 +157,6 @@ def apply_trace_contract(data, key_metadata, key_alias=None):
                    if not isinstance(metadata.get(field), (str, int, float, bool)) or metadata[field] == ""]
         if missing:
             raise HTTPException(status_code=400, detail="Missing benchmark metadata: " + ", ".join(missing))
-    fields = list(defaults) + ["session_id", "trace_user_id", "trace_name", "generation_name", "trace_release", "trace_version",
-                               "tool_category", "tool_name"] + required
-    contract = {field: metadata[field] for field in fields if metadata.get(field) is not None}
-    # Attribution comes from the authenticated key, even when callers supplied metadata.
-    contract["key_alias"] = authenticated_alias
-    metadata["requester_metadata"] = {**(metadata.get("requester_metadata") or {}), **contract}
-    metadata["spend_logs_metadata"] = {**(metadata.get("spend_logs_metadata") or {}), **contract}
-    metadata["trace_metadata"] = {**(metadata.get("trace_metadata") or {}), **contract}
     return data
 
 
@@ -147,10 +167,17 @@ class RequestMetrics(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
         return apply_trace_contract(data, user_api_key_dict.metadata, getattr(user_api_key_dict, "key_alias", None))
 
+    async def async_logging_hook(self, kwargs, result, call_type):
+        # LiteLLM runs logging hooks before success exporters and token counters.
+        return apply_deployment_contract(kwargs), result
+
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        apply_deployment_contract(kwargs)
         print(json.dumps(build_record(kwargs, response_obj, start_time, end_time)), flush=True)
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+        # Failure exporters run in callback order, with this callback first.
+        apply_deployment_contract(kwargs)
         print(json.dumps(build_record(kwargs, response_obj, start_time, end_time)), flush=True)
 
 
