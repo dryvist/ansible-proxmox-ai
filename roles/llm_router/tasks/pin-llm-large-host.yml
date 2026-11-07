@@ -26,18 +26,32 @@
       Could not resolve {{ llm_router_llm_large_fqdn }} to an IPv4 address for
       the LiteLLM /etc/hosts pin.
 
-- name: Remove duplicate serving-host mappings from /etc/hosts for LiteLLM
+- name: Remove serving-host mappings with no other names from /etc/hosts for LiteLLM
   ansible.builtin.replace:
     path: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
     owner: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     group: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     mode: "{{ '0644' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     regexp: >-
-      (?m)^[^#\n]*{{ _llm_router_pin_name_rx }}[^#\n]*\n(?=[\s\S]*^[^#\n]*{{ _llm_router_pin_name_rx }})
+      (?m)^[ \t]*\S+[ \t]+{{ _llm_router_pin_name_rx }}[ \t]*(?:#[^\n]*)?(?:\n|$)
     replace: ""
   vars:
     _llm_router_pin_name_rx: >-
-      (?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[\s#]|$)
+      (?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[ \t#]|$)
+  notify: Restart litellm
+
+- name: Remove the serving-host name while preserving other /etc/hosts aliases
+  ansible.builtin.replace:
+    path: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
+    owner: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
+    group: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
+    mode: "{{ '0644' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
+    regexp: >-
+      (?m)^([^\n#]*?)[ \t]+{{ _llm_router_pin_name_rx }}(?=[ \t]|$)([^\n#]*)
+    replace: '\1\2'
+  vars:
+    _llm_router_pin_name_rx: >-
+      (?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[ \t#]|$)
   notify: Restart litellm
 
 - name: Pin the Mac Studio apex in /etc/hosts for LiteLLM
