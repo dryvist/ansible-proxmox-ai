@@ -43,3 +43,8 @@ def test_cpu_device_restarts_once_then_fails_closed() -> None:
 def test_serving_converge_includes_the_device_check_after_health() -> None:
     main = (ROLE / "tasks/main.yml").read_text()
     assert main.index("file: health.yml") < main.index("file: assert-gpu.yml")
+
+
+def test_finetune_collection_ends_with_the_device_check() -> None:
+    collect = (ROLE / "tasks/finetune-collect.yml").read_text()
+    assert collect.index("finetune-report-failure.yml") < collect.index("assert-gpu.yml")
