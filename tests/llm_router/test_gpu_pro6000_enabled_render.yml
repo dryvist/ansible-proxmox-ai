@@ -100,23 +100,29 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _gpu | length == 2
+          - _gpu | length == 1
           - _gpu | map(attribute='litellm_params.max_parallel_requests') | unique | list == [11]
           - _studio | length == 1
           - _studio[0].litellm_params.max_parallel_requests | int == 1
           - _gpu | map(attribute='litellm_params.order') | max < _studio[0].litellm_params.order
-          - _small | length == 2
+          - _small | length == 1
           - _small | map(attribute='litellm_params.max_parallel_requests') | unique | list == [2]
           - _small | map(attribute='litellm_params.order') | unique | list == [1]
+      loop: "{{ llm_router_priority_tiers }}"
+      loop_control:
+        label: "{{ item.team_id }}"
       vars:
+        _tier_entries: >-
+          {{ _medium_config.model_list
+             | selectattr('litellm_params.tags', 'contains', item.team_id) | list }}
         _gpu: >-
-          {{ _medium_config.model_list | selectattr('model_info.profile', 'defined')
+          {{ _tier_entries | selectattr('model_info.profile', 'defined')
              | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
         _studio: >-
-          {{ _medium_config.model_list | selectattr('model_name', 'equalto', llm_router_primary_model)
+          {{ _tier_entries | selectattr('model_name', 'equalto', llm_router_primary_model)
              | rejectattr('model_info.profile', 'defined') | list }}
         _small: >-
-          {{ _medium_config.model_list | selectattr('model_name', 'equalto', llm_router_small_model)
+          {{ _tier_entries | selectattr('model_name', 'equalto', llm_router_small_model)
              | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url) | list }}
 
     - name: The medium capability keeps its GPU member at the first order
