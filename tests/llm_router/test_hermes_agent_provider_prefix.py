@@ -36,6 +36,7 @@ def _render_agents() -> list[dict]:
     }
     rendered = env.get_template("model-list-hermes-agents.yaml.j2").render(
         llm_router_hermes_agents=agents,
+        llm_router_llm_light_accelerator="cpu",
         llm_router_hermes_agent_identities={name: name for name in AGENT_NAMES},
         llm_router_hermes_identity_bearers={name: "placeholder" for name in AGENT_NAMES},
         llm_router_hermes_agent_timeout=120,

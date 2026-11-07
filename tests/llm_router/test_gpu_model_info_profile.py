@@ -109,6 +109,8 @@ def _render(models: list[dict]) -> list[dict]:
     )
     text = env.get_template("model-list-gpu.yaml.j2").render(
         llm_router_gpu_models=models,
+        llm_router_gpu_accelerator="gpu-primary",
+        llm_router_gpu_profile_accelerators={},
         llm_router_priority_tiers=PRIORITY_TIERS,
         llm_router_deployment_tags_by_entry={f"{m['client_model_id']}|{m['tier']}": [] for m in models},
         llm_router_gpu_profile_base_urls={
