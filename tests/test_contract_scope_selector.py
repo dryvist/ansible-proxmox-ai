@@ -162,7 +162,7 @@ def test_release_back_merge_paths_need_no_contracts() -> None:
     assert selection["llm_router_playbooks"] == []
 
 
-def test_clickhouse_role_and_retired_test_select_nothing() -> None:
+def test_clickhouse_role_selects_contracts_and_retired_test_stays_retired() -> None:
     result = run_selector(
         "roles/clickhouse_docker/tasks/main.yml",
         "tests/langfuse_docker/test_code_eval_dispatcher.yml",
@@ -170,7 +170,9 @@ def test_clickhouse_role_and_retired_test_select_nothing() -> None:
 
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
-    assert selection["pytest_targets"] == []
+    assert selection["pytest_targets"] == [
+        "tests/clickhouse_docker/", "tests/langfuse_docker/test_clickhouse_contract.py",
+    ]
     assert selection["ansible_tests"] == []
 
 
