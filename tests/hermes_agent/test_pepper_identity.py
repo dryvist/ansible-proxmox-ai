@@ -254,10 +254,14 @@ def test_pepper_router_key_does_not_add_the_goal_judge_route():
     tasks = yaml.safe_load((ROLE / 'tasks/main.yml').read_text())
     environment = next(t['vars']['hermes_runtime_gateway_environment'] for t in tasks
                        if 'hermes_runtime_gateway_environment' in t.get('vars', {}))
-    expression = next(entry['value'] for entry in environment if entry['name'] == 'HERMES_CRON_GOAL_JOBS')
+    from ansible.plugins.filter.core import dict_to_list_of_dict_key_value_elements
+    env.filters['dict2items'] = dict_to_list_of_dict_key_value_elements
     for identity in ['pepper', 'hermes', 'hermes-private', 'donna']:
-        jobs = env.from_string(expression).render(
-            hermes_agent_id=identity, hermes_agent_cron_goal_mode_jobs=['fixture-job'])
+        entries = env.from_string(environment).render(
+            hermes_agent_id=identity, hermes_agent_cron_goal_mode_jobs=['fixture-job'],
+            hermes_agent_github_app_slug='fixture', hermes_agent_github_trust_boundary_default='fixture',
+            hermes_agent_kanban_goal_max_turns=8, hermes_agent_proxy_environment={})
+        jobs = next(entry['value'] for entry in entries if entry['name'] == 'HERMES_CRON_GOAL_JOBS')
         assert jobs == ('' if identity == 'pepper' else 'fixture-job')
 
 

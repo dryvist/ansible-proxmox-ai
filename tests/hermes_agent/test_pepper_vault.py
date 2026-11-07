@@ -109,7 +109,8 @@ def test_credentials_only_enter_a_root_only_file_not_git_arguments_or_environmen
     service = (ROLE / 'templates/hermes-pepper-vault.service.j2').read_text()
     assert 'LoadCredential=git-auth:' + config['dest'] in service
     assert 'GIT_CONFIG_GLOBAL=%d/git-auth' in service
-    assert 'EnvironmentFile=' not in service
+    assert 'EnvironmentFile={{ hermes_agent_proxy_environment_file' in service
+    assert 'hermes_agent_hermes_home' not in service
     assert 'hermes_agent_pepper_vault_read_token' not in service
     assert 'StandardOutput=null' in service and 'StandardError=null' in service
     cleanup = next(t for t in tasks if t.get('ansible.builtin.file', {}).get('state') == 'absent')
@@ -150,10 +151,10 @@ def test_service_git_commands_bootstrap_and_refresh_without_running_hooks(tmp_pa
     # Exercise the actual service commands against a local repository, without credentials.
     source = (ROLE / 'templates/hermes-pepper-vault.service.j2').read_text()
     env = Environment()
-    env.filters.update(comment=lambda value: '', to_json=json.dumps)
+    env.filters.update(comment=lambda value: '', to_json=json.dumps, mandatory=lambda value, message: value)
     rendered = env.from_string(source).render(
         ansible_managed='', hermes_agent_pepper_vault_repo_url=str(upstream),
-        hermes_agent_pepper_vault_path=str(checkout))
+        hermes_agent_pepper_vault_path=str(checkout), hermes_agent_proxy_environment_file='/fixture/proxy.env')
     commands = [shlex.split(line.split('=', 1)[1]) for line in rendered.splitlines()
                 if line.startswith('ExecStart=')]
     for revision in ['first revision', 'second revision']:
