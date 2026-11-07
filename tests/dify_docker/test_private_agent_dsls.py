@@ -1,6 +1,7 @@
 """Private agent DSLs: an empty-by-default list, fetched only with the bearer token."""
 
 import ast
+import hashlib
 from pathlib import Path
 
 from jinja2 import Environment
@@ -24,7 +25,12 @@ def _render(expression, **context):
     env = Environment()
     env.filters["bool"] = bool
     env.filters["combine"] = lambda base, extra: {**base, **extra}
+    env.tests["failed"] = lambda result: bool(result.get("failed"))
     return env.from_string(expression).render(context)
+
+
+def _condition_matches(expression, **context):
+    return _render("{{ " + expression + " }}", **context) == "True"
 
 
 def test_private_list_and_token_are_empty_by_default():
@@ -108,7 +114,7 @@ def test_fetch_stays_checksum_verified_and_secret_safe():
     assert fetch["ansible.builtin.get_url"]["mode"] == "0600"
 
 
-def test_check_mode_previews_private_app_action_without_printing_private_name_or_content():
+def test_check_mode_previews_private_app_name_without_printing_private_content():
     importer = _yaml(IMPORT_ONE)
     preview = next(task for task in importer if task.get("name") == "Preview the catalog app create or update")
 
@@ -119,13 +125,109 @@ def test_check_mode_previews_private_app_action_without_printing_private_name_or
             dify_docker_agent_dsl={"private": True},
             dify_docker_dsl_name="private-agent-name",
         )
-        assert message == f"Would {action} private Dify app."
-        assert "private-agent-name" not in message
+        assert message == f'Would {action} private Dify app "private-agent-name".'
         assert "dify_docker_dsl_content" not in message
+        assert "prompt" not in message.lower()
     assert preview.get("no_log") is not True
 
     for task in importer:
         if task is preview:
             continue
         if any(value in str(task) for value in ("dify_docker_dsl_content", "dify_docker_dsl_document")):
+            assert task.get("no_log") is True, task["name"]
+
+
+def test_private_check_mode_reads_verified_dsl_in_memory_without_target_writes_or_deletes():
+    importer = _yaml(IMPORT_ONE)
+    read = _task(importer, "Read the private agent DSL into memory for check mode")
+    verify = _task(importer, "Verify the private agent DSL sha256 in check mode")
+    keep_in_memory = _task(importer, "Keep the verified private agent DSL in memory during check mode")
+    fetch = _task(importer, FETCH_TASK)
+    slurp = _task(importer, "Read the verified agent DSL")
+    cleanup = _task(importer, "Remove the fetched agent DSL copy")
+
+    assert read["ansible.builtin.uri"]["url"] == "{{ dify_docker_agent_dsl.url }}"
+    assert read["ansible.builtin.uri"]["method"] == "GET"
+    assert read["ansible.builtin.uri"]["return_content"] is True
+    assert read["ansible.builtin.uri"]["status_code"] == 200
+    assert read["check_mode"] is False
+    assert read["changed_when"] is False
+    assert read["no_log"] is True
+    assert "dify_docker_agent_dsl.private | default(false) | bool" in read["when"]
+    assert "ansible_check_mode" in read["when"]
+
+    private_authorization = _render(
+        read["ansible.builtin.uri"]["headers"]["Authorization"],
+        dify_docker_private_agent_dsl_token=TOKEN,
+    )
+    assert private_authorization == f"Bearer {TOKEN}"
+
+    checksum_rule = verify["ansible.builtin.assert"]["that"][1]
+    assert "content | hash('sha256')" in checksum_rule
+    assert "dify_docker_agent_dsl.sha256" in checksum_rule
+    assert verify["no_log"] is True
+    assert verify["ansible.builtin.assert"]["fail_msg"] == (
+        "The private agent DSL did not match its pinned sha256."
+    )
+    assert keep_in_memory["no_log"] is True
+    assert "content | b64encode" in keep_in_memory["ansible.builtin.set_fact"][
+        "dify_docker_dsl_raw"
+    ]["content"]
+
+    payload = "app:\n  name: example-private-agent\n"
+    checksum = hashlib.sha256(payload.encode()).hexdigest()
+    hash_env = Environment()
+    hash_env.filters["hash"] = lambda value, algorithm: hashlib.new(
+        algorithm, value.encode()
+    ).hexdigest()
+    checksum_check = hash_env.from_string("{{ " + checksum_rule + " }}")
+    context = {
+        "dify_docker_private_dsl_check_read": {"content": payload},
+        "dify_docker_agent_dsl": {"sha256": checksum},
+    }
+    assert checksum_check.render(context) == "True"
+    context["dify_docker_agent_dsl"]["sha256"] = "0" * 64
+    assert checksum_check.render(context) == "False"
+
+    # Keep the check-mode proof fail-closed if another target-mutating module
+    # is added to this importer later.
+    target_mutating_modules = (
+        "ansible.builtin.get_url",
+        "ansible.builtin.file",
+        "ansible.builtin.copy",
+        "ansible.builtin.template",
+        "ansible.builtin.lineinfile",
+        "ansible.builtin.blockinfile",
+        "ansible.builtin.replace",
+        "ansible.builtin.assemble",
+        "ansible.builtin.unarchive",
+        "ansible.builtin.synchronize",
+        "ansible.builtin.command",
+        "ansible.builtin.shell",
+    )
+    target_mutations = [
+        task
+        for task in importer
+        if any(module in task for module in target_mutating_modules)
+        or (
+            "ansible.builtin.uri" in task
+            and "dest" in task["ansible.builtin.uri"]
+        )
+    ]
+    assert target_mutations == [fetch, cleanup]
+    assert "not ansible_check_mode" in fetch["when"]
+    assert "not ansible_check_mode" in cleanup["when"]
+    assert slurp["ansible.builtin.slurp"]["src"].startswith("/tmp/dify-agent-dsl-")
+    assert "not ansible_check_mode" in slurp["when"]
+
+    context = {
+        "ansible_check_mode": True,
+        "dify_docker_agent_dsl": {"private": True},
+    }
+    assert _condition_matches(fetch["when"][0], **context)
+    assert not _condition_matches(fetch["when"][1], **context)
+    assert not _condition_matches(cleanup["when"], **context)
+    assert not _condition_matches(slurp["when"], **context)
+    for task in importer:
+        if "dify_docker_private_dsl_check_read" in str(task):
             assert task.get("no_log") is True, task["name"]
