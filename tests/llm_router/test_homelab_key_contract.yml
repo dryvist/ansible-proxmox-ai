@@ -22,6 +22,7 @@
       litellm_local_llm_router_key: sk-fixture-local
       langgraph_llm_router_key: sk-fixture-langgraph
       n8n_llm_router_key: sk-fixture-n8n
+      langfuse_llm_router_key: sk-fixture-langfuse
       zammad_llm_router_key: sk-fixture-zammad
       grafana_llm_router_key: sk-fixture-grafana
       agentgateway_llm_router_key: sk-fixture-agentgateway
@@ -54,6 +55,33 @@
       ansible.builtin.set_fact:
         _specs: "{{ _llm_router_declared_virtual_keys }}"
         _keys: "{{ llm_router_virtual_keys }}"
+
+    - name: Load the evaluator connection defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/../langfuse_docker/defaults/main"
+        name: _langfuse_defaults
+
+    - name: Evaluators use the tier 2 key with local models and no cloud fallback
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _langfuse_defaults.langfuse_docker_router_secret_key == _evaluation_key.value
+          - _evaluation_key.priority_tier == 2
+          - _evaluation_key.team_id == 'tier-2'
+          - "'&tier-2' in _evaluation_key.tags"
+          - "'&local' in _evaluation_key.tags"
+          - _evaluation_key.allowed_classes == ['local']
+          - llm_router_primary_model in _evaluation_key.models
+          - _evaluation_key.models | intersect(_cloud_groups) | length == 0
+          - _evaluation_key.router_settings.enable_tag_filtering | bool
+          - _evaluation_key.router_settings.fallbacks == []
+          - _evaluation_key.router_settings.context_window_fallbacks == []
+          - _evaluation_key.router_settings.content_policy_fallbacks == []
+      vars:
+        _evaluation_key: "{{ _keys | selectattr('alias', 'equalto', 'langfuse') | first }}"
+        _cloud_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
 
     - name: Local proxy keys expose the exact local capability set
       ansible.builtin.assert:
