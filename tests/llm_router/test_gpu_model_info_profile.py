@@ -18,6 +18,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = REPO_ROOT / "roles/llm_router/templates"
+PRIORITY_TIERS = yaml.safe_load(
+    (REPO_ROOT / "roles/llm_router/defaults/main/56d-priority-tiers.yml").read_text()
+)["llm_router_priority_tiers"]
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
 SGLANG_DEFAULTS = REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml"
@@ -101,11 +104,12 @@ def _render(models: list[dict]) -> list[dict]:
         litellm_model=lambda model: model.get(
             "litellm_model_name", f"{model['provider']}/{model['client_model_id']}"
         ),
-        local_bounds=lambda model: "",
+        local_bounds=lambda model, priority_tier: "",
         delegation_hints=lambda model: "",
     )
     text = env.get_template("model-list-gpu.yaml.j2").render(
         llm_router_gpu_models=models,
+        llm_router_priority_tiers=PRIORITY_TIERS,
         llm_router_deployment_tags_by_entry={f"{m['client_model_id']}|{m['tier']}": [] for m in models},
         llm_router_gpu_profile_base_urls={
             m.get("profile", ""): (
@@ -134,12 +138,15 @@ def test_every_serving_profile_is_declared_by_exactly_one_gpu_registry_entry():
 def test_each_profile_renders_its_name_into_model_info():
     for entry in _entries():
         rendered = _render([entry])
-        assert len(rendered) == 1
-        assert rendered[0]["litellm_params"]["model"] == (
-            f"{entry['provider']}/{entry['client_model_id']}"
-        )
-        assert rendered[0]["model_info"]["profile"] == entry["profile"]
-        assert rendered[0]["model_name"] == entry.get("route_group", entry["client_model_id"])
+        assert len(rendered) == len(PRIORITY_TIERS)
+        for deployment, tier in zip(rendered, PRIORITY_TIERS, strict=True):
+            assert deployment["litellm_params"]["model"] == (
+                f"{entry['provider']}/{entry['client_model_id']}"
+            )
+            assert deployment["model_info"]["profile"] == entry["profile"]
+            assert deployment["model_name"] == entry.get("route_group", entry["client_model_id"])
+            assert tier["team_id"] in deployment["litellm_params"]["tags"]
+            assert deployment["litellm_params"]["extra_body"]["priority"] == tier["priority"]
 
 
 def test_co_resident_profile_uses_the_second_inventory_derived_port():

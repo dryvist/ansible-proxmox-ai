@@ -1,0 +1,23 @@
+---
+- name: Render the derived store's native client timeout settings
+  ansible.builtin.set_fact:
+    _client_env: >-
+      {{ lookup('template', playbook_dir ~ '/../../roles/hermes_agent/templates/hermes-env-operational.j2') }}
+  vars:
+    hermes_agent_profile: "{{ _client_profile }}"
+
+- name: Client read and stale guards follow the store's effective tier
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _client_env is search('(?m)^HERMES_STREAM_READ_TIMEOUT=' ~ _read ~ '$')
+      - _client_env is search('(?m)^HERMES_STREAM_STALE_TIMEOUT=' ~ _stale ~ '$')
+      - _client_env is search('(?m)^HERMES_API_CALL_STALE_TIMEOUT=' ~ _stale ~ '$')
+      - _client_env is search('(?m)^HERMES_CRON_TIMEOUT=' ~ hermes_agent_cron_inactivity_timeout_seconds ~ '$')
+  vars:
+    _alias: "{{ 'hermes-' ~ _client_profile.name }}"
+    _tier: >-
+      {{ 2 if _client_profile.name == 'default'
+         else llm_router_priority_key_tiers.get(_alias, llm_router_priority_default_tier) }}
+    _read: "{{ ai_tier_2_client_timeout_seconds if _tier == 2 else ai_stream_read_timeout_seconds }}"
+    _stale: "{{ ai_tier_2_client_timeout_seconds if _tier == 2 else hermes_agent_stream_stale_timeout }}"

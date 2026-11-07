@@ -1,0 +1,57 @@
+{# The same projection supplies create, rebuild, and live policy updates. #}
+{%- set previous = _priority_previous | default({}) -%}
+{%- set owner = _priority_role.key_alias | default(_priority_role.role) -%}
+{%- set tier = _llm_router_virtual_keys_without_values
+      | selectattr('alias', 'equalto', owner) | map(attribute='priority_tier') | first
+      | default(llm_router_priority_key_tiers.get(owner, llm_router_priority_default_tier)) -%}
+{%- set callers = namespace(tiers=[]) -%}
+{%- for key in _llm_router_virtual_keys_without_values
+      if _priority_role.role in key.models or '*' in key.models -%}
+{%- set callers.tiers = callers.tiers + [key.priority_tier] -%}
+{%- endfor -%}
+{%- set tiers = callers.tiers | unique | sort
+      if callers.tiers else [tier] -%}
+{%- set params = _priority_params.copy() -%}
+{%- for field, injected in previous.get('settings', {}).items() -%}
+{%- if params.get(field) == injected -%}
+{%- set before = previous.settings_before[field] -%}
+{%- if before.present -%}
+{%- set _ = params.update({field: before.value}) -%}
+{%- elif field == 'keepalive_seconds' -%}
+{%- set _ = params.update({field: 0}) -%}
+{%- elif field == 'extra_body' -%}
+{%- set _ = params.update({field: {}}) -%}
+{%- elif field in ['timeout', 'stream_timeout'] -%}
+{%- set _ = params.update({field: llm_router_request_timeout_seconds}) -%}
+{%- else -%}
+{%- set _ = params.pop(field, none) -%}
+{%- endif -%}
+{%- endif -%}
+{%- endfor -%}
+{%- set tags = (_priority_tags | reject('match', '^tier-[0-9]+$')
+      | reject('equalto', 'default') | list) -%}
+{%- set local = 'local' in tags -%}
+{%- set entries = [] -%}
+{%- for caller_tier in tiers -%}
+{%- set policy = llm_router_priority_policy_by_tier[caller_tier | string] -%}
+{%- set tier_tags = tags + (['tier-' ~ caller_tier] if local or caller_tier != 2 else []) -%}
+{%- set settings = {} -%}
+{%- if local -%}
+{%- set settings = {'extra_body': (params.extra_body | default({}))
+      | combine({'priority': policy.priority}), 'keepalive_seconds': 0} -%}
+{%- if caller_tier == 2 -%}
+{%- set settings = settings | combine({
+      'timeout': llm_router_tier_2_timeout_seconds,
+      'stream_timeout': llm_router_tier_2_timeout_seconds,
+      'keepalive_seconds': llm_router_tier_2_keepalive_seconds}) -%}
+{%- endif -%}
+{%- endif -%}
+{%- set before = {} -%}
+{%- for field in settings -%}
+{%- set _ = before.update({field: {'present': field in params, 'value': params.get(field)}}) -%}
+{%- endfor -%}
+{%- set _ = entries.append({'params': params | combine(settings, {'tags': tier_tags | unique | list}),
+    'provenance': {'tier': caller_tier, 'tiers': [caller_tier],
+                   'settings': settings, 'settings_before': before}}) -%}
+{%- endfor -%}
+{{ entries | to_json }}

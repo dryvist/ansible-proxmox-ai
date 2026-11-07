@@ -1,0 +1,58 @@
+---
+- name: Define an operator-restricted key before it enters tier 2
+  ansible.builtin.set_fact:
+    llm_router_virtual_keys:
+      - alias: fixture-owned
+        value: sk-fixture-owned-key
+        priority_tier: 2
+        team_id: tier-2
+        models: [fixture-local]
+        router_settings: "{{ llm_router_priority_policy_by_tier['2'].router_settings }}"
+    _before_tier_2:
+      key_alias: fixture-owned
+      team_id: tier-0
+      models: [fixture-local]
+      object_permission: "{{ llm_router_mcp_default_object_permission }}"
+      metadata:
+        tags: ['&tier-0', '&local', ui-tag]
+      router_settings:
+        enable_tag_filtering: true
+        fallbacks: []
+        num_retries: 3
+
+- name: Capture policy provenance while applying tier 2
+  ansible.builtin.set_fact:
+    _entered: "{{ lookup('template', _fixture.path ~ '/key.j2') | first }}"
+  vars:
+    _llm_router_live_key_aliases: [fixture-owned]
+    llm_router_existing_keys:
+      json:
+        keys: ["{{ _before_tier_2 }}"]
+
+- name: Move the same key back to tier 0
+  ansible.builtin.set_fact:
+    llm_router_virtual_keys: >-
+      {{ llm_router_virtual_keys | map('combine', {'priority_tier': 0, 'team_id': 'tier-0',
+         'router_settings': llm_router_priority_policy_by_tier['0'].router_settings}) | list }}
+
+- name: Restore the policy captured before tier 2
+  ansible.builtin.set_fact:
+    _left: "{{ lookup('template', _fixture.path ~ '/key.j2') | first }}"
+  vars:
+    _llm_router_live_key_aliases: [fixture-owned]
+    llm_router_existing_keys:
+      json:
+        keys: ["{{ _before_tier_2 | combine(_entered.body) }}"]
+
+- name: Operator restrictions survive while tier-owned restrictions are removed
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'&local' not in _entered.body.metadata.priority_policy.added_tags"
+      - "'&local' in _left.body.metadata.tags"
+      - "'ui-tag' in _left.body.metadata.tags"
+      - _left.body.router_settings.fallbacks == []
+      - _left.body.router_settings.num_retries == 3
+      - "'context_window_fallbacks' not in _left.body.router_settings"
+      - "'content_policy_fallbacks' not in _left.body.router_settings"
+      - "'timeout' not in _left.body.router_settings"

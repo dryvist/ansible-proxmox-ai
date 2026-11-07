@@ -30,6 +30,15 @@ def test_retain_scope_limits_each_process_to_one_in_flight_extraction() -> None:
     assert '"1"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT")
 
 
+def test_background_llm_timeouts_accept_the_tier_2_wait_and_execution_budget() -> None:
+    rendered = render({
+        "hindsight_docker_retain_llm_timeout": 45000,
+        "hindsight_docker_consolidation_llm_timeout": 45000,
+    })
+    for name in ("RETAIN", "CONSOLIDATION"):
+        assert '"45000"' in env_line(rendered, f"HINDSIGHT_API_{name}_LLM_TIMEOUT")
+
+
 def test_retain_limits_cover_real_target_observations() -> None:
     observed = json.loads(LIVE_FIXTURE.read_text())
     replicas = observed["replicas"]

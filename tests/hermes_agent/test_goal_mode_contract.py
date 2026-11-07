@@ -117,7 +117,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         == "{{ hermes_agent_stream_stale_timeout }}"
     )
     assert (
-        "HERMES_API_CALL_STALE_TIMEOUT={{ hermes_agent_api_call_stale_timeout }}"
+        "HERMES_API_CALL_STALE_TIMEOUT={{ _client_timeouts.api_stale | default(hermes_agent_api_call_stale_timeout) }}"
         in environment
     )
     assert defaults["hermes_agent_cron_inactivity_timeout_seconds"] == 1800

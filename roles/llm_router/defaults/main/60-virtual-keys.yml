@@ -9,6 +9,7 @@ _llm_router_virtual_keys_source: >-
         | selectattr('review_private_only', 'defined')
         | map(attribute='route_group') | list -%}
   {%- set _declared_keys = _llm_router_declared_virtual_keys -%}
+  {%- set _effective_tiers = llm_router_priority_effective_key_tiers -%}
   {%- set _rungs_by_class = _llm_router_m_d1_rungs_by_class -%}
   {%- set _zdr_rungs_by_class = llm_router_d1_zdr_rungs_by_class -%}
   {%- set _group_class_by_name = llm_router_d1_group_class_by_name -%}
@@ -21,19 +22,51 @@ _llm_router_virtual_keys_source: >-
   {%- for k in _declared_keys
        if (k.enabled is not defined or k.enabled | bool) -%}
   {%- set _key = k -%}
+  {%- set _requested_tier = _effective_tiers[k.alias] -%}
+  {%- set _priority_tier = (_requested_tier | int) if _requested_tier | string in ['0', '1', '2']
+        else undef('Unsupported priority tier for key alias ' ~ k.alias) -%}
+  {%- set _tier_tag = '&tier-' ~ _priority_tier -%}
+  {%- set _policy = llm_router_priority_policy_by_tier[_priority_tier | string] -%}
+  {%- set _tier_tags = ((_key.tags | default([]))
+        | reject('equalto', 'agent-priority')
+        | reject('match', '^([&!])?tier-[0-9]+$') | list) + [_tier_tag] -%}
+  {%- set _tier_metadata = _key.metadata | default({}) -%}
+  {%- set _tier_metadata = _tier_metadata | combine({'tags':
+        ((_tier_metadata.tags | default([]))
+          | reject('equalto', 'agent-priority')
+          | reject('match', '^([&!])?tier-[0-9]+$') | list) + [_tier_tag]}) -%}
+  {%- set _before = {} -%}
+  {%- for field in _policy.router_settings -%}
+  {%- set _ = _before.update({field: {
+        'present': field in (_key.router_settings | default({})),
+        'value': (_key.router_settings | default({})).get(field)}}) -%}
+  {%- endfor -%}
+  {%- set _tier_metadata = _tier_metadata | combine({'priority_policy': {
+        'tier': _priority_tier,
+        'added_tags': _policy.tags | difference((_key.tags | default([]))
+                     + (_tier_metadata.tags | default([]))),
+        'settings': _policy.router_settings, 'settings_before': _before}}) -%}
+  {%- set _tier_settings = (_key.router_settings | default({})) | combine(_policy.router_settings) -%}
+  {%- if _priority_tier == 2 -%}
+  {%- set _tier_tags = _tier_tags + ['&local'] -%}
+  {%- set _key = _key | combine({'allowed_classes': ['local'], 'zdr_only': false}) -%}
+  {%- endif -%}
+  {%- set _key = _key | combine({'team_id': 'tier-' ~ _priority_tier,
+        'priority_tier': _priority_tier, 'tags': _tier_tags | unique | list,
+        'metadata': _tier_metadata, 'router_settings': _tier_settings}) -%}
   {%- set _trust_clamped = false -%}
   {%- set _caller = _llm_router_trust_scoped_key_caller_ids.get(k.alias) -%}
   {%- if k.alias in _llm_router_trust_scoped_key_caller_ids -%}
   {%- set _tier = (ai_callers | default({})).get(_caller, {}).get('trust_tier', '')
         | default(agent_callers_default_tier | default(''), true) -%}
   {%- if _tier not in _llm_router_trusted_caller_tiers -%}
-  {%- set _classes = (k.allowed_classes | default([]))
+  {%- set _classes = (_key.allowed_classes | default([]))
         | select('in', _llm_router_untrusted_key_classes) | list -%}
-  {%- set _tags = ((k.tags | default([])) + _llm_router_untrusted_key_tags)
+  {%- set _tags = ((_key.tags | default([])) + _llm_router_untrusted_key_tags)
         | unique | list -%}
-  {%- set _router_settings = (k.router_settings | default({}, true))
+  {%- set _router_settings = (_key.router_settings | default({}, true))
         | combine({'enable_tag_filtering': true}, recursive=true) -%}
-  {%- set _key = k | combine({'allowed_classes': _classes, 'tags': _tags,
+  {%- set _key = _key | combine({'allowed_classes': _classes, 'tags': _tags,
         'router_settings': _router_settings}, recursive=true) -%}
   {%- set _trust_clamped = true -%}
   {%- endif -%}
@@ -107,10 +140,11 @@ _llm_router_virtual_keys_source: >-
           'runner': (_key.metadata | default({})).get('runner', _key.alias),
           'runtime': (_key.metadata | default({})).get('runtime', _key.alias),
           'purpose': _purpose,
-          'tier': (_key.metadata | default({})).get('tier', _key.tier | default('local')),
+          'tier': _priority_tier,
           'environment': 'benchmark' if _purpose == 'benchmark' else llm_router_trace_environment,
           'release': _litellm_release,
-        } | combine((_key.metadata | default({})).get('trace_defaults', {})),
+        } | combine((_key.metadata | default({})).get('trace_defaults', {}))
+          | combine({'tier': _priority_tier}),
         'trace_required': llm_router_benchmark_trace_fields}
         | combine(_router_key_metadata, recursive=true),
       }, recursive=true)) -%}

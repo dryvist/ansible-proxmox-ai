@@ -133,6 +133,27 @@
              | selectattr('litellm_params.api_base', 'search', ':8642/v1$')
              | list }}
 
+    - name: Each priority tier can select every published agent
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _agents | length == tofu_data.hermes_agents | length
+          - >-
+            _agents | selectattr('litellm_params.tags', 'contains', item.team_id)
+            | list | length == _agents | length
+          - >-
+            _agents | selectattr('litellm_params.tags', 'contains', 'sensitivity:public')
+            | list | length == _agents | length
+          - >-
+            _agents | selectattr('litellm_params.tags', 'contains', 'local') | list | length == _agents | length
+          - >-
+            _agents | selectattr('litellm_params.tags', 'contains', 'zdr') | list | length == _agents | length
+      loop: "{{ llm_router_priority_tiers }}"
+      loop_control:
+        label: "{{ item.team_id }}"
+      vars:
+        _agents: "{{ _config.model_list | selectattr('model_name', 'in', tofu_data.hermes_agents) | list }}"
+
     - name: Each agent points at its OWN api_url and carries a bearer
       ansible.builtin.assert:
         quiet: true

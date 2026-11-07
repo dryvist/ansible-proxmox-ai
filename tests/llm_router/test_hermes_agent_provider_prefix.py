@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -22,6 +23,10 @@ def _render_agents() -> list[dict]:
     env.filters["regex_replace"] = lambda value, pattern, replacement: re.sub(
         pattern, replacement, str(value)
     )
+    env.filters["to_json"] = json.dumps
+    priority_defaults = yaml.safe_load(
+        (REPO_ROOT / "roles/llm_router/defaults/main/56d-priority-tiers.yml").read_text()
+    )
     agents = {
         name: {
             "api_url": f"http://{name}.example.test:8642/v1",
@@ -35,6 +40,7 @@ def _render_agents() -> list[dict]:
         llm_router_hermes_identity_bearers={name: "placeholder" for name in AGENT_NAMES},
         llm_router_hermes_agent_timeout=120,
         llm_router_hermes_agent_context_window=32768,
+        llm_router_priority_tiers=priority_defaults["llm_router_priority_tiers"],
     )
     return yaml.safe_load("model_list:\n" + rendered)["model_list"]
 
