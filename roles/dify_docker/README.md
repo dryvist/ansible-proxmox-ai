@@ -99,15 +99,22 @@ values remain authoritative; values supplied through the environment seed
 only missing fields. The local sandbox reaches the API only through the
 dedicated SSRF proxy's signed file and Agent Stub routes.
 
-## Private agent DSLs
+## Agent DSL imports
 
-`dify_docker_private_agent_dsls` (default `[]`) lists agent DSL sources the public
-pin list does not carry, each as `name`, `url` and `sha256`. The list and
+The public agent list is read from `agents/dify/manifest.json` at the pinned
+`dify_docker_agent_dsl_commit`. The manifest itself and every listed DSL are
+verified against their pinned SHA-256 values before any public app is imported.
+Catalog entries are imported as listed, including driver entries. Existing app
+names are skipped, so imports do not change an existing app's mode. Check mode
+fetches the catalog for a preview and skips imports.
+
+`dify_docker_private_agent_dsls` (default `[]`) adds private sources alongside
+the public catalog entries, each as `name`, `url` and `sha256`. The list and
 `dify_docker_private_agent_dsl_token` (default empty) are supplied at converge time
 from a private source and are never committed. Each private entry is fetched with
 `Authorization: Bearer <token>`, verified against its `sha256`, and imported like
-the public DSLs, which skips an app name that already exists. Private entries are
-skipped while the token is empty.
+the public DSLs when its source is valid and its app name is not already present.
+Private entries are skipped while the token is empty.
 
 ## What in this stack needs protecting
 

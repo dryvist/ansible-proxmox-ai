@@ -3,8 +3,9 @@
 import ast
 from pathlib import Path
 
-import yaml
 from jinja2 import Environment
+
+from _agent_dsl_shared import _task, _yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,16 +15,8 @@ IMPORT_LOOP = ROOT / "roles/dify_docker/tasks/import_agent_dsls.yml"
 IMPORT_ONE = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
 
 FETCH_TASK = "Fetch the pinned agent DSL and verify its sha256"
-PRIVATE_LOOP_TASK = "Import each private agent DSL (non-fatal, skips existing app names)"
+PRIVATE_LOOP_TASK = "Import each private agent DSL (skips existing app names)"
 TOKEN = "fixture-token"
-
-
-def _yaml(path):
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-def _task(tasks, name):
-    return next(task for task in tasks if task.get("name") == name)
 
 
 def _render(expression, **context):
@@ -47,7 +40,19 @@ def test_pinned_sources_file_does_not_override_supplied_private_values():
     pins = _yaml(AGENT_DSLS)
 
     assert not [name for name in pins if "private" in name]
-    assert all("private" not in entry for entry in pins["dify_docker_agent_dsls"])
+    assert "dify_docker_agent_dsls" not in pins
+
+
+def test_private_sources_remain_a_separate_import_loop_after_catalog_entries():
+    tasks = _yaml(IMPORT_LOOP)
+    public = _task(tasks, "Import each catalog agent DSL (skips existing app names)")
+    private = _task(tasks, PRIVATE_LOOP_TASK)
+
+    assert public["loop"] == "{{ dify_docker_agent_dsls }}"
+    assert private["loop"] == (
+        "{{ dify_docker_private_agent_dsls | map('combine', {'private': true}) | list }}"
+    )
+    assert tasks.index(public) < tasks.index(private)
 
 
 def test_private_entries_are_marked_and_skipped_without_a_token():

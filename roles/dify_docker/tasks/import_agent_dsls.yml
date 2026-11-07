@@ -1,13 +1,85 @@
 ---
 # =============================================================================
-# Import the agent DSLs into the console (best-effort, idempotent, non-fatal).
-# Lists the existing apps once; each DSL is then handled by import_agent_dsl.yml,
-# which skips any app whose name already exists, so operator edits survive.
+# Verify the pinned public catalog inputs before importing any app. Then list
+# existing apps once; import_agent_dsl.yml skips names already in the console.
 # =============================================================================
 
-- name: Load the pinned agent DSL sources
+- name: Load the pinned agent DSL catalog settings
   ansible.builtin.include_vars:
     file: "{{ role_path }}/vars/agent_dsls.yml"
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  no_log: true
+
+- name: Fetch the pinned agent DSL catalog manifest and verify its sha256
+  ansible.builtin.get_url:
+    url: "{{ dify_docker_agent_dsl_base }}/agents/dify/manifest.json"
+    dest: "/tmp/dify-agent-dsl-manifest-{{ dify_docker_agent_dsl_commit }}.json"
+    checksum: "sha256:{{ dify_docker_agent_dsl_manifest_sha256 }}"
+    mode: "0600"
+    force: true
+  check_mode: false
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  no_log: true
+
+- name: Read the verified agent DSL catalog manifest
+  ansible.builtin.slurp:
+    src: "/tmp/dify-agent-dsl-manifest-{{ dify_docker_agent_dsl_commit }}.json"
+  register: dify_docker_agent_dsl_manifest_raw
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  no_log: true
+
+- name: Initialize catalog-derived agent DSL sources
+  ansible.builtin.set_fact:
+    dify_docker_agent_dsls: []
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  no_log: true
+
+- name: Build agent DSL URLs from every catalog manifest entry
+  ansible.builtin.set_fact:
+    dify_docker_agent_dsls: >-
+      {{ dify_docker_agent_dsls
+         + [dify_docker_agent_dsl_manifest_entry
+            | combine({'url': dify_docker_agent_dsl_base ~ '/' ~ dify_docker_agent_dsl_manifest_entry.path})] }}
+  loop: "{{ dify_docker_agent_dsl_manifest_raw.content | b64decode | from_json }}"
+  loop_control:
+    loop_var: dify_docker_agent_dsl_manifest_entry
+    label: "{{ dify_docker_agent_dsl_manifest_entry.name }}"
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  no_log: true
+
+- name: Remove the verified agent DSL catalog manifest copy
+  ansible.builtin.file:
+    path: "/tmp/dify-agent-dsl-manifest-{{ dify_docker_agent_dsl_commit }}.json"
+    state: absent
+  check_mode: false
+  changed_when: false
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+  no_log: true
+
+- name: Fetch and verify all catalog agent DSLs before importing any
+  ansible.builtin.get_url:
+    url: "{{ dify_docker_agent_dsl.url }}"
+    dest: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
+    checksum: "sha256:{{ dify_docker_agent_dsl.sha256 }}"
+    mode: "0600"
+    force: true
+  loop: "{{ dify_docker_agent_dsls }}"
+  loop_control:
+    loop_var: dify_docker_agent_dsl
+    label: "{{ dify_docker_agent_dsl.name }}"
+  check_mode: false
   when:
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
@@ -32,7 +104,7 @@
   failed_when: false
   no_log: true
 
-- name: Import each agent DSL (non-fatal, skips existing app names)
+- name: Import each catalog agent DSL (skips existing app names)
   ansible.builtin.include_tasks: import_agent_dsl.yml
   loop: "{{ dify_docker_agent_dsls }}"
   loop_control:
@@ -46,7 +118,7 @@
 # Private entries come from the converge-time variable and are fetched with the
 # bearer token. They are marked here so an entry cannot be fetched without it,
 # and are skipped while the token is empty.
-- name: Import each private agent DSL (non-fatal, skips existing app names)
+- name: Import each private agent DSL (skips existing app names)
   ansible.builtin.include_tasks: import_agent_dsl.yml
   loop: "{{ dify_docker_private_agent_dsls | map('combine', {'private': true}) | list }}"
   loop_control:
@@ -57,6 +129,7 @@
     - dify_docker_import_agent_dsls | bool
     - dify_docker_dsl_apps_list.status | default(0) == 200
     - dify_docker_private_agent_dsl_token | length > 0
+    - not ansible_check_mode
 
 - name: Report private agent DSLs skipped for a missing token
   ansible.builtin.debug:
