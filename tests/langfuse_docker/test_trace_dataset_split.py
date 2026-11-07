@@ -40,7 +40,9 @@ def test_trace_split_is_deterministic_and_disjoint(trace_ids):
     first = _assign(trace_ids, fraction)
     second = _assign(trace_ids, fraction)
     datasets_reconcile = yaml.safe_load(DATASETS_RECONCILE.read_text())
-    declared = defaults["langfuse_docker_stage0_trace_datasets"]
+    declared = yaml.safe_load(
+        (DEFAULTS.parent / "25-trace-datasets.yml").read_text()
+    )["langfuse_docker_stage0_trace_datasets"]
     native_defaults = yaml.safe_load(
         (DEFAULTS.parent / "30-native-evaluation.yml").read_text()
     )
