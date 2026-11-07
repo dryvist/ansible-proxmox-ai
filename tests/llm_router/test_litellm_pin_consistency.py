@@ -9,6 +9,9 @@ import json
 import re
 from pathlib import Path
 
+import yaml
+from packaging.requirements import Requirement
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 PIN_FILE = REPO_ROOT / "roles" / "llm_router" / "files" / "requirements.in"
@@ -66,6 +69,30 @@ def test_installer_uses_hash_enforcement():
     task = INSTALL_TASK.read_text()
     assert 'requirements: "{{ llm_router_home }}/requirements.txt"' in task
     assert "extra_args: --require-hashes" in task
+
+
+def test_default_pip_requirements_are_named_exact_pins():
+    defaults_dir = IDENTITY_FILE.parent
+    requirements = []
+    for path in defaults_dir.glob("*.yml"):
+        for name, value in yaml.safe_load(path.read_text()).items():
+            if name.endswith(("_pip_packages", "_uv_package")) and "{{" not in str(value):
+                requirements.extend(value if isinstance(value, list) else [value])
+    assert requirements
+    for value in requirements:
+        requirement = Requirement(value)
+        assert len(requirement.specifier) == 1, value
+        assert next(iter(requirement.specifier)).operator == "==", value
+
+
+def test_uv_pin_uses_renovate_requirement_list_annotation():
+    source = IDENTITY_FILE.read_text()
+    assert re.search(
+        r'(?m)^llm_router_uv_package:\n'
+        r'  # renovate: datasource=pypi depName=uv\n'
+        r'  - "uv==(?P<version>\d+\.\d+\.\d+)"$',
+        source,
+    ), "Use the shared Renovate requirement-list matcher to preserve the package name"
 
 
 def test_renovate_compiles_the_lock_with_the_pypi_source():
