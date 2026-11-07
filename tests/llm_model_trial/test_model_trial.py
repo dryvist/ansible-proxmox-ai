@@ -23,7 +23,21 @@ SPEC.loader.exec_module(PLUGIN)
 
 
 def fixture(name: str) -> dict:
-    return json.loads((FIXTURES / name).read_text())
+    data = json.loads((FIXTURES / name).read_text())
+    # Synthetic identity and dates keep engine fixtures separate from model admission evidence.
+    data["info"].update(id="example/quantized", createdAt="2026-11-01T00:00:00Z",
+                        lastModified="2026-11-05T00:00:00Z",
+                        cardData={"base_model": "example/intermediate"})
+    data["upstreams"] = {
+        "example/intermediate": {
+            "id": "example/intermediate", "createdAt": "2026-10-20T00:00:00Z",
+            "cardData": {"base_model": ["example/base"]},
+        },
+        "example/base": {"id": "example/base", "createdAt": "2026-10-01T00:00:00Z", "cardData": {}},
+    }
+    data["policy"] = json.loads((FIXTURES / "model-policy.json").read_text())
+    data["policy"]["_dossier_root"] = str(FIXTURES / "ansible")
+    return data
 
 
 def select(data: dict, **kwargs) -> dict:
@@ -35,7 +49,8 @@ def select(data: dict, **kwargs) -> dict:
         data["hf_quant"],
         data["weight_index"],
         data["card"],
-        RULES,
+        RULES | {"llm_model_trial_policy_data": data["policy"],
+                 "llm_model_trial_upstream_infos": data["upstreams"]},
         **kwargs,
     )
 
@@ -63,7 +78,8 @@ def test_nvidia_modelopt_fixture_selects_vllm_with_mtp() -> None:
     assert selected["architecture"] == "qwen3_5"
     assert selected["mtp_head"] is True
     assert selected["resolved_sha"] == "482ca0f3832238542f8f5295dde86b5f22711d80"
-    assert selected["release_date"] == "2026-09-17T17:16:07+00:00"
+    assert selected["release_date"] == "2026-10-01"
+    assert selected["upstream_id"] == "example/base"
     assert [item["path"] for item in selected["weight_files"]] == [
         "model-00001-of-00003.safetensors",
         "model-00002-of-00003.safetensors",
@@ -79,7 +95,7 @@ def test_unsloth_gguf_fixture_selects_llama_cpp_and_matching_mtp() -> None:
     assert selected["quantization"] == "UD-IQ3_XXS"
     assert selected["architecture"] == "qwen4exp"
     assert selected["mtp_head"] is True
-    assert selected["release_date"] == "2026-10-06T05:31:22+00:00"
+    assert selected["release_date"] == "2026-10-01"
     assert len(selected["weight_files"]) == 3
     assert all("UD-IQ3_XXS" in item["path"] and "/MTP/" not in item["path"]
                for item in selected["weight_files"])

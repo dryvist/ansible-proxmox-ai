@@ -34,6 +34,6 @@ def test_prometheus_config_is_deployed_and_mounted_read_only():
 
 
 def test_prometheus_port_reads_the_published_metrics_constant():
-    defaults = (ROLE / "defaults/main.yml").read_text()
+    defaults = (ROLE / "defaults/main/00-core.yml").read_text()
 
     assert "['service_ports']['clickhouse_metrics']" in defaults

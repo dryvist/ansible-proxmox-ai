@@ -41,7 +41,7 @@ EXPECTED_COLUMNS = [
 
 
 def _defaults() -> dict:
-    return yaml.safe_load((ROLE / "defaults/main.yml").read_text(encoding="utf-8"))
+    return yaml.safe_load((ROLE / "defaults/main/00-core.yml").read_text(encoding="utf-8"))
 
 
 def _render() -> str:
@@ -94,7 +94,7 @@ def test_cribl_is_insert_only_on_the_llm_database_and_its_password_comes_from_op
     tasks = (ROLE / "tasks/main.yml").read_text(encoding="utf-8")
 
     assert defaults["clickhouse_docker_cribl_user"] == "cribl"
-    assert "CRIBL_PASSWORD" in (ROLE / "defaults/main.yml").read_text(encoding="utf-8")
+    assert "CRIBL_PASSWORD" in (ROLE / "defaults/main/00-core.yml").read_text(encoding="utf-8")
     assert "GRANT INSERT ON {{ clickhouse_docker_llm_database }}.* TO {{ clickhouse_docker_cribl_user }}" in tasks
     assert "GRANT SELECT ON {{ clickhouse_docker_llm_database }}.* TO {{ item.key }}" in tasks
     assert "clickhouse_docker_cribl_password" in tasks

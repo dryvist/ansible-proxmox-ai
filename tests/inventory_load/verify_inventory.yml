@@ -197,3 +197,44 @@
           - hostvars['squid'].ai_agent_owner['fixture-system'] == 'roster-test'
           - "hostvars['squid'].ai_callers['roster-test'] == {'trust_tier': ''}"
           - hostvars['squid'].ai_agent_gateway_key_fields['roster-test'] == 'roster_test_agentgateway_key'
+
+    - name: Add a synthetic Pepper guest with both required tags
+      ansible.builtin.set_fact:
+        tofu_data: >-
+          {{ tofu_data | combine({'containers': tofu_data.containers | combine({
+               'fixture-pepper': tofu_data.containers['hermes-agent']
+                 | combine({'tags': ['hermes-agent', 'hermes-pepper']})})}) }}
+
+    - name: Project the Pepper fixture into inventory
+      ansible.builtin.import_tasks: ../../inventory/load_tofu/add_lxc_host_inventory.yml
+
+    - name: Pepper resolves to its own identity in the Hermes connection group
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - hostvars['fixture-pepper'].hermes_agent_identity == 'pepper'
+          - "'fixture-pepper' in groups['hermes_agent_group']"
+
+    - name: Reject conflicting Pepper identity markers
+      block:
+        - name: Pollute Pepper with a second identity marker
+          ansible.builtin.set_fact:
+            tofu_data: >-
+              {{ tofu_data | combine({'containers': tofu_data.containers | combine({
+                   'fixture-pepper': tofu_data.containers['fixture-pepper']
+                     | combine({'tags': ['hermes-agent', 'hermes-pepper', 'hermes-donna']})})}) }}
+        - name: Attempt conflicting identity projection
+          ansible.builtin.include_tasks: ../../inventory/load_tofu/add_lxc_host_inventory.yml
+        - name: Record an incorrectly accepted identity conflict
+          ansible.builtin.set_fact:
+            _pepper_conflict_accepted: true
+      rescue:
+        - name: Confirm the identity tag guard rejected the projection
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_task.name == 'Reject conflicting or unrecognized Hermes identity markers'
+
+    - name: Confirm conflicting identity tags were refused
+      ansible.builtin.assert:
+        that:
+          - not (_pepper_conflict_accepted | default(false))

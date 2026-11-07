@@ -93,6 +93,24 @@ The Docker-based roles still depend on the local `docker_engine` bootstrap copy
 
 ## Contributing
 
+### Model admission
+
+Model trials and enabled router entries use `model-policy.json` from the
+installed `dryvist.homelab` collection's `llm_model_catalog/files/` directory.
+The policy records model IDs, upstream IDs and creation dates, dossiers,
+an evaluation date, a maximum age of 365 days, and denied IDs.
+The controller's current UTC date enforces model age.
+
+The `llm_model_trial_policy` role input supplies the same schema when the
+installed collection has no policy file. Its default is empty and admits no
+models. Tests supply synthetic evidence through fixtures. An installed policy
+takes precedence over the role input.
+
+Trial preflight reads `cardData.base_model` recursively with the native Hub
+CLI. Derived models inherit their oldest upstream creation date. Trial facts
+record that date, upstream ID, and dossier. Router projections exclude old,
+denied, undated, and unlisted models.
+
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/).
 This repo uses the git-flow branching model: open pull requests against
 `develop`, not `main`.

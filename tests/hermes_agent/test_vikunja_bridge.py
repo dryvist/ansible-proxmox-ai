@@ -224,7 +224,11 @@ def test_the_bridge_is_off_by_default_and_asserts_its_own_credential():
     # (the bridge's own gating never names the MCP flag) rather than by
     # pinning the MCP flag's global default, which the homelab-admin profile
     # now flips true independently once the /vikunja gateway route is live.
-    assert "hermes_agent_vikunja_mcp_enabled" not in asserts
+    bridge_asserts = "\n".join(
+        block for block in asserts.split("\n- name:")
+        if "hermes_agent_vikunja_bridge_" in block
+    )
+    assert "hermes_agent_vikunja_mcp_enabled" not in bridge_asserts
     for line in tasks.splitlines():
         if "hermes_agent_vikunja_bridge" in line and "when" in line:
             assert "hermes_agent_vikunja_mcp_enabled" not in line, line
