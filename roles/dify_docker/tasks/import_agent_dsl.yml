@@ -1,8 +1,8 @@
 ---
-# One agent DSL: fetch the pinned file with a sha256 check on its exact bytes,
-# skip an existing app name, import it, and confirm when Dify reports a DSL
-# version mismatch. Every step is non-fatal. Tasks that carry the DSL or the
-# console cookie are no_log.
+# One agent DSL: the public catalog file is pre-fetched and verified before the
+# import loop; private entries are fetched here with their supplied checksum.
+# Existing app names are skipped. Tasks that carry the DSL or console cookie
+# are no_log.
 
 # Facts persist across loop iterations, so clear the previous DSL before fetching.
 - name: Clear the previous agent DSL before fetching
@@ -11,8 +11,7 @@
     dify_docker_dsl_name: ""
   no_log: true
 
-# get_url verifies the checksum on the exact bytes; a mismatch fails the task.
-# A private entry (marked by import_agent_dsls.yml) also sends the bearer token.
+# Private entries (marked by import_agent_dsls.yml) send the bearer token.
 - name: Fetch the pinned agent DSL and verify its sha256
   ansible.builtin.get_url:
     url: "{{ dify_docker_agent_dsl.url }}"
@@ -25,13 +24,17 @@
     force: true
   register: dify_docker_dsl_fetch
   ignore_errors: true
+  check_mode: false
+  when: dify_docker_agent_dsl.private | default(false) | bool
   no_log: true
 
 - name: Read the verified agent DSL
   ansible.builtin.slurp:
     src: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
   register: dify_docker_dsl_raw
-  when: dify_docker_dsl_fetch is not failed
+  when: >-
+    not (dify_docker_agent_dsl.private | default(false) | bool)
+    or dify_docker_dsl_fetch is not failed
   no_log: true
 
 - name: Keep the DSL content and its app name
@@ -46,6 +49,7 @@
     path: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
     state: absent
   changed_when: false
+  check_mode: false
   no_log: true
 
 - name: Report a DSL that failed its pin or fetch
@@ -77,6 +81,7 @@
   when:
     - dify_docker_dsl_content | length > 0
     - dify_docker_dsl_name not in (dify_docker_dsl_apps_list.json.data | default([]) | map(attribute='name') | list)
+    - not ansible_check_mode
   no_log: true
 
 - name: Confirm the agent DSL import (DSL version mismatch)
@@ -93,7 +98,9 @@
     (dify_docker_dsl_confirm.json | default({})).status | default('')
     in ['completed', 'completed-with-warnings']
   failed_when: false
-  when: (dify_docker_dsl_import.json | default({})).status | default('') == 'pending'
+  when:
+    - (dify_docker_dsl_import.json | default({})).status | default('') == 'pending'
+    - not ansible_check_mode
   no_log: true
 
 - name: Agent DSL import result
@@ -107,5 +114,7 @@
 
 - name: Ensure the agent app API key is stored in OpenBao
   ansible.builtin.include_tasks: ensure_agent_app_api_key.yml
-  when: dify_docker_dsl_name | length > 0
+  when:
+    - dify_docker_dsl_name | length > 0
+    - not ansible_check_mode
   no_log: true
