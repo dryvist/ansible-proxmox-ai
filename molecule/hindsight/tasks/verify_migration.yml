@@ -9,14 +9,18 @@
   register: hindsight_fixture_target_container
   changed_when: false
 
-- name: Require the target container to reuse the legacy cache volume
+- name: Select the target named cache
+  ansible.builtin.set_fact:
+    hindsight_fixture_target_cache: >-
+      {{ (hindsight_fixture_target_container.stdout | from_json | first).Mounts
+         | selectattr('Destination', 'equalto', '/home/hindsight/.cache')
+         | map(attribute='Name') | first | default('') }}
+
+- name: Require the target container to use its image-specific cache volume
   ansible.builtin.assert:
     that:
-      - >-
-        ((hindsight_fixture_target_container.stdout | from_json | first).Mounts
-         | selectattr('Destination', 'equalto', '/home/hindsight/.cache')
-         | map(attribute='Name') | first | default(''))
-        == (hindsight_fixture_legacy_cache_file.content | b64decode | trim)
+      - hindsight_fixture_target_cache == hindsight_compose.volumes['hindsight-cache'].name
+      - hindsight_fixture_target_cache != (hindsight_fixture_legacy_cache_file.content | b64decode | trim)
 
 - name: Read the legacy model-blob hash list
   ansible.builtin.slurp:
@@ -37,6 +41,15 @@
   ansible.builtin.assert:
     that:
       - hindsight_fixture_cache_hash_lines == hindsight_fixture_expected_cache_hashes
+
+- name: Hash the target image's model blobs before containment
+  ansible.builtin.import_tasks: hash_cache_blobs.yml
+  vars:
+    hindsight_fixture_cache_name: "{{ hindsight_fixture_target_cache }}"
+
+- name: Record the target model-blob hashes for containment verification
+  ansible.builtin.set_fact:
+    hindsight_fixture_expected_cache_hashes: "{{ hindsight_fixture_cache_hash_lines }}"
 
 - name: Read the original legacy rows
   ansible.builtin.slurp:
