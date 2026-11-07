@@ -25,6 +25,7 @@ def _render(expression, variables):
 
 def _router_fixture():
     registry = [
+        {"client_model_id": "fixture-null-window-id", "route_group": "medium", "context_window": None},
         {"client_model_id": "fixture-medium-id", "route_group": "medium", "context_window": 65536},
         {"client_model_id": "fixture-small-id", "route_group": "small", "context_window": 32768},
         {
@@ -40,7 +41,6 @@ def _router_fixture():
             "serving_role": "ocr",
         },
         {"client_model_id": "fixture-default-context-id", "route_group": "local-default"},
-        {"client_model_id": "fixture-no-group-id", "context_window": 4096},
     ]
     return {
         "llm_router_model_registry": registry,
@@ -53,6 +53,7 @@ def _router_fixture():
             "local-default": "local-default",
         },
         "llm_router_capability_members": [
+            {"client_model_id": "fixture-null-window-id", "route_group": "medium", "context_window": None},
             {"client_model_id": "fixture-medium-id", "route_group": "medium", "context_window": 65536},
             {"client_model_id": "fixture-small-id", "route_group": "small", "context_window": 32768},
         ],
