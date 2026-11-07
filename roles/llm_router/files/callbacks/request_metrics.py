@@ -65,7 +65,7 @@ def build_record(kwargs, response_obj, start_time, end_time):
         "ts": end if isinstance(end, (int, float)) else start,
         "event": "llm_request",
         "model_group": payload.get("model_group"),
-        "model": payload.get("model"),
+        "model": contract.get("model") or payload.get("model"),
         "api_base": _host_only(payload.get("api_base")),
         "status": payload.get("status"),
         "error_class": error_info.get("error_class"),
@@ -105,8 +105,6 @@ def apply_deployment_contract(kwargs):
             contract = target.setdefault(carrier, {})
             contract.update(selected)
         target.update(selected)
-    if selected["model"] is not None:
-        payload["model"] = selected["model"]
     return kwargs
 
 
@@ -124,8 +122,8 @@ def apply_trace_contract(data, key_metadata, key_alias=None):
     metadata["agent"] = defaults.get("agent") or metadata.get("agent") or key_alias or defaults["client"]
     metadata["privacy_class"] = defaults.get("privacy_class", "private")
     # Deployment identity is assigned only after the router selects an attempt.
-    metadata["model"] = None
-    metadata["accelerator"] = None
+    deployment_fields = dict.fromkeys(("model", "accelerator"))
+    metadata.update(deployment_fields)
     session = data.get("litellm_session_id") or metadata.get("session_id")
     metadata["session_id"] = session or metadata.get("run_id") or data.get("litellm_trace_id") or metadata.get("trace_id") or uuid4().hex
     for field, fallback in {
@@ -147,7 +145,7 @@ def apply_trace_contract(data, key_metadata, key_alias=None):
     contract = {field: metadata[field] for field in fields if metadata.get(field) is not None}
     # Attribution comes from the authenticated key, even when callers supplied metadata.
     contract["key_alias"] = authenticated_alias
-    contract.update({"model": None, "accelerator": None})
+    contract.update(deployment_fields)
     # Failure exporters also see trusted attribution when validation rejects a call.
     for carrier in ("requester_metadata", "spend_logs_metadata", "trace_metadata"):
         existing = metadata.get(carrier)

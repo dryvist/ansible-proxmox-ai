@@ -43,7 +43,9 @@ def test_success_failure_retry_and_fallback_use_attempt_deployment(module, capsy
     module["apply_trace_contract"](data, None, "fixture-key")
     callback = module["RequestMetrics"]()
     attempts = [
+        ("success", "fixture/primary", "gpu-primary"),
         ("failure", "fixture/primary", "gpu-primary"),
+        ("success", "fixture/primary", "gpu-primary"),
         ("failure", "fixture/primary", "gpu-primary"),
         ("success", "fixture/fallback", "mac-primary"),
     ]
@@ -59,6 +61,8 @@ def test_success_failure_retry_and_fallback_use_attempt_deployment(module, capsy
             changed, returned = asyncio.run(callback.async_logging_hook(kwargs, result, "acompletion"))
             assert changed is kwargs and returned is result
         asyncio.run(getattr(callback, "async_log_" + status + "_event")(kwargs, None, 0, 1))
+        assert kwargs["standard_logging_object"]["model"] == "requested-alias"
+        assert kwargs["standard_logging_object"]["completion_tokens"] == (7 if status == "success" else 0)
         record = json.loads(capsys.readouterr().out)
         assert {key: record[key] for key in ("agent", "tier", "privacy_class", "model", "accelerator")} == {
             "agent": "fixture-agent", "tier": 0, "privacy_class": "private", "model": model, "accelerator": accelerator,
