@@ -46,6 +46,7 @@ def test_pepper_secret_domain_is_selected_only_for_its_runtime(identities, run_t
     env = NativeEnvironment(undefined=StrictUndefined)
     env.filters.update(intersect=lambda a, b: list(set(a) & set(b)),
                        difference=lambda a, b: list(set(a) - set(b)), bool=bool)
+    context['openbao_secrets_pepper_path'] = roster['openbao_secrets_pepper_path']
     context['hermes_agent_pepper_play_tags'] = roster['hermes_agent_pepper_play_tags']
     context['hermes_agent_pepper_runtime_selected'] = env.from_string(
         roster['hermes_agent_pepper_runtime_selected']).render(context)
