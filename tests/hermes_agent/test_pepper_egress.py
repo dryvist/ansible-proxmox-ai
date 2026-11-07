@@ -13,19 +13,24 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize('vault,youtrack,valid', [
-    ('', 'https://issues.example.test/mcp', True),
-    ('https://evidence.example.test/repository.git', 'https://issues.example.test/mcp', True),
-    ('http://evidence.example.test/repository.git', 'https://issues.example.test/mcp', False),
-    ('https://fixture-user:fixture-password@evidence.example.test/repository.git', 'https://issues.example.test/mcp', False),
-    ('', '', False),
+    ('evidence.example.test', 'issues.example.test', True),
+    ('', 'issues.example.test', False),
+    ('https://evidence.example.test/repository.git', 'issues.example.test', False),
+    ('evidence.example.test', 'fixture-user:fixture-password@issues.example.test', False),
+    ('evidence.example.test', '', False),
+    ('evidence.example.test', '.example.test', False),
+    ('evidence.example.test', '192.0.2.1', False),
 ])
 def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vault, youtrack, valid):
     defaults = role_defaults(ROOT / 'roles/agent_guest')
     defaults.update(yaml.safe_load((ROOT / 'roles/squid/defaults/main.yml').read_text()))
     endpoints = dict(
-        hermes_agent_youtrack_mcp_url=youtrack,
-        hermes_agent_github_identity_bao_addr='https://secrets.example.test',
-        hermes_agent_pepper_vault_repo_url=vault,
+        hermes_agent_pepper_youtrack_host=youtrack,
+        hermes_agent_pepper_vault_host=vault,
+        # Any attempt to consume the secret view or credential-bearing URLs fails.
+        hermes_agent_bao="{{ undef('The proxy must not fetch Pepper secrets') }}",
+        hermes_agent_youtrack_mcp_url="{{ undef('Use the non-secret hostname') }}",
+        hermes_agent_pepper_vault_repo_url="{{ undef('Use the non-secret hostname') }}",
     )
     defaults.update(
         agent_guest_proxy_host='proxy.example.test', agent_guest_proxy_port=3128,
@@ -43,7 +48,7 @@ def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vaul
         ai_agent_pool_group=dict(hosts={'fixture-pepper': {}, 'fixture-ordinary': {}}),
         squid_group=dict(hosts={'proxy-fixture': dict(ansible_connection='local')}),
     )))))
-    # Only the squid play runs: no facts have been prepared on either agent.
+    # Only the squid play runs: no facts or secrets have been prepared on either agent.
     resolver = yaml.safe_load((ROOT / 'roles/squid/tasks/main.yml').read_text())[0]
     tasks = [dict(name='Resolve the production squid inputs', **{'ansible.builtin.include_role': dict(
         name='squid', tasks_from='pepper_egress')},
@@ -71,8 +76,7 @@ def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vaul
         ]}}, vars=dict(
             _pepper_domains="{{ (_squid.split('acl pepper_domains dstdomain ')[1].split('\n')[0]).split() }}",
             _expected_domains=['.slack.com', '{{ squid_npm_registry_domain }}', 'llm.pve.example.test',
-                               'issues.example.test', 'secrets.example.test']
-                              + (['evidence.example.test'] if vault else []))),
+                               'issues.example.test', 'secrets.example.test', 'evidence.example.test'])),
     ]
     playbook = tmp_path / 'verify.yml'
     playbook.write_text(yaml.safe_dump([
@@ -83,14 +87,13 @@ def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vaul
         ['ansible-playbook', str(playbook), '-i', str(inventory), '-c', 'local',
          '--tags', 'squid', '--limit', 'squid_group,localhost'],
         env=dict(os.environ, ANSIBLE_LOCAL_TEMP=str(tmp_path / 'local'),
+                 SECRET_STORE_ADDR='https://secrets.example.test',
                  ANSIBLE_OPENTELEMETRY_ENABLED='true',
                  ANSIBLE_OPENTELEMETRY_STORE_SPANS_IN_FILE='/dev/null'),
         text=True, capture_output=True, check=False)
     assert result.returncode == (0 if valid else 2), result.stdout + result.stderr
     if not valid:
-        if vault:
-            assert vault not in result.stdout + result.stderr
-        assert 'Pepper egress requires resolvable HTTPS' in result.stdout
+        assert 'Pepper egress requires a non-secret DNS hostname' in result.stdout
 
 
 def test_proxy_precedes_runtime_and_uses_the_shared_guest_role():
