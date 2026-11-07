@@ -22,6 +22,9 @@ ROLE = ROOT / "roles/langfuse_docker"
     "api-error", "write-error", "invalid-sampling", "invalid-price", "unknown-variable", "disabled",
 ])
 def test_native_reconciliation(tmp_path, scenario):
+    registry = yaml.safe_load((ROOT / "llm-models.d/10-large.yml").read_text())
+    model = next(row["route_group"] for row in registry["_llm_registry_large"]
+                 if row.get("serving_role") == "primary")
     resources = {"datasets": {}, "models": [], "evaluators": [], "evaluation-rules": []}
     requests = []
     prompt = "Fixture {{input}} {{output}}"
@@ -124,7 +127,7 @@ def test_native_reconciliation(tmp_path, scenario):
                                    "input_price": -1 if scenario == "invalid-price" else 0,
                                    "output_price": 0}],
         "langfuse_evaluators": [{"name": "fixture-judge", "prompt_name": "judge-fixture",
-                                 "model": "small", "target": {"agent": "fixture", "tier": 2}}],
+                                 "model": model, "target": {"agent": "fixture", "tier": 2}}],
     }
     if scenario == "invalid-sampling":
         variables["langfuse_evaluators"][0]["sampling_rate"] = 2
@@ -189,7 +192,7 @@ def test_native_reconciliation(tmp_path, scenario):
         judge = resources["evaluators"][0]
         assert judge["type"] == "llm_as_judge"
         assert judge["prompt"] == [{"role": "user", "content": prompt}]
-        assert judge["modelConfig"] == {"provider": "litellm-router", "model": "small"}
+        assert judge["modelConfig"] == {"provider": "litellm-router", "model": model}
         assert judge["outputDefinition"] == {"dataType": "NUMERIC", "minValue": 0, "maxValue": 1}
         assert judge["variableMapping"] == [
             {"variable": name, "source": name} for name in ("input", "output")]
