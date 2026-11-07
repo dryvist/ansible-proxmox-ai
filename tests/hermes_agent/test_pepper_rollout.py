@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
     (['hermes_crons'], [], True), (['hermes_runtime_install'], [], True),
     (['hermes_units_gateways'], [], True), (['hermes_content_scripts'], [], True),
     (['hermes_delivery_probe'], [], True), (['tagged'], [], True),
+    (['squid'], [], False), (['squid'], ['squid'], False), (['squid'], ['hermes_agent'], False),
     (['untagged'], [], False), (['always'], [], False),
     (['all'], ['hermes_agent'], False), (['hermes_agent'], ['ai'], False),
     (['hermes_profiles_env'], ['hermes_profiles_env'], False),
@@ -45,6 +46,8 @@ def test_pepper_secret_domain_is_selected_only_for_its_runtime(identities, run_t
     env = NativeEnvironment(undefined=StrictUndefined)
     env.filters.update(intersect=lambda a, b: list(set(a) & set(b)),
                        difference=lambda a, b: list(set(a) - set(b)), bool=bool)
+    context['openbao_secrets_pepper_path'] = roster['openbao_secrets_pepper_path']
+    context['hermes_agent_pepper_play_tags'] = roster['hermes_agent_pepper_play_tags']
     context['hermes_agent_pepper_runtime_selected'] = env.from_string(
         roster['hermes_agent_pepper_runtime_selected']).render(context)
     assert context['hermes_agent_pepper_runtime_selected'] is selected
@@ -72,7 +75,7 @@ def test_rollout_tag_gate_tracks_the_runtime_entry_points():
 
 
 @pytest.mark.parametrize('tags,skip,selected', [
-    ('llm_router', '', False), ('hermes_profiles_env', '', True),
+    ('llm_router', '', False), ('hermes_profiles_env', '', True), ('squid', '', False),
     ('all', 'hermes_agent', False), ('all', '', True),
 ])
 def test_cli_tag_selection_gates_always_tagged_runtime_prerequisites(tmp_path, tags, skip, selected):

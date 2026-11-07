@@ -1,11 +1,11 @@
 ---
-# The headless agent execution plane: the legacy AI job runners, the egress
-# proxy that is the plane's whole outbound boundary, the pooled autonomous
-# agent guests, and the opt-in play that returns a guest to the pool.
+# The headless agent execution plane: the legacy AI job runners, the
+# pooled autonomous agent guests and the opt-in play that returns a guest to
+# the pool. agent-egress.yml configures their proxy before the interactive agents.
 #
 # Split out of site.yml as one unit, the way llm-serving.yml was, to keep that
 # file within its token budget. Order INSIDE this file is load-bearing (the
-# proxy play must precede the pooled guests — see its header); its position in
+# proxy must precede the pooled guests); its position in
 # the overall converge is unchanged: site.yml imports it last, after the
 # orchestration platforms. The interactive agent plane (Hermes, herdr) is
 # agents.yml.
@@ -40,38 +40,6 @@
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: ai_runner
-
-# =============================================================================
-# Phase 7a: Squid — the agent plane's egress chokepoint.
-#
-# This play MUST run BEFORE the pooled agent guests below: an `ai-proxied` guest
-# has no direct WAN rule, so until this proxy is up it cannot reach an apt repo,
-# the npm registry or GitHub, and agent_guest's very first toolchain task (an
-# apt update) fails. The domain allowlist enforced here is the plane's whole
-# egress boundary — the Proxmox firewall cannot filter by hostname.
-# =============================================================================
-
-- name: Configure the agent-plane egress proxy
-  hosts: squid_group
-  become: true
-  gather_facts: false
-  tags:
-    - squid
-    - agent
-    - ai
-  tasks:
-    - name: Converge squid (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include squid role
-          ansible.builtin.include_role:
-            name: squid
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: squid
 
 # =============================================================================
 # Phase 7b: Pooled autonomous agent guests (ai-runner-pool-NN, `ai-proxied`).

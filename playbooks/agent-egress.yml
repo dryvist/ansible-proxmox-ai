@@ -1,0 +1,56 @@
+---
+- name: Prepare the Pepper egress profile
+  hosts: hermes_agent_group
+  become: true
+  gather_facts: false
+  tags:
+    - hermes_agent
+    - hermes_profiles_env
+    - hermes_units_gateways
+    - squid
+    - agent
+    - ai
+    - llm
+  pre_tasks:
+    - name: Resolve Pepper preparation endpoints on the controller
+      ansible.builtin.include_tasks: tasks/pepper_egress_endpoints.yml
+      when: hermes_agent_identity | default('') == 'pepper'
+  tasks:
+    - name: Prepare the identity-scoped proxy inputs and guest environment
+      ansible.builtin.include_role:
+        name: hermes_agent
+        tasks_from: egress
+      vars:
+        hermes_agent_egress_host_overrides: "{{ squid_pepper_endpoint_hosts }}"
+      when: hermes_agent_identity | default('') == 'pepper'
+
+- name: Configure the agent-plane egress proxy
+  hosts: squid_group
+  become: true
+  gather_facts: false
+  tags:
+    - squid
+    - hermes_agent
+    - hermes_profiles_env
+    - agent
+    - ai
+    - llm
+  tasks:
+    - name: Converge squid (isolated — failure does not abort downstream plays)
+      block:
+        - name: Resolve Pepper proxy endpoints on the controller
+          ansible.builtin.include_tasks: tasks/pepper_egress_endpoints.yml
+          when: >-
+            groups['hermes_agent_group'] | default([]) | map('extract', hostvars)
+            | selectattr('hermes_agent_identity', 'defined')
+            | selectattr('hermes_agent_identity', 'equalto', 'pepper') | list | length > 0
+        - name: Gather facts
+          ansible.builtin.include_tasks: tasks/gather_facts.yml
+        - name: Include squid role
+          ansible.builtin.include_role:
+            name: squid
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: squid

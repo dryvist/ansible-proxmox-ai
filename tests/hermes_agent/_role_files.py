@@ -74,9 +74,11 @@ def hermes_runtime_role_root() -> Path:
     return root
 
 
-def render_hermes_runtime_unit(consumer_role: Path, template_name: str) -> str:
+def render_hermes_runtime_unit(consumer_role: Path, template_name: str, **overrides) -> str:
     """Render a collection unit with the consumer's actual include_role vars."""
-    from jinja2 import Environment, StrictUndefined
+    from ansible.plugins.filter.core import dict_to_list_of_dict_key_value_elements
+    from jinja2 import StrictUndefined
+    from jinja2.nativetypes import NativeEnvironment
 
     include_task = next(
         task
@@ -88,7 +90,9 @@ def render_hermes_runtime_unit(consumer_role: Path, template_name: str) -> str:
     )
     context = role_defaults(consumer_role)
     context.update(hermes_agent_uid=1001, hermes_agent_dashboard_port=8080)
-    env = Environment(autoescape=False, undefined=StrictUndefined)
+    context.update(overrides)
+    env = NativeEnvironment(autoescape=False, undefined=StrictUndefined)
+    env.filters['dict2items'] = dict_to_list_of_dict_key_value_elements
     for key in (
         "hermes_agent_hermes_home",
         "hermes_agent_web_dist",

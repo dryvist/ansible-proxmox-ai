@@ -43,6 +43,20 @@ def resolve(name, context):
     return evaluate(name)
 
 
+def test_pepper_bundle_is_release_and_commit_pinned():
+    import re
+    from urllib.parse import parse_qs, urlsplit
+
+    ref = resolve('hermes_agent_bundle_flake_ref', dict(hermes_agent_id='pepper'))
+    source = urlsplit(ref)
+    query = parse_qs(source.query)
+    assert source.path == 'dryvist/nix-hermes'
+    assert source.fragment == 'pepper-bundle'
+    assert re.fullmatch(r'nix-hermes-v\d+\.\d+\.\d+', query['ref'][0])
+    assert re.fullmatch(r'[0-9a-f]{40}', query['rev'][0])
+    assert resolve('hermes_agent_bundle_flake_ref', dict(hermes_agent_id='hermes')).endswith('#hermes-bundle')
+
+
 def test_polluted_controller_cannot_supply_shared_credentials():
     context = dict(hermes_agent_identity='pepper', hermes_agent_id='pepper',
                    hermes_agent_env_prefix='PEPPER', hermes_agent_bao={},
@@ -240,10 +254,14 @@ def test_pepper_router_key_does_not_add_the_goal_judge_route():
     tasks = yaml.safe_load((ROLE / 'tasks/main.yml').read_text())
     environment = next(t['vars']['hermes_runtime_gateway_environment'] for t in tasks
                        if 'hermes_runtime_gateway_environment' in t.get('vars', {}))
-    expression = next(entry['value'] for entry in environment if entry['name'] == 'HERMES_CRON_GOAL_JOBS')
+    from ansible.plugins.filter.core import dict_to_list_of_dict_key_value_elements
+    env.filters['dict2items'] = dict_to_list_of_dict_key_value_elements
     for identity in ['pepper', 'hermes', 'hermes-private', 'donna']:
-        jobs = env.from_string(expression).render(
-            hermes_agent_id=identity, hermes_agent_cron_goal_mode_jobs=['fixture-job'])
+        entries = env.from_string(environment).render(
+            hermes_agent_id=identity, hermes_agent_cron_goal_mode_jobs=['fixture-job'],
+            hermes_agent_github_app_slug='fixture', hermes_agent_github_trust_boundary_default='fixture',
+            hermes_agent_kanban_goal_max_turns=8, hermes_agent_proxy_environment={})
+        jobs = next(entry['value'] for entry in entries if entry['name'] == 'HERMES_CRON_GOAL_JOBS')
         assert jobs == ('' if identity == 'pepper' else 'fixture-job')
 
 
