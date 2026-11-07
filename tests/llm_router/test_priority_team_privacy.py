@@ -33,7 +33,7 @@ def test_priority_teams_create_and_reconcile_zdr_models(tmp_path, tier, exists):
             llm_router_api_port=port, llm_router_master_key="sk-fixture-master",
         )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert len(writes) == 1
+    assert len(writes) == 2
     path, body = writes[0]
     assert path == ("/team/update" if exists else "/team/new")
     assert body["models"] == ["fixture-local"]
@@ -45,6 +45,13 @@ def test_priority_teams_create_and_reconcile_zdr_models(tmp_path, tier, exists):
     if tier == 2:
         assert body["router_settings"]["fallbacks"] == []
         assert body["router_settings"]["timeout"] == 45600
+    public_path, public_body = writes[1]
+    assert public_path == path
+    assert public_body["team_id"] == f"tier-{tier}-public"
+    assert set(public_body["models"]) == {"fixture-local", "fixture-retaining", "fixture-free"}
+    assert public_body["metadata"]["privacy_class"] == "public"
+    assert public_body["metadata"]["tags"] == body["metadata"]["tags"]
+    assert public_body["router_settings"] == body["router_settings"]
 
 
 def test_public_priority_team_keeps_declared_grants_and_privacy(tmp_path):
