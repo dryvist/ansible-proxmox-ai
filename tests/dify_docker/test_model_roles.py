@@ -41,6 +41,7 @@ def _router_fixture():
             "serving_role": "ocr",
         },
         {"client_model_id": "fixture-default-context-id", "route_group": "local-default"},
+        {"client_model_id": "fixture-no-group-id", "context_window": 4096},
     ]
     return {
         "llm_router_model_registry": registry,
