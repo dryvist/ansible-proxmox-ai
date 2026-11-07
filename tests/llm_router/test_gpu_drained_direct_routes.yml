@@ -75,7 +75,7 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: Direct routes stay isolated and safe defaults resolve to the primary
+    - name: Direct routes stay isolated except for the exact small fallback
       ansible.builtin.assert:
         quiet: true
         that:
@@ -91,11 +91,24 @@
           - llm_router_direct_route_aliases | intersect(llm_router_d1_ladder_groups) | length == 0
           - llm_router_direct_route_aliases | intersect(llm_router_rendered_capability_names) | length == 0
           - llm_router_direct_route_aliases | intersect(llm_router_entry_point_names) | length == 0
-          - llm_router_direct_route_aliases | intersect(llm_router_fallback_map.keys() | list) | length == 0
-          - llm_router_direct_route_aliases | intersect(llm_router_fallback_map.values() | flatten | list) | length == 0
+          - llm_router_studio_small_fallback_route in llm_router_direct_route_aliases
+          - >-
+            llm_router_direct_route_aliases
+            | intersect(llm_router_fallback_map.keys() | list)
+            == [llm_router_studio_small_fallback_route]
+          - >-
+            llm_router_direct_route_aliases
+            | intersect(llm_router_fallback_map.values() | flatten | list)
+            == [llm_router_studio_small_fallback_route]
+          - llm_router_fallback_map[llm_router_small_capability_name]
+            == [llm_router_studio_small_fallback_route]
+          - llm_router_fallback_map[llm_router_studio_small_fallback_route] == []
           - llm_router_direct_route_aliases | intersect(_role_chain_names) | length == 0
           - _direct_key.models == llm_router_direct_route_aliases
-          - _other_key_models | intersect(llm_router_direct_route_aliases) | length == 0
+          - >-
+            _other_key_models
+            | intersect(llm_router_direct_route_aliases)
+            == [llm_router_studio_small_fallback_route]
           - ai_default_model == llm_router_primary_model
           - hermes_brain_model == llm_router_primary_model
           - hermes_goal_judge_model == (llm_router_d1_zdr_ladder_groups | first)

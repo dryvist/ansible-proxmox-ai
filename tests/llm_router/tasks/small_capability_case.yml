@@ -44,6 +44,94 @@
   ansible.builtin.set_fact:
     _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
+- name: Capture the rendered fallback maps and cloud-authorized key
+  ansible.builtin.set_fact:
+    _small_case_global_fallback_map: >-
+      {{ dict(_config.router_settings.fallbacks | map('dict2items') | flatten
+         | map(attribute='key')
+         | zip(_config.router_settings.fallbacks | map('dict2items') | flatten
+           | map(attribute='value'))) }}
+    _small_case_oss_key: >-
+      {{ _small_case_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}
+    _small_case_oss_fallback_map: >-
+      {%- set _settings = llm_router_review_key_router_settings.oss -%}
+      {{ dict(_settings.fallbacks | map('dict2items') | flatten | map(attribute='key')
+         | zip(_settings.fallbacks | map('dict2items') | flatten | map(attribute='value'))) }}
+    _small_case_hosted_names: >-
+      {%- set ns = namespace(names=[]) -%}
+      {%- for _model in llm_router_hermes_cloud_models + llm_router_openrouter_models -%}
+      {%- set _group = _model.route_group | default(_model.client_model_id) -%}
+      {%- set _fallback_group = _model.fallback_group | default(_group) -%}
+      {%- set ns.names = ns.names + [_model.client_model_id, _group, _fallback_group] -%}
+      {%- endfor -%}
+      {{ ns.names | unique | list }}
+
+- name: Walk the small fallback closure in both rendered settings views
+  ansible.builtin.set_fact:
+    _small_case_fallback_closures: >-
+      {%- set _views = [
+        {'name': 'global', 'map': _small_case_global_fallback_map,
+         'defaults': _config.router_settings.default_fallbacks | default([])},
+        {'name': 'github-actions-oss', 'map': _small_case_oss_fallback_map,
+         'defaults': llm_router_review_key_router_settings.oss.get(
+           'default_fallbacks', _config.router_settings.default_fallbacks | default([]))}
+      ] -%}
+      {%- set _out = namespace(paths={}) -%}
+      {%- for _view in _views -%}
+      {%- set _path = namespace(names=[llm_router_small_capability_name]) -%}
+      {%- set _walk_budget = _view.map | length
+            + (_view.map | dict2items | map(attribute='value') | map('length') | sum)
+            + (_view.defaults | length)
+            + (llm_router_model_group_aliases | length) + 2 -%}
+      {%- for _ in range(0, _walk_budget) -%}
+      {%- set _next = namespace(names=_path.names) -%}
+      {%- for _name in _path.names -%}
+      {%- set _targets = _view.map.get(
+           _name, _view.defaults) -%}
+      {%- if _targets is string -%}{%- set _targets = [_targets] -%}{%- endif -%}
+      {%- for _target in _targets if _target not in _next.names -%}
+      {%- set _ = _next.names.append(_target) -%}
+      {%- endfor -%}
+      {%- set _alias_target = llm_router_model_group_aliases.get(_name) -%}
+      {%- if _alias_target is not none and _alias_target not in _next.names -%}
+      {%- set _ = _next.names.append(_alias_target) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set _path.names = _next.names -%}
+      {%- endfor -%}
+      {%- set _out.paths = _out.paths | combine({_view.name: _path.names}) -%}
+      {%- endfor -%}
+      {{ _out.paths }}
+
+- name: The cloud-authorized key sees only the local small fallback closure
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_external_terminal_rungs | length > 0
+      - _small_case_oss_key.router_settings_ref == 'oss'
+      - llm_router_small_capability_name in _small_case_oss_key.models
+      - _small_case_hosted_names | intersect(_small_case_oss_key.models) | length > 0
+      - llm_router_studio_small_fallback_route in llm_router_direct_route_aliases
+      - llm_router_studio_small_fallback_route in _small_case_oss_key.models
+      - _small_case_global_fallback_map[llm_router_small_capability_name]
+        == [llm_router_studio_small_fallback_route]
+      - _small_case_global_fallback_map[llm_router_studio_small_fallback_route] == []
+      - _small_case_oss_fallback_map[llm_router_small_capability_name]
+        == [llm_router_studio_small_fallback_route]
+      - _small_case_oss_fallback_map[llm_router_studio_small_fallback_route] == []
+      - llm_router_studio_small_fallback_route
+        in (_config.model_list | map(attribute='model_name') | list)
+      - _small_case_hosted_names | length > 0
+      - _small_case_fallback_closures.global | intersect(_small_case_hosted_names) | length == 0
+      - _small_case_fallback_closures['github-actions-oss']
+        | intersect(_small_case_hosted_names) | length == 0
+      - llm_router_studio_small_fallback_route in _small_case_fallback_closures.global
+      - llm_router_studio_small_fallback_route in _small_case_fallback_closures['github-actions-oss']
+    fail_msg: >-
+      global={{ _small_case_fallback_closures.global }};
+      github-actions-oss={{ _small_case_fallback_closures['github-actions-oss'] }};
+      hosted={{ _small_case_hosted_names }}.
+
 - name: Capture rendered names and key projections
   ansible.builtin.set_fact:
     _rendered_names: >-
@@ -139,7 +227,7 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - _hindsight_models == [_small_group]
+      - _hindsight_models == [_small_group, llm_router_studio_small_fallback_route]
       - _hindsight_allowed_classes == ['local']
       - _hindsight_tags | sort == ['&zdr', '!free', '!retains', '&local', '&tier-2'] | sort
       - _hindsight_models_authoritative | bool
@@ -183,6 +271,10 @@
       vllm={{ _vllm_on }}: small-only keys {{ _small_only_keys | map(attribute='alias') | list }}
       name {{ _small_only_keys | map(attribute='models') | flatten | unique }}; rendered {{ _rendered_names }}.
   vars:
+    _small_only_key_models: >-
+      {{ [llm_router_small_model]
+         + ([llm_router_studio_small_fallback_route]
+            if llm_router_studio_small_fallback_route | length > 0 else []) }}
     _small_only_keys: >-
       {{ _small_case_virtual_keys
-         | selectattr('models', 'equalto', [llm_router_small_model]) | list }}
+         | selectattr('models', 'equalto', _small_only_key_models) | list }}
