@@ -18,6 +18,20 @@ CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
 GENERATED_MATRIX = runpy.run_path(str(SELECTOR))["llm_router_matrix"]()
 
 
+def test_agent_platform_conformance_is_required_by_merge_gate() -> None:
+    jobs = yaml.safe_load(CI_GATE.read_text())["jobs"]
+    conformance = jobs["conformance"]
+    assert conformance["uses"] == (
+        "dryvist/.github/.github/workflows/agent-platform-conformance.yml"
+        "@198f25d695819a48e73f5a7723b47c5bd4839a7c"
+    )
+    assert conformance["permissions"] == {"contents": "read"}
+    assert "if" not in conformance
+    assert "conformance" in jobs["gate"]["needs"]
+    aggregator = next(step for step in jobs["gate"]["steps"] if step.get("name") == "Check all results")
+    assert "conformance" not in aggregator["env"]["CI_GATE_ALLOWED_SKIPS"]
+
+
 def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(SELECTOR), *paths], check=False, capture_output=True, text=True)
 
