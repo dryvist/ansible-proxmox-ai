@@ -14,7 +14,7 @@ def test_dify_118_images_follow_upstream_except_deployed_weaviate():
 
     assert defaults["dify_docker_api_image"] == "langgenius/dify-api:1.18.0"
     assert defaults["dify_docker_web_image"] == "langgenius/dify-web:1.18.0"
-    assert defaults["dify_docker_plugin_daemon_image"] == "langgenius/dify-plugin-daemon:0.6.12-local"
+    assert defaults["dify_docker_plugin_daemon_image"] == "langgenius/dify-plugin-daemon:0.6.13-local"
     assert defaults["dify_docker_sandbox_image"] == "langgenius/dify-sandbox:0.2.15"
     assert defaults["dify_docker_weaviate_image"] == "cr.weaviate.io/semitechnologies/weaviate:1.40.3"
     assert defaults["dify_docker_agent_backend_image"] == "langgenius/dify-agent-backend:1.18.0"

@@ -138,9 +138,12 @@ def test_registry_matches_only_the_actual_upstream_artifact() -> None:
     assert not PLUGIN._POLICY.registry_policy_allowed(model, policy)
 
 
-@pytest.mark.parametrize("installed,denied", [(False, False), (True, False), (True, True)])
-def test_policy_loader_uses_installed_collection_before_role_input(
-    tmp_path: Path, installed: bool, denied: bool
+@pytest.mark.parametrize("installed,use_collection,denied", [
+    (False, False, False), (True, False, False), (True, False, True),
+    (True, True, False), (True, True, True),
+])
+def test_policy_loader_prefers_explicit_input_and_defaults_to_collection(
+    tmp_path: Path, installed: bool, use_collection: bool, denied: bool
 ) -> None:
     policy = fixture("nvidia-qwen38.json")["policy"]
     if installed:
@@ -156,7 +159,9 @@ def test_policy_loader_uses_installed_collection_before_role_input(
     result = subprocess.run(
         ["ansible-playbook", "-i", "localhost,", "-c", "local",
          str(Path(__file__).with_name("test_model_policy.yml")), "-e",
-         json.dumps({"expected_deny": policy["deny"], "expected_allowed": not denied})],
+         json.dumps({"use_collection": use_collection,
+                     "expected_deny": policy["deny"] if use_collection else [],
+                     "expected_allowed": not (use_collection and denied)})],
         cwd=ROOT, text=True, capture_output=True, timeout=60,
         env=os.environ | {"ANSIBLE_ROLES_PATH": str(ROOT / "roles"),
                           "ANSIBLE_COLLECTIONS_PATH": str(tmp_path)},

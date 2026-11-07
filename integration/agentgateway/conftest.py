@@ -19,7 +19,6 @@ import pytest
 import yaml
 from gateway_falsifier_contract import (
     COMPOSE_FILE,
-    ENVOY_IMAGE,
     PROTOCOL_VERSION,
     REPO_ROOT,
     TESTBOX_IMAGE,
@@ -256,7 +255,7 @@ def runtime(request: Any) -> Any:
         context["source_commit"] = source_commit
         context["images"] = {
             "agentgateway": image_identity(env, image),
-            "envoy": image_identity(env, ENVOY_IMAGE),
+            "envoy": image_identity(env, compose_config["services"]["observer"]["image"]),
         }
         if mode == "testbox":
             context["images"]["testbox"] = image_identity(env, TESTBOX_IMAGE)
