@@ -9,7 +9,10 @@ from typing import Literal
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / "tests/llamacpp_release/fixtures/hf-2.2.0-update-check.txt"
+HF_VERSION = yaml.safe_load(
+    (ROOT / "roles/nvidia_gpu_guest/defaults/main/00-core.yml").read_text()
+)["nvidia_gpu_guest_huggingface_hub_version"]
+FIXTURE = ROOT / f"tests/llamacpp_release/fixtures/hf-{HF_VERSION}-update-check.txt"
 
 
 def _replay(tmp_path, disabled):
@@ -18,7 +21,7 @@ def _replay(tmp_path, disabled):
 
     def installed_version(library):
         version_lookups.append(library)
-        return "2.2.0"
+        return HF_VERSION
 
     namespace = {
         "Literal": Literal, "Path": Path, "os": os, "time": time,
