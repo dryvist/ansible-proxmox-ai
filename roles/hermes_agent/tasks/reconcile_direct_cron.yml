@@ -6,7 +6,7 @@
 # `cron edit` is not relied on — recreate re-pins schedule/prompt/skill/model/
 # provider/deliver deterministically).
 #
-# item fields: name, schedule, EITHER prompt_file (loaded from the pinned
+# item fields: name, schedule, EITHER prompt_file/prompt_files (loaded from the pinned
 # catalog) OR prompt_var (name of an already-resolved var, inline or
 # catalog-preloaded — same lookup('vars', ...) pattern the retired kanban card
 # table used), skill (may be ""), enabled, an optional deliver override
@@ -49,10 +49,10 @@
 - name: "Direct cron | Load prompt + append reporting footer for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_prompt: >-
-      {{ ((lookup('vars', item.prompt_var) if item.prompt_var is defined else
-           lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
-             ~ item.prompt_file, rstrip=false))
-          | regex_replace('(?s)^---\n.*?\n---\n', '') | trim)
+      {{ (([lookup('vars', item.prompt_var)] if item.prompt_var is defined else
+           query('ansible.builtin.template', *hermes_agent_direct_prompt_paths,
+                 keep_trailing_newline=true))
+          | map('regex_replace', '(?s)^---\n.*?\n---\n', '') | join('') | trim)
          ~ '\n\n' ~
          (lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
              ~ ('hermes-direct-cron-footer-quiet.md' if item.channel_when_healthy is defined
@@ -61,6 +61,10 @@
           | replace('${DELIVER}', hermes_agent_direct_deliver)
           | replace('${CHANNEL_WHEN_HEALTHY}', item.channel_when_healthy | default(''))
           | trim) }}
+  vars:
+    hermes_agent_direct_prompt_paths: >-
+      {{ (item.prompt_files | default([item.prompt_file | default('')]))
+         | map('regex_replace', '^', hermes_agent_prompts_path ~ '/') | list }}
   when: hermes_agent_direct_wanted | bool
 
 # --workdir is not cosmetic: read from the pinned hermes-agent v2026.8.3

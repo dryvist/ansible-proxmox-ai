@@ -60,6 +60,7 @@ def test_main_task_files_have_one_declared_entry_tag_and_probe_stays_scoped() ->
         ]
         expected_refs = {_tag_expression(target)}
         if target == "prompt_catalog.yml":
+            assert "always" in tags
             expected_refs.add(_tag_expression("cron_reconcile.yml"))
         if target == "bundle_build.yml":
             expected_refs.add(_tag_expression("public_gateway.yml"))

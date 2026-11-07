@@ -149,3 +149,9 @@ fixable), while an over-broad rule merges genuinely different faults into one
 > if the server is ever fixed. `splunk-status-digest` passes `-24h`, which
 > happens to match the server's default, so it is accidentally rather than
 > deliberately correct — fix it there too when the MCP is touched.
+
+Prompt bodies resolve from the pinned catalog. `hermes_agent_catalog_prompt_sources`
+maps prompt variables to `prompt_file` or ordered `prompt_files` references. Shared
+fragments precede their consumers. Template lookups expand role variables and strip
+each file's frontmatter; parts join without separators or trimming. Direct cron job
+entries also accept `prompt_files`. Explicit prompt-variable overrides take precedence.
