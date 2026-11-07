@@ -20,11 +20,16 @@ ROLE = ROOT / "roles/langfuse_docker"
 @pytest.mark.parametrize("scenario", [
     "create", "changed", "chat", "pagination", "duplicate", "missing-prompt", "defaults", "transient",
     "api-error", "write-error", "invalid-sampling", "invalid-price", "unknown-variable", "disabled",
+    "subagent", "goal-judge", "unknown-model",
 ])
 def test_native_reconciliation(tmp_path, scenario):
     registry = yaml.safe_load((ROOT / "llm-models.d/10-large.yml").read_text())
     model = next(row["route_group"] for row in registry["_llm_registry_large"]
                  if row.get("serving_role") == "primary")
+    if scenario in {"subagent", "goal-judge"}:
+        model = scenario
+    elif scenario == "unknown-model":
+        model = "fixture-unregistered"
     resources = {"datasets": {}, "models": [], "evaluators": [], "evaluation-rules": []}
     requests = []
     prompt = "Fixture {{input}} {{output}}"
@@ -158,7 +163,7 @@ def test_native_reconciliation(tmp_path, scenario):
     try:
         result = run()
         errors = {"api-error", "write-error", "invalid-price", "invalid-sampling",
-                  "unknown-variable", "missing-prompt"}
+                  "unknown-variable", "missing-prompt", "unknown-model"}
         assert (result.returncode != 0) == (scenario in errors), result.stdout + result.stderr
         if scenario in errors:
             assert resources["evaluators"] == []
