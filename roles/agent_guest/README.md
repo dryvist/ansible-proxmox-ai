@@ -136,6 +136,11 @@ through `agent-guest.env`, and the fetching Ansible modules through an
 `environment:` on the toolchain include — config files on disk do not reach the
 Ansible process.
 
+With `agent_guest_proxy_system_wide: false`, the role instead writes
+`agent_guest_proxy_environment_file` for units to load explicitly and removes
+its guest-wide proxy files. Installation retains the guest's ordinary network
+path; service consumers share the same proxy variables and templates.
+
 Both coordinates are inventory-derived: the proxy FQDN from `squid_group`
 membership, the port from `tofu_data.constants.service_ports.squid_proxy`.
 `no_proxy` carries the internal domain and the RFC1918 ranges, so OpenBao,

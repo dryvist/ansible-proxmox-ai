@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.26.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.25.0...v2.26.0) (2026-11-07)
+
+
+### Features
+
+* **hermes:** add gates for a local-only profile ([#2111](https://github.com/dryvist/ansible-proxmox-ai/issues/2111)) ([d53e218](https://github.com/dryvist/ansible-proxmox-ai/commit/d53e218c9e6b66a51992132b8073e9acba06f256))
+
 ## [2.25.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.24.0...v2.25.0) (2026-11-07)
 
 

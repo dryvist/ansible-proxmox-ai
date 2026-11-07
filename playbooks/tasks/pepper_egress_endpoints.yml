@@ -1,0 +1,61 @@
+---
+- name: Resolve the client endpoints for the Pepper proxy policy
+  block:
+    - name: Fetch Pepper's identity domain through its own AppRole
+      ansible.builtin.include_role:
+        name: dryvist.homelab.openbao_secrets
+        apply:
+          delegate_to: localhost
+          connection: local
+          become: false
+          run_once: true
+      vars:
+        ansible_become: false
+        openbao_secrets_domains:
+          - name: pepper
+            role_id_env: OPENBAO_APPROLE_PEPPER_ROLE_ID
+            secret_id_env: OPENBAO_APPROLE_PEPPER_SECRET_ID
+            paths:
+              - "{{ openbao_secrets_pepper_path }}"
+            required: true
+        # The squid play has no Hermes hosts in ansible_play_hosts_all. Activate
+        # Pepper's own roster groups for this one-domain lookup so the shared
+        # role's domain filter keeps the AppRole entry.
+        openbao_secrets_active_groups: "{{ openbao_secrets_domain_groups.get('pepper', []) }}"
+        # This endpoint read must never fall back to the broader operator identity.
+        openbao_secrets_operator_domains: []
+      run_once: true
+
+    - name: Project only Pepper's client endpoint hostnames
+      ansible.builtin.set_fact:
+        squid_pepper_endpoint_hosts: >-
+          {{ dict(
+               hermes_agent_pepper_youtrack_host=(
+                 _pepper_domain.get('YOUTRACK_MCP_URL', '')
+                 | ansible.builtin.urlsplit('hostname')),
+               hermes_agent_pepper_vault_host=(
+                 _pepper_domain.get('PEPPER_VAULT_REPO_URL', '')
+                 | ansible.builtin.urlsplit('hostname'))
+             ) }}
+      vars:
+        _pepper_domain: >-
+          {{ (hostvars['localhost'].openbao_secrets_by_domain | default({}, true))
+             .get('pepper', {}) }}
+      no_log: true
+
+    - name: Require both Pepper client endpoint hostnames
+      ansible.builtin.assert:
+        that:
+          - squid_pepper_endpoint_hosts.hermes_agent_pepper_youtrack_host | default('', true) | length > 0
+          - squid_pepper_endpoint_hosts.hermes_agent_pepper_vault_host | default('', true) | length > 0
+        fail_msg: >-
+          Pepper proxy requires both client endpoint URLs from Pepper's identity domain;
+          refusing to render the allowlist.
+        quiet: true
+      no_log: true
+  rescue:
+    - name: Refuse a proxy render without the client endpoints
+      ansible.builtin.fail:
+        msg: >-
+          Pepper proxy requires both client endpoint URLs from Pepper's identity domain;
+          check the Pepper AppRole lookup. Refusing to render the allowlist.

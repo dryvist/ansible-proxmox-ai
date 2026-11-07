@@ -89,6 +89,24 @@
             config: "{{ _config_vllm_on }}"
             catalog: "{{ _keys_vllm_on }}"
 
+    - name: Pepper has one authoritative local-only key in every render
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _pepper_keys | length == 1
+          - _pepper_keys[0].allowed_classes == ['local']
+          - _pepper_keys[0].models_authoritative | bool
+          - _pepper_keys[0].models | length > 0
+          - "['&local', '&zdr', '!retains'] | difference(_pepper_keys[0].tags) | length == 0"
+          - item.config.general_settings.enforce_fallback_model_access | bool
+          - _inventory.llm_router_pepper_key_enabled | bool
+      vars:
+        _pepper_keys: "{{ item.catalog | selectattr('alias', 'equalto', 'pepper') | list }}"
+        _inventory: "{{ lookup('file', playbook_dir ~ '/../../inventory/group_vars/all/00-core.yml') | from_yaml }}"
+      loop: "{{ _render_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+
     - name: Trace fallback paths after key-model and sensitivity-tag gates
       ansible.builtin.import_tasks: tasks/trace_tagged_hosted_reach.yml
 
