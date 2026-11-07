@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+set -euo pipefail
+
+BAO_ADDR={{ hermes_agent_pepper_vault_bao_addr | to_json }}
+TOKEN_MOUNT={{ hermes_agent_pepper_vault_github_token_mount | to_json }}
+TOKEN_SET={{ hermes_agent_pepper_vault_github_token_set | to_json }}
+REPO_URL={{ hermes_agent_pepper_vault_repo_url | to_json }}
+GIT_CREDENTIAL_HELPER={{ hermes_agent_pepper_vault_git_credential_helper_path | to_json }}
+ROLE_ID="${PEPPER_VAULT_ROLE_ID:-}"
+SECRET_ID="${PEPPER_VAULT_SECRET_ID:-}"
+
+log_failure() {
+  logger -t hermes-pepper-vault "$1"
+}
+
+if [[ -z "${BAO_ADDR}" || -z "${ROLE_ID}" || -z "${SECRET_ID}" ]]; then
+  log_failure "OpenBao AppRole inputs are missing"
+  exit 1
+fi
+
+if ! BAO_TOKEN="$(
+  BAO_ADDR="${BAO_ADDR}" BAO_APPROLE_ROLE_ID="${ROLE_ID}" \
+    BAO_APPROLE_SECRET_ID="${SECRET_ID}" FLOW_LOCK_API_MAX_TIME=10 \
+    bao-approle login 2>/dev/null
+)"; then
+  log_failure "OpenBao AppRole login failed"
+  exit 1
+fi
+if [[ -z "${BAO_TOKEN}" ]]; then
+  log_failure "OpenBao AppRole login returned no token"
+  exit 1
+fi
+unset PEPPER_VAULT_ROLE_ID PEPPER_VAULT_SECRET_ID ROLE_ID SECRET_ID
+
+if ! GITHUB_TOKEN="$(
+  BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" BAO_APPROLE_API_MAX_TIME=15 \
+    bao-approle gh-token "${TOKEN_MOUNT}" "${TOKEN_SET}" 2>/dev/null
+)"; then
+  unset BAO_TOKEN GITHUB_TOKEN
+  log_failure "GitHub token mint failed"
+  exit 1
+fi
+unset BAO_TOKEN
+if [[ -z "${GITHUB_TOKEN}" ]]; then
+  unset GITHUB_TOKEN
+  log_failure "GitHub token mint returned no token"
+  exit 1
+fi
+
+if ! PEPPER_VAULT_GITHUB_TOKEN="${GITHUB_TOKEN}" /usr/bin/git \
+  -c core.hooksPath=/dev/null \
+  -c credential.helper= \
+  -c "credential.helper=${GIT_CREDENTIAL_HELPER}" \
+  -c http.extraHeader= \
+  fetch --no-recurse-submodules "${REPO_URL}" HEAD >/dev/null 2>&1; then
+  unset GITHUB_TOKEN
+  log_failure "evidence fetch failed"
+  exit 1
+fi
+unset GITHUB_TOKEN
+
+if ! /usr/bin/git -c core.hooksPath=/dev/null merge --ff-only FETCH_HEAD >/dev/null 2>&1; then
+  log_failure "evidence update was not a fast-forward"
+  exit 1
+fi
