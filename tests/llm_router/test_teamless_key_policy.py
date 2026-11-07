@@ -168,6 +168,41 @@ def test_default_team_reconciles_required_tags_even_when_models_match(tmp_path, 
         assert writes == [("/team/update" if exists else "/team/new", expected)]
 
 
+@pytest.mark.parametrize("has_team", [False, True])
+@pytest.mark.parametrize("mode", ["initial", "rebuild"])
+def test_public_key_restores_grants_after_narrowing_in_same_converge(tmp_path, has_team, mode):
+    models = ["fixture-local", "fixture-retaining", "fixture-free"]
+    key = {"token": MARKER, "key_alias": "fixture-public", "models": models,
+           "user_id": "fixture-owner", "metadata": {"privacy_class": "public"}}
+    if has_team:
+        key["team_id"] = "tier-1"
+    desired = {"alias": key["key_alias"], "value": MARKER, "team_id": "tier-1-public",
+               "models": models, "privacy_class": "public", "sensitivity_tag": "&sensitivity:public"}
+    with team_api(team_info={"models": models}, keys=[key], users=[key["user_id"]]) as (port, writes):
+        variables = {
+            "llm_router_api_port": port, "llm_router_master_key": "sk-fixture-master",
+            "llm_router_virtual_keys": [desired], "llm_router_existing_keys": {"json": {"keys": [key]}},
+            "llm_router_mcp_default_object_permission": {"mcp_servers": []},
+            "llm_router_seed_mode": mode,
+            "_llm_router_key_trust_metadata": {},
+        }
+        tasks = ["reconcile-teamless-keys.yml", "reconcile-seeded-key-policy.yml"]
+        result = run_tasks(tmp_path, [], tasks, **variables)
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert key["team_id"] == desired["team_id"]
+        assert key["models"] == models
+        narrow = ("/key/update", {"key": MARKER, "models": ["fixture-local"]})
+        transfer = ("/key/update", {"key": MARKER, "team_id": desired["team_id"]})
+        restore = next((path, body) for path, body in writes if body.get("models") == models)
+        assert writes.index(narrow) < writes.index(transfer) < writes.index(restore)
+        assert MARKER not in output
+        count = len(writes)
+        result = run_tasks(tmp_path, [], tasks, **variables)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert len(writes) == count
+
+
 def test_team_assignment_uses_complete_snapshot_before_seeded_updates():
     seed = (ROLE / "tasks/seed-keys.yml").read_text()
     assert seed.index("seed-teams.yml") < seed.index("reconcile-teamless-keys.yml")

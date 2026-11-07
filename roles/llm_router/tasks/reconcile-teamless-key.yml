@@ -76,6 +76,20 @@
         status_code: [200, 201]
         timeout: "{{ llm_router_seed_request_timeout }}"
       when: _teamless_key.models | default([], true) | difference(_default_team_models) | length > 0
+      register: _llm_router_teamless_narrow
+      no_log: true
+
+    - name: Record successfully narrowed grants for seeded policy comparison
+      ansible.builtin.set_fact:
+        llm_router_existing_keys: >-
+          {%- set keys = [] -%}
+          {%- for key in llm_router_existing_keys.json['keys'] -%}
+          {%- set _ = keys.append(key | combine({'models': _default_team_models})
+                if key.token == _teamless_key.token else key) -%}
+          {%- endfor -%}
+          {{ llm_router_existing_keys | combine({
+               'json': llm_router_existing_keys.json | combine({'keys': keys})}) }}
+      when: _llm_router_teamless_narrow.status | default(0) in [200, 201]
       no_log: true
 
     - name: Assign the teamless key to its destination team

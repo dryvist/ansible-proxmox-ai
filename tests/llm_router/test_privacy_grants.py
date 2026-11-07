@@ -31,8 +31,8 @@ def run_tasks(tmp_path, records, tasks, **variables):
             **variables,
         },
         "tasks": [{"ansible.builtin.include_role": {
-            "name": str(ROLE), "tasks_from": tasks,
-        }}],
+            "name": str(ROLE), "tasks_from": task,
+        }} for task in ([tasks] if isinstance(tasks, str) else tasks)],
     }], sort_keys=False), encoding="utf-8")
     return subprocess.run(
         ["ansible-playbook", str(playbook), "-i", "localhost,", "-c", "local"],
