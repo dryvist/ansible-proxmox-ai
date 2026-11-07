@@ -82,6 +82,44 @@
         _local: "{{ _config.model_list | selectattr('litellm_params.tags', 'contains', 'local') | list }}"
         _cloud: "{{ _config.model_list | rejectattr('litellm_params.tags', 'contains', 'local') | list }}"
 
+    - name: Every deployment carries its serving lane and the native counter exports it
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _config.model_list | selectattr('model_info.accelerator', 'defined')
+            | list | length == _config.model_list | length
+          - >-
+            _config.model_list | map(attribute='model_info.accelerator') | unique | sort
+            == ['cloud', 'cpu', 'gpu-primary', 'gpu-secondary', 'mac-primary']
+          - _cloud | map(attribute='model_info.accelerator') | unique | list == ['cloud']
+          - "'accelerator' in _config.litellm_settings.custom_prometheus_metadata_labels"
+          - >-
+            _config.litellm_settings.custom_prometheus_metadata_labels
+            | intersect(['agent', 'run_id', 'trace_id']) == []
+          - >-
+            ['requester_metadata.agent', 'requester_metadata.tier', 'requester_metadata.privacy_class',
+             'requester_metadata.model', 'requester_metadata.accelerator']
+            | difference(_config.litellm_settings.callback_settings.otel.baggage_metadata_keys) == []
+
+    - name: Each configured endpoint inherits its lane value
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _config.model_list | selectattr('litellm_params.api_base', 'defined')
+            | selectattr('litellm_params.api_base', 'equalto', item.url)
+            | map(attribute='model_info.accelerator') | reject('equalto', item.accelerator) | list == []
+      loop:
+        - url: "{{ llm_router_llm_large_base_url }}"
+          accelerator: "{{ llm_router_llm_large_accelerator }}"
+        - url: "{{ llm_router_llm_large_standby_base_url }}"
+          accelerator: "{{ llm_router_llm_large_standby_accelerator }}"
+        - url: "{{ llm_router_gpu_profile_base_urls.values() | first }}"
+          accelerator: "{{ llm_router_gpu_accelerator }}"
+      loop_control:
+        label: "{{ item.accelerator }}"
+
     - name: Each tier has the same local backends and its own priority and patience
       ansible.builtin.assert:
         quiet: true

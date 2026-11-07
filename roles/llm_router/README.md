@@ -55,6 +55,21 @@ Common edits:
 
 See [prompt ownership and removal criteria](../../docs/LLM_ROUTER_PROMPTS.md).
 
+## Trace accelerator values
+
+Every deployment declares `model_info.accelerator`. The answering deployment
+supplies the trace value on each attempt, including fallbacks.
+
+| Value | Capability |
+| --- | --- |
+| `gpu-primary`, `gpu-secondary`, `mac-primary` | Local inference lanes |
+| `cpu` | CPU inference |
+| `cloud` | Remote provider inference |
+| `agent` | Hermes agent endpoint; inference is counted on its inner router calls |
+
+Lane token aggregation excludes `agent` to count inference once.
+LiteLLM's native output-token counter exports the `accelerator` metadata label.
+
 ## Tiers (one proxy, multiple backends)
 
 The router projects each physical backend once and exposes stable consumer

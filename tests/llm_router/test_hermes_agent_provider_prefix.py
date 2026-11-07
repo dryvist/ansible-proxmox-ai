@@ -52,3 +52,12 @@ def test_hermes_agents_use_hosted_vllm_provider_prefix():
         deployment["model_name"]: deployment["litellm_params"]["model"]
         for deployment in deployments
     } == {name: f"hosted_vllm/{name}" for name in AGENT_NAMES}
+
+
+def test_hermes_endpoints_are_agents_regardless_of_their_inner_inference_lanes():
+    deployments = _render_agents()
+
+    assert {
+        deployment["model_name"]: deployment["model_info"]["accelerator"]
+        for deployment in deployments
+    } == dict.fromkeys(AGENT_NAMES, "agent")
