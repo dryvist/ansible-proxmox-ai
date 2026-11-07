@@ -29,7 +29,10 @@ def test_prompt_sources_preserve_the_original_literal_bytes():
     assert bodies.keys() == expected.keys()
     for key, body in bodies.items():
         assert hashlib.sha256(body.encode()).hexdigest() == expected[key], key
-    assert "e426c884bbd19a464c93afe214b627db23a2e5c4#" in defaults["hermes_agent_prompts_flake_ref"]
+    assert re.fullmatch(
+        r"github:dryvist/ai-llm-prompts/[0-9a-f]{40}#auto-ai-agent",
+        defaults["hermes_agent_prompts_flake_ref"],
+    )
 
 
 def test_defaults_hold_prompt_references_with_only_the_five_private_exceptions():
