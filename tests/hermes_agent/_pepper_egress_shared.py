@@ -22,6 +22,18 @@ PEPPER_SECRET_PATHS = {
     '/v1/secret/data/apps/pepper': ('pepper_llm_router_key', 'PEPPER_VAULT_REPO_URL'),
 }
 
+
+def pepper_roster():
+    return yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/11-roster-domains.yml').read_text())
+
+
+def pepper_secret_paths(roster=None):
+    roster = roster or pepper_roster()
+    seed_vars = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/00-seed-vars.yml').read_text())
+    return NativeEnvironment().from_string(roster['openbao_secrets_pepper_paths']).render(
+        openbao_secrets_kv_mount=seed_vars['openbao_secrets_kv_mount'])
+
+
 @pytest.fixture
 def endpoint_store():
     """Exercise the shared AppRole reader against a loopback-only KV v2 fixture."""
@@ -101,10 +113,9 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
         # No agent facts, secrets or client hostname inventory are available.
         hermes_agent_bao="{{ undef('The proxy cannot use the agent play secret view') }}",
     )
-    roster = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/11-roster-domains.yml').read_text())
+    roster = pepper_roster()
+    pepper_paths = pepper_secret_paths(roster)
     seed_vars = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/00-seed-vars.yml').read_text())
-    pepper_paths = NativeEnvironment().from_string(roster['openbao_secrets_pepper_paths']).render(
-        openbao_secrets_kv_mount=seed_vars['openbao_secrets_kv_mount'])
     domain_groups = NativeEnvironment().from_string(
         roster['openbao_secrets_domain_groups']
     ).render(ai_agents={'pepper': {'container': 'fixture-pepper'}})
