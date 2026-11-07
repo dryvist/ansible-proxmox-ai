@@ -42,6 +42,7 @@ Keep keys and endpoint values outside this repository and command arguments.
 | `ROUTER_TIER2_MODEL` | Approved local model-group alias for tier 2 |
 | `ROUTER_TIER0_MODEL` | Approved local model-group alias for tier 0 |
 | `LOAD_RUN_ID` | Unique run label: 1-64 letters, digits, underscores, or hyphens |
+| `LOAD_PROMPT_FILE` | Local catalog file prepared in section 2 |
 | `LOAD_ARTIFACT_DIR` | New private directory outside the checkout |
 
 Requests use documented [required routing tags](https://docs.litellm.ai/docs/proxy/tag_routing)
@@ -56,17 +57,34 @@ The unique synthetic message and `cache.no-cache` request option exercise infere
 
 ## 2. Local validation
 
+Prepare the immutable catalog source before validation or execution. The pin in
+`tests/load/catalog.yml` uses the same SHA pin format and Renovate release annotation as
+the Hermes catalog. Native Nix prefetch downloads the source without building it:
+
+```sh
+catalog_ref=$(yq -r '.load_test_prompts_flake_ref' tests/load/catalog.yml)
+catalog_source=$(nix flake prefetch --json "${catalog_ref%#*}" | jq -r '.storePath')
+export LOAD_PROMPT_FILE="$catalog_source/automation/testing/tier-2-load-test-request.md"
+```
+
+k6 reads `LOAD_PROMPT_FILE` locally during initialization. Keep that store path
+available for the run. No prompt fetch happens during execution; a missing file
+stops initialization. The loader strips catalog frontmatter, preserves the body
+bytes, and replaces only `${id}` with the request ID in both scenarios.
+
 These commands contact no router:
 
 ```sh
 nix run nixpkgs#k6 -- inspect tests/load/tier2-burst.js
 pytest tests/load/ -q
-pre-commit run --files tests/load/tier2-burst.js tests/load/README.md tests/load/test_tier2_burst.py
+pre-commit run --files tests/load/tier2-burst.js tests/load/README.md tests/load/test_tier2_burst.py tests/load/catalog.yml
 ```
 
 The pytest checks run the actual k6 module with Node's native module mocks.
 They cover request accounting, response errors, streaming framing, and setup
 validation without a network listener or live credentials.
+The tests reuse the Hermes fixture cache to fetch the pinned catalog through Git
+on a cold cache; subsequent runs read the local archive.
 
 ## 3. Operator execution
 
