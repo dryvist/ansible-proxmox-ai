@@ -1,26 +1,23 @@
 """Agent DSL imports use the pinned catalog manifest and verify every source."""
 
 import ast
+import json
+import os
 import re
+import subprocess
+import sys
+from copy import deepcopy
 from pathlib import Path
 
 from jinja2 import Environment
-import yaml
+
+from _agent_dsl_shared import _task, _yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
 AGENT_DSLS = ROOT / "roles/dify_docker/vars/agent_dsls.yml"
 IMPORT_LOOP = ROOT / "roles/dify_docker/tasks/import_agent_dsls.yml"
 IMPORT_ONE = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
-
-
-def _yaml(path):
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-def _task(tasks, name):
-    return next(task for task in tasks if task.get("name") == name)
-
 
 def test_catalog_manifest_is_pinned_to_the_release_commit_and_checksum():
     pins = _yaml(AGENT_DSLS)
@@ -95,7 +92,7 @@ def test_manifest_entries_keep_their_url_and_sha256_through_public_import():
     assert "dify_docker_agent_dsl.mode" not in str(importer)
 
 
-def test_manifest_or_public_dsl_hash_failure_stops_before_any_import():
+def test_manifest_or_public_dsl_hash_failure_stops_before_any_import(tmp_path):
     tasks = _yaml(IMPORT_LOOP)
     by_name = {task.get("name"): (index, task) for index, task in enumerate(tasks)}
     manifest_fetch_index, manifest_fetch = by_name[
@@ -114,6 +111,35 @@ def test_manifest_or_public_dsl_hash_failure_stops_before_any_import():
     assert manifest_fetch_index < public_fetch_index < apps_index < public_import_index
     assert manifest_fetch["check_mode"] is False
     assert public_fetch["check_mode"] is False
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"fixture": true}\n', encoding="utf-8")
+    wrong_checksum = "sha256:" + "0" * 64
+    fetch_fixture = deepcopy(manifest_fetch)
+    fetch_fixture.pop("no_log", None)
+    fetch_fixture.pop("when", None)
+    fetch_fixture["ansible.builtin.get_url"].update(
+        {
+            "url": manifest.as_uri(),
+            "dest": str(tmp_path / "downloaded-manifest.json"),
+            "checksum": wrong_checksum,
+        }
+    )
+    environment = dict(os.environ)
+    environment["ANSIBLE_LOCAL_TEMP"] = str(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-m", "ansible.modules.get_url"],
+        cwd=ROOT,
+        env=environment,
+        input=json.dumps({"ANSIBLE_MODULE_ARGS": fetch_fixture["ansible.builtin.get_url"]}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "did not match" in output, output
+    assert wrong_checksum.partition(":")[2] in output, output
 
 
 def test_check_mode_previews_catalog_without_importing_or_provisioning_keys():

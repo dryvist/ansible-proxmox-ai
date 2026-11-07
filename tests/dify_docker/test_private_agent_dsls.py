@@ -3,8 +3,9 @@
 import ast
 from pathlib import Path
 
-import yaml
 from jinja2 import Environment
+
+from _agent_dsl_shared import _task, _yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,14 +17,6 @@ IMPORT_ONE = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
 FETCH_TASK = "Fetch the pinned agent DSL and verify its sha256"
 PRIVATE_LOOP_TASK = "Import each private agent DSL (skips existing app names)"
 TOKEN = "fixture-token"
-
-
-def _yaml(path):
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-def _task(tasks, name):
-    return next(task for task in tasks if task.get("name") == name)
 
 
 def _render(expression, **context):
