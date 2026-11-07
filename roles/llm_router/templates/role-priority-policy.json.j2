@@ -1,13 +1,16 @@
 {# The same projection supplies create, rebuild, and live policy updates. #}
 {%- set previous = _priority_previous | default({}) -%}
+{%- set owner = _priority_role.key_alias | default(_priority_role.role) -%}
+{%- set tier = _llm_router_virtual_keys_without_values
+      | selectattr('alias', 'equalto', owner) | map(attribute='priority_tier') | first
+      | default(llm_router_priority_key_tiers.get(owner, llm_router_priority_default_tier)) -%}
 {%- set callers = namespace(tiers=[]) -%}
 {%- for key in _llm_router_virtual_keys_without_values
       if _priority_role.role in key.models or '*' in key.models -%}
 {%- set callers.tiers = callers.tiers + [key.priority_tier] -%}
 {%- endfor -%}
 {%- set tiers = callers.tiers | unique | sort
-      if callers.tiers else [llm_router_priority_default_tier] -%}
-{%- set tier = tiers | first -%}
+      if callers.tiers else [tier] -%}
 {%- set policy = llm_router_priority_policy_by_tier[tier | string] -%}
 {%- set params = _priority_params.copy() -%}
 {%- for field, injected in previous.get('settings', {}).items() -%}

@@ -2,7 +2,7 @@
 type: reference
 description: Priority teams, deployment tags, and timeout precedence for router consumers.
 tags: [llm-router, routing]
-timestamp: 2026-11-06T23:55:00Z
+timestamp: 2026-11-07T00:09:05Z
 ---
 
 # Priority tiers
@@ -36,8 +36,8 @@ seed restrictions, pre-existing operator policy, and subsequent operator edits.
 Rows without provenance retain their existing restrictions until ownership is
 recorded. DB role creation, rebuild, and live updates use one tier projection;
 each role advertises the union of its authorized keys' effective tiers, including
-explicit key overrides. Roles without declared callers use the default tier.
-Shared roles use the most urgent caller's priority and retain tier-2 patience
+explicit key overrides. Roles without declared callers use their owning key's mapped tier.
+Shared roles retain their owning key's effective priority and tier-2 patience
 when any authorized caller uses tier 2. Stored targets and
 custom parameters survive policy updates. Tier-2 roles retargeted to cloud carry
 no tier-2 deployment grant.
