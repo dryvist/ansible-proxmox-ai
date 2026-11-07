@@ -36,6 +36,12 @@ def role_defaults(role_root: Path) -> dict:
     merged: dict = {}
     for f in sorted((role_root / "defaults" / "main").glob("*.yml")):
         merged.update(yaml.safe_load(f.read_text()) or {})
+    if "hermes_agent_catalog_prompt_sources" in merged:
+        from _prompt_catalog import prompt_bodies
+
+        # Content contracts inspect the same literal bodies as before the move.
+        # Real Ansible template expansion is checked by test_prompt_catalog_render.
+        merged.update(prompt_bodies(merged))
     for key, value in list(merged.items()):
         if not isinstance(value, str):
             continue
