@@ -207,7 +207,11 @@ def test_agents_share_hindsight_service_but_not_memory_banks() -> None:
     hermes = _render_hindsight_config("hermes")
     donna = _render_hindsight_config("donna")
 
-    assert defaults["hermes_agent_memory_bank_id"] == "{{ hermes_agent_id }}"
+    for identity in ['hermes', 'hermes-private', 'donna']:
+        assert Environment().from_string(defaults["hermes_agent_memory_bank_id"]).render(
+            hermes_agent_id=identity) == identity
+    assert Environment().from_string(defaults["hermes_agent_memory_bank_id"]).render(
+        hermes_agent_id='pepper') == ''
     assert hermes["mode"] == donna["mode"] == "local_external"
     assert hermes["api_url"] == donna["api_url"]
     assert hermes["api_key"] == donna["api_key"] == "fixture-hindsight-api-key"

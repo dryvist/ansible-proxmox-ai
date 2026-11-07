@@ -1,0 +1,29 @@
+---
+- name: Check the Pepper profiles directory
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_hermes_home }}/profiles"
+  register: hermes_agent_pepper_profiles_directory
+
+- name: Require the Pepper profiles path to be a directory when present
+  ansible.builtin.assert:
+    that:
+      - >-
+        not hermes_agent_pepper_profiles_directory.stat.exists
+        or (hermes_agent_pepper_profiles_directory.stat.isdir | default(false)
+            and not hermes_agent_pepper_profiles_directory.stat.islnk | default(false))
+
+- name: Inspect inherited Pepper profile homes
+  ansible.builtin.find:
+    paths: "{{ hermes_agent_hermes_home }}/profiles"
+    file_type: any
+    hidden: true
+    recurse: false
+  register: hermes_agent_pepper_profile_homes
+  when: hermes_agent_pepper_profiles_directory.stat.exists
+
+- name: Require Pepper to have no inherited profile homes
+  ansible.builtin.assert:
+    that:
+      - hermes_agent_pepper_profile_homes.matched | default(0) == 0
+      - hermes_agent_pepper_profile_homes.skipped_paths | default({}) | length == 0
+    fail_msg: Remove inherited Pepper profile homes before enabling this identity.
