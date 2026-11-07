@@ -14,7 +14,7 @@ TEMPLATE_DIR = REPO_ROOT / "roles/llm_router/templates"
 AGENT_NAMES = ("hermes-agent", "hermes-private", "hermes-donna")
 
 
-def _render_agents() -> list[dict]:
+def _render_agents(accelerators=None) -> list[dict]:
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(TEMPLATE_DIR),
         trim_blocks=True,
@@ -37,6 +37,7 @@ def _render_agents() -> list[dict]:
     rendered = env.get_template("model-list-hermes-agents.yaml.j2").render(
         llm_router_hermes_agents=agents,
         llm_router_llm_light_accelerator="cpu",
+        llm_router_hermes_agent_accelerators=accelerators or dict.fromkeys(AGENT_NAMES, "mac-primary"),
         llm_router_hermes_agent_identities={name: name for name in AGENT_NAMES},
         llm_router_hermes_identity_bearers={name: "placeholder" for name in AGENT_NAMES},
         llm_router_hermes_agent_timeout=120,
@@ -53,3 +54,13 @@ def test_hermes_agents_use_hosted_vllm_provider_prefix():
         deployment["model_name"]: deployment["litellm_params"]["model"]
         for deployment in deployments
     } == {name: f"hosted_vllm/{name}" for name in AGENT_NAMES}
+
+
+def test_hermes_agents_inherit_their_configured_serving_lanes():
+    accelerators = dict(zip(AGENT_NAMES, ("gpu-primary", "mac-primary", "cloud"), strict=True))
+    deployments = _render_agents(accelerators)
+
+    assert {
+        deployment["model_name"]: deployment["model_info"]["accelerator"]
+        for deployment in deployments
+    } == accelerators
