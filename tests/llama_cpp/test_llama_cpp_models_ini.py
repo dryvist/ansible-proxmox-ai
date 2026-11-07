@@ -93,6 +93,12 @@ def test_chat_section_omits_embeddings_flags_and_carries_cache_reuse():
     assert parser.get("fixture-chat", "jinja") == "true"
 
 
+def test_chat_section_shares_one_kv_buffer_only_when_the_entry_asks():
+    models = [{"name": "shared", "aliases": [], "gguf": "shared.gguf", "embeddings": False, "kv_unified": True}]
+    assert _parse(render(llama_cpp_models_present=models)).get("shared", "kv-unified") == "true"
+    assert not _parse(render()).has_option("fixture-chat", "kv-unified")
+
+
 def test_embeddings_section_carries_embeddings_flags_and_no_chat_flags():
     parser = _parse(render())
     assert parser.get("fixture-embeddings", "pooling") == "mean"
