@@ -2,6 +2,7 @@
 
 import ast
 import hashlib
+import re
 from pathlib import Path
 
 from jinja2 import Environment
@@ -15,7 +16,7 @@ AGENT_DSLS = ROOT / "roles/dify_docker/vars/agent_dsls.yml"
 IMPORT_LOOP = ROOT / "roles/dify_docker/tasks/import_agent_dsls.yml"
 IMPORT_ONE = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
 
-FETCH_TASK = "Fetch the pinned agent DSL and verify its sha256"
+FETCH_TASK = "Fetch the pinned agent DSL and verify its sha256 without redirects"
 PRIVATE_LOOP_TASK = "Reconcile each private agent DSL"
 TOKEN = "fixture-token"
 
@@ -25,6 +26,9 @@ def _render(expression, **context):
     env = Environment()
     env.filters["bool"] = bool
     env.filters["combine"] = lambda base, extra: {**base, **extra}
+    env.filters["regex_replace"] = lambda value, pattern, replacement="": re.sub(
+        pattern, replacement, str(value)
+    )
     env.tests["failed"] = lambda result: bool(result.get("failed"))
     return env.from_string(expression).render(context)
 
@@ -89,7 +93,7 @@ def test_missing_token_is_reported_instead_of_fetching_unauthenticated():
 
 def test_fetch_sends_the_bearer_token_only_for_private_entries():
     fetch = _task(_yaml(IMPORT_ONE), FETCH_TASK)
-    headers = fetch["ansible.builtin.get_url"]["headers"]
+    headers = fetch["ansible.builtin.uri"]["headers"]
 
     private = ast.literal_eval(
         _render(
@@ -108,24 +112,55 @@ def test_fetch_sends_the_bearer_token_only_for_private_entries():
 
 def test_fetch_stays_checksum_verified_and_secret_safe():
     fetch = _task(_yaml(IMPORT_ONE), FETCH_TASK)
+    request = fetch["ansible.builtin.uri"]
 
     assert fetch["no_log"] is True
-    assert fetch["ansible.builtin.get_url"]["checksum"] == "sha256:{{ dify_docker_agent_dsl.sha256 }}"
-    assert fetch["ansible.builtin.get_url"]["mode"] == "0600"
+    assert request["method"] == "GET"
+    assert request["status_code"] == 200
+    assert request["follow_redirects"] == "none"
+    assert request["return_content"] is True
+    assert "dify_docker_dsl_fetch.content" in fetch["failed_when"]
+    assert "hash('sha256')" in fetch["failed_when"]
+    assert "dify_docker_agent_dsl.sha256" in fetch["failed_when"]
+
+    write = _task(_yaml(IMPORT_ONE), "Write the verified private agent DSL for live import")
+    assert write["ansible.builtin.copy"]["content"] == "{{ dify_docker_dsl_fetch.content }}"
+    assert write["ansible.builtin.copy"]["mode"] == "0600"
+    assert "not ansible_check_mode" in write["when"]
+    assert write["no_log"] is True
 
 
 def test_check_mode_previews_private_app_name_without_printing_private_content():
     importer = _yaml(IMPORT_ONE)
+    resolve_name = _task(importer, "Resolve the private app preview name from its catalog entry")
     preview = next(task for task in importer if task.get("name") == "Preview the catalog app create or update")
+    assert resolve_name["no_log"] is True
 
+    catalog_entries = [
+        ({"name": "catalog-agent-name", "url": "https://example.test/hidden.dsl.yml"}, "catalog-agent-name"),
+        ({"url": "https://example.test/agent-file.dsl.yml"}, "agent-file"),
+    ]
+    for entry, expected_name in catalog_entries:
+        preview_name = _render(
+            resolve_name["ansible.builtin.set_fact"]["dify_docker_dsl_preview_name"],
+            dify_docker_agent_dsl={**entry, "private": True},
+        )
+        assert preview_name == expected_name
+
+    preview_name = _render(
+        resolve_name["ansible.builtin.set_fact"]["dify_docker_dsl_preview_name"],
+        dify_docker_agent_dsl={**catalog_entries[0][0], "private": True},
+    )
     for matches, action in (([], "create"), ([{"name": "private-agent-name"}], "overwrite")):
         message = _render(
             preview["ansible.builtin.debug"]["msg"],
             dify_docker_dsl_app_matches=matches,
             dify_docker_agent_dsl={"private": True},
-            dify_docker_dsl_name="private-agent-name",
+            dify_docker_dsl_name="dsl-document-internal-name",
+            dify_docker_dsl_preview_name=preview_name,
         )
-        assert message == f'Would {action} private Dify app "private-agent-name".'
+        assert message == f'Would {action} private Dify app "catalog-agent-name".'
+        assert "dsl-document-internal-name" not in message
         assert "dify_docker_dsl_content" not in message
         assert "prompt" not in message.lower()
     assert preview.get("no_log") is not True
@@ -142,6 +177,7 @@ def test_private_check_mode_reads_verified_dsl_in_memory_without_target_writes_o
     read = _task(importer, "Read the catalog agent DSL into memory for check mode")
     verify = _task(importer, "Verify the catalog agent DSL sha256 in check mode")
     fetch = _task(importer, FETCH_TASK)
+    write = _task(importer, "Write the verified private agent DSL for live import")
     slurp = _task(importer, "Read the verified agent DSL")
     select_source = _task(importer, "Select the verified in-memory or file-backed agent DSL")
     cleanup = _task(importer, "Remove the fetched agent DSL copy")
@@ -150,6 +186,7 @@ def test_private_check_mode_reads_verified_dsl_in_memory_without_target_writes_o
     assert read["ansible.builtin.uri"]["method"] == "GET"
     assert read["ansible.builtin.uri"]["return_content"] is True
     assert read["ansible.builtin.uri"]["status_code"] == 200
+    assert read["ansible.builtin.uri"]["follow_redirects"] == "none"
     assert read["check_mode"] is False
     assert read["changed_when"] is False
     assert read["no_log"] is True
@@ -224,8 +261,8 @@ def test_private_check_mode_reads_verified_dsl_in_memory_without_target_writes_o
             and "dest" in task["ansible.builtin.uri"]
         )
     ]
-    assert target_mutations == [fetch, cleanup]
-    assert "not ansible_check_mode" in fetch["when"]
+    assert target_mutations == [write, cleanup]
+    assert "not ansible_check_mode" in write["when"]
     assert "not ansible_check_mode" in cleanup["when"]
     assert slurp["ansible.builtin.slurp"]["src"].startswith("/tmp/dify-agent-dsl-")
     assert "not ansible_check_mode" in slurp["when"]
