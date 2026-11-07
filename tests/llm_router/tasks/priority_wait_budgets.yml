@@ -58,3 +58,54 @@
       - hindsight_docker_consolidation_llm_timeout == ai_tier_2_client_timeout_seconds
       - hindsight_docker_retain_wall_timeout == ai_tier_2_router_request_timeout_seconds
       - hindsight_docker_consolidation_wall_timeout == ai_tier_2_router_request_timeout_seconds
+
+- name: Load Hermes client policy defaults
+  ansible.builtin.include_vars:
+    dir: "{{ playbook_dir }}/../../roles/hermes_agent/defaults/main"
+
+- name: Supply a background gateway with independently tiered profiles
+  ansible.builtin.set_fact:
+    # Scheduler calculation is independent of client policy in this render.
+    hermes_agent_cron_wall_timeout_seconds: 900
+    _llm_router_declared_virtual_keys:
+      - alias: "{{ hermes_agent_router_key_alias }}"
+        priority_tier: 2
+        models: []
+
+- name: Verify each derived Hermes store follows its own effective tier
+  ansible.builtin.include_tasks: priority_client_timeouts.yml
+  loop: "{{ hermes_agent_profiles + [{'name': 'default', 'description': 'Gateway', 'env': []}] }}"
+  loop_control:
+    loop_var: _client_profile
+
+- name: The default store also uses its own effective tier
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _env is search('(?m)^HERMES_STREAM_READ_TIMEOUT=' ~ ai_tier_2_client_timeout_seconds ~ '$')
+      - _env is search('(?m)^HERMES_STREAM_STALE_TIMEOUT=' ~ ai_tier_2_client_timeout_seconds ~ '$')
+      - _env is search('(?m)^HERMES_API_CALL_STALE_TIMEOUT=' ~ ai_tier_2_client_timeout_seconds ~ '$')
+  vars:
+    _env: >-
+      {{ lookup('template', playbook_dir ~ '/../../roles/hermes_agent/templates/hermes-env-operational.j2') }}
+
+- name: Override a derived consumer to the interactive tier
+  ansible.builtin.set_fact:
+    _llm_router_declared_virtual_keys:
+      - alias: hermes-eval
+        priority_tier: 0
+        models: []
+
+- name: Verify the consumer key override also controls its client timeout
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _key.priority_tier == 0
+      - _env is search('(?m)^HERMES_STREAM_READ_TIMEOUT=1800$')
+      - _env is search('(?m)^HERMES_STREAM_STALE_TIMEOUT=900$')
+      - _env is search('(?m)^HERMES_API_CALL_STALE_TIMEOUT=900$')
+  vars:
+    hermes_agent_profile: {name: eval}
+    _key: "{{ _llm_router_virtual_keys_source | first }}"
+    _env: >-
+      {{ lookup('template', playbook_dir ~ '/../../roles/hermes_agent/templates/hermes-env-operational.j2') }}

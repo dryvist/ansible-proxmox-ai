@@ -40,9 +40,20 @@ llm_router_priority_key_tiers:
 
 llm_router_priority_default_tier: 1
 
+llm_router_priority_effective_key_tiers: >-
+  {%- set out = llm_router_priority_key_tiers.copy() -%}
+  {%- for key in _llm_router_declared_virtual_keys -%}
+  {%- set _ = out.update({key.alias: key.priority_tier | default(
+        llm_router_priority_key_tiers.get(key.alias, llm_router_priority_default_tier))}) -%}
+  {%- endfor -%}
+  {{ out }}
+
 # Shared projection for key creation, reconciliation, and DB role deployments.
 llm_router_priority_policy_by_tier: >-
   {%- set out = {} -%}
+  {%- set client_timeout = ai_tier_2_client_timeout_seconds | default(
+        (ai_tier_2_wait_timeout_seconds | default(43200) | int)
+        + (ai_stream_read_timeout_seconds | default(1800) | int)) -%}
   {%- for tier in llm_router_priority_tiers -%}
   {%- set settings = {'enable_tag_filtering': true} -%}
   {%- if tier.tier == 2 -%}
@@ -52,6 +63,8 @@ llm_router_priority_policy_by_tier: >-
   {%- endif -%}
   {%- set _ = out.update({tier.tier | string: {
         'tier': tier.tier, 'priority': tier.priority,
+        'client_timeouts': (dict.fromkeys(['read', 'stale', 'api_stale'], client_timeout)
+                            if tier.tier == 2 else {}),
         'tags': ['&' ~ tier.team_id] + (['&local'] if tier.tier == 2 else []),
         'router_settings': settings}}) -%}
   {%- endfor -%}

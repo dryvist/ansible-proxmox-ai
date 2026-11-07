@@ -2,7 +2,7 @@
 type: reference
 description: Priority teams, deployment tags, and timeout precedence for router consumers.
 tags: [llm-router, routing]
-timestamp: 2026-11-07T00:38:00Z
+timestamp: 2026-11-07T00:58:14Z
 ---
 
 # Priority tiers
@@ -26,6 +26,11 @@ waiting and the existing 2400-second attempt budget. Tier-2 key and team setting
 carry the same attempt timeout. Native background clients use 45000 seconds,
 including their existing 1800-second execution budget; the workflow runtime uses
 the attempt budget. Tier-0 and tier-1 client and attempt defaults stay unchanged.
+Hermes resolves each store's key alias through the shared effective-tier
+projection, including explicit key overrides. Tier-2 stores use the client
+budget for read, stream-stale, and non-streaming stale guards; other stores
+retain their configured client defaults. Named profiles resolve independently
+of their gateway's tier.
 Cloud deployments carry only
 tiers 0 and 1 and retain their privacy tags.
 Hermes agent endpoints carry all priority tier tags and retain `sensitivity:public`.
