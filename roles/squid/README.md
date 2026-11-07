@@ -49,17 +49,16 @@ a domain allowlist. The template turns each entry into one ACL pair:
 
 The `pepper` profile selects only the Pepper identity from the Hermes group.
 It permits the router, YouTrack, OpenBao, the configured evidence repository
-host, Slack, and the npm registry. Service hosts come from non-secret hostname
-variables. All service hostnames are required. Identity profiles deny
+host, Slack, and the npm registry. All service hostnames are required. Identity profiles deny
 unmatched destinations before any shared profile can grant access.
 
 The Squid play resolves service hosts from each identity's inventory and the
-shared Hermes role defaults, including during Squid-only limited runs, without
-fetching identity secrets. `hermes_agent_pepper_router_host` projects the router
+shared Hermes role defaults, including during Squid-only limited runs.
+`hermes_agent_pepper_router_host` projects the router
 endpoint; `hermes_agent_pepper_openbao_host` projects `SECRET_STORE_ADDR` or
-`BAO_ADDR`. Set `hermes_agent_pepper_youtrack_host` and
-`hermes_agent_pepper_vault_host` as non-secret inventory hostnames. Empty values,
-URLs, addresses, credentials, and wildcards fail before the proxy config renders.
+`BAO_ADDR`. The play resolves the YouTrack and evidence hostnames on the controller
+through the existing secret lookup, then passes only those hostnames to the shared
+projection. Empty values, addresses, and wildcards fail before the proxy config renders.
 
 `playbooks/agent-egress.yml` prepares Pepper's service proxy environment and
 converges Squid before the Hermes runtime. Pepper's gateway, jobs, and evidence

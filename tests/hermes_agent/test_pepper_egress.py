@@ -1,8 +1,11 @@
 """Render the shipped Pepper endpoint projection and shared proxy policy offline."""
 import os
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import shlex
 import subprocess
+from threading import Thread
 
 import pytest
 import yaml
@@ -12,29 +15,65 @@ from _role_files import render_hermes_runtime_unit, role_defaults
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture
+def endpoint_store():
+    """Exercise the native lookup against a loopback-only KV v2 fixture."""
+    state = dict(data={}, status=200, requests=[])
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            state['requests'].append(self.path)
+            assert self.headers.get('X-Vault-Token') == 'fixture-token'
+            if self.path == '/v1/auth/token/lookup-self':
+                status, data = 200, {'data': {'policies': ['fixture-reader']}}
+            elif self.path == '/v1/secret/data/ai/pepper':
+                status, data = state['status'], {'data': {'data': state['data'], 'metadata': {}}}
+            else:
+                status, data = 404, {'errors': ['Unexpected fixture path']}
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode())
+
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f'http://127.0.0.1:{server.server_port}', state
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 @pytest.mark.parametrize('vault,youtrack,valid', [
-    ('evidence.example.test', 'issues.example.test', True),
-    ('', 'issues.example.test', False),
-    ('https://evidence.example.test/repository.git', 'issues.example.test', False),
-    ('evidence.example.test', 'fixture-user:fixture-password@issues.example.test', False),
-    ('evidence.example.test', '', False),
-    ('evidence.example.test', '.example.test', False),
-    ('evidence.example.test', '192.0.2.1', False),
+    ('https://evidence.example.test/repository.git', 'https://issues.example.test/mcp', True),
+    ('https://fixture-user:fixture-password@evidence.example.test/repository.git',
+     'https://issues.example.test/mcp?token=fixture-query', True),
+    ('', 'https://issues.example.test/mcp', False),
+    ('https://evidence.example.test/repository.git', '', False),
+    ('https://evidence.example.test/repository.git', 'https://.example.test/mcp', False),
+    ('https://evidence.example.test/repository.git', 'https://192.0.2.1/mcp', False),
 ])
-def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vault, youtrack, valid):
+def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, endpoint_store, vault, youtrack, valid):
+    address, store = endpoint_store
+    store['data'] = dict(PEPPER_VAULT_REPO_URL=vault, YOUTRACK_MCP_URL=youtrack,
+                         PEPPER_VAULT_READ_TOKEN='fixture-private-token')
     defaults = role_defaults(ROOT / 'roles/agent_guest')
     defaults.update(yaml.safe_load((ROOT / 'roles/squid/defaults/main.yml').read_text()))
     endpoints = dict(
-        hermes_agent_pepper_youtrack_host=youtrack,
-        hermes_agent_pepper_vault_host=vault,
-        # Any attempt to consume the secret view or credential-bearing URLs fails.
-        hermes_agent_bao="{{ undef('The proxy must not fetch Pepper secrets') }}",
-        hermes_agent_youtrack_mcp_url="{{ undef('Use the non-secret hostname') }}",
-        hermes_agent_pepper_vault_repo_url="{{ undef('Use the non-secret hostname') }}",
+        # No agent facts, secrets or client hostname inventory are available.
+        hermes_agent_bao="{{ undef('The proxy cannot use the agent play secret view') }}",
     )
+    roster = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/11-roster-domains.yml').read_text())
     defaults.update(
         agent_guest_proxy_host='proxy.example.test', agent_guest_proxy_port=3128,
         agent_guest_no_proxy='{{ agent_guest_loopback_no_proxy }}',
+        hermes_agent_pepper_openbao_host='secrets.example.test',
+        openbao_secrets_kv_mount='secret', openbao_secrets_pepper_path=roster['openbao_secrets_pepper_path'],
         ansible_managed='fixture',
         tofu_data={'constants': {'service_ports': {'squid_proxy': 3128}}},
     )
@@ -49,8 +88,11 @@ def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vaul
         squid_group=dict(hosts={'proxy-fixture': dict(ansible_connection='local')}),
     )))))
     # Only the squid play runs: no facts or secrets have been prepared on either agent.
+    proxy_play = yaml.safe_load((ROOT / 'playbooks/agent-egress.yml').read_text())[1]
+    fetch = proxy_play['tasks'][0]['block'][0].copy()
+    fetch['ansible.builtin.include_tasks'] = str(ROOT / 'playbooks' / fetch['ansible.builtin.include_tasks'])
     resolver = yaml.safe_load((ROOT / 'roles/squid/tasks/main.yml').read_text())[0]
-    tasks = [dict(name='Resolve the production squid inputs', **{'ansible.builtin.include_role': dict(
+    tasks = [fetch, dict(name='Resolve the production squid inputs', **{'ansible.builtin.include_role': dict(
         name='squid', tasks_from='pepper_egress')},
         **{k: v for k, v in resolver.items() if k in ('loop', 'loop_control', 'when')})]
     tasks += [
@@ -64,6 +106,9 @@ def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vaul
             "'acl pepper_clients src fixture-ordinary-address' not in _squid",
             "_squid.index('http_access deny pepper_clients') < _squid.index('http_access allow ai_proxied_clients')",
             "'http_access deny all' in _squid",
+            "'fixture-password' not in _squid",
+            "'fixture-query' not in _squid",
+            "'fixture-private-token' not in _squid",
             "_pepper_domains | sort == _expected_domains | sort",
             "'api.openai.com' not in _pepper_domains",
             "'api.anthropic.com' not in _pepper_domains",
@@ -81,19 +126,23 @@ def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(tmp_path, vaul
     playbook = tmp_path / 'verify.yml'
     playbook.write_text(yaml.safe_dump([
         dict(name='Verify Pepper egress', hosts='squid_group', gather_facts=False,
-             vars=defaults, tasks=tasks, tags=['squid']),
+             vars=defaults, tasks=tasks, tags=proxy_play['tags']),
     ]))
     result = subprocess.run(
         ['ansible-playbook', str(playbook), '-i', str(inventory), '-c', 'local',
          '--tags', 'squid', '--limit', 'squid_group,localhost'],
         env=dict(os.environ, ANSIBLE_LOCAL_TEMP=str(tmp_path / 'local'),
-                 SECRET_STORE_ADDR='https://secrets.example.test',
+                 SECRET_STORE_ADDR=address, BAO_TOKEN='fixture-token',
                  ANSIBLE_OPENTELEMETRY_ENABLED='true',
                  ANSIBLE_OPENTELEMETRY_STORE_SPANS_IN_FILE='/dev/null'),
         text=True, capture_output=True, check=False)
     assert result.returncode == (0 if valid else 2), result.stdout + result.stderr
+    assert store['requests'].count('/v1/secret/data/ai/pepper') == 2
+    assert set(store['requests']) <= {'/v1/secret/data/ai/pepper', '/v1/auth/token/lookup-self'}
+    assert 'fixture-password' not in result.stdout + result.stderr
+    assert 'fixture-private-token' not in result.stdout + result.stderr
     if not valid:
-        assert 'Pepper egress requires a non-secret DNS hostname' in result.stdout
+        assert 'Pepper egress requires a DNS hostname' in result.stdout
 
 
 def test_proxy_precedes_runtime_and_uses_the_shared_guest_role():
@@ -115,6 +164,33 @@ def test_proxy_precedes_runtime_and_uses_the_shared_guest_role():
     proxy_tasks = yaml.safe_load((ROOT / 'roles/agent_guest/tasks/proxy_guest.yml').read_text())
     assert any(t.get('ansible.builtin.file', {}).get('path') == '{{ agent_guest_npm_prefix }}/etc'
                for t in proxy_tasks)
+
+
+@pytest.mark.parametrize('status', [200, 403, 404])
+def test_unavailable_client_endpoint_refuses_the_proxy_render(tmp_path, endpoint_store, status):
+    address, store = endpoint_store
+    store['status'] = status
+    # Even a readable path is insufficient when either endpoint field is absent.
+    store['data'] = dict(PEPPER_VAULT_REPO_URL='https://evidence.example.test/repository.git')
+    roster = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/11-roster-domains.yml').read_text())
+    task_file = ROOT / 'playbooks/tasks/pepper_egress_endpoints.yml'
+    read = yaml.safe_load(task_file.read_text())[0]['block'][0]
+    assert read['delegate_to'] == 'localhost' and read['no_log'] is True
+    assert read['become'] is False and read['vars']['ansible_become'] is False
+    playbook = tmp_path / 'verify.yml'
+    playbook.write_text(yaml.safe_dump([dict(
+        name='Verify unavailable Pepper endpoints', hosts='localhost', gather_facts=False,
+        vars=dict(openbao_secrets_kv_mount='secret', openbao_secrets_pepper_path=roster['openbao_secrets_pepper_path']),
+        tasks=[dict(name='Resolve production endpoint hosts',
+                    **{'ansible.builtin.include_tasks': str(task_file)})])]))
+    result = subprocess.run(
+        ['ansible-playbook', str(playbook), '-i', 'localhost,', '-c', 'local'],
+        env=dict(os.environ, ANSIBLE_LOCAL_TEMP=str(tmp_path / 'local'),
+                 SECRET_STORE_ADDR=address, BAO_TOKEN='fixture-token'),
+        text=True, capture_output=True, check=False)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert 'Refusing to render the allowlist' in result.stdout
+    assert 'evidence.example.test' not in result.stdout + result.stderr
 
 
 def test_install_tasks_and_runtime_units_use_different_proxy_settings():
