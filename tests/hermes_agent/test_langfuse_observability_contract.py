@@ -94,8 +94,8 @@ def test_langfuse_requires_both_keys_and_renders_sanitized_config() -> None:
                 "HERMES_LANGFUSE_CAPTURE": "sanitized",
                 "HERMES_LANGFUSE_ENV": "production",
             }
-            # Langfuse SDK 4.15.2 appends this override to base_url:
-            # https://github.com/langfuse/langfuse-python/blob/v4.15.2/langfuse/_client/span_processor.py#L108-L118
+            # Langfuse SDK appends this override to base_url:
+            # https://github.com/langfuse/langfuse-python/blob/v4.18.0/langfuse/_client/span_processor.py
             assert values["LANGFUSE_OTEL_TRACES_EXPORT_PATH"] == "v1/traces"
             assert langfuse_values["HERMES_LANGFUSE_BASE_URL"] != langfuse_host
         else:
@@ -123,7 +123,7 @@ def test_credentials_are_read_from_the_agent_openbao_view() -> None:
 
 def test_managed_sdk_pin_matches_the_supported_plugin_imports() -> None:
     defaults = role_defaults(ROLE_ROOT)
-    assert defaults["hermes_agent_langfuse_sdk_version"] == "4.15.2"
+    assert defaults["hermes_agent_langfuse_sdk_version"] == "4.18.0"
     plugins = (ROLE_ROOT / "defaults/main/155-plugins.yml").read_text()
     assert "langfuse{{ hermes_agent_langfuse_sdk_pin }}" in plugins
     assert "from langfuse import Langfuse, propagate_attributes" in (
