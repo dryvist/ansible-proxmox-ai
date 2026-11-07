@@ -81,7 +81,7 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
                                 prepared=False, rendered=True, expected_error=None):
     address, store = endpoint_store
     store['data'] = dict(PEPPER_VAULT_REPO_URL=vault, YOUTRACK_MCP_URL=youtrack,
-                         PEPPER_VAULT_READ_TOKEN='fixture-private-token')
+                         YOUTRACK_MCP_TOKEN='fixture-private-token')
     defaults = role_defaults(ROOT / 'roles/agent_guest')
     defaults.update(yaml.safe_load((ROOT / 'roles/squid/defaults/main.yml').read_text()))
     endpoints = dict(

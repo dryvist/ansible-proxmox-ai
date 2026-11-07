@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.27.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.26.0...v2.27.0) (2026-11-07)
+
+
+### Features
+
+* **hermes:** mint Pepper's evidence token at each refresh ([#2121](https://github.com/dryvist/ansible-proxmox-ai/issues/2121)) ([e2cabbf](https://github.com/dryvist/ansible-proxmox-ai/commit/e2cabbf463c084d2ade127041260f697373cdd9f))
+
 ## [2.26.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.25.0...v2.26.0) (2026-11-07)
 
 

@@ -76,7 +76,7 @@ def _render(template: str, limits: dict[str, Any], **overrides: Any) -> tuple[st
         "hermes_agent_kanban_max_in_progress": 8,
         "hermes_agent_kanban_max_in_progress_per_profile": 8,
         "hermes_agent_pepper_vault_repo_url": "",
-        "hermes_agent_pepper_vault_read_token": "",
+        "hermes_agent_pepper_vault_enabled": False,
     })
     context.update(overrides)
     rendered = env.get_template(template).render(**context)
