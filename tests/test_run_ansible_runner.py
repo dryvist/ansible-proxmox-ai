@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -63,13 +64,15 @@ class RunAnsibleShimContract(unittest.TestCase):
 
     def test_pins_the_shared_runner_and_sets_this_repos_switches(self):
         result = self._run(["playbooks/site.yml", "--limit", "qdrant_group"])
+        refs = re.findall(r"^HOMELAB_CONTRACTS_REF=(v\d+\.\d+\.\d+)$", RUNNER.read_text(), re.M)
+        self.assertEqual(len(refs), 1)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             self.argv_log.read_text(encoding="utf-8").splitlines(),
             [
                 "run",
-                "github:dryvist/homelab-contracts/v5.41.0#run-ansible",
+                f"github:dryvist/homelab-contracts/{refs[0]}#run-ansible",
                 "--",
                 "playbooks/site.yml",
                 "--limit",
