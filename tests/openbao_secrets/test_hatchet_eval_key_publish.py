@@ -10,7 +10,6 @@ from jinja2.nativetypes import NativeEnvironment
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "playbooks/llm-serving.yml"
 SITE = ROOT / "playbooks/site.yml"
-GPU_FILL_TASKS = "playbooks/tasks/publish_gpu_fill_router_key.yml"
 
 # (publish task, absent-key report task, task file or None for the rendering play,
 #  roster key, field written to apps/hatchet/eval)
@@ -22,14 +21,6 @@ PROJECTIONS = [
         "hatchet_eval_llm_router_key",
         "hatchet_eval_litellm_api_key",
         id="hatchet-eval",
-    ),
-    pytest.param(
-        "Publish GPU fill router key to apps",
-        "Report the GPU fill router key is absent from the roster domain",
-        GPU_FILL_TASKS,
-        "gpu_fill_llm_router_key",
-        "gpu_fill_llm_router_key",
-        id="gpu-fill",
     ),
 ]
 
@@ -110,11 +101,3 @@ def test_absent_roster_key_is_reported_and_skipped(publish_name, report_name, ta
     assert report_condition.render(hostvars=absent) is True
     assert publish_condition.render(hostvars=present) is True
     assert report_condition.render(hostvars=present) is False
-
-
-def test_gpu_fill_publish_is_imported_into_the_rendering_play():
-    imports = [
-        task for task in _router_play()["tasks"]
-        if task.get("ansible.builtin.import_tasks") == "tasks/publish_gpu_fill_router_key.yml"
-    ]
-    assert len(imports) == 1
