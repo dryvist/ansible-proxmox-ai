@@ -4,8 +4,7 @@ import logging
 
 from litellm.integrations.custom_logger import CustomLogger
 
-_CI_KEY_ALIASES = frozenset({"github-actions"})
-_THINKING_OFF_ALIASES = _CI_KEY_ALIASES | {"github-actions-oss", "github-actions-oss-interim"}
+_CI_KEY_ALIASES = frozenset({"github-actions", "github-actions-oss", "github-actions-oss-interim"})
 _THINKING_OFF_MODELS = frozenset({"medium", "review-local", "review-private", "review-oss"})
 _SERVED_CALL_TYPES = frozenset(
     {
@@ -248,7 +247,7 @@ def _sanitize_transport_fields(data, request):
         data.pop("provider_specific_header", None)
 
 
-def pin_request(data, call_type, body):
+def pin_request(data, call_type, body, alias):
     family = _ROUTE_FAMILIES[call_type]
     allowed = _ALLOWED_FIELDS[family] | _ALWAYS_KEPT
     unknown = []
@@ -260,7 +259,7 @@ def pin_request(data, call_type, body):
     if unknown:
         _LOG.warning(
             "CI key alias %s call type %s dropped unknown request keys: %s",
-            "github-actions",
+            alias,
             call_type,
             ", ".join(sorted(unknown)),
         )
@@ -296,8 +295,6 @@ class CiEffortPin(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
         alias = getattr(user_api_key_dict, "key_alias", None)
         if alias not in _CI_KEY_ALIASES:
-            if alias in _THINKING_OFF_ALIASES:
-                default_thinking_off(data, call_type)
             return data
         if call_type not in _SERVED_CALL_TYPES:
             return "The CI key serves chat, Responses and Anthropic messages requests only."
@@ -311,7 +308,7 @@ class CiEffortPin(CustomLogger):
         for model in (body.get("model"), data.get("model")):
             if model is not None and (not isinstance(model, str) or "," in model):
                 return "The CI key must select one model per request."
-        pinned = pin_request(data, call_type, body)
+        pinned = pin_request(data, call_type, body, alias)
         default_thinking_off(pinned, call_type)
         return pinned
 

@@ -13,7 +13,6 @@ import pytest
 
 SOURCE = Path(__file__).resolve().parents[2] / "roles/llm_router/files/callbacks/ci_effort_pin.py"
 THINKING_OFF = {"enable_thinking": False}
-KEYS = ["github-actions", "github-actions-oss", "github-actions-oss-interim"]
 
 
 def _load() -> dict:
@@ -28,6 +27,7 @@ def _load() -> dict:
 
 
 _NAMESPACE = _load()
+KEYS = sorted(_NAMESPACE["_CI_KEY_ALIASES"])
 # The review role names are registry values, so they are read from the callback's own set, never re-typed here.
 LOCAL, OSS, PRIVATE = (
     next(m for m in sorted(_NAMESPACE["_THINKING_OFF_MODELS"]) if m.endswith(scope)) for scope in ("local", "oss", "private")
@@ -40,8 +40,8 @@ def handler():
 
 
 def call(handler, alias, data, call_type="acompletion"):
-    if alias == "github-actions":
-        data["proxy_server_request"] = {"body": copy.deepcopy(data)}
+    if alias in _NAMESPACE["_CI_KEY_ALIASES"]:
+        data["proxy_server_request"] = {"body": dict(data)}
     key = types.SimpleNamespace(key_alias=alias)
     out = asyncio.run(handler.async_pre_call_hook(key, None, data, call_type))
     if isinstance(out, dict):
@@ -73,50 +73,53 @@ def test_client_choice_in_extra_body_is_kept_and_not_duplicated(handler, alias, 
     assert "chat_template_kwargs" not in out
 
 
+@pytest.mark.parametrize("alias", KEYS)
 @pytest.mark.parametrize("enabled", [True, False])
-def test_oss_client_choice_at_top_level_is_kept(handler, enabled):
+def test_client_choice_at_top_level_is_pinned_off(handler, alias, enabled):
     template = {"enable_thinking": enabled}
-    out = call(handler, "github-actions-oss", {"model": OSS, "chat_template_kwargs": dict(template)})
-    assert out["chat_template_kwargs"] == template
+    out = call(handler, alias, {"model": OSS, "chat_template_kwargs": dict(template)})
+    assert out["chat_template_kwargs"] == THINKING_OFF
     assert "extra_body" not in out
 
 
-def test_oss_other_template_flags_at_top_level_get_the_default_added(handler):
-    out = call(handler, "github-actions-oss", {"model": OSS, "chat_template_kwargs": {"preserve_thinking": True}})
-    assert out["chat_template_kwargs"] == {"preserve_thinking": True, **THINKING_OFF}
-
-
-def test_oss_other_template_flags_in_extra_body_get_the_default_added_without_mutating_the_request(handler):
-    extra = {"provider": {"order": ["a"]}, "chat_template_kwargs": {"preserve_thinking": True}}
-    original = copy.deepcopy(extra)
-    out = call(handler, "github-actions-oss", {"model": OSS, "extra_body": extra})
-    assert out["extra_body"] == {
-        "provider": {"order": ["a"]},
-        "chat_template_kwargs": {"preserve_thinking": True, **THINKING_OFF},
-    }
-    assert extra == original
-    assert "chat_template_kwargs" not in out
-
-
-@pytest.mark.parametrize("extra", [{"provider": {"order": ["a"]}}, {}, None, "text", ["x"]])
-def test_oss_extra_body_without_template_is_untouched_and_default_goes_top_level(handler, extra):
-    out = call(handler, "github-actions-oss", {"model": OSS, "extra_body": copy.deepcopy(extra)})
-    assert out["extra_body"] == extra
+@pytest.mark.parametrize("alias", KEYS)
+def test_other_template_flags_at_top_level_are_replaced_by_the_default(handler, alias):
+    out = call(handler, alias, {"model": OSS, "chat_template_kwargs": {"preserve_thinking": True}})
     assert out["chat_template_kwargs"] == THINKING_OFF
 
 
+@pytest.mark.parametrize("alias", KEYS)
+def test_other_template_flags_in_extra_body_are_replaced_without_mutating_the_request(handler, alias):
+    extra = {"provider": {"order": ["a"]}, "chat_template_kwargs": {"preserve_thinking": True}}
+    original = copy.deepcopy(extra)
+    out = call(handler, alias, {"model": OSS, "extra_body": extra})
+    assert "extra_body" not in out
+    assert out["chat_template_kwargs"] == THINKING_OFF
+    assert extra == original
+
+
+@pytest.mark.parametrize("alias", KEYS)
+@pytest.mark.parametrize("extra", [{"provider": {"order": ["a"]}}, {}, None, "text", ["x"]])
+def test_extra_body_without_template_is_dropped_and_default_goes_top_level(handler, alias, extra):
+    out = call(handler, alias, {"model": OSS, "extra_body": copy.deepcopy(extra)})
+    assert "extra_body" not in out
+    assert out["chat_template_kwargs"] == THINKING_OFF
+
+
+@pytest.mark.parametrize("alias", KEYS)
 @pytest.mark.parametrize("template", ["x", ["x"], 1])
-def test_oss_malformed_top_level_template_is_left_alone(handler, template):
-    out = call(handler, "github-actions-oss", {"model": OSS, "chat_template_kwargs": template})
-    assert out["chat_template_kwargs"] == template
+def test_malformed_top_level_template_is_replaced_by_the_default(handler, alias, template):
+    out = call(handler, alias, {"model": OSS, "chat_template_kwargs": template})
+    assert out["chat_template_kwargs"] == THINKING_OFF
 
 
+@pytest.mark.parametrize("alias", KEYS)
 @pytest.mark.parametrize("template", ["x", ["x"], None])
-def test_oss_malformed_extra_body_template_is_left_alone(handler, template):
+def test_malformed_extra_body_template_is_replaced_by_the_default(handler, alias, template):
     extra = {"chat_template_kwargs": template}
-    out = call(handler, "github-actions-oss", {"model": OSS, "extra_body": copy.deepcopy(extra)})
-    assert out["extra_body"] == extra
-    assert "chat_template_kwargs" not in out
+    out = call(handler, alias, {"model": OSS, "extra_body": copy.deepcopy(extra)})
+    assert "extra_body" not in out
+    assert out["chat_template_kwargs"] == THINKING_OFF
 
 
 @pytest.mark.parametrize("model", ["m", "review", "cloud-rung-under-test"])
@@ -138,13 +141,21 @@ def test_non_chat_routes_are_untouched(handler, call_type):
     assert out == {"model": PRIVATE}
 
 
+@pytest.mark.parametrize("alias", KEYS)
 @pytest.mark.parametrize("call_type", ["aembedding", "arerank", "atext_completion"])
-def test_oss_key_non_chat_calls_are_untouched(handler, call_type):
-    data = {"model": OSS, "input": "x"}
-    assert call(handler, "github-actions-oss", dict(data), call_type) == data
+def test_ci_keys_reject_unsupported_routes(handler, alias, call_type):
+    out = call(handler, alias, {"model": OSS, "input": "x"}, call_type)
+    assert isinstance(out, str)
 
 
-@pytest.mark.parametrize("model", [[OSS], {"a": 1}, None])
-def test_oss_key_non_string_model_does_not_raise(handler, model):
+@pytest.mark.parametrize("alias", KEYS)
+@pytest.mark.parametrize("model", [[OSS], {"a": 1}])
+def test_ci_key_rejects_non_string_model(handler, alias, model):
     data = {"model": model, "messages": []}
-    assert call(handler, "github-actions-oss", dict(data)) == data
+    assert isinstance(call(handler, alias, dict(data)), str)
+
+
+@pytest.mark.parametrize("alias", KEYS)
+def test_ci_key_without_model_does_not_raise(handler, alias):
+    data = {"model": None, "messages": []}
+    assert call(handler, alias, dict(data)) == data

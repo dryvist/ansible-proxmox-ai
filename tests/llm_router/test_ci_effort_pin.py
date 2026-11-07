@@ -14,13 +14,11 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE = REPO_ROOT / "roles/llm_router/files/callbacks/ci_effort_pin.py"
-CI_ALIAS = "github-actions"
 REVIEW_MODEL = "review-capability-under-test"
 CLOUD_MODEL = "cloud-rung-under-test"
 
 
-@pytest.fixture(scope="module")
-def ns():
+def _load_namespace():
     stub = types.ModuleType("litellm.integrations.custom_logger")
     stub.CustomLogger = type("CustomLogger", (), {})
     sys.modules.setdefault("litellm", types.ModuleType("litellm"))
@@ -31,13 +29,23 @@ def ns():
     return out
 
 
+_NAMESPACE = _load_namespace()
+CI_ALIASES = sorted(_NAMESPACE["_CI_KEY_ALIASES"])
+CI_ALIAS = CI_ALIASES[0]
+
+
+@pytest.fixture(scope="module")
+def ns():
+    return _NAMESPACE
+
+
 @pytest.fixture(scope="module")
 def thinking_off_model(ns):
     return sorted(ns["_THINKING_OFF_MODELS"])[0]
 
 
 def _call(ns, alias, data, call_type="acompletion"):
-    added_snapshot = alias == CI_ALIAS and "proxy_server_request" not in data
+    added_snapshot = alias in ns["_CI_KEY_ALIASES"] and "proxy_server_request" not in data
     if added_snapshot:
         data["proxy_server_request"] = {"body": dict(data)}
     key = types.SimpleNamespace(key_alias=alias)
@@ -52,7 +60,9 @@ def test_source_parses():
     ast.parse(SOURCE.read_text())
 
 
-def test_ci_key_loses_every_effort_carrier(ns):
+@pytest.mark.parametrize("alias", CI_ALIASES)
+@pytest.mark.parametrize("call_type", ["acompletion", "aanthropic_messages"])
+def test_ci_key_loses_every_effort_carrier_on_chat_and_messages(ns, alias, call_type):
     data = {
         "model": REVIEW_MODEL,
         "reasoning_effort": "low",
@@ -61,7 +71,7 @@ def test_ci_key_loses_every_effort_carrier(ns):
         "output_config": {"effort": "low"},
         "messages": [{"role": "user", "content": "hi"}],
     }
-    out = _call(ns, CI_ALIAS, data)
+    out = _call(ns, alias, data, call_type)
     assert out["model"] == REVIEW_MODEL
     assert out["messages"] == [{"role": "user", "content": "hi"}]
     for field in ("reasoning_effort", "thinking", "reasoning", "output_config"):
@@ -127,8 +137,9 @@ def test_foreign_or_non_dict_extra_body_is_dropped(ns):
 
 
 @pytest.mark.parametrize("call_type", ["_aresponses_websocket", "aembedding", "arerank", "atext_completion", "aget_responses"])
-def test_ci_key_is_rejected_off_the_served_routes(ns, call_type):
-    out = _call(ns, CI_ALIAS, {"model": CLOUD_MODEL, "extra_body": {"model": "other"}}, call_type=call_type)
+@pytest.mark.parametrize("alias", CI_ALIASES)
+def test_ci_key_is_rejected_off_the_served_routes(ns, alias, call_type):
+    out = _call(ns, alias, {"model": CLOUD_MODEL, "extra_body": {"model": "other"}}, call_type=call_type)
     assert isinstance(out, str)
 
 
@@ -145,7 +156,8 @@ def test_ci_key_is_rejected_off_the_served_routes(ns, call_type):
         "aanthropic_messages",
     ],
 )
-def test_ci_key_served_call_types_are_pinned(ns, thinking_off_model, call_type):
+@pytest.mark.parametrize("alias", CI_ALIASES)
+def test_ci_key_served_call_types_are_pinned(ns, thinking_off_model, call_type, alias):
     # Codex jobs call Responses and Claude jobs call Anthropic messages with the
     # same key; both reach the same deployments, so the same pins apply.
     data = {
@@ -156,7 +168,7 @@ def test_ci_key_served_call_types_are_pinned(ns, thinking_off_model, call_type):
         "extra_body": {"model": "gpt-5.6-sol", "chat_template_kwargs": {"enable_thinking": False}},
         "input": "hi",
     }
-    out = _call(ns, CI_ALIAS, data, call_type=call_type)
+    out = _call(ns, alias, data, call_type=call_type)
     expected = {
         "model": thinking_off_model,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
@@ -166,8 +178,9 @@ def test_ci_key_served_call_types_are_pinned(ns, thinking_off_model, call_type):
     assert out == expected
 
 
-@pytest.mark.parametrize("alias", ["github-actions-oss", "open-webui", None])
-def test_other_keys_keep_every_request_control(ns, alias):
+@pytest.mark.parametrize("alias", ["open-webui", "github-actions-ci-fix", None])
+@pytest.mark.parametrize("call_type", ["acompletion", "aanthropic_messages"])
+def test_non_ci_keys_keep_every_request_control(ns, alias, call_type):
     data = {
         "model": "m",
         "reasoning_effort": "low",
@@ -176,8 +189,17 @@ def test_other_keys_keep_every_request_control(ns, alias):
         "extra_body": {"reasoning_effort": "low", "model": "other"},
     }
     snapshot = {k: (dict(v) if isinstance(v, dict) else v) for k, v in data.items()}
-    assert _call(ns, alias, data) == snapshot
-    assert _call(ns, alias, dict(data), call_type="aresponses") == snapshot
+    assert _call(ns, alias, data, call_type=call_type) == snapshot
+
+
+def test_non_ci_alias_is_untouched_on_messages(ns):
+    data = {
+        "model": REVIEW_MODEL,
+        "reasoning_effort": "high",
+        "thinking": {"type": "enabled"},
+        "output_config": {"effort": "high"},
+    }
+    assert _call(ns, "open-webui", data, call_type="aanthropic_messages") == data
 
 
 def test_request_without_effort_is_untouched(ns):
