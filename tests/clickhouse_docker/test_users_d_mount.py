@@ -17,7 +17,7 @@ def test_users_d_is_mounted_writable_for_the_entrypoint():
 
 
 def test_users_d_is_owned_by_the_container_user():
-    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+    defaults = yaml.safe_load((ROLE / "defaults/main/00-core.yml").read_text())
     entries = [
         entry
         for value in defaults.values()

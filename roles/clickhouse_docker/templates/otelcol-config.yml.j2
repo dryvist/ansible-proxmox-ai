@@ -1,0 +1,78 @@
+---
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: ${env:OTEL_HTTP_LISTEN}
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 64
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+connectors:
+  span_metrics:
+    namespace: traces.span.metrics
+    histogram:
+      unit: s
+      explicit:
+        buckets: [50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s, 60s, 120s]
+    dimensions:
+      - name: gen_ai.request.model
+      - name: gen_ai.system
+    exclude_dimensions: [collector.instance.id]
+    aggregation_temporality: AGGREGATION_TEMPORALITY_CUMULATIVE
+    metrics_flush_interval: 15s
+    metrics_expiration: 15m
+    series_expiration: 15m
+    resource_metrics_key_attributes: [service.name]
+    aggregation_cardinality_limit: 5000
+    add_resource_attributes: false
+    exemplars:
+      enabled: false
+    events:
+      enabled: false
+  service_graph:
+    latency_histogram_buckets: [50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s, 60s, 120s]
+    dimensions: []
+    store:
+      ttl: 5m
+      max_items: 10000
+    metrics_flush_interval: 15s
+
+exporters:
+  prometheusremotewrite:
+    http:
+      endpoint: ${env:VM_REMOTE_WRITE_URL}
+    translation_strategy: UnderscoreEscapingWithSuffixes
+    resource_constant_labels:
+      excluded: ["*"]
+    target_info:
+      enabled: false
+    disable_scope_info: true
+    remote_write_queue:
+      enabled: true
+      queue_size: 1000
+      num_consumers: 1
+    max_batch_request_parallelism: 1
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [span_metrics, service_graph]
+    metrics:
+      receivers: [span_metrics, service_graph]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite]

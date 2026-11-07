@@ -16,7 +16,7 @@ RECENT = "CREATE MATERIALIZED VIEW IF NOT EXISTS llm.recent_activity"
 
 
 def _defaults() -> dict:
-    defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text(encoding="utf-8"))
+    defaults = yaml.safe_load((ROLE / "defaults/main/00-core.yml").read_text(encoding="utf-8"))
     # tasks/wall_feed.yml passes the stopword file in as this list; mirror that here.
     stopwords = (ROLE / "files" / defaults["clickhouse_docker_stopwords_file"]).read_text(encoding="utf-8")
     defaults["clickhouse_docker_stopwords"] = [w.strip() for w in stopwords.splitlines() if w.strip()]

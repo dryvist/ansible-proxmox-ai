@@ -42,6 +42,7 @@ def router_paths(shards: list[dict[str, str]]) -> list[str]:
     ("roles/langflow_docker/templates/docker-compose.yml.j2", "tests/agent_concurrency/"),
     ("roles/langflow_docker/tasks/main.yml", "tests/langflow_docker/"),
     ("roles/langfuse_docker/tasks/reconcile-stage0-evaluation.yml", "tests/langfuse_docker/"),
+    ("roles/clickhouse_docker/tasks/otelcol.yml", "tests/clickhouse_docker/"),
 ])
 def test_production_role_selects_its_existing_contract_family(path: str, target: str) -> None:
     result = run_selector(path)
@@ -107,6 +108,7 @@ def test_inventory_and_playbook_edits_route_to_full_suite(path: str) -> None:
 
 @pytest.mark.parametrize("path", [
     "roles/fabric_watchdog/defaults/main.yml", "roles/langfuse_docker/tasks/main.yml",
+    "tests/clickhouse_docker/test_otelcol_config.py",
     "roles/llamacpp_serving/tasks/install.yml", "roles/nvidia_gpu_guest/tasks/cache-sync.yml",
     "roles/vllm_serving/tasks/install.yml",
     "tests/langfuse_docker/fixtures/api-response-shapes.json",

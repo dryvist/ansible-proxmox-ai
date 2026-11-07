@@ -94,7 +94,7 @@ ROLE_TESTS = {
     "llamaindex": set(),
     "qdrant_docker": {"tests/qdrant_docker/"},
     "agent_guest": set(),
-    "clickhouse_docker": set(),
+    "clickhouse_docker": {"tests/clickhouse_docker/", "tests/langfuse_docker/test_clickhouse_contract.py"},
     "herdr_server": set(),
     "herdr_remote": set(),
     "nixos_deploy": set(),
