@@ -10,6 +10,12 @@ The stable release v0.7.0 maps to build b11669 through its official
 `nightly-tag.txt` asset, preserved in `stable-release-v0.7.0-nightly-tag.txt`
 from <https://github.com/ggml-org/llama.cpp/releases/download/v0.7.0/nightly-tag.txt>.
 
+`github-release-b11960.json` preserves the same five assets from
+<https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b11960>,
+captured on 2026-11-07. Stable v0.8.0 maps to b11960 through
+`stable-release-v0.8.0-nightly-tag.txt`, captured from
+<https://github.com/ggml-org/llama.cpp/releases/download/v0.8.0/nightly-tag.txt>.
+
 `hf-2.4.0-update-check.txt` preserves the pinned CLI's complete native
 `_check_cli_update` function, captured from
 <https://raw.githubusercontent.com/huggingface/huggingface_hub/v2.4.0/src/huggingface_hub/cli/_cli_utils.py>.
