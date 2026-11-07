@@ -1,0 +1,73 @@
+---
+# Builds the agent-chat-ui image from the role's pinned inputs. It never pushes the image.
+name: Chat UI Image
+
+on:
+  pull_request:
+    branches: [develop, main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/chat-ui-image.yml'
+      - 'roles/langgraph_docker/defaults/main.yml'
+      - 'roles/langgraph_docker/templates/agent-chat-ui.Dockerfile.j2'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build agent-chat-ui image
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 5 || 10 }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Render the Dockerfile and build the image
+        env:
+          DEFAULTS: roles/langgraph_docker/defaults/main.yml
+          TEMPLATE: roles/langgraph_docker/templates/agent-chat-ui.Dockerfile.j2
+        run: |
+          node_image=$(yq -r '.langgraph_docker_node_image' "$DEFAULTS" | xargs)
+          repo=$(yq -r '.langgraph_docker_chat_ui_repo' "$DEFAULTS")
+          ref=$(yq -r '.langgraph_docker_chat_ui_ref' "$DEFAULTS")
+          pnpm_version=$(yq -r '.langgraph_docker_chat_ui_pnpm_version' "$DEFAULTS")
+          assistant_id=$(yq -r '.langgraph_docker_assistant_id' "$DEFAULTS")
+
+          context=$(mktemp -d)
+          git -C "$context" init -q
+          git -C "$context" fetch -q --depth 1 "$repo" "$ref"
+          git -C "$context" checkout -q FETCH_HEAD
+
+          # The deployed port and API URL come from private inventory, so the build uses stand-ins.
+          dockerfile=$(mktemp)
+          sed -e "s|{{ langgraph_docker_node_image }}|$node_image|" \
+            -e "s|{{ langgraph_docker_chat_ui_pnpm_version }}|$pnpm_version|" \
+            -e 's|{{ langgraph_docker_chat_ui_port }}|3000|g' \
+            -e 's|{{ ansible_managed }}|rendered by chat-ui-image.yml|' \
+            "$TEMPLATE" > "$dockerfile"
+          if grep -q '{{' "$dockerfile"; then
+            echo "::error::the Dockerfile still has an unrendered variable"
+            exit 1
+          fi
+
+          docker build -t chat-ui-image:ci -f "$dockerfile" \
+            --build-arg NEXT_PUBLIC_API_URL=https://chat-ui.invalid/api \
+            --build-arg NEXT_PUBLIC_ASSISTANT_ID="$assistant_id" \
+            "$context"
+
+          major=${node_image#node:}
+          major=${major%%-*}
+          actual=$(docker run --rm chat-ui-image:ci node --version)
+          if [[ $actual != "v$major."* ]]; then
+            echo "::error::expected Node $major in the image, found $actual"
+            exit 1
+          fi
+          echo "Built on $node_image, running Node $actual"
