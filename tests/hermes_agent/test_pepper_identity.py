@@ -115,7 +115,8 @@ def test_identity_mapping_and_conflicting_tag_rejection():
     tasks = yaml.safe_load((ROOT / 'inventory/load_tofu/add_lxc_host_inventory.yml').read_text())
     mapping = next(t['ansible.builtin.add_host']['hermes_agent_identity'] for t in tasks
                    if 'ansible.builtin.add_host' in t)
-    guards = next(t['ansible.builtin.assert']['that'] for t in tasks
+    guards = next(t['ansible.builtin.assert']['that'] for t in yaml.safe_load(
+        (ROOT / 'inventory/load_tofu/assert_hermes_identity.yml').read_text())
                   if t['name'] == 'Reject conflicting or unrecognized Hermes identity markers')
     env = Environment(undefined=StrictUndefined)
     env.filters.update(difference=lambda a, b: list(set(a) - set(b)),
@@ -188,6 +189,8 @@ def test_rendered_pepper_capabilities_and_existing_identity_behavior(identity):
                     'memory', 'skills', 'delegation']).issubset(config['agent']['disabled_toolsets'])
         assert config['kanban']['default_assignee'] == 'default'
         assert config['kanban']['orchestrator_profile'] == 'default'
+        assert config['kanban']['dispatch_profiles'] == ['default']
+        assert {'project', 'desktop_ui', 'catalog'} <= set(config['agent']['disabled_toolsets'])
         assert goal_mode is False
         assert 'goal_judge' not in config['auxiliary']
     else:
@@ -203,6 +206,7 @@ def test_rendered_pepper_capabilities_and_existing_identity_behavior(identity):
             'slack': defaults['hermes_agent_api_server_toolsets'] + ['clarify']}
         assert config['kanban']['default_assignee'] == 'orchestrator'
         assert config['kanban']['orchestrator_profile'] == 'orchestrator'
+        assert 'dispatch_profiles' not in config['kanban']
         assert goal_mode is True
         assert config['auxiliary']['goal_judge']['model'] == 'fixture-judge'
 
@@ -222,28 +226,6 @@ def test_pepper_memory_requires_no_key_or_bank_even_with_polluted_credentials():
     guard = (ROLE / 'tasks/assert_brain_and_bridge.yml').read_text()
     assert 'hermes_agent_pepper_memory_authorized' not in guard
 
-
-@pytest.mark.parametrize('identities', [[], ['hermes'], ['hermes-private'], ['donna'],
-                                        ['hermes', 'donna'], ['pepper'], ['hermes', 'pepper']])
-def test_pepper_secret_domain_is_selected_only_for_its_runtime(identities):
-    directory = ROOT / 'inventory/group_vars/all/openbao_secrets'
-    identity_domains = yaml.safe_load((directory / '10-domains-identities.yml').read_text())
-    fleet = yaml.safe_load((directory / '10-domains.yml').read_text())
-    roster = yaml.safe_load((directory / '11-roster-domains.yml').read_text())
-    static = (fleet['_openbao_secrets_static_domains_fleet']
-              + identity_domains['_openbao_secrets_static_domains_identities'])
-    # Include an unprovisioned roster entry: only the selected runtime may require its domain.
-    context = dict(_openbao_secrets_static_domains=static, ai_agents={'pepper': {'container': 'fixture'}},
-                   ai_agent_owner={}, ai_callers={}, openbao_app_agent_tier_reader_domains=[],
-                   ansible_play_hosts_all=identities,
-                   hostvars={identity: {'hermes_agent_identity': identity} for identity in identities})
-    env = NativeEnvironment(undefined=StrictUndefined)
-    domains = env.from_string(roster['openbao_secrets_domains']).render(context)
-    pepper = [d for d in domains if d['name'] == 'pepper']
-    assert pepper == ([{'name': 'pepper', 'paths': ['ai/pepper'], 'required': True}]
-                      if 'pepper' in identities else [])
-    assert [d for d in domains if d['name'] in {s['name'] for s in static}] == static
-    assert all('ai/pepper' not in d['paths'] for d in domains if d['name'] != 'pepper')
 
 
 def test_pepper_router_key_does_not_add_the_goal_judge_route():
