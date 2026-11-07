@@ -81,5 +81,7 @@ def test_install_tasks_and_runtime_units_use_different_proxy_settings():
     evidence = env.from_string((role / 'templates/hermes-pepper-vault.service.j2').read_text()).render(
         ansible_managed='fixture', hermes_agent_proxy_environment_file=proxy_file,
         hermes_agent_pepper_vault_path='/fixture/evidence',
-        hermes_agent_pepper_vault_repo_url='https://evidence.example.test/repository.git')
+        hermes_agent_pepper_vault_env_path='/fixture/vault.env',
+        hermes_agent_pepper_vault_refresh_script_path='/fixture/refresh')
     assert f'EnvironmentFile={proxy_file}' in evidence
+    assert 'EnvironmentFile=/fixture/vault.env' in evidence
