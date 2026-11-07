@@ -28,14 +28,28 @@ http_access deny manager
 # address. Client addresses are the DHCP reservations of that profile's
 # inventory group — never hand-written here. A profile with no members in
 # inventory emits no rule at all, so it falls through to the deny below.
-{% for profile, spec in squid_egress_profiles | dictsort %}
-{% set clients = groups[spec.group] | default([]) | map('extract', hostvars, 'container_reserved_ip') | reject('equalto', '') | list %}
+{% for identity_scoped in [true, false] %}
+{% for profile, spec in squid_egress_profiles | dictsort if (spec.identity is defined) == identity_scoped %}
+{% set members = namespace(hosts=[], domains=spec.domains | list) %}
+{% for host in groups[spec.group] | default([]) %}
+{% if not identity_scoped or hostvars[host].hermes_agent_identity | default('') == spec.identity %}
+{% set members.hosts = members.hosts + [host] %}
+{% if spec.domains_fact is defined %}
+{% set members.domains = members.domains + (hostvars[host][spec.domains_fact] | mandatory) %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% set clients = members.hosts | map('extract', hostvars, 'container_reserved_ip') | reject('equalto', '') | list %}
 {% if clients %}
 
 acl {{ profile }}_clients src {{ clients | join(' ') }}
-acl {{ profile }}_domains dstdomain {{ spec.domains | join(' ') }}
+acl {{ profile }}_domains dstdomain {{ members.domains | unique | join(' ') }}
 http_access allow {{ profile }}_clients {{ profile }}_domains
+{% if identity_scoped %}
+http_access deny {{ profile }}_clients
 {% endif %}
+{% endif %}
+{% endfor %}
 {% endfor %}
 
 # Anything not matched above — unknown client, or a known client reaching for a
