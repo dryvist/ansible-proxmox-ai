@@ -115,7 +115,8 @@ are published so API callers receive the catalog version. API-key provisioning
 also runs for unchanged apps, which lets a later converge repair an app whose
 key was not stored. Import, confirmation, publication and catalog-hash update
 failures fail the converge. Check mode previews public and private app creates
-or overwrites and sends no import, publish or API-key writes.
+or overwrites, reads the pinned manifest and DSLs into memory, and writes no
+files to the target or Dify APIs.
 
 `dify_docker_private_agent_dsls` (default `[]`) adds private sources alongside
 the public catalog entries, each as `name`, `url` and `sha256`. The list and

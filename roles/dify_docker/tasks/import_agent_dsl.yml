@@ -12,41 +12,31 @@
     dify_docker_dsl_raw: {}
   no_log: true
 
-# Check mode reads private DSLs directly into memory so it can verify the pin
+# Check mode reads either source directly into memory so it can verify the pin
 # and preview the app without writing the content to the target filesystem.
-- name: Read the private agent DSL into memory for check mode
+- name: Read the catalog agent DSL into memory for check mode
   ansible.builtin.uri:
     url: "{{ dify_docker_agent_dsl.url }}"
     method: GET
-    headers:
-      Authorization: "Bearer {{ dify_docker_private_agent_dsl_token }}"
+    headers: >-
+      {{ {'Authorization': 'Bearer ' ~ dify_docker_private_agent_dsl_token}
+         if (dify_docker_agent_dsl.private | default(false) | bool) else {} }}
     status_code: 200
     return_content: true
-  register: dify_docker_private_dsl_check_read
+  register: dify_docker_dsl_check_read
   check_mode: false
   changed_when: false
   when:
-    - dify_docker_agent_dsl.private | default(false) | bool
     - ansible_check_mode
   no_log: true
 
-- name: Verify the private agent DSL sha256 in check mode
+- name: Verify the catalog agent DSL sha256 in check mode
   ansible.builtin.assert:
     that:
-      - dify_docker_private_dsl_check_read.content is defined
-      - dify_docker_private_dsl_check_read.content | hash('sha256') == dify_docker_agent_dsl.sha256
-    fail_msg: "The private agent DSL did not match its pinned sha256."
+      - dify_docker_dsl_check_read.content is defined
+      - dify_docker_dsl_check_read.content | hash('sha256') == dify_docker_agent_dsl.sha256
+    fail_msg: "The catalog agent DSL did not match its pinned sha256."
   when:
-    - dify_docker_agent_dsl.private | default(false) | bool
-    - ansible_check_mode
-  no_log: true
-
-- name: Keep the verified private agent DSL in memory during check mode
-  ansible.builtin.set_fact:
-    dify_docker_dsl_raw:
-      content: "{{ dify_docker_private_dsl_check_read.content | b64encode }}"
-  when:
-    - dify_docker_agent_dsl.private | default(false) | bool
     - ansible_check_mode
   no_log: true
 
@@ -72,13 +62,23 @@
 - name: Read the verified agent DSL
   ansible.builtin.slurp:
     src: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
-  register: dify_docker_dsl_raw
+  register: dify_docker_dsl_file_read
+  when:
+    - not ansible_check_mode
+    - >-
+      not (dify_docker_agent_dsl.private | default(false) | bool)
+      or dify_docker_dsl_fetch is not failed
+  no_log: true
+
+- name: Select the verified in-memory or file-backed agent DSL
+  ansible.builtin.set_fact:
+    dify_docker_dsl_raw:
+      content: >-
+        {{ (dify_docker_dsl_check_read.content | b64encode)
+           if ansible_check_mode else dify_docker_dsl_file_read.content }}
   when: >-
-    not (dify_docker_agent_dsl.private | default(false) | bool)
-    or (
-      not ansible_check_mode
-      and dify_docker_dsl_fetch is not failed
-    )
+    (ansible_check_mode and dify_docker_dsl_check_read.content is defined)
+    or (not ansible_check_mode and dify_docker_dsl_file_read.content is defined)
   no_log: true
 
 - name: Parse the verified DSL document and app name
@@ -94,10 +94,8 @@
     path: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
     state: absent
   changed_when: false
-  check_mode: false
-  when: >-
-    not (dify_docker_agent_dsl.private | default(false) | bool)
-    or not ansible_check_mode
+  when:
+    - not ansible_check_mode
   no_log: true
 
 - name: Report a DSL that failed its pin or fetch

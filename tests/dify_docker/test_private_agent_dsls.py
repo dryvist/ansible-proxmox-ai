@@ -139,11 +139,11 @@ def test_check_mode_previews_private_app_name_without_printing_private_content()
 
 def test_private_check_mode_reads_verified_dsl_in_memory_without_target_writes_or_deletes():
     importer = _yaml(IMPORT_ONE)
-    read = _task(importer, "Read the private agent DSL into memory for check mode")
-    verify = _task(importer, "Verify the private agent DSL sha256 in check mode")
-    keep_in_memory = _task(importer, "Keep the verified private agent DSL in memory during check mode")
+    read = _task(importer, "Read the catalog agent DSL into memory for check mode")
+    verify = _task(importer, "Verify the catalog agent DSL sha256 in check mode")
     fetch = _task(importer, FETCH_TASK)
     slurp = _task(importer, "Read the verified agent DSL")
+    select_source = _task(importer, "Select the verified in-memory or file-backed agent DSL")
     cleanup = _task(importer, "Remove the fetched agent DSL copy")
 
     assert read["ansible.builtin.uri"]["url"] == "{{ dify_docker_agent_dsl.url }}"
@@ -153,26 +153,36 @@ def test_private_check_mode_reads_verified_dsl_in_memory_without_target_writes_o
     assert read["check_mode"] is False
     assert read["changed_when"] is False
     assert read["no_log"] is True
-    assert "dify_docker_agent_dsl.private | default(false) | bool" in read["when"]
     assert "ansible_check_mode" in read["when"]
 
-    private_authorization = _render(
-        read["ansible.builtin.uri"]["headers"]["Authorization"],
-        dify_docker_private_agent_dsl_token=TOKEN,
+    private_headers = ast.literal_eval(
+        _render(
+            read["ansible.builtin.uri"]["headers"],
+            dify_docker_agent_dsl={"private": True},
+            dify_docker_private_agent_dsl_token=TOKEN,
+        )
     )
-    assert private_authorization == f"Bearer {TOKEN}"
+    public_headers = ast.literal_eval(
+        _render(
+            read["ansible.builtin.uri"]["headers"],
+            dify_docker_agent_dsl={},
+            dify_docker_private_agent_dsl_token=TOKEN,
+        )
+    )
+    assert private_headers == {"Authorization": f"Bearer {TOKEN}"}
+    assert public_headers == {}
 
     checksum_rule = verify["ansible.builtin.assert"]["that"][1]
     assert "content | hash('sha256')" in checksum_rule
     assert "dify_docker_agent_dsl.sha256" in checksum_rule
     assert verify["no_log"] is True
     assert verify["ansible.builtin.assert"]["fail_msg"] == (
-        "The private agent DSL did not match its pinned sha256."
+        "The catalog agent DSL did not match its pinned sha256."
     )
-    assert keep_in_memory["no_log"] is True
-    assert "content | b64encode" in keep_in_memory["ansible.builtin.set_fact"][
-        "dify_docker_dsl_raw"
-    ]["content"]
+    assert select_source["no_log"] is True
+    assert "content | b64encode" in str(
+        select_source["ansible.builtin.set_fact"]["dify_docker_dsl_raw"]
+    )
 
     payload = "app:\n  name: example-private-agent\n"
     checksum = hashlib.sha256(payload.encode()).hexdigest()
@@ -182,7 +192,7 @@ def test_private_check_mode_reads_verified_dsl_in_memory_without_target_writes_o
     ).hexdigest()
     checksum_check = hash_env.from_string("{{ " + checksum_rule + " }}")
     context = {
-        "dify_docker_private_dsl_check_read": {"content": payload},
+        "dify_docker_dsl_check_read": {"content": payload},
         "dify_docker_agent_dsl": {"sha256": checksum},
     }
     assert checksum_check.render(context) == "True"
@@ -226,8 +236,8 @@ def test_private_check_mode_reads_verified_dsl_in_memory_without_target_writes_o
     }
     assert _condition_matches(fetch["when"][0], **context)
     assert not _condition_matches(fetch["when"][1], **context)
-    assert not _condition_matches(cleanup["when"], **context)
-    assert not _condition_matches(slurp["when"], **context)
+    assert all(not _condition_matches(condition, **context) for condition in cleanup["when"])
+    assert not _condition_matches(slurp["when"][0], **context)
     for task in importer:
-        if "dify_docker_private_dsl_check_read" in str(task):
+        if "dify_docker_dsl_check_read" in str(task):
             assert task.get("no_log") is True, task["name"]

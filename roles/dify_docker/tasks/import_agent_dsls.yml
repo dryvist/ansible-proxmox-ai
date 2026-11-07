@@ -24,15 +24,61 @@
   when:
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
+    - not ansible_check_mode
+  no_log: true
+
+- name: Read the pinned agent DSL catalog manifest into memory for check mode
+  ansible.builtin.uri:
+    url: "{{ dify_docker_agent_dsl_base }}/agents/dify/manifest.json"
+    method: GET
+    status_code: 200
+    return_content: true
+  register: dify_docker_agent_dsl_manifest_check_read
+  check_mode: false
+  changed_when: false
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+    - ansible_check_mode
+  no_log: true
+
+- name: Verify the agent DSL catalog manifest sha256 in check mode
+  ansible.builtin.assert:
+    that:
+      - dify_docker_agent_dsl_manifest_check_read.content | hash('sha256') == dify_docker_agent_dsl_manifest_sha256
+    fail_msg: "The agent DSL catalog manifest did not match its pinned sha256."
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+    - ansible_check_mode
+  no_log: true
+
+- name: Keep the verified agent DSL catalog manifest in memory during check mode
+  ansible.builtin.set_fact:
+    dify_docker_agent_dsl_manifest_content: "{{ dify_docker_agent_dsl_manifest_check_read.content }}"
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+    - ansible_check_mode
   no_log: true
 
 - name: Read the verified agent DSL catalog manifest
   ansible.builtin.slurp:
     src: "/tmp/dify-agent-dsl-manifest-{{ dify_docker_agent_dsl_commit }}.json"
-  register: dify_docker_agent_dsl_manifest_raw
+  register: dify_docker_agent_dsl_manifest_file_read
   when:
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
+    - not ansible_check_mode
+  no_log: true
+
+- name: Keep the verified agent DSL catalog manifest from the live file
+  ansible.builtin.set_fact:
+    dify_docker_agent_dsl_manifest_content: "{{ dify_docker_agent_dsl_manifest_file_read.content | b64decode }}"
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+    - not ansible_check_mode
   no_log: true
 
 - name: Initialize catalog-derived agent DSL sources
@@ -49,7 +95,7 @@
       {{ dify_docker_agent_dsls
          + [dify_docker_agent_dsl_manifest_entry
             | combine({'url': dify_docker_agent_dsl_base ~ '/' ~ dify_docker_agent_dsl_manifest_entry.path})] }}
-  loop: "{{ dify_docker_agent_dsl_manifest_raw.content | b64decode | from_json }}"
+  loop: "{{ dify_docker_agent_dsl_manifest_content | from_json }}"
   loop_control:
     loop_var: dify_docker_agent_dsl_manifest_entry
     label: "{{ dify_docker_agent_dsl_manifest_entry.name }}"
@@ -67,6 +113,7 @@
   when:
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
+    - not ansible_check_mode
   no_log: true
 
 - name: Fetch and verify all catalog agent DSLs before importing any
@@ -84,6 +131,7 @@
   when:
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
+    - not ansible_check_mode
   no_log: true
 
 - name: List first page of existing Dify apps (agent DSL catalog hash check)
