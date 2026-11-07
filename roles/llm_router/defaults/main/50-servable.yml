@@ -124,8 +124,16 @@ llm_router_direct_gpu_models: >-
      if (llm_router_gpu_profiles_enabled | default(false) | bool
          and groups['llm_gpu_group'] | default([]) | length > 0) else [] }}
 llm_router_direct_studio_models: >-
-  {{ llm_router_large_models
-     | selectattr('direct_route_aliases', 'defined') | list }}
+  {%- set ns = namespace(models=[]) -%}
+  {%- for m in (llm_router_large_models
+       | selectattr('direct_route_aliases', 'defined') | list) -%}
+  {%- set _aliases = m.direct_route_aliases | list -%}
+  {%- if m.route_group | default('') == llm_router_primary_model -%}
+  {%- set _aliases = (_aliases + [m.client_model_id]) | unique | list -%}
+  {%- endif -%}
+  {%- set ns.models = ns.models + [m | combine({'direct_route_aliases': _aliases})] -%}
+  {%- endfor -%}
+  {{ ns.models }}
 llm_router_direct_route_alias_pairs: >-
   {%- set ns = namespace(pairs=[]) -%}
   {%- for m in llm_router_direct_gpu_models + llm_router_direct_studio_models -%}

@@ -1,5 +1,5 @@
 ---
-# Pins the deprecated caller aliases and the hardware order behind `small`.
+# Pins the deprecated caller aliases, hardware order, and local Studio fallback behind `small`.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_cheap_gpu_first_ladder.yml -i localhost, -c local
@@ -21,6 +21,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
@@ -30,6 +37,10 @@
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         dir: "{{ _defaults_dir }}"
+
+    - name: Admit the existing Studio model route for this fallback fixture
+      ansible.builtin.set_fact:
+        llm_router_studio_precheck_passed: true
 
     - name: Load the fabric model registry the way the converge does
       ansible.builtin.include_role:
@@ -54,9 +65,16 @@
           - llm_router_model_group_aliases.cheap == llm_router_small_model
           - llm_router_model_group_aliases.fast == llm_router_small_model
           - _small_members | map(attribute='order') | map('int') | sort == [1, 2, 3]
+          - llm_router_small_capability_name in llm_router_rendered_capability_names
+          - llm_router_studio_small_fallback_route in llm_router_direct_route_aliases
+          - llm_router_fallback_map[llm_router_small_capability_name] == [llm_router_studio_small_fallback_route]
+          - llm_router_fallback_map[llm_router_studio_small_fallback_route] == []
+          - llm_router_primary_model in llm_router_local_fallback_groups
+          - llm_router_fallback_map[llm_router_small_capability_name]
+            | intersect(llm_router_external_terminal_rungs) | length == 0
           - llm_router_small_model == llm_router_routine_model
         fail_msg: "small capability members={{ _small_members }} aliases={{ llm_router_model_group_aliases }}"
-        success_msg: "fast and cheap target the ordered small capability members"
+        success_msg: "fast and cheap target the ordered small members with a local Studio fallback"
 
     - name: The long lane routes to the same capability as default
       ansible.builtin.assert:

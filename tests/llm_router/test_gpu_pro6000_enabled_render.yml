@@ -161,7 +161,8 @@
     - name: Select the small profile and render its shared capability
       ansible.builtin.set_fact:
         llm_active_profile: small
-        llm_router_llm_vllm_enabled: false
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
 
     - name: Refresh cached router projections after fixture input changes [gpu-pro6000-enabled-render-2]
       ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
@@ -281,3 +282,81 @@
           {%- endif -%}
           {%- endfor -%}
           {{ ns.rows }}
+
+    - name: Small capability falls through to the probed Studio model route only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _small_route_members | map(attribute='litellm_params.order') | map('int') | unique | sort == [1, 2]
+          - _small_4080 | length > 0
+          - _small_4080 | map(attribute='litellm_params.order') | map('int') | unique | list == [1]
+          - _small_6000 | length > 0
+          - _small_6000 | map(attribute='litellm_params.order') | map('int') | unique | list == [2]
+          - llm_router_studio_small_fallback_route in llm_router_direct_route_aliases
+          - _small_fallback_map[llm_router_small_capability_name] == [llm_router_studio_small_fallback_route]
+          - _small_fallback_map[llm_router_studio_small_fallback_route] == []
+          - _studio_route | length > 0
+          - _studio_route | map(attribute='litellm_params.api_base') | unique | list == [llm_router_llm_large_base_url]
+          - _studio_route | map(attribute='litellm_params.model') | unique | length == 1
+          - _studio_route | rejectattr('model_info.profile', 'defined') | length == _studio_route | length
+          - llm_router_primary_model in llm_router_local_fallback_groups
+          - _small_fallback_map[llm_router_small_capability_name]
+            | intersect(llm_router_external_terminal_rungs) | length == 0
+        fail_msg: >-
+          small={{ _small_route_members }}, fallback={{ _small_fallback_map.get(llm_router_small_capability_name) }},
+          Studio model={{ _studio_route }}.
+      vars:
+        _fallback_entries: >-
+          {{ _small_config.router_settings.fallbacks | default([])
+             | map('dict2items') | flatten | list }}
+        _small_fallback_map: >-
+          {{ dict(_fallback_entries | map(attribute='key')
+                  | zip(_fallback_entries | map(attribute='value'))) }}
+        _small_route_members: >-
+          {{ _small_config.model_list
+             | selectattr('model_name', 'equalto', llm_router_small_capability_name) | list }}
+        _small_4080: >-
+          {{ _small_route_members
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url) | list }}
+        _small_6000: >-
+          {{ _small_route_members | selectattr('model_info.profile', 'defined')
+             | selectattr('model_info.profile', 'equalto', 'small') | list }}
+        _studio_route: >-
+          {{ _small_config.model_list
+             | selectattr('model_name', 'equalto', llm_router_studio_small_fallback_route)
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_large_base_url)
+             | list }}
+
+    - name: Keep the Studio route name for the failed-precheck case
+      ansible.builtin.set_fact:
+        _studio_small_route_at_pass: "{{ llm_router_studio_small_fallback_route }}"
+
+    - name: Fail the Studio precheck and refresh the route projections
+      ansible.builtin.set_fact:
+        llm_router_studio_precheck_passed: false
+
+    - name: Refresh cached router projections after the Studio precheck fails [gpu-pro6000-enabled-render-3]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render the small capability after the Studio precheck fails
+      ansible.builtin.set_fact:
+        _small_no_studio_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: A failed Studio precheck omits that fallback rung and leaves no cloud route
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_small_capability_name in _small_no_studio_fallback_map
+          - _small_no_studio_fallback_map[llm_router_small_capability_name] == []
+          - _studio_small_route_at_pass not in _small_no_studio_fallback_map[llm_router_small_capability_name]
+          - _small_no_studio_fallback_map[llm_router_small_capability_name]
+            | intersect(llm_router_external_terminal_rungs) | length == 0
+        fail_msg: >-
+          fallback={{ _small_no_studio_fallback_map.get(llm_router_small_capability_name) }}.
+      vars:
+        _no_studio_fallback_entries: >-
+          {{ _small_no_studio_config.router_settings.fallbacks | default([])
+             | map('dict2items') | flatten | list }}
+        _small_no_studio_fallback_map: >-
+          {{ dict(_no_studio_fallback_entries | map(attribute='key')
+                  | zip(_no_studio_fallback_entries | map(attribute='value'))) }}

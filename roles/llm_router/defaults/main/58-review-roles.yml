@@ -45,12 +45,14 @@ llm_router_cross_modality_fail_fast_names: >-
 # role rows rather than typed, so a new empty-fallback role can never be left
 # on default_fallbacks (the DB record alone does not stop it: LiteLLM consults
 # default_fallbacks for any name with no exact `fallbacks` key). `light` and
-# its registry synonyms use the same exact empty-list entry so local exhaustion
-# cannot spill into a shared remote chain.
+# its registry synonyms use an exact local-only entry; it can be empty or hold
+# the precheck-gated Studio model route.
 llm_router_light_lane_local_only_names: >-
   {{ ((llm_router_model_group_aliases | dict2items
        | selectattr('key', 'in', dict(light='', fast='', cheap='') | list)
        | map(attribute='key') | list)
+      + ([llm_router_studio_small_fallback_route]
+         if llm_router_studio_small_fallback_route | length > 0 else [])
       + [llm_router_small_capability_name]) | unique | list }}
 llm_router_local_only_fail_fast_names: >-
   {{ ((llm_router_role_deployments
@@ -63,9 +65,9 @@ llm_router_local_only_fail_fast_names: >-
 # A role whose chain is non-empty but entirely local (its GPU rung and routine
 # rung) is written into the config with that exact chain, the same way the
 # fail-fast roles above are, so its local-only property does not depend on the
-# seeded fallback record alone. Keys are role names; values are the chains.
-# Written only while the GPU route is active: with it inactive the rendered
-# config is unchanged, and the fail-fast entries and seeded chains apply.
+# seeded fallback record alone. The small capability also gets the already
+# rendered Studio model route as its final cross-capability rung. Keys are
+# route or role names; values are the chains.
 llm_router_local_only_chains: >-
   {%- set ns = namespace(out={}) -%}
   {%- for d in llm_router_role_deployments
@@ -74,6 +76,11 @@ llm_router_local_only_chains: >-
           and (d.fallbacks | reject('in', llm_router_zdr_asserted_group_names) | list | length == 0) -%}
   {%- set _discard = ns.out.update({d.role: d.fallbacks}) -%}
   {%- endfor -%}
+  {%- set _studio_route = llm_router_studio_small_fallback_route -%}
+  {%- if llm_router_small_capability_name in llm_router_rendered_capability_names
+        and _studio_route | length > 0 -%}
+  {%- set _discard = ns.out.update({llm_router_small_capability_name: [_studio_route]}) -%}
+  {%- endif -%}
   {{ ns.out }}
 
 # THE FIX for litellm 1.98's nested-fallback-follows-the-failed-rung's-own-
