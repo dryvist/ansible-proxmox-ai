@@ -29,24 +29,18 @@ llm_router_default_fallbacks: "{{ _llm_router_m_d1_ladder_groups }}"
 # a busy/failed call under one of these names never walks the five-rung chat
 # ladder above — cross-modality errors an embedding/OCR failure has no
 # business paying for, at chat-ladder latency and, for paid rungs, spend.
-#
-# These groups fail fast rather than falling through to the chat fallback
-# ladder, because chat and embedding/OCR requests are different modalities.
 llm_router_cross_modality_fail_fast_names: >-
   {%- set _groups = [llm_router_embedding_model, llm_router_ocr_model] -%}
   {%- set _aliases = llm_router_model_group_aliases | dict2items
        | selectattr('value', 'in', _groups) | map(attribute='key') | list -%}
   {{ (_groups + _aliases) | unique | list }}
 
-# Every role seeded with an empty fallback list (55-roles.yml) is a caller that
-# explicitly wants NO external rung ever, local backend up or down. The same
-# short-circuit mechanism as the cross-modality
-# names above, but a different reason: not another modality. Derived from the
-# role rows rather than typed, so a new empty-fallback role can never be left
-# on default_fallbacks (the DB record alone does not stop it: LiteLLM consults
-# default_fallbacks for any name with no exact `fallbacks` key). `light` and
-# its registry synonyms use an exact local-only entry; it can be empty or hold
-# the precheck-gated Studio model route.
+# Every role seeded with an empty fallback list (55-roles.yml) wants NO external
+# rung, local backend up or down: the short-circuit above, for another reason.
+# Derived from the role rows, so a new empty-fallback role can't stay on
+# default_fallbacks, which LiteLLM consults for any name with no exact
+# `fallbacks` key. `light` and its registry synonyms use an exact local-only
+# entry, empty or holding the precheck-gated Studio model route.
 llm_router_light_lane_local_only_names: >-
   {{ ((llm_router_model_group_aliases | dict2items
        | selectattr('key', 'in', dict(light='', fast='', cheap='') | list)
@@ -62,12 +56,10 @@ llm_router_local_only_fail_fast_names: >-
       + llm_router_light_lane_local_only_names
       + (llm_router_ci_luna_groups | default([]))) | unique | list }}
 
-# A role whose chain is non-empty but entirely local (its GPU rung and routine
-# rung) is written into the config with that exact chain, the same way the
-# fail-fast roles above are, so its local-only property does not depend on the
-# seeded fallback record alone. The small capability also gets the already
-# rendered Studio model route as its final cross-capability rung. Keys are
-# route or role names; values are the chains.
+# A role whose chain is non-empty but entirely local is written into the config
+# with that exact chain, so its local-only property doesn't depend on the seeded
+# record alone. The small capability also gets the rendered Studio model route
+# as its final rung. Keys are route or role names; values are the chains.
 llm_router_local_only_chains: >-
   {%- set ns = namespace(out={}) -%}
   {%- for d in llm_router_role_deployments
