@@ -169,6 +169,19 @@ def test_check_mode_previews_catalog_without_importing_or_provisioning_keys():
     )
 
 
+def test_private_catalog_entries_are_included_in_check_mode_preview():
+    private = _task(_yaml(IMPORT_LOOP), "Reconcile each private agent DSL")
+    public = _task(_yaml(IMPORT_LOOP), "Reconcile each catalog agent DSL")
+
+    assert private["loop"] == (
+        "{{ dify_docker_private_agent_dsls | map('combine', {'private': true}) | list }}"
+    )
+    assert "dify_docker_private_agent_dsl_token | length > 0" in private["when"]
+    assert "not ansible_check_mode" not in private["when"]
+    assert "not ansible_check_mode" not in public["when"]
+    assert private["ansible.builtin.include_tasks"] == public["ansible.builtin.include_tasks"]
+
+
 def test_catalog_app_listing_fetches_and_validates_every_page():
     tasks = _yaml(IMPORT_LOOP)
     page_tasks = _yaml(LIST_CATALOG_PAGE)
@@ -211,11 +224,16 @@ def test_catalog_app_listing_fetches_and_validates_every_page():
 
 def test_changed_workflow_is_published_after_successful_import_and_failure_is_fatal():
     importer = _yaml(IMPORT_ONE)
+    environment = Environment()
     tasks_by_name = {task.get("name"): (index, task) for index, task in enumerate(importer)}
     _, import_task = tasks_by_name["Import the catalog DSL when its checksum is new"]
     _, confirm_task = tasks_by_name["Confirm the agent DSL import (DSL version mismatch)"]
     app_id_index, app_id_task = tasks_by_name["Resolve the Dify app id returned by the catalog import"]
     publish_index, publish_task = tasks_by_name["Publish the changed catalog workflow for API callers"]
+    metadata_index, metadata_task = tasks_by_name[
+        "Read the published app metadata before recording the catalog hash"
+    ]
+    record_index, record_task = tasks_by_name["Record the catalog hash after publishing the workflow"]
     key_index, key_task = tasks_by_name["Ensure the agent app API key is stored in OpenBao"]
 
     assert import_task["failed_when"] != "false"
@@ -242,12 +260,56 @@ def test_changed_workflow_is_published_after_successful_import_and_failure_is_fa
     assert publish_task["failed_when"] != "false"
     assert "success" in publish_task["failed_when"]
     assert publish_task["no_log"] is True
+    assert metadata_index > publish_index
+    assert metadata_index < record_index
+    assert metadata_task["ansible.builtin.uri"]["method"] == "GET"
+    assert metadata_task["no_log"] is True
+    assert record_index > publish_index
+    assert record_index < key_index
+    assert record_task["ansible.builtin.uri"]["url"] == (
+        "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_dsl_imported_app_id }}"
+    )
+    assert record_task["ansible.builtin.uri"]["method"] == "PUT"
+    assert record_task["ansible.builtin.uri"]["status_code"] == 200
+    assert "catalog sha256:" in record_task["ansible.builtin.uri"]["body"]
+    assert "dify_docker_dsl_publish.json" in record_task["when"][-1]
+    assert "success" in record_task["when"][-1]
+    assert record_task["failed_when"] != "false"
+    assert "dify_docker_dsl_imported_app_id" in record_task["failed_when"]
+    assert record_task["no_log"] is True
+    assert "mode" not in record_task["ansible.builtin.uri"]["body"]
+    assert "api_key" not in record_task["ansible.builtin.uri"]["body"]
+    record_payload = ast.literal_eval(
+        environment.from_string(record_task["ansible.builtin.uri"]["body"]).render(
+            dify_docker_dsl_name="catalog-app",
+            dify_docker_dsl_catalog_description="Catalog description",
+            dify_docker_agent_dsl={"sha256": "a" * 64},
+            dify_docker_dsl_app_metadata={
+                "json": {
+                    "icon_type": "emoji",
+                    "icon": "sparkles",
+                    "icon_background": "#FFFFFF",
+                    "use_icon_as_answer_icon": True,
+                    "max_active_requests": 10,
+                }
+            },
+        )
+    )
+    assert record_payload == {
+        "name": "catalog-app",
+        "description": "Catalog description [catalog sha256:" + "a" * 64 + "]",
+        "icon_type": "emoji",
+        "icon": "sparkles",
+        "icon_background": "#FFFFFF",
+        "use_icon_as_answer_icon": True,
+        "max_active_requests": 10,
+    }
     assert "not (dify_docker_dsl_import_needed | bool)" in key_task["when"][-1]
 
-    environment = Environment()
     import_failure = environment.from_string("{{ " + import_task["failed_when"] + " }}")
     confirm_failure = environment.from_string("{{ " + confirm_task["failed_when"] + " }}")
     publish_failure = environment.from_string("{{ " + publish_task["failed_when"] + " }}")
+    record_after_publish_success = environment.from_string("{{ " + record_task["when"][-1] + " }}")
     for completed_status in ("completed", "completed-with-warnings"):
         assert import_failure.render(dify_docker_dsl_import={"json": {"status": completed_status}}) == "False"
         assert confirm_failure.render(dify_docker_dsl_confirm={"json": {"status": completed_status}}) == "False"
@@ -256,12 +318,14 @@ def test_changed_workflow_is_published_after_successful_import_and_failure_is_fa
     assert confirm_failure.render(dify_docker_dsl_confirm={"json": {"status": "failed"}}) == "True"
     assert publish_failure.render(dify_docker_dsl_publish={"json": {"result": "success"}}) == "False"
     assert publish_failure.render(dify_docker_dsl_publish={"json": {"result": "error"}}) == "True"
+    assert record_after_publish_success.render(dify_docker_dsl_publish={"json": {"result": "success"}}) == "True"
+    assert record_after_publish_success.render(dify_docker_dsl_publish={"json": {"result": "error"}}) == "False"
 
 
 def test_catalog_hash_decides_whether_to_import_and_payload_targets_existing_app():
     importer = _yaml(IMPORT_ONE)
     decision_task = _task(importer, "Decide whether the catalog app needs an import")
-    payload_task = _task(importer, "Prepare the Dify import payload with its catalog hash")
+    payload_task = _task(importer, "Prepare the Dify import payload")
     import_task = _task(importer, "Import the catalog DSL when its checksum is new")
     environment = Environment()
     environment.filters["combine"] = lambda base, extra: {**base, **extra}
@@ -300,21 +364,55 @@ def test_catalog_hash_decides_whether_to_import_and_payload_targets_existing_app
     update_payload = ast.literal_eval(
         environment.from_string(payload_expression).render(
             dify_docker_dsl_content="version: 0.1.0",
-            dify_docker_dsl_document={"app": {"description": "Catalog description"}},
-            dify_docker_agent_dsl={"sha256": digest},
+            dify_docker_dsl_catalog_description="Catalog description",
             dify_docker_dsl_existing_app={"id": "app-1"},
         )
     )
     create_payload = ast.literal_eval(
         environment.from_string(payload_expression).render(
             dify_docker_dsl_content="version: 0.1.0",
-            dify_docker_dsl_document={"app": {"description": "Catalog description"}},
-            dify_docker_agent_dsl={"sha256": digest},
+            dify_docker_dsl_catalog_description="Catalog description",
             dify_docker_dsl_existing_app={},
         )
     )
     assert update_payload["app_id"] == "app-1"
-    assert update_payload["description"].endswith(f"[catalog sha256:{digest}]")
+    assert update_payload["description"] == "Catalog description"
+    assert "catalog sha256:" not in update_payload["description"]
     assert "app_id" not in create_payload
-    assert create_payload["description"].endswith(f"[catalog sha256:{digest}]")
+    assert create_payload["description"] == "Catalog description"
     assert import_task["ansible.builtin.uri"]["body"] == "{{ dify_docker_dsl_import_body }}"
+
+
+def test_catalog_hash_description_is_committed_after_publish_within_dify_limit():
+    importer = _yaml(IMPORT_ONE)
+    description_task = _task(importer, "Prepare the catalog app description")
+    import_payload_task = _task(importer, "Prepare the Dify import payload")
+    record_task = _task(importer, "Record the catalog hash after publishing the workflow")
+    digest = "a" * 64
+    environment = Environment()
+
+    catalog_description = environment.from_string(
+        description_task["ansible.builtin.set_fact"]["dify_docker_dsl_catalog_description"]
+    ).render(dify_docker_dsl_document={"app": {"description": "A" * 321}})
+    assert len(catalog_description) <= 318
+    assert "catalog sha256:" not in str(import_payload_task["ansible.builtin.set_fact"])
+
+    recorded_payload = ast.literal_eval(
+        environment.from_string(record_task["ansible.builtin.uri"]["body"]).render(
+            dify_docker_dsl_name="catalog-app",
+            dify_docker_dsl_catalog_description=catalog_description,
+            dify_docker_agent_dsl={"sha256": digest},
+            dify_docker_dsl_app_metadata={
+                "json": {
+                    "icon_type": None,
+                    "icon": None,
+                    "icon_background": None,
+                    "use_icon_as_answer_icon": False,
+                    "max_active_requests": None,
+                }
+            },
+        )
+    )
+    assert recorded_payload["description"].endswith(f"[catalog sha256:{digest}]")
+    assert len(recorded_payload["description"]) <= 400
+    assert recorded_payload["icon"] is None

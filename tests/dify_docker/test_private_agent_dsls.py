@@ -63,6 +63,7 @@ def test_private_entries_are_marked_and_skipped_without_a_token():
     assert loop["loop_control"]["label"] == "private agent DSL"
     assert "dify_docker_private_agent_dsl_token | length > 0" in loop["when"]
     assert "dify_docker_import_agent_dsls | bool" in loop["when"]
+    assert "not ansible_check_mode" not in loop["when"]
 
     marked = ast.literal_eval(
         _render(
@@ -105,3 +106,26 @@ def test_fetch_stays_checksum_verified_and_secret_safe():
     assert fetch["no_log"] is True
     assert fetch["ansible.builtin.get_url"]["checksum"] == "sha256:{{ dify_docker_agent_dsl.sha256 }}"
     assert fetch["ansible.builtin.get_url"]["mode"] == "0600"
+
+
+def test_check_mode_previews_private_app_action_without_printing_private_name_or_content():
+    importer = _yaml(IMPORT_ONE)
+    preview = next(task for task in importer if task.get("name") == "Preview the catalog app create or update")
+
+    for matches, action in (([], "create"), ([{"name": "private-agent-name"}], "overwrite")):
+        message = _render(
+            preview["ansible.builtin.debug"]["msg"],
+            dify_docker_dsl_app_matches=matches,
+            dify_docker_agent_dsl={"private": True},
+            dify_docker_dsl_name="private-agent-name",
+        )
+        assert message == f"Would {action} private Dify app."
+        assert "private-agent-name" not in message
+        assert "dify_docker_dsl_content" not in message
+    assert preview.get("no_log") is not True
+
+    for task in importer:
+        if task is preview:
+            continue
+        if any(value in str(task) for value in ("dify_docker_dsl_content", "dify_docker_dsl_document")):
+            assert task.get("no_log") is True, task["name"]
