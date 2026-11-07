@@ -171,17 +171,15 @@ def test_native_reconciliation(tmp_path, scenario):
             assert len(resources["models"]) > 1
             assert all(row["inputPrice"] == row["outputPrice"] == 0.25 for row in resources["models"])
             assert resources["evaluators"] == []
-            identity = next(task for task in yaml.safe_load(
+            stage0 = yaml.safe_load(
                 (ROLE / "tasks/reconcile-stage0-trace-datasets.yml").read_text()
-            ) if task.get("name") == "Require Stage 0 trace split datasets to retain their identities")
+            )
             replay = yaml.safe_load(playbook.read_text())
-            dataset_name = yaml.safe_load(
-                (ROLE / "defaults/main/00-main.yml").read_text()
-            )["langfuse_docker_stage0_dataset_name"]
-            identity["loop"] = [{"status": 200, "item": {"split": split},
-                                 "json": resources["datasets"][f"{dataset_name}-{split}"]}
-                                for split in ("train", "holdout")]
-            replay[0]["tasks"].append(identity)
+            replay[0]["vars"].update({
+                "ansible_facts": {"lo": {"ipv4": {"address": "127.0.0.1"}}},
+                "langfuse_docker_web_port": server.server_port,
+            })
+            replay[0]["tasks"].extend(stage0[:-1])
             playbook.write_text(yaml.safe_dump(replay, sort_keys=False))
             requests.clear()
             result = run()
