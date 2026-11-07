@@ -1,0 +1,30 @@
+---
+# LAYA_DEVICE is a preference. Laya falls back to the CPU silently when the card
+# is absent at start, and its unauthenticated /health still says ok. The
+# authenticated /health names where the resident checkpoint really computes.
+- name: Read where Laya computes before any restart
+  ansible.builtin.include_tasks: read-device.yml
+
+- name: Restart Laya once when it started on the CPU
+  when: not (laya_systemone_device_read.json.device | default('') is match('cuda'))
+  block:
+    - name: Restart the Laya service so it can load on the card
+      ansible.builtin.systemd:
+        name: laya-systemone.service
+        state: restarted
+      no_log: true
+
+    - name: Wait for Laya health after the restart
+      ansible.builtin.include_tasks: health.yml
+
+    - name: Read where Laya computes after the restart
+      ansible.builtin.include_tasks: read-device.yml
+
+- name: Assert Laya computes on the card
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - laya_systemone_device_read.json.device | default('') is match('cuda')
+    fail_msg: >-
+      Laya reports device {{ laya_systemone_device_read.json.device | default('unknown') }}.
+      The classifier must run on the card, not silently on the CPU.
