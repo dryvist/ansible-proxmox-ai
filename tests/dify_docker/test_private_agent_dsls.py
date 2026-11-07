@@ -165,6 +165,15 @@ def test_check_mode_previews_private_app_name_without_printing_private_content()
         assert "prompt" not in message.lower()
     assert preview.get("no_log") is not True
 
+    # A nameless private entry must still render the import result, through the file-stem fallback.
+    result = _task(importer, "Agent DSL import result")
+    result_message = _render(
+        result["ansible.builtin.debug"]["msg"],
+        dify_docker_agent_dsl={"url": "https://example.test/agent-file.dsl.yml", "private": True},
+        dify_docker_dsl_preview_name="agent-file",
+    )
+    assert result_message.startswith("agent DSL agent-file:")
+
     for task in importer:
         if task is preview:
             continue
