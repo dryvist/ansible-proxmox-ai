@@ -26,38 +26,38 @@ def _render(expression, variables):
 
 def _router_fixture():
     registry = [
-        {"client_model_id": "fixture-null-window-id", "route_group": "medium", "context_window": None},
-        {"client_model_id": "fixture-medium-id", "route_group": "medium", "context_window": 65536},
-        {"client_model_id": "fixture-small-id", "route_group": "small", "context_window": 32768},
+        {"client_model_id": "fixture-null-window-id", "route_group": "fixture-medium", "context_window": None},
+        {"client_model_id": "fixture-medium-id", "route_group": "fixture-medium", "context_window": 65536},
+        {"client_model_id": "fixture-small-id", "route_group": "fixture-small", "context_window": 32768},
         {
             "client_model_id": "fixture-embedding-id",
-            "route_group": "embed",
+            "route_group": "fixture-embed",
             "context_window": 8192,
             "embedding": True,
         },
         {
             "client_model_id": "fixture-ocr-id",
-            "route_group": "ocr",
+            "route_group": "fixture-ocr",
             "context_window": 4096,
             "serving_role": "ocr",
         },
-        {"client_model_id": "fixture-default-context-id", "route_group": "local-default"},
+        {"client_model_id": "fixture-default-context-id", "route_group": "fixture-local-default"},
         {"client_model_id": "fixture-no-group-id", "context_window": 4096},
     ]
     return {
         "llm_router_model_registry": registry,
         "llm_router_capability_names": ["medium", "small", "embed", "ocr", "local-default"],
         "llm_router_model_group_aliases": {
-            "medium": "medium",
-            "small": "small",
-            "embed": "embed",
-            "ocr": "ocr",
-            "local-default": "local-default",
+            "medium": "fixture-medium",
+            "small": "fixture-small",
+            "embed": "fixture-embed",
+            "ocr": "fixture-ocr",
+            "local-default": "fixture-local-default",
         },
         "llm_router_capability_members": [
-            {"client_model_id": "fixture-null-window-id", "route_group": "medium", "context_window": None},
-            {"client_model_id": "fixture-medium-id", "route_group": "medium", "context_window": 65536},
-            {"client_model_id": "fixture-small-id", "route_group": "small", "context_window": 32768},
+            {"client_model_id": "fixture-null-window-id", "route_group": "fixture-medium", "context_window": None},
+            {"client_model_id": "fixture-medium-id", "route_group": "fixture-medium", "context_window": 65536},
+            {"client_model_id": "fixture-small-id", "route_group": "fixture-small", "context_window": 32768},
         ],
         "_llm_router_static_virtual_keys": [
             {"alias": "open-webui", "models": ["judge", "scope-excluded-role"]},
@@ -70,12 +70,12 @@ def _router_fixture():
             },
         ],
         "llm_router_role_deployments": [
-            {"role": "judge", "model": "small"},
-            {"role": "recorder", "model": "small"},
-            {"role": "recorder-medium", "model": "medium"},
-            {"role": "scope-excluded-role", "model": "small"},
-            {"role": "embedding-role", "model": "embed"},
-            {"role": "ocr-role", "model": "ocr"},
+            {"role": "judge", "model": "fixture-small"},
+            {"role": "recorder", "model": "fixture-small"},
+            {"role": "recorder-medium", "model": "fixture-medium"},
+            {"role": "scope-excluded-role", "model": "fixture-small"},
+            {"role": "embedding-role", "model": "fixture-embed"},
+            {"role": "ocr-role", "model": "fixture-ocr"},
         ],
     }
 
