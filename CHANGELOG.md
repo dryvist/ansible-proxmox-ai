@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.22.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.21.0...v2.22.0) (2026-11-07)
+
+
+### Features
+
+* **agentgateway:** route named agents with peer allowlists ([#2052](https://github.com/dryvist/ansible-proxmox-ai/issues/2052)) ([a7ba602](https://github.com/dryvist/ansible-proxmox-ai/commit/a7ba6020dc7339efcfbb79a6f076126d7c202138))
+* **clickhouse:** add an OpenTelemetry Collector for span and service-graph metrics ([#2065](https://github.com/dryvist/ansible-proxmox-ai/issues/2065)) ([dacd7b2](https://github.com/dryvist/ansible-proxmox-ai/commit/dacd7b25c126b5f27b4485490ec945ddbfa38ebb))
+* **clickhouse:** add token counts to the wall recent activity view ([#2058](https://github.com/dryvist/ansible-proxmox-ai/issues/2058)) ([a6f4bd4](https://github.com/dryvist/ansible-proxmox-ai/commit/a6f4bd4997ab9191abe1ed83c442c153562fc4db))
+* **dify_docker:** export native run telemetry with full sampling ([#2063](https://github.com/dryvist/ansible-proxmox-ai/issues/2063)) ([080d068](https://github.com/dryvist/ansible-proxmox-ai/commit/080d0684caa396485c39577a93e9423f740aa667))
+* **dify:** configure batch workflow runtime ([#2048](https://github.com/dryvist/ansible-proxmox-ai/issues/2048)) ([fe651eb](https://github.com/dryvist/ansible-proxmox-ai/commit/fe651ebb8b370285c6c95d68816ba09491460a03))
+* **hermes:** add the local-only Pepper project manager identity ([#2064](https://github.com/dryvist/ansible-proxmox-ai/issues/2064)) ([e1c131e](https://github.com/dryvist/ansible-proxmox-ai/commit/e1c131ef5d32063c038c3c071ad0775eca42aa8d))
+* **hindsight:** enable native consolidation through inventory ([#2060](https://github.com/dryvist/ansible-proxmox-ai/issues/2060)) ([80054cd](https://github.com/dryvist/ansible-proxmox-ai/commit/80054cd9296f439b6a4418ef53291e4403f386ed))
+* **llm-router:** enable Studio local candidates ([#2053](https://github.com/dryvist/ansible-proxmox-ai/issues/2053)) ([72cd4e8](https://github.com/dryvist/ansible-proxmox-ai/commit/72cd4e87bcd13c7ecbcdffebf99fe4ae49d8b242))
+* **router:** configure priority teams and deployment entries ([#2055](https://github.com/dryvist/ansible-proxmox-ai/issues/2055)) ([f46f87e](https://github.com/dryvist/ansible-proxmox-ai/commit/f46f87e0b8044627186860cca94862f5bc48b612))
+* scope Home Assistant router access ([#2069](https://github.com/dryvist/ansible-proxmox-ai/issues/2069)) ([5903ac4](https://github.com/dryvist/ansible-proxmox-ai/commit/5903ac4a571863f0160dd82c992ad5f73222ce30))
+
+
+### Bug Fixes
+
+* **dify_docker:** configure workflow visibility and step limits ([#2059](https://github.com/dryvist/ansible-proxmox-ai/issues/2059)) ([eaec927](https://github.com/dryvist/ansible-proxmox-ai/commit/eaec9273ee93ea65ec1780e3d8465f649d53dada))
+* **llm_router:** reconcile MCP server grants with profile permissions ([#2046](https://github.com/dryvist/ansible-proxmox-ai/issues/2046)) ([e902923](https://github.com/dryvist/ansible-proxmox-ai/commit/e9029238a6a97e8f045ed4ecbae3e92da7f682ff))
+* **model-policy:** enforce upstream creation dates for model admission ([#2054](https://github.com/dryvist/ansible-proxmox-ai/issues/2054)) ([5bb86b5](https://github.com/dryvist/ansible-proxmox-ai/commit/5bb86b5be8755e6b893b0a738a394a8ac3678fb8))
+* **openbao_secrets:** read the Grafana router key from its own bucket ([#2062](https://github.com/dryvist/ansible-proxmox-ai/issues/2062)) ([dd04d6b](https://github.com/dryvist/ansible-proxmox-ai/commit/dd04d6b22acc53de7bfdba766e74288dcd2fc11d))
+
 ## [2.21.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.20.5...v2.21.0) (2026-11-06)
 
 
