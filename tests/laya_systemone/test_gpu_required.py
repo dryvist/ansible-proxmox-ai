@@ -26,6 +26,8 @@ def test_unit_refuses_to_start_until_the_card_is_visible() -> None:
 def test_device_read_is_authenticated_and_does_not_log_the_key() -> None:
     assert READ["ansible.builtin.uri"]["headers"]["Authorization"] == "Bearer {{ laya_systemone_api_key }}"
     assert READ["no_log"] is True
+    assert READ["ansible.builtin.uri"]["follow_redirects"] == "none"
+    assert READ["ansible.builtin.uri"]["use_proxy"] is False
 
 
 def test_cpu_device_restarts_once_then_fails_closed() -> None:
