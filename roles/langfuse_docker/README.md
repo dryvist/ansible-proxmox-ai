@@ -9,7 +9,8 @@ description: Public API inputs for datasets, local model prices, and sampled jud
 The role reconciles Langfuse datasets, model prices, LLM-as-a-judge evaluators,
 and sampling rules through the public API. Each write follows a read.
 `langfuse_docker_native_evaluation_enabled` defaults to `true`; check mode
-omits API reconciliation. The Stage 0 TypeScript flags remain independent.
+omits API reconciliation. The Stage 0 TypeScript evaluator is a removal candidate;
+its existing opt-in flags remain independent.
 
 ### Inputs
 
