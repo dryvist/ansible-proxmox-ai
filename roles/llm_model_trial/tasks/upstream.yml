@@ -1,0 +1,37 @@
+---
+- name: Bound the upstream metadata traversal
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_upstream_infos | length < 16
+    fail_msg: The Hub base_model graph exceeds the metadata traversal limit.
+    quiet: true
+
+- name: Read public upstream model metadata
+  ansible.builtin.command:
+    argv:
+      - hf
+      - models
+      - info
+      - "{{ llm_model_trial_upstream_pending[0] }}"
+      - --json
+      - --expand
+      - id,createdAt,cardData
+  environment:
+    HF_HUB_DISABLE_IMPLICIT_TOKEN: '1'
+  register: llm_model_trial_upstream_raw
+  changed_when: false
+
+- name: Record the upstream metadata by requested repository ID
+  ansible.builtin.set_fact:
+    llm_model_trial_upstream_infos: >-
+      {{ llm_model_trial_upstream_infos | combine({
+           llm_model_trial_upstream_pending[0]: llm_model_trial_upstream_raw.stdout | from_json}) }}
+    llm_model_trial_upstream_pending: >-
+      {{ (llm_model_trial_upstream_pending[1:]
+          + (llm_model_trial_upstream_raw.stdout | from_json | llm_model_trial_base_models))
+         | unique | difference(llm_model_trial_upstream_infos.keys() | list
+                               + [llm_model_trial_upstream_pending[0]]) }}
+
+- name: Resolve remaining upstream model metadata
+  ansible.builtin.include_tasks: upstream.yml
+  when: llm_model_trial_upstream_pending | length > 0
