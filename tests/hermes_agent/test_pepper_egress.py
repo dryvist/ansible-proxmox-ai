@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 import pytest
 import yaml
+from jinja2.nativetypes import NativeEnvironment
 
 from _role_files import render_hermes_runtime_unit, role_defaults
 
@@ -81,13 +82,20 @@ def endpoint_store():
 
 @pytest.mark.parametrize('tags,limit,prepared,rendered', [
     ([tag], '', True, True) for tag in yaml.safe_load((ROOT / 'playbooks/agent-egress.yml').read_text())[1]['tags']
-] + [([], '', True, True), (['squid'], 'squid_group,localhost', False, True),
-     (['hermes_units_gateways'], '', True, False), (['llm_router'], '', False, False)])
+] + [([], '', True, True), (['hermes_units_gateways'], '', True, False),
+     (['llm_router'], '', False, False)])
 def test_egress_tag_paths_resolve_endpoints_before_preparation_and_render(
         tmp_path, endpoint_store, tags, limit, prepared, rendered):
     _verify_pepper_proxy_policy(tmp_path, endpoint_store,
                                'https://evidence.example.test/repository.git',
                                'https://issues.example.test/mcp', True, tags, limit, prepared, rendered)
+
+
+def test_pepper_endpoint_fetch_survives_production_roster_domain_filter(tmp_path, endpoint_store):
+    _verify_pepper_proxy_policy(tmp_path, endpoint_store,
+                               'https://evidence.example.test/repository.git',
+                               'https://issues.example.test/mcp', True,
+                               ['squid'], 'squid_group,localhost', prepared=False, rendered=True)
 
 
 @pytest.mark.parametrize('vault,youtrack,valid,expected_error', [
@@ -117,11 +125,16 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
         hermes_agent_bao="{{ undef('The proxy cannot use the agent play secret view') }}",
     )
     roster = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/11-roster-domains.yml').read_text())
+    domain_groups = NativeEnvironment().from_string(
+        roster['openbao_secrets_domain_groups']
+    ).render(ai_agents={'pepper': {'container': 'fixture-pepper'}})
+    assert domain_groups['pepper'] == ['llm_router_group', 'hermes_agent_group']
     defaults.update(
         agent_guest_proxy_host='proxy.example.test', agent_guest_proxy_port=3128,
         agent_guest_no_proxy='{{ agent_guest_loopback_no_proxy }}',
         hermes_agent_pepper_openbao_host='secrets.example.test',
         openbao_secrets_kv_mount='secret', openbao_secrets_pepper_path=roster['openbao_secrets_pepper_path'],
+        openbao_secrets_domain_groups=domain_groups, openbao_secrets_active_groups=[],
         ansible_managed='fixture',
         tofu_data={'constants': {'service_ports': {'squid_proxy': 3128}}},
     )
@@ -197,7 +210,8 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
         text=True, capture_output=True, check=False)
     assert result.returncode == (0 if valid else 2), result.stdout + result.stderr
     expected_reads = int(prepared) + int(rendered)
-    assert sum(urlsplit(path).path == '/v1/secret/data/ai/pepper' for path in store['requests']) == expected_reads
+    actual_reads = sum(urlsplit(path).path == '/v1/secret/data/ai/pepper' for path in store['requests'])
+    assert actual_reads == expected_reads, result.stdout + result.stderr
     assert len(store['role_logins']) == expected_reads
     assert store['role_logins'] == [
         {'role_id': 'fixture-role-id', 'secret_id': 'fixture-secret-id'}
@@ -260,6 +274,8 @@ def test_unavailable_client_endpoint_refuses_the_proxy_render(tmp_path, endpoint
         'paths': ['{{ openbao_secrets_pepper_path }}'],
         'required': True,
     }]
+    assert read['vars']['openbao_secrets_active_groups'] == (
+        "{{ openbao_secrets_domain_groups.get('pepper', []) }}")
     assert read['vars']['openbao_secrets_operator_domains'] == []
     assert 'BAO_TOKEN' not in task_file.read_text()
     playbook = tmp_path / 'verify.yml'
