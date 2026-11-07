@@ -175,6 +175,29 @@
           {{ llm_router_d1_group_class_by_name | dict2items
              | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
 
+    - name: Declare public callers at every tier
+      ansible.builtin.set_fact:
+        _llm_router_declared_virtual_keys:
+          - {alias: fixture-public-0, priority_tier: 0, models: [], sensitivity_tag: '&sensitivity:public'}
+          - {alias: fixture-public-1, priority_tier: 1, models: [], sensitivity_tag: '&sensitivity:public'}
+          - {alias: fixture-public-2, priority_tier: 2, models: [], sensitivity_tag: '&sensitivity:public'}
+
+    - name: Public callers join the public team variant with the same priority policy
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.team_id == 'tier-' ~ item.priority_tier ~ '-public'
+          - _team.metadata.privacy_class == 'public'
+          - _team.models | intersect(llm_router_zdr_unasserted_terminal_rungs) | length > 0
+          - _team.priority == llm_router_priority_policy_by_tier[item.priority_tier | string].priority
+          - item.tags is contains('&tier-' ~ item.priority_tier)
+          - item.priority_tier != 2 or item.allowed_classes == ['local']
+      loop: "{{ _llm_router_virtual_keys_source }}"
+      loop_control:
+        label: "{{ item.alias }}"
+      vars:
+        _team: "{{ llm_router_priority_team_settings | selectattr('team_id', 'equalto', item.team_id) | first }}"
+
     - name: Shadow and background services use tier 2 and dashboards use tier 0
       ansible.builtin.assert:
         quiet: true

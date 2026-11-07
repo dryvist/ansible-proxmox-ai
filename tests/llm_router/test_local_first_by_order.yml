@@ -150,7 +150,7 @@
           - llm_router_small_model in _gha.models
           - llm_router_primary_model in _gha.models
           - llm_router_large_model in _gha.models
-          - llm_router_ci_luna_groups | difference(_gha.models) | length == 0
+          - llm_router_ci_luna_groups | intersect(_gha.models) | length == 0
           - _gha.allowed_classes == ['local']
           - _uncovered | length == 0
           - >-
@@ -171,13 +171,15 @@
               + llm_router_entry_point_fallback_overrides.keys() | list
               + llm_router_entry_point_fallback_overrides.values() | flatten) | unique | list }}
         # Every key x role it names: the chain must be a subset of the key's
-        # models — minus, for an &zdr key, the retaining/free groups that
+        # models — minus, for every nonpublic key, the retaining/free groups that
         # 59-key-scopes.yml removes on purpose, and for every key but
         # github-actions the review-only groups (llm_router_ci_luna_groups).
         _uncovered: >-
           {%- set out = [] -%}
           {%- for k in llm_router_virtual_keys -%}
-          {%- set _excluded = (llm_router_zdr_unasserted_terminal_rungs if '&zdr' in (k.tags | default([])) else [])
+          {%- set _zdr_only = k.sensitivity_tag | default('&sensitivity:sensitive') != '&sensitivity:public'
+                or '&zdr' in (k.tags | default([])) -%}
+          {%- set _excluded = (llm_router_zdr_unasserted_terminal_rungs if _zdr_only else [])
                               + (llm_router_ci_luna_groups if k.alias != 'github-actions' else []) -%}
           {%- if k.priority_tier == 2 -%}
           {%- set _excluded = _excluded + (llm_router_d1_group_class_by_name | dict2items

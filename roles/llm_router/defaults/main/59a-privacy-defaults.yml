@@ -1,0 +1,37 @@
+---
+llm_router_privacy_grants_template: >-
+  {{ (role_path | default(_role_dir, true)) }}/templates/privacy-grant-violations.yaml.j2
+
+llm_router_default_team_id: default-settings
+
+# Priority teams share the registry's ZDR scope unless their input declares models.
+llm_router_priority_team_settings: >-
+  {%- set out = [] -%}
+  {%- for team in llm_router_priority_tiers -%}
+  {%- set metadata = team.metadata | default({}) -%}
+  {%- if team.privacy_class is defined -%}
+  {%- set metadata = metadata | combine({'privacy_class': team.privacy_class}) -%}
+  {%- endif -%}
+  {%- set _ = out.append(team | combine({
+        'models': team.models | default(llm_router_zdr_asserted_group_names),
+        'metadata': metadata})) -%}
+  {%- set _ = out.append(team | combine({
+        'team_id': team.team_id ~ '-public', 'privacy_class': 'public',
+        'models': (llm_router_zdr_asserted_group_names + llm_router_zdr_unasserted_terminal_rungs) | unique | list,
+        'metadata': metadata | combine({'privacy_class': 'public'})})) -%}
+  {%- endfor -%}
+  {{ out }}
+
+llm_router_default_key_generate_params:
+  team_id: "{{ llm_router_default_team_id }}"
+  models: "{{ ([llm_router_primary_model] + llm_router_d1_standard_key_groups) | unique | list }}"
+  metadata:
+    tags: ['&zdr', '&sensitivity:sensitive']
+
+# Team model access is seeded through /team/new and /team/update.
+llm_router_default_team_settings:
+  - team_id: "{{ llm_router_default_team_id }}"
+    models: "{{ llm_router_default_key_generate_params.models }}"
+    metadata:
+      tags: "{{ llm_router_default_key_generate_params.metadata.tags + llm_router_priority_policy_by_tier['1'].tags }}"
+    router_settings: "{{ llm_router_priority_policy_by_tier['1'].router_settings }}"

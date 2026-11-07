@@ -8,11 +8,6 @@
 
 - name: Define the Stage 0 trace split datasets
   ansible.builtin.set_fact:
-    langfuse_docker_stage0_trace_datasets:
-      - name: "{{ langfuse_docker_stage0_dataset_name }}-train"
-        split: train
-      - name: "{{ langfuse_docker_stage0_dataset_name }}-holdout"
-        split: holdout
     langfuse_docker_stage0_trace_to_start_time: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
 
 - name: Read the Stage 0 trace split datasets
@@ -30,7 +25,7 @@
   changed_when: false
   loop: "{{ langfuse_docker_stage0_trace_datasets }}"
   loop_control:
-    label: "{{ item.split }}"
+    label: "{{ item.metadata.split }}"
   no_log: true
 
 - name: Require Stage 0 trace split datasets to retain their identities
@@ -39,13 +34,13 @@
       - >-
         item.status == 404 or
         (item.json.metadata.source_dataset == langfuse_docker_stage0_dataset_name
-         and item.json.metadata.split == item.item.split)
+         and item.json.metadata.split == item.item.metadata.split)
     fail_msg: >-
       An existing trace split dataset has different source metadata. Review it
       before changing the Stage 0 trace dataset contract.
   loop: "{{ langfuse_docker_stage0_trace_dataset_reads.results }}"
   loop_control:
-    label: "{{ item.item.split }}"
+    label: "{{ item.item.metadata.split }}"
 
 - name: Create missing Stage 0 trace split datasets
   ansible.builtin.uri:
@@ -59,16 +54,16 @@
     body_format: json
     body:
       name: "{{ item.item.name }}"
-      description: "Agent traces assigned to the Stage 0 {{ item.item.split }} split."
+      description: "Agent traces assigned to the Stage 0 {{ item.item.metadata.split }} split."
       metadata:
-        source_dataset: "{{ langfuse_docker_stage0_dataset_name }}"
-        split: "{{ item.item.split }}"
+        source_dataset: "{{ item.item.metadata.source_dataset }}"
+        split: "{{ item.item.metadata.split }}"
         split_strategy: sha256-prefix-mod-10000
     return_content: true
     status_code: 200
   loop: "{{ langfuse_docker_stage0_trace_dataset_reads.results }}"
   loop_control:
-    label: "{{ item.item.split }}"
+    label: "{{ item.item.metadata.split }}"
   when: item.status == 404
   no_log: true
 

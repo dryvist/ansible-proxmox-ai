@@ -52,19 +52,16 @@ llm_router_d1_group_class_by_name: >-
   {{ ns.classes }}
 
 llm_router_d1_class_order: [local, sub, paid-zdr, free, retains]
-llm_router_d1_ladder_groups: >-
-  {{ (_llm_router_m_d1_rungs_by_class['local']
-      + _llm_router_m_d1_rungs_by_class['sub']
-      + _llm_router_m_d1_rungs_by_class['paid-zdr']
-      + _llm_router_m_d1_rungs_by_class['free']
-      + _llm_router_m_d1_rungs_by_class['retains']) | unique | list }}
+# Shared fallbacks use local, ZDR subscription, and paid-ZDR groups.
+llm_router_d1_ladder_groups: "{{ llm_router_d1_zdr_ladder_groups }}"
 # Sandbox-only model ids are granted explicitly, never inherited by class keys.
 llm_router_d1_standard_key_groups: >-
-  {{ (['local', 'sub', 'paid-zdr', 'free']
-      | map('extract', _llm_router_m_d1_rungs_by_class) | flatten | unique | list)
+  {{ llm_router_d1_zdr_ladder_groups
      | difference(llm_router_sandbox_only_model_ids) }}
-llm_router_d1_all_key_groups: >-
-  {{ _llm_router_m_d1_ladder_groups
+llm_router_d1_all_key_groups: "{{ llm_router_d1_standard_key_groups }}"
+llm_router_d1_public_key_groups: >-
+  {{ (llm_router_d1_class_order
+      | map('extract', _llm_router_m_d1_rungs_by_class) | flatten | unique | list)
      | difference(llm_router_sandbox_only_model_ids) }}
 llm_router_d1_zdr_key_groups: >-
   {{ llm_router_d1_zdr_ladder_groups
@@ -77,8 +74,8 @@ llm_router_d1_auto_initial_group: >-
 # targets (llm_router_hermes_gpu_*_target). Every other target is within the
 # catalog-derived ladder; the ordinary fallback map continues from the selected
 # group's D1 position.
-# Free and retaining classes stay at the fallback tail, rather than becoming
-# direct complexity targets. Deployment tags still filter each selected model
+# Free and retaining classes remain available through explicit key scopes.
+# Deployment tags filter each selected model
 # for ZDR keys, including the auto-router's internal tier selection.
 llm_router_d1_auto_simple_group: >-
   {{ llm_router_hermes_gpu_fast_target if llm_router_gpu_models | length > 0

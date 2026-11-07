@@ -20,6 +20,10 @@
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     _group_vars_all: "{{ playbook_dir }}/../../inventory/group_vars/all"
+    _homeassistant_path: >-
+      {{ (_openbao_secrets_static_domains_fleet | selectattr('name', 'equalto', 'apps')
+          | first).paths | select('mapping')
+         | selectattr('path', 'equalto', 'apps/homeassistant') | first }}
     tofu_data:
       constants:
         service_ports:
@@ -69,6 +73,23 @@
         name: llm_router
         tasks_from: registry.yml
 
+    - name: Home Assistant app reads default to disabled
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (_homeassistant_path.enabled | bool)
+          - _homeassistant_path.optional | bool
+
+    - name: Enable the Home Assistant app read fixture
+      ansible.builtin.set_fact:
+        llm_router_homeassistant_key_enabled: true
+
+    - name: Home Assistant app reads follow the explicit enable flag
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _homeassistant_path.enabled | bool
+
     - name: Collect every path the apps domain declares
       ansible.builtin.set_fact:
         _apps_domain_paths: >-
@@ -115,6 +136,7 @@
         - apps/lane-walk-probe
         - apps/open-llm
         - apps/grafana-llm
+        - apps/homeassistant
       loop_control:
         label: "{{ item }}"
 

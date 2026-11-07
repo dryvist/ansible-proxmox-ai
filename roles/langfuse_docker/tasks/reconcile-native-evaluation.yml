@@ -1,0 +1,49 @@
+---
+- name: Load shared router registry projections
+  ansible.builtin.include_vars:
+    file: "{{ role_path | dirname }}/llm_router/defaults/main/{{ item }}"
+  loop:
+    - 20-registry.yml
+    - 59-key-scopes.yml
+
+# Pricing needs registered names, without serving/catalog reconciliation.
+- name: Read registered model names for local prices
+  ansible.builtin.include_vars:
+    dir: "{{ llm_router_registry_dir }}"
+    files_matching: '^(?!.*artifacts.*\.yml$).*\.yml$'
+
+- name: Reconcile native Langfuse resources using project credentials
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ langfuse_docker_init_public_key }}"
+      url_password: "{{ langfuse_docker_init_secret_key }}"
+      force_basic_auth: true
+      return_content: true
+      body_format: json
+  no_log: true
+  block:
+    - name: Reconcile native datasets
+      ansible.builtin.include_tasks: reconcile-native-dataset.yml
+      loop: "{{ langfuse_docker_datasets }}"
+      loop_control:
+        loop_var: langfuse_docker_dataset
+
+    - name: Initialize model price inventory
+      ansible.builtin.set_fact:
+        langfuse_docker_api_rows: []
+        langfuse_docker_api_page: 1
+
+    - name: Read all model price pages
+      ansible.builtin.include_tasks: read-native-models.yml
+
+    - name: Reconcile native model prices
+      ansible.builtin.include_tasks: reconcile-native-price.yml
+      loop: "{{ langfuse_model_prices | default(langfuse_docker_model_prices) }}"
+      loop_control:
+        loop_var: langfuse_docker_price
+
+    - name: Reconcile native judge evaluators and sampling rules
+      ansible.builtin.include_tasks: reconcile-native-judge.yml
+      loop: "{{ langfuse_evaluators | default([]) }}"
+      loop_control:
+        loop_var: langfuse_docker_judge
