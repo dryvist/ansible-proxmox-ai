@@ -13,10 +13,10 @@ FRONTMATTER = r"(?s)^---\n.*?\n---\n"
 
 
 @lru_cache
-def catalog_files(pin):
+def catalog_files(pin, directory="auto-ai-agent"):
     """Cache the immutable archive; never build Nix or contact a runtime."""
     revision = re.search(r"ai-llm-prompts/([0-9a-f]{40})#", pin)[1]
-    cache = ROOT / ".pytest_cache" / f"hermes-catalog-{revision}.tar"
+    cache = ROOT / ".pytest_cache" / f"{directory.replace('/', '-')}-catalog-{revision}.tar"
     cache.parent.mkdir(parents=True, exist_ok=True)
     with cache.with_suffix(".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -29,16 +29,16 @@ def catalog_files(pin):
             ):
                 subprocess.run(["git", *args], check=True, capture_output=True, timeout=120)
             cache.write_bytes(subprocess.check_output(
-                ["git", "-C", str(checkout), "archive", revision, "auto-ai-agent"],
+                ["git", "-C", str(checkout), "archive", revision, directory],
                 timeout=60,
             ))
     with tarfile.open(fileobj=BytesIO(cache.read_bytes())) as archive:
         return {
             Path(member.name).name: archive.extractfile(member).read().decode()
             for member in archive.getmembers()
-            if member.isfile() and member.name.startswith("auto-ai-agent/")
+            if member.isfile() and member.name.startswith(f"{directory}/")
             and member.name.endswith(".md")
-            and member.name.count("/") == 1
+            and member.name.count("/") == directory.count("/") + 1
         }
 
 

@@ -8,6 +8,7 @@ const patience = '12h';
 const grace = '12h1m';
 const base = (__ENV.ROUTER_BASE_URL || '').replace(/\/$/, '');
 const run = __ENV.LOAD_RUN_ID;
+const prompt = open(__ENV.LOAD_PROMPT_FILE).replace(/^---\n[\s\S]*?\n---\n/, '');
 const attempted = new Counter('tier2_attempted');
 const completed = new Counter('tier2_completed');
 const errors = new Counter('tier2_errors');
@@ -66,7 +67,7 @@ function request(tier) {
     id,
     body: JSON.stringify({
       model: __ENV[`ROUTER_TIER${tier}_MODEL`],
-      messages: [{ role: 'user', content: `Request ${id}. Count from 1 to 128.` }],
+      messages: [{ role: 'user', content: prompt.replaceAll('${id}', id) }],
       max_tokens: 512,
       stream: tier === 0,
       cache: { 'no-cache': true },
