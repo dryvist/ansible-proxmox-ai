@@ -1,0 +1,104 @@
+---
+- name: Reconcile teamless ownership without stopping other keys
+  block:
+    - name: Look up the existing key owner
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ llm_router_api_port }}/user/info?user_id={{ _teamless_key.user_id | urlencode }}"
+        headers:
+          Authorization: "Bearer {{ llm_router_master_key }}"
+        status_code: [200, 404]
+        timeout: "{{ llm_router_seed_request_timeout }}"
+      register: _llm_router_teamless_owner
+      when: _teamless_key.user_id | default('', true) | length > 0
+      check_mode: false
+      no_log: true
+
+    - name: Require an existing owner before adding membership
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            not (_teamless_key.user_id | default('', true)) or
+            (_llm_router_teamless_owner.status == 200 and
+             _llm_router_teamless_owner.json.user_info.user_id | default('') == _teamless_key.user_id)
+      no_log: true
+
+    - name: Read the destination team's current members
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ llm_router_api_port }}/team/info?team_id={{ _teamless_target_team | urlencode }}"
+        headers:
+          Authorization: "Bearer {{ llm_router_master_key }}"
+        timeout: "{{ llm_router_seed_request_timeout }}"
+      register: _llm_router_teamless_members
+      when: _teamless_key.user_id | default('', true) | length > 0
+      check_mode: false
+      no_log: true
+
+    - name: Add the key owner as a destination team member
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ llm_router_api_port }}/team/member_add"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ llm_router_master_key }}"
+        body_format: json
+        body:
+          team_id: "{{ _teamless_target_team }}"
+          member:
+            role: user
+            user_id: "{{ _teamless_key.user_id }}"
+        status_code: [200, 201]
+        timeout: "{{ llm_router_seed_request_timeout }}"
+      when:
+        - _teamless_key.user_id | default('', true) | length > 0
+        - >-
+          _teamless_key.user_id not in (_llm_router_teamless_members.json.team_info.members_with_roles
+            | default([], true) | map(attribute='user_id') | list)
+      register: _llm_router_teamless_member_add
+      changed_when: true
+      no_log: true
+
+    - name: Report the owner membership addition
+      ansible.builtin.debug:
+        msg: "Added owner membership for teamless key {{ _teamless_key_index + 1 }}."
+      when: _llm_router_teamless_member_add.status | default(0) in [200, 201]
+
+    # LiteLLM validates stored models before applying a models-and-team update.
+    - name: Narrow incompatible teamless grants before changing teams
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ llm_router_master_key }}"
+        body_format: json
+        body:
+          key: "{{ _teamless_key.token }}"
+          models: "{{ _default_team_models }}"
+        status_code: [200, 201]
+        timeout: "{{ llm_router_seed_request_timeout }}"
+      when: _teamless_key.models | default([], true) | difference(_default_team_models) | length > 0
+      no_log: true
+
+    - name: Assign the teamless key to its destination team
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ llm_router_master_key }}"
+        body_format: json
+        body:
+          key: "{{ _teamless_key.token }}"
+          team_id: "{{ _teamless_target_team }}"
+        status_code: [200, 201]
+        timeout: "{{ llm_router_seed_request_timeout }}"
+      no_log: true
+
+  rescue:
+    - name: Exclude skipped teamless aliases from subsequent seeded updates
+      ansible.builtin.set_fact:
+        _llm_router_teamless_skipped_aliases: >-
+          {{ _llm_router_teamless_skipped_aliases + [_teamless_key.key_alias | default('')] }}
+      no_log: true
+
+    - name: Report the skipped key without exposing credentials or owner identifiers
+      ansible.builtin.debug:
+        msg: "WARNING: Skipped teamless key {{ _teamless_key_index + 1 }} during {{ ansible_failed_task.name }}."

@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from threading import Thread
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 import pytest
@@ -13,20 +14,32 @@ from test_privacy_grants import MARKER, ROLE, run_tasks
 
 
 @contextmanager
-def team_api(team_info=None, keys=None):
+def team_api(team_info=None, keys=None, users=(), members=None, reject_keys=()):
     writes = []
     keys = {} if keys is None else {row["token"]: row for row in keys}
     team_models = (team_info or {}).get("models", ["fixture-local"])
+    members = {} if members is None else members
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
 
         def do_GET(self):
-            self.send_response(404 if team_info is None else 200)
+            parsed = urlparse(self.path)
+            if parsed.path == "/user/info":
+                owner = parse_qs(parsed.query)["user_id"][0]
+                status = 200 if owner in users else 404
+                response = {"user_info": {"user_id": owner}} if status == 200 else {}
+            else:
+                team_id = parse_qs(parsed.query)["team_id"][0]
+                status = 404 if team_info is None and not keys else 200
+                response = {"team_info": {**(team_info or {}), "members_with_roles": [
+                    {"user_id": owner, "role": "user"} for owner in members.get(team_id, [])
+                ]}}
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"team_info": team_info}).encode())
+            self.wfile.write(json.dumps(response).encode())
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -37,8 +50,15 @@ def team_api(team_info=None, keys=None):
                 models = key.get("models", [])
                 if body.get("team_id") and set(models) - set(team_models):
                     status = 400
+                elif body.get("team_id") and key.get("user_id") and key["user_id"] not in members.get(body["team_id"], []):
+                    status = 403
+                elif body.get("team_id") and body["key"] in reject_keys:
+                    status = 503
                 else:
                     key.update(body)
+            elif self.path == "/team/member_add":
+                owner = body["member"]["user_id"]
+                members.setdefault(body["team_id"], []).append(owner)
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -68,17 +88,16 @@ def test_existing_teamless_keys_acquire_default_team_once(tmp_path):
         variables = {
             "llm_router_api_port": port,
             "llm_router_master_key": "sk-fixture-master",
-            "llm_router_virtual_keys": [{"alias": "fixture-managed", "value": "sk-fixture-managed"}],
+            "llm_router_virtual_keys": [{"alias": "fixture-managed", "value": "sk-fixture-managed", "team_id": "tier-1"}],
             "llm_router_existing_keys": {"json": {"keys": records}},
         }
         result = run_tasks(tmp_path, [], "reconcile-teamless-keys.yml", **variables)
         assert result.returncode == 0, result.stdout + result.stderr
         assert writes == [
+            ("/key/update", {"key": records[0]["token"], "team_id": "default-settings"}),
             ("/key/update", {"key": records[1]["token"], "models": ["fixture-local"]}),
-            *[
-                ("/key/update", {"key": row["token"], "team_id": "default-settings"})
-                for row in records[:2]
-            ],
+            ("/key/update", {"key": records[1]["token"], "team_id": "default-settings"}),
+            ("/key/update", {"key": records[3]["token"], "team_id": "tier-1"}),
         ]
         assert records[1]["models"] == ["fixture-local"]
         assert records[1]["metadata"] == {"app": "fixture-app"}
@@ -86,7 +105,7 @@ def test_existing_teamless_keys_acquire_default_team_once(tmp_path):
         assert MARKER not in result.stdout + result.stderr
         result = run_tasks(tmp_path, [], "reconcile-teamless-keys.yml", **variables)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert len(writes) == 3
+        assert len(writes) == 4
         assert "changed=0" in result.stdout
 
 
@@ -116,7 +135,10 @@ def test_managed_teamless_key_narrows_before_combined_seed_update(tmp_path):
         }
         result = run_tasks(tmp_path, [], "reconcile-teamless-keys.yml", **variables)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert writes == [("/key/update", {"key": MARKER, "models": ["fixture-local"]})]
+        assert writes == [
+            ("/key/update", {"key": MARKER, "models": ["fixture-local"]}),
+            ("/key/update", {"key": MARKER, "team_id": "tier-0"}),
+        ]
         result = run_tasks(tmp_path, [], "reconcile-seeded-key-policy.yml", **variables)
         assert result.returncode == 0, result.stdout + result.stderr
         assert key["team_id"] == "tier-0"
