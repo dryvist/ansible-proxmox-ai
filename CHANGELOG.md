@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.25.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.24.0...v2.25.0) (2026-11-07)
+
+
+### Features
+
+* **phoenix_docker:** update the Phoenix image to version-21.0.0 ([#2112](https://github.com/dryvist/ansible-proxmox-ai/issues/2112)) ([6ce485e](https://github.com/dryvist/ansible-proxmox-ai/commit/6ce485e6e9affb36ed823491c306937afce1ba0b))
+
 ## [2.24.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.23.2...v2.24.0) (2026-11-07)
 
 
