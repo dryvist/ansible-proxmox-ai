@@ -58,10 +58,21 @@ def _router_fixture():
             {"client_model_id": "fixture-medium-id", "route_group": "medium", "context_window": 65536},
             {"client_model_id": "fixture-small-id", "route_group": "small", "context_window": 32768},
         ],
+        "_llm_router_static_virtual_keys": [
+            {"alias": "open-webui", "models": ["judge", "scope-excluded-role"]},
+            {
+                "alias": "dify",
+                "models": [
+                    "medium", "small", "recorder-medium", "recorder",
+                    "local-default", "embedding-role", "ocr-role",
+                ],
+            },
+        ],
         "llm_router_role_deployments": [
             {"role": "judge", "model": "small"},
             {"role": "recorder", "model": "small"},
             {"role": "recorder-medium", "model": "medium"},
+            {"role": "scope-excluded-role", "model": "small"},
             {"role": "embedding-role", "model": "embed"},
             {"role": "ocr-role", "model": "ocr"},
         ],
@@ -78,7 +89,8 @@ def test_provider_models_render_chat_roles_with_served_context_sizes():
     }
 
     assert defaults["dify_docker_default_llm_model"] == "medium"
-    assert {"medium", "small", "recorder-medium", "judge", "recorder"} <= by_name.keys()
+    assert {"medium", "small", "recorder-medium", "recorder"} <= by_name.keys()
+    assert not {"judge", "scope-excluded-role"} & by_name.keys()
     assert not {"embedding-role", "ocr-role"} & by_name.keys()
     assert not source_model_ids & by_name.keys()
     assert not {"gpt-oss-120b", "qwen3-coder", "hermes-4-14b"} & by_name.keys()
