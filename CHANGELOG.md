@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.30.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.30.3...v2.30.4) (2026-11-08)
+
+
+### Bug Fixes
+
+* **dify_docker:** carry the controller connection on a block around the key seed ([#2167](https://github.com/dryvist/ansible-proxmox-ai/issues/2167)) ([ebb6eee](https://github.com/dryvist/ansible-proxmox-ai/commit/ebb6eee3abfd19c4f9c16df94624b1435736ef94))
+* **dify_docker:** take validate_certs for the agent app key reads from a role default ([#2169](https://github.com/dryvist/ansible-proxmox-ai/issues/2169)) ([1bd60c9](https://github.com/dryvist/ansible-proxmox-ai/commit/1bd60c9e75b1cd9392dda9d379224b4ce3a88269))
+* **llm_router:** resolve claude-ocg trust through the Claude Code caller ([#2170](https://github.com/dryvist/ansible-proxmox-ai/issues/2170)) ([1e16079](https://github.com/dryvist/ansible-proxmox-ai/commit/1e16079ea5f1d34a8dad38ccf8ee4c3b6167edd0))
+* **llm_router:** skip a GPU member the router reaches through another tier ([#2176](https://github.com/dryvist/ansible-proxmox-ai/issues/2176)) ([232c6e5](https://github.com/dryvist/ansible-proxmox-ai/commit/232c6e57f1d00883fb0c4322015c53e02fb386a3))
+* **llm_router:** skip a virtual key whose model scope is empty ([#2168](https://github.com/dryvist/ansible-proxmox-ai/issues/2168)) ([27553dd](https://github.com/dryvist/ansible-proxmox-ai/commit/27553dddaed827a2132dcbb302b2d88e626709fe))
+* **llm-models:** order the co-resident small models after the small lane ([#2172](https://github.com/dryvist/ansible-proxmox-ai/issues/2172)) ([00af674](https://github.com/dryvist/ansible-proxmox-ai/commit/00af674ec79323d9f786990f7196ead45795872a))
+
 ## [2.30.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.30.2...v2.30.3) (2026-11-08)
 
 
