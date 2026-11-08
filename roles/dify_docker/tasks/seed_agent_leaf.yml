@@ -1,0 +1,76 @@
+---
+# Shared by ensure_agent_app_api_key.yml and publish_agent_mcp.yml: seeds one
+# OpenBao leaf through the shared dryvist.homelab.openbao_secrets seed_generated
+# task and reads the leaf back when that fails. Callers pass the leaf path
+# (dify_docker_agent_leaf_seed_path), the field list
+# (dify_docker_agent_leaf_seed_fields) and the register name for the seed
+# result (dify_docker_agent_leaf_seed_register); rotate fields are optional.
+# A caller whose flow created a key in Dify first may also pass
+# dify_docker_agent_leaf_seed_rollback_url: when the seed fails and the leaf
+# does not hold the created value, the rescue deletes that key so Dify is not
+# left holding a key nothing stores.
+- name: Store the agent app leaf in OpenBao
+  block:
+    - name: Store the agent app leaf through the shared seed_generated task
+      delegate_to: localhost
+      connection: local
+      become: false
+      vars:
+        ansible_become: false
+        openbao_secrets_seed_addr: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+        openbao_secrets_seed_mount: "{{ openbao_secrets_kv_mount }}"
+        openbao_secrets_seed_path: "{{ dify_docker_agent_leaf_seed_path }}"
+        openbao_secrets_seed_fields: "{{ dify_docker_agent_leaf_seed_fields }}"
+        openbao_secrets_seed_rotate_fields: "{{ dify_docker_agent_leaf_seed_rotate_fields | default([]) }}"
+        openbao_secrets_seed_token: "{{ openbao_secrets_converge_writer_token }}"
+        openbao_secrets_seed_expected_writer_policy: ansible-converge
+        openbao_secrets_seed_check_capabilities: "{{ not ansible_check_mode }}"
+        openbao_secrets_seed_revoke_token: false
+        openbao_secrets_seed_register: "{{ dify_docker_agent_leaf_seed_register }}"
+      no_log: true
+      # include_role rejects connection; the block carries it, as in storage_and_secret.yml.
+      block:
+        - name: Run the shared seed_generated task for the agent app leaf
+          ansible.builtin.include_role:
+            name: dryvist.homelab.openbao_secrets
+            tasks_from: seed_generated
+  rescue:
+    - name: Read back the agent app leaf after OpenBao storage failed
+      community.hashi_vault.vault_kv2_get:
+        url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+        auth_method: token
+        token: "{{ openbao_secrets_converge_writer_token }}"
+        engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+        path: "{{ dify_docker_agent_leaf_seed_path }}"
+        validate_certs: "{{ dify_docker_bao_validate_certs }}"
+      register: dify_docker_agent_leaf_seed_readback
+      check_mode: false
+      failed_when: >-
+        dify_docker_agent_leaf_seed_readback is failed
+        and 'Invalid or missing path' not in
+          (dify_docker_agent_leaf_seed_readback.msg | default(''))
+      changed_when: false
+      delegate_to: localhost
+      connection: local
+      become: false
+      vars:
+        ansible_become: false
+      no_log: true
+    - name: Delete the caller-created key if OpenBao storage failed
+      ansible.builtin.uri:
+        url: "{{ dify_docker_agent_leaf_seed_rollback_url }}"
+        method: DELETE
+        headers:
+          Cookie: "{{ dify_docker_console_cookies }}"
+          X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+        status_code: 204
+      when: >-
+        dify_docker_agent_leaf_seed_rollback_url is defined
+        and ((dify_docker_agent_leaf_seed_readback.secret | default({})).get(
+               dify_docker_agent_leaf_seed_fields[0].name, '') | default('', true))
+            != dify_docker_agent_leaf_seed_fields[0].value
+      no_log: true
+    - name: Fail after OpenBao storage failed
+      ansible.builtin.fail:
+        msg: The agent app leaf could not be stored in OpenBao.
+      no_log: true

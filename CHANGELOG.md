@@ -1,24 +1,5 @@
 # Changelog
 
-## [2.31.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.30.4...v2.31.0) (2026-11-08)
-
-
-### Features
-
-* **dify_docker:** import catalog entries in named slices ([#2182](https://github.com/dryvist/ansible-proxmox-ai/issues/2182)) ([111a2ab](https://github.com/dryvist/ansible-proxmox-ai/commit/111a2abb80e406cd62558c7c6c811d0013129979))
-* **dify_docker:** wire the rotation to each agent's webhook trigger ([#2174](https://github.com/dryvist/ansible-proxmox-ai/issues/2174)) ([7a7f38c](https://github.com/dryvist/ansible-proxmox-ai/commit/7a7f38cadc6fed88f58429c63c978a1289ef9f20))
-
-
-### Bug Fixes
-
-* **dify_docker:** require the default model among Dify's chat roles ([#2186](https://github.com/dryvist/ansible-proxmox-ai/issues/2186)) ([6dc432f](https://github.com/dryvist/ansible-proxmox-ai/commit/6dc432f1b946cf25534e2c8ac00052a8fefa2176))
-* **dify_docker:** wire the rotation only in the slice that imports it ([#2183](https://github.com/dryvist/ansible-proxmox-ai/issues/2183)) ([796ebe2](https://github.com/dryvist/ansible-proxmox-ai/commit/796ebe288fe7ddcd6d457826d0e623b3821e3512))
-
-
-### Performance
-
-* **dify_docker:** cap the agent app id lookup at two pages ([#2177](https://github.com/dryvist/ansible-proxmox-ai/issues/2177)) ([a094844](https://github.com/dryvist/ansible-proxmox-ai/commit/a094844b0e132d8fa3e53772d1f28400239628b5))
-
 ## [2.30.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.30.3...v2.30.4) (2026-11-08)
 
 
