@@ -1,0 +1,32 @@
+---
+# Shared by ensure_agent_app_api_key.yml and publish_agent_mcp.yml: reads one
+# OpenBao leaf and publishes the result under the caller's register name.
+# Callers pass the leaf path (dify_docker_agent_leaf_read_path) and the
+# register name (dify_docker_agent_leaf_read_register). A missing path stays
+# a tolerated, empty read; every other failure fails the run.
+- name: Read the agent app leaf from OpenBao
+  community.hashi_vault.vault_kv2_get:
+    url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+    auth_method: token
+    token: "{{ openbao_secrets_converge_writer_token }}"
+    engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+    path: "{{ dify_docker_agent_leaf_read_path }}"
+    validate_certs: "{{ dify_docker_bao_validate_certs }}"
+  register: dify_docker_agent_leaf_read_result
+  check_mode: false
+  failed_when: >-
+    dify_docker_agent_leaf_read_result is failed
+    and 'Invalid or missing path' not in
+      (dify_docker_agent_leaf_read_result.msg | default(''))
+  changed_when: false
+  delegate_to: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  no_log: true
+
+- name: Publish the leaf read result under the caller's register name
+  ansible.builtin.set_fact:
+    "{{ dify_docker_agent_leaf_read_register }}": "{{ dify_docker_agent_leaf_read_result }}"
+  no_log: true

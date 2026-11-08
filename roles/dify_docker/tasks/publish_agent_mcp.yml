@@ -1,0 +1,144 @@
+---
+# One catalog agent app (dify_docker_dsl_name, set by the including loop).
+# Publishes the app's native MCP server (Dify starts a new one active),
+# activates an existing server that is not active, and stores its URL in
+# the app's OpenBao leaf (dify_docker_agent_mcp_path). The server_code inside
+# the URL is a bearer secret: it reaches only that leaf, and every task that
+# receives, holds or writes it runs with no_log. Check mode reads the same
+# endpoints and reports what a live run would change, by app name only.
+- name: Resolve the agent app id through the shared app lookup
+  ansible.builtin.include_tasks: resolve_agent_app_id.yml
+  no_log: true
+
+- name: Read the agent app MCP server
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/server
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_agent_mcp_server_read
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+- name: Create the agent app MCP server only when the app has none
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/server
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body:
+      parameters: {}
+    status_code: 201
+  register: dify_docker_agent_mcp_server_create
+  changed_when: dify_docker_agent_mcp_server_create.status | default(0) == 201
+  when:
+    - not ansible_check_mode
+    - dify_docker_agent_mcp_server_read.json | default({}) == {}
+  no_log: true
+
+- name: Resolve the published agent app MCP server
+  ansible.builtin.set_fact:
+    dify_docker_agent_mcp_server: >-
+      {{ dify_docker_agent_mcp_server_create.json
+         if dify_docker_agent_mcp_server_create.status | default(0) == 201
+         else dify_docker_agent_mcp_server_read.json }}
+  no_log: true
+
+- name: Activate the agent app MCP server when it is not active
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/server
+    method: PUT
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body:
+      id: "{{ dify_docker_agent_mcp_server.id }}"
+      description: "{{ dify_docker_agent_mcp_server.description | default('') }}"
+      parameters: "{{ dify_docker_agent_mcp_server.parameters | default({}) }}"
+      status: active
+    status_code: 200
+  register: dify_docker_agent_mcp_server_activate
+  changed_when: dify_docker_agent_mcp_server_activate.status | default(0) == 200
+  when:
+    - not ansible_check_mode
+    - (dify_docker_agent_mcp_server.status | default('')) != 'active'
+  no_log: true
+
+- name: Resolve the agent app MCP server URL
+  ansible.builtin.set_fact:
+    dify_docker_agent_mcp_url: >-
+      {{ dify_docker_public_url | regex_replace('/+$', '') ~
+         '/mcp/server/' ~
+         (dify_docker_agent_mcp_server.server_code | default('')) ~ '/mcp' }}
+  no_log: true
+
+- name: Read the stored agent app MCP server URL from OpenBao
+  ansible.builtin.include_tasks: read_agent_leaf.yml
+  vars:
+    dify_docker_agent_leaf_read_path: "{{ dify_docker_agent_mcp_path }}"
+    dify_docker_agent_leaf_read_register: dify_docker_agent_mcp_lookup
+  no_log: true
+
+- name: Detect whether the stored agent app MCP server URL matches
+  ansible.builtin.set_fact:
+    dify_docker_agent_mcp_url_matches: >-
+      {{ (dify_docker_agent_mcp_lookup.secret | default({})).url | default('', true)
+         == dify_docker_agent_mcp_url }}
+  no_log: true
+
+- name: Detect whether the agent app MCP server needs changes
+  ansible.builtin.set_fact:
+    dify_docker_agent_mcp_planned_changes: >-
+      {{ []
+         + (['create its MCP server']
+            if dify_docker_agent_mcp_server_read.json | default({}) == {} else [])
+         + (['activate its MCP server']
+            if dify_docker_agent_mcp_server_read.json | default({}) != {}
+               and (dify_docker_agent_mcp_server.status | default('')) != 'active' else [])
+         + (['store its MCP server URL'] if not dify_docker_agent_mcp_url_matches | bool else []) }}
+  no_log: true
+
+- name: Report the agent app MCP server changes a live run would make
+  ansible.builtin.debug:
+    msg: >-
+      agent app {{ dify_docker_dsl_name }}: a live run would
+      {{ dify_docker_agent_mcp_planned_changes | join(' and ') }}.
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - dify_docker_agent_mcp_planned_changes | length > 0
+
+- name: Report a published agent app MCP server
+  ansible.builtin.debug:
+    msg: >-
+      agent app {{ dify_docker_dsl_name }}: its MCP server is published and
+      its URL is stored.
+  changed_when: false
+  when: dify_docker_agent_mcp_planned_changes | length == 0
+
+- name: Store the agent app MCP server URL in OpenBao
+  when:
+    - not ansible_check_mode
+    - not dify_docker_agent_mcp_url_matches | bool
+  block:
+    - name: Store the agent app MCP server URL through the shared seed_generated task
+      ansible.builtin.include_tasks: seed_agent_leaf.yml
+      vars:
+        dify_docker_agent_leaf_seed_path: "{{ dify_docker_agent_mcp_path }}"
+        dify_docker_agent_leaf_seed_fields:
+          - name: url
+            value: "{{ dify_docker_agent_mcp_url }}"
+        dify_docker_agent_leaf_seed_rotate_fields:
+          - url
+        dify_docker_agent_leaf_seed_register: dify_docker_agent_mcp_seed_result
+      no_log: true

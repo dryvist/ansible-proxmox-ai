@@ -164,6 +164,19 @@ written. Check mode reads the same endpoints, reports the variable names that
 would change, and writes nothing. All Dify 1.18.0 console endpoints above are
 verified against that release's source.
 
+## Agent MCP server publishing
+
+`dify_docker_publish_agent_mcp` (default `false`) publishes every catalog
+agent app as its native Dify MCP server after the DSL import, and stores each
+server's URL at `dify_docker_agent_mcp_path`. The app id is resolved through
+the same paged exact-name lookup as the API keys, the console MCP server is
+created only when the app has none, and a server Dify reports as not `active`
+is activated. The stored `url` is written through the shared `openbao_secrets`
+seed task only when it is missing or differs, so an unchanged app costs no
+write. A sliced run (`dify_docker_agent_dsl_select`) publishes only its
+selected apps. Check mode makes no POST, PUT or storage write and reports
+what a live run would change, by app name only.
+
 ## What in this stack needs protecting
 
 | Component | Needs protection | Why |

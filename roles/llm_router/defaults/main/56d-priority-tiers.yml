@@ -4,6 +4,16 @@ llm_router_priority_tiers:
   - {tier: 1, team_id: tier-1, priority: 10}
   - {tier: 2, team_id: tier-2, priority: 20}
 
+# MCP access groups each priority team allows: the union of what its keys declare.
+# LiteLLM refuses a key update that requests a group its team does not allow.
+llm_router_priority_team_mcp_access_groups: >-
+  {%- set ns = namespace(groups={}) -%}
+  {%- for key in _llm_router_virtual_keys_without_values -%}
+  {%- set _requested = (key.object_permission | default({}, true)).get('mcp_access_groups', []) | default([], true) -%}
+  {%- set _ = ns.groups.update({key.team_id: (ns.groups.get(key.team_id, []) + _requested) | unique | sort | list}) -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+
 llm_router_tier_2_timeout_seconds: >-
   {{ ai_tier_2_router_request_timeout_seconds | default(
        (ai_tier_2_wait_timeout_seconds | default(43200) | int)
