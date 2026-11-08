@@ -119,6 +119,7 @@ def test_fetch_stays_checksum_verified_and_secret_safe():
     assert request["method"] == "GET"
     assert request["status_code"] == 200
     assert request["follow_redirects"] == "none"
+    assert request["use_proxy"] is False
     assert request["return_content"] is True
     assert "dify_docker_dsl_fetch.content" in fetch["failed_when"]
     assert "hash('sha256')" in fetch["failed_when"]
@@ -219,6 +220,9 @@ def test_private_check_mode_reads_verified_dsl_in_memory_without_target_writes_o
     assert read["ansible.builtin.uri"]["return_content"] is True
     assert read["ansible.builtin.uri"]["status_code"] == 200
     assert read["ansible.builtin.uri"]["follow_redirects"] == "none"
+    use_proxy = read["ansible.builtin.uri"]["use_proxy"]
+    assert _render(use_proxy, dify_docker_agent_dsl={"private": True}) == "False"
+    assert _render(use_proxy, dify_docker_agent_dsl={}) == "True"
     assert read["check_mode"] is False
     assert read["changed_when"] is False
     assert read["no_log"] is True
