@@ -63,6 +63,15 @@ def test_empty_roster_keeps_static_domain_lists_unchanged():
     assert _render_optional_domains({}) == defaults["_openbao_secrets_static_optional_domains"]
 
 
+def test_donna_domain_adds_only_the_optional_slack_vendor_path():
+    (domain,) = [d for d in _static_domains() if d["name"] == "donna"]
+
+    assert domain["paths"] == [
+        "ai/donna",
+        {"mount": "secrets-external", "path": "slack/donna/rw", "optional": True},
+    ]
+
+
 def test_roster_agent_gets_its_paths_and_owned_mcp_paths():
     domains = _render_domains(ROSTER)
 
