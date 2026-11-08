@@ -255,3 +255,53 @@
              | map(attribute='alias') | zip(_active_virtual_keys
              | selectattr('alias', 'in', _delivery_aliases)
              | map(attribute='value'))) }}
+
+    - name: Model an empty OpenCode ZDR input
+      ansible.builtin.set_fact:
+        llm_router_opencode_zdr_fallback_groups: []
+
+    - name: Refresh cached router projections with no OpenCode ZDR groups
+      vars:
+        llm_router_zdr_unasserted_terminal_rungs: "{{ _active_zdr_unasserted_terminal_rungs }}"
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: Capture the virtual-key projection with no OpenCode ZDR groups
+      vars:
+        llm_router_zdr_unasserted_terminal_rungs: "{{ _active_zdr_unasserted_terminal_rungs }}"
+      ansible.builtin.set_fact:
+        _empty_opencode_virtual_keys: "{{ llm_router_virtual_keys }}"
+
+    - name: Evaluate the privacy assertion's violations with no OpenCode ZDR groups
+      ansible.builtin.set_fact:
+        _empty_opencode_privacy_violations: >-
+          {{ lookup('template', llm_router_privacy_grants_template) }}
+      vars:
+        _llm_router_privacy_records: >-
+          {{ _llm_router_virtual_keys_without_values + llm_router_default_team_settings
+             + llm_router_priority_team_settings
+             + [llm_router_default_key_generate_params | combine({'alias': 'default-key'})] }}
+
+    - name: An empty OpenCode ZDR scope disables claude-ocg before privacy validation
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _empty_claude_ocg.models | length == 0
+          - not (_empty_claude_ocg.enabled | bool)
+          - "'claude-ocg' in llm_router_disabled_virtual_keys"
+          - _empty_opencode_virtual_keys | selectattr('alias', 'equalto', 'claude-ocg') | list | length == 0
+          - _empty_opencode_privacy_violations | length == 0
+        fail_msg: >-
+          An empty OpenCode ZDR scope must disable claude-ocg and leave no privacy
+          grant violations: {{ _empty_opencode_privacy_violations }}.
+        success_msg: >-
+          A Claude key with no OpenCode ZDR models stays disabled and passes the
+          privacy grant check.
+      vars:
+        _empty_claude_ocg: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'equalto', 'claude-ocg') | first }}
+
+    - name: Run the unchanged privacy assertion with no OpenCode ZDR groups
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-privacy-grants.yml"
