@@ -45,8 +45,8 @@ page continues with the variable surface.
 | `hermes_agent_model` | `Qwen3-Coder-30B-A3B` | model id (LiteLLM router alias) |
 | `hermes_agent_memory_provider` | `hindsight` when `hindsight_service_enabled`, otherwise `builtin` | external or builtin memory provider |
 | `hermes_agent_max_turns` | `90` | agentic-loop budget |
-| `hermes_agent_slack_bot_token` | `""` | Slack bot OAuth token (`xoxb-…`) |
-| `hermes_agent_slack_app_token` | `""` | Slack app-level token for Socket Mode (`xapp-…`) |
+| `hermes_agent_slack_bot_token` | `""` | Slack bot OAuth token (`xoxb-…`) — rendered only into the identity's main gateway; every named profile env blanks it (one Slack socket per identity) |
+| `hermes_agent_slack_app_token` | `""` | Slack app-level token for Socket Mode (`xapp-…`) — main gateway only; a named profile never receives one and posts through `gateway.profile_routes` |
 | `hermes_agent_slack_allowed_users` | env | members allowed to message the bot: `SLACK_MEMBER_ID` plus `SLACK_<PREFIX>_MEMBER_ID`, deduplicated |
 | `hermes_agent_slack_home_channel` | `""` | Slack channel ID for proactive posts |
 | `hermes_agent_slack_home_channel_name` | `""` | Slack channel display name |

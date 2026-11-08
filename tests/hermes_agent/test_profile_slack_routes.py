@@ -170,6 +170,29 @@ def test_enqueuer_items_do_not_set_profile_homes() -> None:
         assert "hermes_home" not in item or "/profiles/" not in str(item["hermes_home"]), task["name"]
 
 
+def test_splunk_and_homelab_admin_slack_jobs_deliver_only_through_the_route() -> None:
+    """The named profiles hold no Slack token (hermes-env-profile.j2), so every
+    splunk-admin/homelab-admin job that posts to Slack must name its delivery
+    through the routed deliver-target projection and stay disabled until its
+    profile route exists — the primary gateway's Slack adapter then delivers
+    the job's output through gateway.profile_routes (multiplex tick)."""
+    for profile in ("splunk-admin", "homelab-admin"):
+        jobs = [
+            job for job in _declared_direct_jobs()
+            if str(job.get("hermes_home", "")).endswith(f"/profiles/{profile}")
+        ]
+        slack_jobs = [job for job in jobs if str(job.get("deliver", "")).startswith("slack")]
+        assert slack_jobs, f"no Slack-delivering {profile} job declares its routed target"
+        for job in slack_jobs:
+            assert "hermes_agent_slack_profile_deliver_targets" in str(job["deliver"]), job["name"]
+            enabled = job.get("enabled")
+            if enabled is not None and enabled is not False:
+                assert (
+                    f"'{profile}' in hermes_agent_slack_profile_deliver_targets"
+                    in str(enabled)
+                ), job["name"]
+
+
 def _channels(env: dict, ai_agents: dict | None = None) -> str:
     """Render the profile-channel default as Ansible would, env lookups stubbed."""
     expr = role_defaults(ROLE_ROOT)["hermes_agent_slack_profile_channels"]

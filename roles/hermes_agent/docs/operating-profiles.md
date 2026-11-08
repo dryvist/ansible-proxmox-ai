@@ -14,7 +14,11 @@ skills. Named profiles live at `{{ hermes_agent_hermes_home }}/profiles/<name>/`
 the `default` profile is `{{ hermes_agent_hermes_home }}` itself.
 
 There is **one shared gateway, dispatcher, Kanban board, and Slack bot** for
-every profile — no per-profile gateway service exists. Cron is the one
+every profile — no per-profile gateway service exists. Profiles receive no
+Slack token: `hermes-env-profile.j2` blanks every `SLACK_*` line, so the
+identity's main gateway holds the one Socket Mode connection and a named
+profile's Slack output is delivered through the primary's profile route.
+Cron is the one
 exception (native-cron reframe): a direct-cron job on a named profile
 (`hermes_home:` in `hermes_agent_direct_cron_jobs`) gets its own cron store,
 which the persistent gateway ticks in that profile's scope and delivers through
