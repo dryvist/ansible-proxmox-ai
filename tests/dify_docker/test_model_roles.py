@@ -184,3 +184,33 @@ def test_unlisted_provider_model_is_removed_and_listed_model_is_kept():
     embedding_model = {"model": "hand-added-embedding", "model_type": "text-embedding"}
     assert not applies(delete_task, embedding_model, check_mode=False)
     assert not applies(preview_task, embedding_model, check_mode=True)
+
+
+def test_model_without_a_saved_credential_is_created_not_updated():
+    # Dify answers current_credential_id: null for a model with no saved credential.
+    provider_tasks = yaml.safe_load(MODEL_PROVIDER_TASKS.read_text(encoding="utf-8"))
+    create_task = next(
+        task for task in provider_tasks if task.get("name") == "Create missing Dify LLM model credentials"
+    )
+    update_task = next(
+        task for task in provider_tasks if task.get("name") == "Update existing Dify LLM model credentials"
+    )
+    model = {"name": "medium", "context_size": "32768", "mode": "chat"}
+
+    def applies(task, current_credential_id):
+        current = {"json": {"current_credential_id": current_credential_id, "credentials": {}}}
+        variables = {
+            "ansible_check_mode": False,
+            "dify_docker_provision_model_provider": True,
+            "dify_docker_model_credentials_current": {"results": [current]},
+            "dify_docker_model_index": 0,
+            "dify_docker_model_endpoint_url": "fixture-endpoint",
+            "item": model,
+        }
+        return all(_render("{{ " + condition + " }}", variables) for condition in task["when"])
+
+    for missing in (None, ""):
+        assert applies(create_task, missing)
+        assert not applies(update_task, missing)
+    assert not applies(create_task, "fixture-credential-id")
+    assert applies(update_task, "fixture-credential-id")
