@@ -43,6 +43,8 @@ def test_wiring_is_included_after_the_agent_dsl_import():
     assert wiring["when"] == [
         "dify_docker_provision_model_provider | bool",
         "dify_docker_import_agent_dsls | bool",
+        "dify_docker_agent_dsl_select | length == 0"
+        " or dify_docker_rotation_app_name in dify_docker_agent_dsl_select",
     ]
 
 

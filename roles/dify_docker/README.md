@@ -120,7 +120,8 @@ files to the target or Dify APIs.
 
 `dify_docker_agent_dsl_select` (default `[]`) names the catalog entries one run
 imports. Empty imports every manifest entry. A name missing from the manifest
-fails the run before any fetch.
+fails the run before any catalog DSL fetch. A sliced run wires the rotation only
+when its selection names the rotation app, so the last slice imports it.
 
 `dify_docker_private_agent_dsls` (default `[]`) adds private sources alongside
 the public catalog entries, each as `name`, `url` and `sha256`. The list and
