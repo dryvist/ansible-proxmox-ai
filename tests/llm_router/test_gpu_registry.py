@@ -172,7 +172,7 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     co_resident_profile = serving_profiles["small-c4-64k"]
     assert co_resident["artifact_id"] == small["artifact_id"]
     assert co_resident["route_group"] == "small"
-    assert co_resident["order"] == 1
+    assert co_resident["order"] == 2
     assert co_resident["max_parallel_requests"] == 4
     assert co_resident["context_window"] == 32768
     assert co_resident["max_output_tokens"] == 32768

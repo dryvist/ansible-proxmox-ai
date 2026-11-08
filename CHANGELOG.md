@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.30.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.30.2...v2.30.3) (2026-11-08)
+
+
+### Bug Fixes
+
+* **dify_docker:** accept an already-listed credential in the model list ([#2156](https://github.com/dryvist/ansible-proxmox-ai/issues/2156)) ([ccbe7d3](https://github.com/dryvist/ansible-proxmox-ai/commit/ccbe7d39ef1c623e1fea6abeee3f02c319f6b531))
+* **llama_cpp:** wait for model loads before checking residency ([#2164](https://github.com/dryvist/ansible-proxmox-ai/issues/2164)) ([73bb15e](https://github.com/dryvist/ansible-proxmox-ai/commit/73bb15e40e0a322e1a46c055161fa0a8cf2c30f4))
+
 ## [2.30.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.30.1...v2.30.2) (2026-11-08)
 
 

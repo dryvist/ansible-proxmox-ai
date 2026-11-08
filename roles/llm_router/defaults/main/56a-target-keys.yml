@@ -1,5 +1,15 @@
 ---
 # One routed key per target consumer; missing source fields keep keys disabled.
+_llm_router_claude_ocg_model_scope: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for m in llm_router_opencode_models -%}
+  {%- set _name = m.route_group | default(m.client_model_id) -%}
+  {%- if 'sandbox-only' not in (m.tags | default([]))
+        and _name in llm_router_d1_zdr_rungs_by_class['sub'] -%}
+  {%- set ns.names = ns.names + [_name] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.names | unique | list }}
 _llm_router_target_virtual_keys:
   - alias: claude-code
     owner_filter: false  # D1: preserve workstation MCP access pending operator decision.
@@ -165,19 +175,14 @@ _llm_router_target_virtual_keys:
       enable_tag_filtering: true
     daily_budget: 10.0
   - alias: claude-ocg
+    # Claude Code holds this key (apps/claude-code), so its trust tier applies.
+    trust_caller: claude-code
     value: "{{ (bao_apps_secrets | default({})).get('claude_ocg_router_key', '') }}"
-    enabled: "{{ (bao_apps_secrets | default({})).get('claude_ocg_router_key', '') | string | length > 0 }}"
+    enabled: >-
+      {{ (bao_apps_secrets | default({})).get('claude_ocg_router_key', '') | string | length > 0
+         and _llm_router_claude_ocg_model_scope | length > 0 }}
     allowed_classes: [sub]
-    models: >-
-      {%- set ns = namespace(names=[]) -%}
-      {%- for m in llm_router_opencode_models -%}
-      {%- set _name = m.route_group | default(m.client_model_id) -%}
-      {%- if 'sandbox-only' not in (m.tags | default([]))
-            and _name in llm_router_d1_zdr_rungs_by_class['sub'] -%}
-      {%- set ns.names = ns.names + [_name] -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {{ ns.names | unique | list }}
+    models: "{{ _llm_router_claude_ocg_model_scope }}"
     models_authoritative: true
     tags: ['&zdr', '!free', '!retains']
     router_settings:

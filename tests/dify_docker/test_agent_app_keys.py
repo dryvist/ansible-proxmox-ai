@@ -75,7 +75,8 @@ def test_token_tasks_are_secret_safe_and_create_only_when_missing():
     assert api_key_block["when"] == "dify_docker_agent_app_api_key_create.status | default(0) == 201"
 
     seed = by_name[STORE_TASK]
-    assert seed["ansible.builtin.include_role"]["tasks_from"] == "seed_generated"
+    include = next(task for task in seed["block"] if "ansible.builtin.include_role" in task)
+    assert include["ansible.builtin.include_role"]["tasks_from"] == "seed_generated"
     fields = seed["vars"]["openbao_secrets_seed_fields"]
     assert fields[0]["name"] == "api_key"
     assert fields[0]["value"] == "{{ dify_docker_agent_app_api_key_create.json.token }}"
@@ -323,3 +324,17 @@ def test_api_key_leaf_is_derived_from_the_dify_openbao_base_path():
     assert defaults["dify_docker_agent_app_api_key_path"] == (
         "{{ dify_docker_openbao_path }}/agent-apps/{{ dify_docker_dsl_name }}"
     )
+
+
+def test_openbao_reads_take_validate_certs_from_a_role_default():
+    tasks = _yaml(API_KEY_TASKS)
+    api_key_block = next(task for task in tasks if "block" in task)
+    reads = [
+        task["community.hashi_vault.vault_kv2_get"]
+        for task in tasks + api_key_block["rescue"]
+        if "community.hashi_vault.vault_kv2_get" in task
+    ]
+
+    assert len(reads) == 2
+    assert {read["validate_certs"] for read in reads} == {"{{ dify_docker_bao_validate_certs }}"}
+    assert load_defaults()["dify_docker_bao_validate_certs"] is True

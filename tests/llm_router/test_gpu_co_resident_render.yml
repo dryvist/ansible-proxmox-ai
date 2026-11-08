@@ -1,5 +1,5 @@
 ---
-- name: Verify co-resident GPU routing and CPU fallback order
+- name: Verify co-resident GPU routing, the small lane and CPU fallback order
   hosts: localhost
   gather_facts: false
   vars_files:
@@ -42,6 +42,13 @@
         llm_active_profile: qwen38-96k-11-fp8-mtp
         llm_gpu_serving_co_resident_profiles: [small-c4-64k, small-k2-horizon]
 
+    - name: Add the small-lane member with its serving slot count
+      ansible.builtin.add_host:
+        name: llm-vllm-fixture
+        groups: llm_vllm_group
+        ansible_connection: local
+        llama_cpp_parallel: 2
+
     - name: Load router role defaults
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
@@ -49,6 +56,12 @@
     - name: Provide the synthetic router subdomain
       ansible.builtin.set_fact:
         llm_router_subdomain: pve.example.test
+
+    - name: Enable the small lane with a passing probe
+      ansible.builtin.set_fact:
+        llm_router_4080_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
 
     - name: Load the registry projections
       ansible.builtin.include_role:
@@ -66,15 +79,17 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: Route the co-resident small model first and retain the CPU fallback
+    - name: Route small to the small lane, then the co-resident model, then CPU
       ansible.builtin.assert:
         quiet: true
         that:
           - >-
             llm_router_gpu_models | map(attribute='profile') | list | sort
             == ['qwen38-96k-11-fp8-mtp', 'small-c4-64k', 'small-k2-horizon']
-          - _small_members | length >= 2
-          - _small_members | map(attribute='litellm_params.order') | map('int') | list | sort == [1, 3]
+          - _small_members | length >= 3
+          - _small_members | map(attribute='litellm_params.order') | map('int') | list | sort == [1, 2, 3]
+          - _small_lane.litellm_params.order | int == 1
+          - _gpu_small.litellm_params.order | int == 2
           - _gpu_small.litellm_params.api_base == _gpu_co_url
           - _gpu_small.litellm_params.max_parallel_requests | int == 4
           - _trial.model_name == 'small-trial-gpu'
@@ -90,6 +105,10 @@
         _small_members: >-
           {{ _config.model_list | selectattr('model_name', 'equalto', 'small')
              | selectattr('litellm_params.tags', 'contains', 'default') | list }}
+        _small_lane: >-
+          {{ _small_members
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url)
+             | first }}
         _gpu_small: >-
           {{ _small_members
              | selectattr('litellm_params.api_base', 'equalto', _gpu_co_url)
@@ -99,6 +118,9 @@
              | selectattr('litellm_params.api_base', 'equalto', _gpu_main_url) | first }}
         _trial: >-
           {{ _config.model_list | selectattr('model_name', 'equalto', 'small-trial-gpu') | first }}
+
+    - name: Require distinct capability orders, as the converge does
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-capabilities.yml"
 
     - name: Provide successful listings from every GPU serving endpoint
       ansible.builtin.set_fact:
