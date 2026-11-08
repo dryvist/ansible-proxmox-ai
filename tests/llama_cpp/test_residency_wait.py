@@ -8,6 +8,7 @@ no model is mid-load, bounded by two role defaults, and only then asserts.
 
 from pathlib import Path
 
+import jinja2
 import yaml
 
 
@@ -22,11 +23,25 @@ def _task(name: str) -> dict:
     return next(task for task in VERIFY if task.get("name") == name)
 
 
+def _until_holds(statuses: list[str]) -> bool:
+    """Evaluate the read-back task's `until` against one GET /models answer."""
+    readback = _task("Read back which models are actually resident")
+    condition = jinja2.Environment().compile_expression(readback["until"].strip())
+    data = [{"id": f"m{i}", "status": {"value": s}} for i, s in enumerate(statuses)]
+    return bool(condition(llama_cpp_models_status={"json": {"data": data}}))
+
+
 def test_readback_waits_until_no_model_is_loading() -> None:
     readback = _task("Read back which models are actually resident")
-    assert "'loading'" in readback["until"]
     assert readback["retries"] == "{{ llama_cpp_residency_retries }}"
     assert readback["delay"] == "{{ llama_cpp_residency_delay_seconds }}"
+    # Any model still loading keeps the task polling.
+    assert not _until_holds(["loaded", "loading"])
+    assert not _until_holds(["loading"])
+    # Settled answers stop the poll, including an eviction the assert must catch.
+    assert _until_holds(["loaded", "loaded"])
+    assert _until_holds(["loaded", "unloaded"])
+    assert _until_holds([])
 
 
 def test_wait_bounds_are_positive_defaults() -> None:
