@@ -204,7 +204,7 @@ def test_model_without_a_saved_credential_is_created_not_updated():
             "dify_docker_provision_model_provider": True,
             "dify_docker_model_credentials_current": {"results": [current]},
             "dify_docker_model_index": 0,
-            "dify_docker_model_endpoint_url": "http://router.example.invalid/v1",
+            "dify_docker_model_endpoint_url": "fixture-endpoint",
             "item": model,
         }
         return all(_render("{{ " + condition + " }}", variables) for condition in task["when"])
