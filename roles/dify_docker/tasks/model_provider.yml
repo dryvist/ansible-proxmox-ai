@@ -216,15 +216,22 @@
       model: "{{ item.name }}"
       model_type: llm
       credential_id: "{{ dify_docker_provisioned_credential_id }}"
-    status_code: 200
+    status_code: [200, 400]
   loop: "{{ dify_docker_llm_models }}"
   loop_control:
     index_var: dify_docker_model_index
     label: "{{ item.name }}"
+  register: dify_docker_model_list_add
   when:
     - not ansible_check_mode
     - dify_docker_provision_model_provider | bool
   changed_when: false
+  # Dify answers 400 "Can't add same credential" when the credential is already in the model list.
+  failed_when: >-
+    dify_docker_model_list_add.status != 200
+    and not (dify_docker_model_list_add.status == 400
+             and (dify_docker_model_list_add.json | default({}, true)).message | default('')
+                 == "Can't add same credential")
   no_log: true
   vars:
     dify_docker_provisioned_credential_id: >-

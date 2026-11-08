@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.30.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.30.1...v2.30.2) (2026-11-08)
+
+
+### Bug Fixes
+
+* **llama_cpp:** make the restart handler notifiable ([#2152](https://github.com/dryvist/ansible-proxmox-ai/issues/2152)) ([79a293a](https://github.com/dryvist/ansible-proxmox-ai/commit/79a293ad90f1f2ee9055a9dac561380e7b5444be))
+* **llm_router:** fail clearly unless exactly one primary is enabled ([#2154](https://github.com/dryvist/ansible-proxmox-ai/issues/2154)) ([3e08133](https://github.com/dryvist/ansible-proxmox-ai/commit/3e08133d3e12ae66c7da3decaf00ba3cb6902b7a))
+
 ## [2.30.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.30.0...v2.30.1) (2026-11-08)
 
 
