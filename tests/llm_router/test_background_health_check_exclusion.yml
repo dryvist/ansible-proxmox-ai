@@ -33,7 +33,8 @@
         cpu-fixture:
           ip: 127.0.0.1
           tags: [fixture-cpu-small]
-    bao_local_llm_secrets: {}
+    bao_local_llm_secrets:
+      OPENCODE_API_KEY: fixture-opencode
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
@@ -143,4 +144,30 @@
           {{ _vllm_entries
              | selectattr('model_info.disable_background_health_check', 'defined')
              | selectattr('model_info.disable_background_health_check')
+             | map(attribute='model_name') | list }}
+
+    - name: Subscription (OpenCode Go) deployments are never probed
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _opencode_entries | length > 0
+          - _probed_opencode | length == 0
+        fail_msg: >-
+          OpenCode Go deployment(s) {{ _probed_opencode }} lack
+          model_info.disable_background_health_check: true. Each probe is a real
+          paid completion against the subscription quota on every router.
+        success_msg: "All {{ _opencode_entries | length }} OpenCode Go deployment(s) are excluded from probing."
+      vars:
+        _opencode_entries: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_key', 'defined')
+             | selectattr('litellm_params.api_key', 'equalto', 'os.environ/OPENCODE_API_KEY')
+             | list }}
+        _probed_opencode: >-
+          {{ _opencode_entries
+             | rejectattr('model_info.disable_background_health_check', 'defined')
+             | map(attribute='model_name') | list
+             + _opencode_entries
+             | selectattr('model_info.disable_background_health_check', 'defined')
+             | rejectattr('model_info.disable_background_health_check')
              | map(attribute='model_name') | list }}
