@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.33.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.32.0...v2.33.0) (2026-11-08)
+
+
+### Features
+
+* **hermes_agent:** join the shared Slack member list with each identity's own ([#2200](https://github.com/dryvist/ansible-proxmox-ai/issues/2200)) ([bc81683](https://github.com/dryvist/ansible-proxmox-ai/commit/bc8168392340496bbff0e8ee7e0f3deabb801627))
+* **llm_router:** add the openhands virtual key ([#2202](https://github.com/dryvist/ansible-proxmox-ai/issues/2202)) ([09be001](https://github.com/dryvist/ansible-proxmox-ai/commit/09be0016c228267bf9e559bfbaa8d21ca7b9c476))
+
+
+### Bug Fixes
+
+* **dify_docker:** match the Dify 1.18 webhook and schedule trigger types ([#2205](https://github.com/dryvist/ansible-proxmox-ai/issues/2205)) ([2019eea](https://github.com/dryvist/ansible-proxmox-ai/commit/2019eea327a57d35b83a03311430a9aa59a2082b))
+* **openbao_secrets:** fetch apps/openhands only behind llm_router_openhands_key_enabled ([#2203](https://github.com/dryvist/ansible-proxmox-ai/issues/2203)) ([a634d0c](https://github.com/dryvist/ansible-proxmox-ai/commit/a634d0cc18ba7250db60b895f7633e87e3cd2d1d))
+
 ## [2.32.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.31.1...v2.32.0) (2026-11-08)
 
 
