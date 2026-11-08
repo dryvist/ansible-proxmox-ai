@@ -75,7 +75,8 @@ def test_token_tasks_are_secret_safe_and_create_only_when_missing():
     assert api_key_block["when"] == "dify_docker_agent_app_api_key_create.status | default(0) == 201"
 
     seed = by_name[STORE_TASK]
-    assert seed["ansible.builtin.include_role"]["tasks_from"] == "seed_generated"
+    include = next(task for task in seed["block"] if "ansible.builtin.include_role" in task)
+    assert include["ansible.builtin.include_role"]["tasks_from"] == "seed_generated"
     fields = seed["vars"]["openbao_secrets_seed_fields"]
     assert fields[0]["name"] == "api_key"
     assert fields[0]["value"] == "{{ dify_docker_agent_app_api_key_create.json.token }}"
