@@ -28,11 +28,19 @@
     label: "{{ item.name }}"
   when: llama_cpp_service_enabled
 
+# A load request returns before the model finishes loading, so a read taken at
+# once can still show "loading". Wait until no model is mid-load; a model that
+# was evicted reads "unloaded" and still fails the assert below.
 - name: Read back which models are actually resident
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llama_cpp_api_port }}/models?reload=1"
     return_content: true
   register: llama_cpp_models_status
+  until: >-
+    (llama_cpp_models_status.json.data | default([])
+     | selectattr('status.value', 'equalto', 'loading') | list | length) == 0
+  retries: "{{ llama_cpp_residency_retries }}"
+  delay: "{{ llama_cpp_residency_delay_seconds }}"
   when: llama_cpp_service_enabled
 
 - name: Assert every declared model fits and stayed resident together
