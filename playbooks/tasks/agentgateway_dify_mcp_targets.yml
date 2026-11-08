@@ -1,0 +1,125 @@
+---
+- name: Read Dify MCP targets from OpenBao
+  delegate_to: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  run_once: true
+  no_log: true
+  block:
+    - name: List Dify MCP app leaves from OpenBao
+      ansible.builtin.uri:
+        url: >-
+          {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) | regex_replace('/+$', '')
+          }}/v1/{{ _agentgateway_dify_mcp_metadata_path }}/?list=true
+        method: GET
+        headers:
+          X-Vault-Token: "{{ openbao_secrets_converge_writer_token }}"
+        status_code: [200, 404]
+        return_content: true
+        validate_certs: true
+      register: _agentgateway_dify_mcp_list_result
+      failed_when: false
+      changed_when: false
+
+    - name: Classify the Dify MCP metadata list response
+      ansible.builtin.set_fact:
+        _agentgateway_dify_mcp_list_status: "{{ _agentgateway_dify_mcp_list_result.status | default('unknown') }}"
+        _agentgateway_dify_mcp_app_names: >-
+          {{ _agentgateway_dify_mcp_list_result.json.data['keys'] | default([])
+             if _agentgateway_dify_mcp_list_result.status | default(0) | int == 200 else [] }}
+      delegate_facts: true
+
+    - name: Fail when Dify MCP metadata cannot be listed
+      ansible.builtin.fail:
+        msg: >-
+          OpenBao metadata path {{ _agentgateway_dify_mcp_metadata_path }}
+          returned HTTP {{ hostvars['localhost']._agentgateway_dify_mcp_list_status }}.
+      when: (hostvars['localhost']._agentgateway_dify_mcp_list_status | string) not in ['200', '404']
+      no_log: false
+
+    - name: Validate Dify MCP app names from OpenBao
+      ansible.builtin.assert:
+        that:
+          - item is string
+          - item is match('^[a-z0-9][a-z0-9_-]*$')
+        fail_msg: "OpenBao Dify MCP app name '{{ item }}' is not path-safe."
+      loop: "{{ hostvars['localhost']._agentgateway_dify_mcp_app_names }}"
+      loop_control:
+        label: "{{ item }}"
+      no_log: false
+
+    - name: Read each Dify MCP app leaf from OpenBao
+      ansible.builtin.uri:
+        url: >-
+          {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) | regex_replace('/+$', '')
+          }}/v1/{{ _agentgateway_dify_mcp_data_path }}/{{ item }}
+        method: GET
+        headers:
+          X-Vault-Token: "{{ openbao_secrets_converge_writer_token }}"
+        status_code: [200, 404]
+        return_content: true
+        validate_certs: true
+      register: _agentgateway_dify_mcp_leaf_reads
+      failed_when: false
+      changed_when: false
+      loop: "{{ hostvars['localhost']._agentgateway_dify_mcp_app_names }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Collect Dify MCP leaf read errors without URLs
+      ansible.builtin.set_fact:
+        _agentgateway_dify_mcp_read_errors: >-
+          {%- set errors = [] -%}
+          {%- for result in _agentgateway_dify_mcp_leaf_reads.results | default([]) -%}
+            {%- if result.status | default(0) | int != 200 -%}
+              {%- set _ = errors.append({'app': result.item, 'status': result.status | default('unknown')}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ errors }}
+      delegate_facts: true
+
+    - name: Fail when a Dify MCP app leaf cannot be read
+      ansible.builtin.fail:
+        msg: >-
+          OpenBao data path {{ _agentgateway_dify_mcp_data_path }}/{{ item.app }}
+          returned HTTP {{ item.status }}.
+      loop: "{{ hostvars['localhost']._agentgateway_dify_mcp_read_errors }}"
+      loop_control:
+        label: "{{ item.app }}"
+      no_log: false
+
+    - name: Build Dify MCP targets from the OpenBao leaves
+      ansible.builtin.set_fact:
+        agentgateway_docker_dify_mcp_targets: >-
+          {%- set targets = [] -%}
+          {%- for result in _agentgateway_dify_mcp_leaf_reads.results | default([]) -%}
+            {%- set response = result.json | default({}) -%}
+            {%- set envelope = response.get('data', {}) if response is mapping else {} -%}
+            {%- set secret = envelope.get('data', {}) if envelope is mapping else {} -%}
+            {%- set _ = targets.append({'name': result.item,
+                                        'url': secret.get('url', '') if secret is mapping else ''}) -%}
+          {%- endfor -%}
+          {{ targets }}
+      delegate_facts: true
+
+    - name: Collect Dify MCP apps with missing or invalid URLs
+      ansible.builtin.set_fact:
+        _agentgateway_dify_mcp_invalid_apps: >-
+          {%- set invalid = [] -%}
+          {%- for target in hostvars['localhost'].agentgateway_docker_dify_mcp_targets | default([]) -%}
+            {%- if target.url is not string or target.url is not match('^https?://[^/]+/.+') -%}
+              {%- set _ = invalid.append(target.name) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ invalid }}
+      delegate_facts: true
+
+    - name: Fail when a Dify MCP app URL is missing or invalid
+      ansible.builtin.fail:
+        msg: >-
+          Dify MCP leaf URL is missing or invalid for app(s):
+          {{ hostvars['localhost']._agentgateway_dify_mcp_invalid_apps | join(', ') }}.
+      when: hostvars['localhost']._agentgateway_dify_mcp_invalid_apps | length > 0
+      no_log: false
