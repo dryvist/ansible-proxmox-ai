@@ -19,9 +19,11 @@
       github_actions_oss_llm_router_key: sk-fixture-gha-oss
       github_actions_ci_fix_llm_router_key: sk-fixture-ci-fix
       github_actions_pr_review_llm_router_key: sk-fixture-pr-review
+      openhands_llm_router_key: sk-fixture-openhands
     llm_router_chatgpt_auth_file_present: true
     bao_local_llm_secrets: {}
     llm_router_oss_ci_key_enabled: true
+    llm_router_openhands_key_enabled: true
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: pve.example.test
@@ -95,7 +97,7 @@
       vars:
         _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
 
-    - name: Event-specific local keys keep their medium capability and trace metadata
+    - name: Event-specific local keys keep their declared capabilities and trace metadata
       ansible.builtin.assert:
         quiet: true
         that:
@@ -103,16 +105,26 @@
           - >-
             _pr_review.models == ([llm_router_primary_model, llm_router_review_aliases.private]
                                   + llm_router_review_local_chain) | unique | list
+          - _openhands.models == ([llm_router_primary_model, llm_router_large_model] | unique | list)
           - llm_router_ci_luna_groups | intersect(_pr_review.models) | length == 0
           - _ci_fix.allowed_classes == ['local']
           - _pr_review.allowed_classes == ['local']
+          - _openhands.allowed_classes == ['local']
           - _ci_fix.tags == ['&zdr', '!free', '!retains', '&local', '&tier-1']
           - _pr_review.tags == ['&zdr', '!free', '!retains', '&local', '&tier-1']
+          - _openhands.tags == ['&zdr', '!free', '!retains', '&local', '&tier-1']
+          - _ci_fix.priority_tier == 1
+          - _openhands.priority_tier == 1
+          - _openhands.team_id == 'tier-1'
+          - _openhands.router_settings.enable_tag_filtering | bool
           - _ci_fix.metadata.trace_defaults.agent_flow == 'ci-failure-fixer'
           - _ci_fix.metadata.trace_defaults.agent_trigger == 'workflow_run'
           - _pr_review.metadata.trace_defaults.agent_flow == 'pr-review-responder'
           - _pr_review.metadata.trace_defaults.agent_trigger == 'review-event'
-        fail_msg: "ci-fix={{ _ci_fix }} pr-review={{ _pr_review }}"
+          - _openhands.metadata.trace_defaults.agent_flow == 'openhands-ticket-to-pr'
+          - _openhands.metadata.trace_defaults.agent_trigger == 'vikunja-label'
+        fail_msg: "ci-fix={{ _ci_fix }} pr-review={{ _pr_review }} openhands={{ _openhands }}"
       vars:
         _ci_fix: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-ci-fix') | first }}"
         _pr_review: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-pr-review') | first }}"
+        _openhands: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'openhands') | first }}"

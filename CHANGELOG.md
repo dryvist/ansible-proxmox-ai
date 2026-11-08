@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.32.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.31.1...v2.32.0) (2026-11-08)
+
+
+### Features
+
+* **agentgateway_docker:** route each published Dify agent by name ([#2197](https://github.com/dryvist/ansible-proxmox-ai/issues/2197)) ([db860fe](https://github.com/dryvist/ansible-proxmox-ai/commit/db860fe0f64cedb7596456f2032f7da36e7fbd4c))
+* **dify_docker:** publish catalog apps as MCP servers ([#2190](https://github.com/dryvist/ansible-proxmox-ai/issues/2190)) ([5f97764](https://github.com/dryvist/ansible-proxmox-ai/commit/5f97764e422e1c699f17b3ed5309d16c9b21a313))
+
+
+### Bug Fixes
+
+* **llm_router:** give the 4080 lane's admission probe a 30 s timeout ([#2195](https://github.com/dryvist/ansible-proxmox-ai/issues/2195)) ([360d22b](https://github.com/dryvist/ansible-proxmox-ai/commit/360d22b3fc539b38a5ce95993cac97c13ff24ef7))
+* **llm_router:** let priority teams allow the MCP groups their keys declare ([#2192](https://github.com/dryvist/ansible-proxmox-ai/issues/2192)) ([04ed729](https://github.com/dryvist/ansible-proxmox-ai/commit/04ed7293d807f8fd9cc5c1fea069eb12b98c2270))
+
 ## [2.31.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.31.0...v2.31.1) (2026-11-08)
 
 

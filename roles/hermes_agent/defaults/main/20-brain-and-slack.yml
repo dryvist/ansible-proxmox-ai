@@ -171,13 +171,12 @@ hermes_agent_slack_bot_token: >-
      if hermes_agent_id != 'donna' else '' }}
 hermes_agent_slack_app_token: >-
   {{ lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_APP_TOKEN') | default('', true) }}
-# Identity-prefixed var wins when set (Donna's own allowed-user/home-channel);
-# otherwise falls back to the original unprefixed var, so hermes_agent_id: hermes
-# keeps reading the same Doppler vars it always has (no SLACK_HERMES_* exist).
+# Every identity allows the shared SLACK_MEMBER_ID list, plus the members in its
+# own SLACK_<PREFIX>_MEMBER_ID. Both are comma-separated; the result is deduplicated.
 hermes_agent_slack_allowed_users: >-
-  {{ lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_MEMBER_ID')
-     | default(lookup('env', 'SLACK_MEMBER_ID') if hermes_agent_id == 'hermes' else '', true)
-     | default('', true) }}
+  {{ ((lookup('env', 'SLACK_MEMBER_ID') | default('', true)) ~ ','
+      ~ (lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_MEMBER_ID') | default('', true))).split(',')
+     | map('trim') | select | unique | join(',') }}
 hermes_agent_slack_home_channel: >-
   {{ (ai_agents | default({})).get(hermes_agent_id, {}).get('slack', {}).get('home_channel')
      | default(lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_HOME_CHANNEL')

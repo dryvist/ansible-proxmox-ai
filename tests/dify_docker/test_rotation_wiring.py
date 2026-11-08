@@ -1,8 +1,10 @@
 """The tier2 rotation wiring: derived agents, patch scope, check mode, secrets."""
 
+import ast
 from pathlib import Path
 
 import yaml
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
 WIRING = ROOT / "roles/dify_docker/tasks/wire_rotation_webhooks.yml"
@@ -287,3 +289,20 @@ def test_webhook_and_webhook_id_tasks_are_no_log():
     # The webhook-id assertion evaluates the id into its failure output, so it
     # is censored like every other task that can hold the value.
     assert _task(_yaml(AGENT), "Assert the agent webhook id was returned").get("no_log") is True
+
+
+def test_trigger_filters_match_the_dify_1_18_trigger_types():
+    # GET /console/api/apps/<id>/triggers in Dify 1.18 reports node types, not bare kinds.
+    response = {"data": [
+        {"id": "t1", "node_id": "n1", "trigger_type": "trigger-webhook", "status": "enabled"},
+        {"id": "t2", "node_id": "n2", "trigger_type": "trigger-schedule", "status": "enabled"},
+    ]}
+    env = Environment()
+    cases = (
+        (AGENT, "Resolve the agent webhook trigger", "dify_docker_rotation_agent_triggers", "t1"),
+        (WIRING, "Resolve the rotation schedule trigger", "dify_docker_rotation_triggers", "t2"),
+    )
+    for path, name, registered, expected in cases:
+        expression = next(iter(_task(_yaml(path), name)["ansible.builtin.set_fact"].values()))
+        rendered = env.from_string(expression).render({registered: {"json": response}})
+        assert ast.literal_eval(rendered.strip()) == [r for r in response["data"] if r["id"] == expected], name
