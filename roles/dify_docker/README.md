@@ -38,6 +38,16 @@ The role requires an existing container when a `dump.rdb` snapshot is present.
 Fresh installations use the Compose AOF setting directly. See the
 [Redis persistence procedure](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/).
 
+Before an upgrade stops the workers, the role waits for the pre-1.19.0
+`ops_trace` Celery queue to reach zero on the Redis broker (logical DB 1) while
+the old workers still consume it: 1.19.0 workers read `ops_trace_v2` only and
+would strand anything left behind. The wait polls every
+`dify_docker_ops_trace_drain_poll_seconds`, fails the converge at
+`dify_docker_ops_trace_drain_timeout_seconds`, and never purges the queue; the
+upgrade-safety restart then resumes the old consumers so a later converge can
+finish the drain. See the
+[Dify 1.19.0 release notes](https://github.com/langgenius/dify/releases/tag/1.19.0).
+
 Runtime names verified against Dify 1.18.0 on 2026-11-06:
 [workflow and schedule settings](https://github.com/langgenius/dify/blob/1.18.0/api/configs/feature/__init__.py),
 [trigger URL](https://github.com/langgenius/dify/blob/1.18.0/docker/.env.example), and

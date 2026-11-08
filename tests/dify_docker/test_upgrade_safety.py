@@ -1,4 +1,4 @@
-"""Dify upgrades compare every image and protect the complete backup sequence."""
+"""Dify upgrades compare every image, protect the complete backup sequence, and drain the legacy trace queue."""
 
 from pathlib import Path
 import re
@@ -16,6 +16,7 @@ COMPOSE_TEMPLATE = ROOT / "roles/dify_docker/templates/docker-compose.yml.j2"
 CONFIG_TASKS = TASK_DIR / "config_and_deploy.yml"
 COMPOSE_TEST = ROOT / "tests/dify_docker/test_compose_ssr_api_url.yml"
 UPGRADE_BLOCK_NAME = "Back up and stop Dify before changing its release"
+OPS_TRACE_DRAIN = "Wait for the legacy ops_trace Celery queue to drain"
 
 
 def _expand_task_files(tasks: list[dict], source: Path) -> list[dict]:
@@ -167,6 +168,65 @@ def test_upgrade_rescue_restarts_the_stack_before_failing():
     assert rescue_tasks.index(restart) < rescue_tasks.index(fail)
     assert "community.docker.docker_compose_v2" in restart
     assert "ansible.builtin.fail" in fail
+
+
+def _upgrade_block_tasks() -> list[dict]:
+    return _task(_upgrade_tasks(), UPGRADE_BLOCK_NAME)["block"]
+
+
+def test_legacy_ops_trace_queue_drains_while_old_workers_still_consume_it():
+    from jinja2 import Environment
+
+    tasks = _upgrade_block_tasks()
+    ingress_stop = _task(tasks, "Stop Dify ingress and scheduler before draining Celery workers")
+    container_read = _task(tasks, "Read the deployed Redis container ID before the queue drain")
+    drain = _task(tasks, OPS_TRACE_DRAIN)
+    worker_stop = _task(tasks, "Drain Dify workers gracefully before deploying the target version")
+    # Producers are stopped by the ingress stop, the old workers are the only
+    # consumers left, and the worker may not stop before the queue is empty.
+    assert (
+        tasks.index(ingress_stop)
+        < tasks.index(container_read)
+        < tasks.index(drain)
+        < tasks.index(worker_stop)
+    )
+    when = drain["when"]
+    assert "'worker' in" in str(when) and "'redis' in" in str(when) and "length > 0" in str(when)
+    assert container_read["ansible.builtin.command"]["argv"] == [
+        "docker", "compose", "ps", "--all", "--quiet", "redis",
+    ]
+
+    # The probe only reads the depth on the Celery broker DB; nothing may
+    # purge, pop, or delete the legacy queue.
+    argv = drain["ansible.builtin.command"]["argv"]
+    assert argv[:4] == ["docker", "exec", "--env", "REDISCLI_AUTH"]
+    assert argv[-4:] == ["-n", "1", "LLEN", "{{ dify_docker_ops_trace_legacy_queue }}"]
+    assert not any(
+        verb in argv
+        for verb in ("PURGE", "DEL", "UNLINK", "LPOP", "RPOP", "SREM", "FLUSHDB", "FLUSHALL", "celery")
+    )
+    assert drain["changed_when"] is False
+    assert drain["no_log"] is True
+    assert drain["environment"] == {"REDISCLI_AUTH": "{{ dify_docker_redis_password }}"}
+    assert "dify_docker_redis_password" not in str(drain["ansible.builtin.command"])
+    assert "failed_when" not in drain and "ignore_errors" not in drain
+
+    until = Environment().compile_expression(drain["until"])
+    assert until(dify_docker_ops_trace_queue_depth={"stdout": "0\n"}) is True
+    assert until(dify_docker_ops_trace_queue_depth={"stdout": "5"}) is False
+
+    defaults = load_defaults()
+    timeout = defaults["dify_docker_ops_trace_drain_timeout_seconds"]
+    poll = defaults["dify_docker_ops_trace_drain_poll_seconds"]
+    assert isinstance(timeout, int) and 0 < timeout <= 3600
+    assert isinstance(poll, int) and 0 < poll <= timeout
+    env = Environment()
+    retries = int(env.from_string(drain["retries"]).render(**defaults))
+    delay = int(env.from_string(drain["delay"]).render(**defaults))
+    assert retries == timeout // poll
+    assert retries * delay <= timeout
+    assert defaults["dify_docker_ops_trace_legacy_queue"] == "ops_trace"
+    assert defaults["dify_docker_ops_trace_queue"] == "ops_trace_v2"
 
 
 def test_compose_version_preflight_precedes_render_and_deploy():

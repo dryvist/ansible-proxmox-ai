@@ -21,6 +21,52 @@
   changed_when: true
   when: item in (dify_docker_deployed_services.stdout_lines | default([]))
 
+# Producers (worker_beat, api) are stopped above, so the queue can only shrink.
+# The pre-1.19.0 workers still run and are the only consumers of the legacy
+# queue; after this upgrade they read OPS_TRACE_QUEUE exclusively. A timeout
+# fails the task, and the upgrade_safety rescue restarts the old stack — the
+# play never lets workers start on the new queue with legacy work stranded.
+# The queue is never purged: undelivered messages must reach the old handler.
+- name: Read the deployed Redis container ID before the queue drain
+  ansible.builtin.command:
+    argv: [docker, compose, ps, --all, --quiet, redis]
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  register: dify_docker_drain_redis_container
+  changed_when: false
+  when: "'redis' in (dify_docker_deployed_services.stdout_lines | default([]))"
+
+- name: Wait for the legacy ops_trace Celery queue to drain
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - --env
+      - REDISCLI_AUTH
+      - "{{ dify_docker_drain_redis_container.stdout | trim }}"
+      - redis-cli
+      - --raw
+      - -n
+      - "1"
+      - LLEN
+      - "{{ dify_docker_ops_trace_legacy_queue }}"
+  args:
+    chdir: "{{ dify_docker_data_dir }}"
+  environment:
+    REDISCLI_AUTH: "{{ dify_docker_redis_password }}"
+  register: dify_docker_ops_trace_queue_depth
+  changed_when: false
+  retries: "{{ (dify_docker_ops_trace_drain_timeout_seconds | int)
+               // (dify_docker_ops_trace_drain_poll_seconds | int) }}"
+  delay: "{{ dify_docker_ops_trace_drain_poll_seconds | int }}"
+  until: dify_docker_ops_trace_queue_depth.stdout | trim == '0'
+  no_log: true
+  when:
+    - "'worker' in (dify_docker_deployed_services.stdout_lines | default([]))"
+    - "'redis' in (dify_docker_deployed_services.stdout_lines | default([]))"
+    # No broker container means no broker data: nothing is left to strand.
+    - dify_docker_drain_redis_container.stdout | trim | length > 0
+
 - name: Drain Dify workers gracefully before deploying the target version
   ansible.builtin.command:
     argv:
