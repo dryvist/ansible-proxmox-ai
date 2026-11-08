@@ -37,9 +37,8 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         hermes_agent_homeassistant_home_channel="",
         hermes_agent_homeassistant_entity_denylist="",
     )
-    always_blank = ("CONTEXT7_API_KEY",)
+    always_blank = ("CONTEXT7_API_KEY", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN")
     section_keys = {
-        "slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
         "splunk": ("SPLUNK_MCP_URL", "SPLUNK_MCP_TOKEN"),
         "zammad": ("ZAMMAD_URL", "ZAMMAD_API_TOKEN"),
         "github": ("GH_PAT_WRITE_PROJECT_ISSUES",),
