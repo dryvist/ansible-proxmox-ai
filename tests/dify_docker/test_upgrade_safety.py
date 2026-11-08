@@ -186,3 +186,20 @@ def test_password_pepper_is_preserved_from_existing_compose_and_rendered_only_wh
     test_play = COMPOSE_TEST.read_text(encoding="utf-8")
     assert "environment.get('PASSWORD_PEPPER') is none" in test_play
     assert "fixture-password-pepper" in test_play
+
+
+def test_weaviate_backup_id_uses_only_characters_weaviate_accepts():
+    # Weaviate refuses a backup id outside [a-z0-9_-] with HTTP 422; the timestamp carries an uppercase "T".
+    from jinja2 import Environment
+
+    prepare = yaml.safe_load((TASK_DIR / "upgrade_backup_prepare.yml").read_text(encoding="utf-8"))
+    expression = next(
+        task["ansible.builtin.set_fact"]["dify_docker_weaviate_backup_id"]
+        for task in prepare
+        if "dify_docker_weaviate_backup_id" in task.get("ansible.builtin.set_fact", {})
+    )
+    backup_id = Environment().from_string(expression).render(
+        dify_docker_upgrade_backup_timestamp="20261108T001500"
+    ).strip()
+    assert backup_id == "pre-upgrade-20261108t001500"
+    assert re.fullmatch(r"[a-z0-9_-]+", backup_id)
