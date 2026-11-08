@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.33.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.33.0...v2.33.1) (2026-11-08)
+
+
+### Bug Fixes
+
+* **llm_router:** disable background health checks on OpenCode Go deployments ([#2216](https://github.com/dryvist/ansible-proxmox-ai/issues/2216)) ([115c406](https://github.com/dryvist/ansible-proxmox-ai/commit/115c4064d1e589d9b76a6c7a3a6c08403d81962e))
+* **llm_router:** stop background probes on OpenCode Go deployments ([115c406](https://github.com/dryvist/ansible-proxmox-ai/commit/115c4064d1e589d9b76a6c7a3a6c08403d81962e))
+
 ## [2.33.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.32.0...v2.33.0) (2026-11-08)
 
 
