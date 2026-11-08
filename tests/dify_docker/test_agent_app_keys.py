@@ -141,7 +141,7 @@ def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
 
     assert initialize["ansible.builtin.set_fact"]["dify_docker_agent_apps_all"] == []
     assert initialize["no_log"] is True
-    assert include_pages["loop"] == "{{ range(1, 51) | list }}"
+    assert include_pages["loop"] == "{{ range(1, (dify_docker_app_lookup_max_pages | int) + 1) | list }}"
     assert include_pages["loop_control"] == {"loop_var": "dify_docker_app_page"}
     assert include_pages["no_log"] is True
     assert app_list["ansible.builtin.uri"]["url"] == (
@@ -184,7 +184,7 @@ def test_app_list_pagination_is_a_bounded_loop_with_cap_and_shape_guards():
         == "Dify app list response has no boolean has_more field."
     )
 
-    assert page_loop["loop"] == "{{ range(1, 51) | list }}"
+    assert page_loop["loop"] == "{{ range(1, (dify_docker_app_lookup_max_pages | int) + 1) | list }}"
     assert page_loop["loop_control"] == {"loop_var": "dify_docker_app_page"}
     assert more_record["ansible.builtin.set_fact"]["dify_docker_agent_apps_more"] == (
         "{{ dify_docker_agent_apps_page.json.has_more }}"
@@ -198,7 +198,7 @@ def test_app_list_pagination_is_a_bounded_loop_with_cap_and_shape_guards():
     assert cap_fail["when"] == [
         "dify_docker_agent_apps_more | bool",
         "dify_docker_agent_apps_page.json.has_more is true",
-        "dify_docker_app_page | int >= 50",
+        "dify_docker_app_page | int >= dify_docker_app_lookup_max_pages | int",
     ]
     assert missing_has_more_fail["when"] == [
         "dify_docker_agent_apps_more | bool",
@@ -338,3 +338,21 @@ def test_openbao_reads_take_validate_certs_from_a_role_default():
     assert len(reads) == 2
     assert {read["validate_certs"] for read in reads} == {"{{ dify_docker_bao_validate_certs }}"}
     assert load_defaults()["dify_docker_bao_validate_certs"] is True
+
+
+def test_app_lookup_expands_a_small_page_count():
+    # Each expanded page costs five tasks even when skipped, so a large cap slows every app import.
+    assert load_defaults()["dify_docker_app_lookup_max_pages"] == 2
+
+
+def test_every_app_lookup_caller_uses_the_page_cap():
+    loop = "{{ range(1, (dify_docker_app_lookup_max_pages | int) + 1) | list }}"
+    callers = [
+        task
+        for path in sorted((ROOT / "roles/dify_docker/tasks").glob("*.yml"))
+        for task in _yaml(path) or []
+        if isinstance(task, dict) and task.get("ansible.builtin.include_tasks") == "list_agent_app_page.yml"
+    ]
+
+    assert len(callers) == 3
+    assert all(task["loop"] == loop for task in callers)

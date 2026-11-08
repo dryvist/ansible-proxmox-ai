@@ -118,6 +118,11 @@ failures fail the converge. Check mode previews public and private app creates
 or overwrites, reads the pinned manifest and DSLs into memory, and writes no
 files to the target or Dify APIs.
 
+`dify_docker_agent_dsl_select` (default `[]`) names the catalog entries one run
+imports. Empty imports every manifest entry. A name missing from the manifest
+fails the run before any catalog DSL fetch. A sliced run wires the rotation only
+when its selection names the rotation app, so the last slice imports it.
+
 `dify_docker_private_agent_dsls` (default `[]`) adds private sources alongside
 the public catalog entries, each as `name`, `url` and `sha256`. The list and
 `dify_docker_private_agent_dsl_token` (default empty) are supplied at converge time
@@ -125,6 +130,39 @@ from a private source and are never committed. Each private entry is fetched wit
 `Authorization: Bearer <token>`, verified against its `sha256`, and reconciled
 like the public DSLs when its source is valid.
 Private entries are skipped while the token is empty.
+
+## Tier2 rotation webhook wiring
+
+After the agent DSL import, the role wires the `tier2-rotation` catalog
+workflow (`dify_docker_rotation_app_name`) to the agent apps it fans out to.
+The agent set is read from the rotation draft itself: every
+`<AGENT>_TRIGGER_URL` variable that has a matching `<AGENT>_WEBHOOK_ID` names
+one agent, and its Dify app name is the key lowercased with underscores folded
+to hyphens (`AI_NEWS` maps to the app `ai-news`). No agent list is kept in the
+role. Each agent app is resolved by exact name through the paged app lookup,
+its webhook trigger is located through the console triggers API, and its bare
+webhook id is read from the webhook endpoint for the trigger's node. A missing
+agent app or webhook trigger fails the converge with the agent's app name.
+
+Each `<AGENT>_TRIGGER_URL` is set to `dify_docker_trigger_url` without a
+trailing slash and each `<AGENT>_WEBHOOK_ID` to the bare webhook id through one
+`environment_variable_patch` on the rotation draft, which is then published;
+the rotation's own schedule trigger and each agent's webhook trigger are
+enabled when Dify reports them disabled. The step is idempotent: when every
+value already matches, no draft sync or publish is sent. Dify masks secret
+values in the draft response, so a masked non-empty `<AGENT>_WEBHOOK_ID`
+cannot prove the stored id is current. Each agent instead keeps a non-secret
+companion string variable `<AGENT>_WEBHOOK_DIGEST` holding the SHA-256 digest
+of the webhook id: the id and the digest are rewritten together whenever the
+stored digest is missing or differs and left alone when it matches, with the
+digest appended through the same patch under a deterministic id when the
+variable is new and the existing variable's id reused when it is already
+present by name. To force a reseed after a webhook is recreated, delete the
+`<AGENT>_WEBHOOK_DIGEST` variable once in the console. The live operator
+inputs `ROTATION_SPEED`, `ROTATION_OFFSET` and `ROTATION_PAUSED` are never
+written. Check mode reads the same endpoints, reports the variable names that
+would change, and writes nothing. All Dify 1.18.0 console endpoints above are
+verified against that release's source.
 
 ## What in this stack needs protecting
 
