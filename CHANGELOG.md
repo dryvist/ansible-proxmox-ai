@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.30.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.29.1...v2.30.0) (2026-11-08)
+
+
+### Features
+
+* **dify_docker:** update and publish changed catalog apps ([#2139](https://github.com/dryvist/ansible-proxmox-ai/issues/2139)) ([3b265a7](https://github.com/dryvist/ansible-proxmox-ai/commit/3b265a76ca07b812aabd3b2eac516abfc05d06c9))
+* **hermes:** read Pepper and Donna credentials from vendor paths ([#2135](https://github.com/dryvist/ansible-proxmox-ai/issues/2135)) ([010d13b](https://github.com/dryvist/ansible-proxmox-ai/commit/010d13bac40cce8dfac6bf6b5cd2418df1bef45e))
+
+
+### Bug Fixes
+
+* **dify_docker:** create model credentials when Dify reports a null id ([#2147](https://github.com/dryvist/ansible-proxmox-ai/issues/2147)) ([7a8d7b6](https://github.com/dryvist/ansible-proxmox-ai/commit/7a8d7b666d03f07072ac6704f1d13b64e2d68bc6))
+* **dify_docker:** give the plugin daemon storage to its uid ([#2145](https://github.com/dryvist/ansible-proxmox-ai/issues/2145)) ([0740ba4](https://github.com/dryvist/ansible-proxmox-ai/commit/0740ba464f56448af5ca308b5e2600d5e6c2f802))
+* **dify_docker:** keep private DSL requests off ambient proxies ([#2141](https://github.com/dryvist/ansible-proxmox-ai/issues/2141)) ([0738a0c](https://github.com/dryvist/ansible-proxmox-ai/commit/0738a0c2377cba247a159003379c27298af45ffb))
+* **dify_docker:** lowercase the Weaviate pre-upgrade backup id ([#2138](https://github.com/dryvist/ansible-proxmox-ai/issues/2138)) ([6d6bec2](https://github.com/dryvist/ansible-proxmox-ai/commit/6d6bec2f7fc534d780f82787b6eadbbb479c1eaa))
+* **dify_docker:** offer router capability roles as Dify models ([#2134](https://github.com/dryvist/ansible-proxmox-ai/issues/2134)) ([a01bf45](https://github.com/dryvist/ansible-proxmox-ai/commit/a01bf45499342217bb87f86b77b9630b67f6d7ce))
+* **dify_docker:** take a cold Weaviate backup when it holds no collections ([#2144](https://github.com/dryvist/ansible-proxmox-ai/issues/2144)) ([07052d0](https://github.com/dryvist/ansible-proxmox-ai/commit/07052d013f083fd8d27bc19c4e74a183c43c7440))
+* **llm_router:** replace a stale serving-host pin ([#2142](https://github.com/dryvist/ansible-proxmox-ai/issues/2142)) ([f47ddd3](https://github.com/dryvist/ansible-proxmox-ai/commit/f47ddd30b3992a3aa1d4af7dcebbb0cd4928f9a1))
+
 ## [2.29.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.29.0...v2.29.1) (2026-11-07)
 
 
