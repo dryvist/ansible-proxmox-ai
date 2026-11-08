@@ -5,9 +5,10 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment
 
+from _defaults import load_defaults
+
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 IMPORT_TASKS = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
 API_KEY_TASKS = ROOT / "roles/dify_docker/tasks/ensure_agent_app_api_key.yml"
 APP_PAGE_TASKS = ROOT / "roles/dify_docker/tasks/list_agent_app_page.yml"
@@ -38,7 +39,15 @@ def test_api_key_provisioning_is_wired_after_each_agent_dsl():
     )
 
     assert provision["ansible.builtin.include_tasks"] == "ensure_agent_app_api_key.yml"
-    assert provision["when"] == ["dify_docker_dsl_name | length > 0", "not ansible_check_mode"]
+    assert provision["when"][:3] == [
+        "dify_docker_dsl_name | length > 0",
+        "dify_docker_dsl_content | length > 0",
+        "not ansible_check_mode",
+    ]
+    assert "not (dify_docker_dsl_import_needed | bool)" in provision["when"][3]
+    assert "completed" in provision["when"][3]
+    assert "completed-with-warnings" in provision["when"][3]
+    assert not any("dify_docker_dsl_app_matches | length == 0" in condition for condition in provision["when"])
     assert provision["no_log"] is True
 
 
@@ -309,7 +318,7 @@ def test_exact_name_uniqueness_uses_apps_aggregated_from_all_pages():
 
 
 def test_api_key_leaf_is_derived_from_the_dify_openbao_base_path():
-    defaults = _yaml(DEFAULTS)
+    defaults = load_defaults()
 
     assert defaults["dify_docker_agent_app_api_key_path"] == (
         "{{ dify_docker_openbao_path }}/agent-apps/{{ dify_docker_dsl_name }}"
