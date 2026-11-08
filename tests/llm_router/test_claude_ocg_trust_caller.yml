@@ -1,0 +1,45 @@
+---
+- name: Verify claude-ocg takes the trust tier of the Claude Code harness
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_unforced_trust_fixture: true
+  tasks:
+    - name: Seed the claude-ocg key fixture
+      ansible.builtin.set_fact:
+        bao_apps_secrets: >-
+          {{ (bao_apps_secrets | default({})) | combine({'claude_ocg_router_key': 'fixture-claude-ocg'}) }}
+      no_log: true
+
+    - name: Prepare role-backed rendered contract
+      ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+
+    - name: Trust the Claude Code harness only, as the released caller registry does
+      ansible.builtin.set_fact:
+        ai_callers:
+          claude-code:
+            trust_tier: "{{ _llm_router_trusted_caller_tiers | first }}"
+
+    - name: Refresh the projection after changing caller tiers
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: Require claude-ocg to keep its whole subscription scope
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_trust_scoped_key_caller_ids['claude-ocg'] == 'claude-code'
+          - _llm_router_claude_ocg_model_scope | length > 0
+          - _claude_ocg.models | sort == _llm_router_claude_ocg_model_scope | sort
+        fail_msg: "claude-ocg rendered {{ _claude_ocg.models }} instead of its subscription scope."
+      vars:
+        _claude_ocg: >-
+          {{ _llm_router_virtual_keys_without_values
+             | selectattr('alias', 'equalto', 'claude-ocg') | first }}
+
+    - name: Require the production privacy grant gate to pass
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-privacy-grants.yml"
