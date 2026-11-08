@@ -26,29 +26,36 @@
       Could not resolve {{ llm_router_llm_large_fqdn }} to an IPv4 address for
       the LiteLLM /etc/hosts pin.
 
-- name: Remove serving-host mappings with no other names from /etc/hosts for LiteLLM
+# Comment lines are never touched, and the line that already maps the current
+# IP stays, so a converge with a correct pin changes nothing.
+- name: Remove stale lines that map only the serving-host name for LiteLLM
   ansible.builtin.replace:
     path: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
     owner: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     group: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     mode: "{{ '0644' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     regexp: >-
-      (?m)^[ \t]*\S+[ \t]+{{ _llm_router_pin_name_rx }}[ \t]*(?:#[^\n]*)?(?:\n|$)
+      (?m)^[ \t]*(?!#)(?!{{ llm_router_llm_large_ip | regex_escape }}[ \t])\S+[ \t]+{{ _llm_router_pin_name_rx
+      }}[ \t]*(?:#[^\n]*)?(?:\n|$)
     replace: ""
   vars:
     _llm_router_pin_name_rx: >-
       (?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[ \t#]|$)
   notify: Restart litellm
 
-- name: Remove the serving-host name while preserving other /etc/hosts aliases
+- name: Remove the serving-host name from lines that also map other names
   ansible.builtin.replace:
     path: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
     owner: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     group: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     mode: "{{ '0644' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
-    regexp: >-
-      (?m)^([^\n#]*?)[ \t]+{{ _llm_router_pin_name_rx }}(?=[ \t]|$)([^\n#]*)
-    replace: '\1\2'
+    regexp: "{{ item }}"
+    replace: '\1'
+  loop:
+    # The name after another name on the line.
+    - '(?m)^([ \t]*(?!#)\S+[ \t]+[^\s#]+(?:[ \t]+[^\s#]+)*?)[ \t]+{{ _llm_router_pin_name_rx }}'
+    # The name first, before another name.
+    - '(?m)^([ \t]*(?!#)\S+)[ \t]+{{ _llm_router_pin_name_rx }}(?=[ \t]+[^\s#])'
   vars:
     _llm_router_pin_name_rx: >-
       (?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[ \t#]|$)
