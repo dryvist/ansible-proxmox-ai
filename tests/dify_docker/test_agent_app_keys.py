@@ -354,5 +354,5 @@ def test_every_app_lookup_caller_uses_the_page_cap():
         if isinstance(task, dict) and task.get("ansible.builtin.include_tasks") == "list_agent_app_page.yml"
     ]
 
-    assert len(callers) == 3
+    assert len(callers) == 4
     assert all(task["loop"] == loop for task in callers)
