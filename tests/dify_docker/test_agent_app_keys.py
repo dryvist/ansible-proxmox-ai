@@ -343,3 +343,16 @@ def test_openbao_reads_take_validate_certs_from_a_role_default():
 def test_app_lookup_expands_a_small_page_count():
     # Each expanded page costs five tasks even when skipped, so a large cap slows every app import.
     assert load_defaults()["dify_docker_app_lookup_max_pages"] == 2
+
+
+def test_every_app_lookup_caller_uses_the_page_cap():
+    loop = "{{ range(1, (dify_docker_app_lookup_max_pages | int) + 1) | list }}"
+    callers = [
+        task
+        for path in sorted((ROOT / "roles/dify_docker/tasks").glob("*.yml"))
+        for task in _yaml(path) or []
+        if isinstance(task, dict) and task.get("ansible.builtin.include_tasks") == "list_agent_app_page.yml"
+    ]
+
+    assert len(callers) == 3
+    assert all(task["loop"] == loop for task in callers)
