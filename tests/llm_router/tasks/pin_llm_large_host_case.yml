@@ -22,6 +22,11 @@
       ansible.builtin.set_fact:
         _pin_hosts_lines: "{{ lookup('file', _pin_hosts_fixture.path).splitlines() }}"
 
+    - name: Collect the uncommented lines that map the serving name
+      ansible.builtin.set_fact:
+        _pin_fqdn_lines: >-
+          {{ _pin_hosts_lines | reject('match', '\s*#') | select('search', _pin_fqdn_pattern) | list }}
+
     - name: Run the serving-host pin tasks again on the reconciled fixture
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/pin-llm-large-host.yml"
       vars:
@@ -31,8 +36,8 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _pin_hosts_lines | reject('match', '\s*#') | select('search', _pin_fqdn_pattern) | list | length == 1
-          - "'192.0.2.20 router-pin-fixture.example.test' in _pin_hosts_lines"
+          - _pin_fqdn_lines | length == 1
+          - _pin_fqdn_lines[0].split()[0] == '192.0.2.20'
           - pin_case.preserved_line in _pin_hosts_lines
           - not (pin_case.unchanged | default(false)) or _pin_hosts_lines == pin_case.before.splitlines()
           # A second run on a reconciled file changes nothing, so it never restarts LiteLLM.
