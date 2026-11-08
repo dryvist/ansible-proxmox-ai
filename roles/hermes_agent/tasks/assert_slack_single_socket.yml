@@ -1,0 +1,83 @@
+---
+# One Slack socket per identity — the converge-time guard for the rule the
+# profile env renders (hermes-env-profile.j2). The runtime parks a second
+# gateway holding the same Slack token as the first ("both configure slack
+# with the same credential — refusing to start the duplicate",
+# upstream gateway/run_adapters.py _refuse_duplicate_claim) and serves a
+# named profile through the primary gateway's profile routes precisely
+# because "the satellite home never holds the platform credentials itself"
+# (upstream cron/scheduler_preflight.py _primary_profile_routes_for_current_
+# home). A profile env that rendered a token, or two gateways on this guest
+# rendering the same app token, would therefore disable Slack at RUN time;
+# these checks render the env templates exactly as the play deploys them and
+# fail here instead. Read-only; safe in check mode. Every task that touches
+# rendered env content is no_log: the rendered text carries the real tokens.
+- name: Collect each named profile env's rendered Slack token lines
+  vars:
+    hermes_agent_profile: "{{ item }}"
+    hermes_agent_slack_socket_profile_env: "{{ lookup('ansible.builtin.template', 'hermes-env-profile.j2') }}"
+  ansible.builtin.set_fact:
+    hermes_agent_slack_socket_profile_tokens: >-
+      {{ (hermes_agent_slack_socket_profile_tokens | default([])) + [{
+           'name': item.name,
+           'bot': (hermes_agent_slack_socket_profile_env.split('\n')
+                   | select('match', '^SLACK_BOT_TOKEN=')
+                   | first | default('', true)).split('=', 1)[-1],
+           'app': (hermes_agent_slack_socket_profile_env.split('\n')
+                   | select('match', '^SLACK_APP_TOKEN=')
+                   | first | default('', true)).split('=', 1)[-1]
+         }] }}
+  loop: "{{ hermes_agent_profiles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  no_log: true
+
+- name: Assert every named profile env renders no Slack token
+  vars:
+    hermes_agent_slack_socket_profile_offenders: >-
+      {{ ((((hermes_agent_slack_socket_profile_tokens | default([]))
+            | rejectattr('bot', 'equalto', '')
+            | map(attribute='name') | list)
+           + ((hermes_agent_slack_socket_profile_tokens | default([]))
+            | rejectattr('app', 'equalto', '')
+            | map(attribute='name') | list))
+          | unique | list) }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_slack_socket_profile_offenders | length == 0
+    fail_msg: >-
+      Named profiles would receive a Slack token: {{
+      hermes_agent_slack_socket_profile_offenders | join(', ') }}. One Slack
+      socket per identity: the main gateway holds the token pair and profile
+      cron output is delivered through gateway.profile_routes, so every
+      profile env must render SLACK_BOT_TOKEN= and SLACK_APP_TOKEN= blank
+      (templates/hermes-env-profile.j2).
+
+- name: Assert the guest's two gateways never share a Slack app token
+  vars:
+    # Task vars, not facts: the rendered env text (which carries the real
+    # tokens) lives only for this task's evaluation and is never stored.
+    hermes_agent_slack_socket_main_env: "{{ lookup('ansible.builtin.template', 'hermes-env.j2') }}"
+    hermes_agent_slack_socket_public_env: "{{ lookup('ansible.builtin.template', 'hermes-env-public-gateway.j2') }}"
+    hermes_agent_slack_socket_main_app: >-
+      {{ (hermes_agent_slack_socket_main_env.split('\n')
+          | select('match', '^SLACK_APP_TOKEN=')
+          | first | default('', true)).split('=', 1)[-1] }}
+    hermes_agent_slack_socket_public_app: >-
+      {{ (hermes_agent_slack_socket_public_env.split('\n')
+          | select('match', '^SLACK_APP_TOKEN=')
+          | first | default('', true)).split('=', 1)[-1] }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_slack_socket_main_app | length == 0
+        or hermes_agent_slack_socket_public_app | length == 0
+        or hermes_agent_slack_socket_main_app != hermes_agent_slack_socket_public_app
+    fail_msg: >-
+      The main gateway and the github-public gateway would receive the same
+      non-empty SLACK_APP_TOKEN. One Slack socket per identity: give the
+      second gateway either no Slack token or its own app-level token, never
+      this identity's.
+  no_log: true

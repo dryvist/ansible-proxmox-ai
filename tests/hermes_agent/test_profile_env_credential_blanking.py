@@ -38,8 +38,21 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         hermes_agent_homeassistant_entity_denylist="",
     )
     always_blank = ("CONTEXT7_API_KEY",)
+    # One Slack socket per identity: the main gateway holds the token pair and
+    # profile cron output is delivered through gateway.profile_routes, so every
+    # Slack line renders blank for every profile, grant or not (upstream parks a
+    # gateway holding another profile's Slack token and a satellite never holds
+    # platform credentials — gateway/run_adapters.py _refuse_duplicate_claim,
+    # cron/scheduler_preflight.py _primary_profile_routes_for_current_home).
+    # The remaining sections keep the grant contract.
+    always_blank_slack = (
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
+        "SLACK_ALLOWED_USERS",
+        "SLACK_HOME_CHANNEL",
+        "SLACK_HOME_CHANNEL_NAME",
+    )
     section_keys = {
-        "slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
         "splunk": ("SPLUNK_MCP_URL", "SPLUNK_MCP_TOKEN"),
         "zammad": ("ZAMMAD_URL", "ZAMMAD_API_TOKEN"),
         "github": ("GH_PAT_WRITE_PROJECT_ISSUES",),
@@ -67,6 +80,8 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         )
         for key in always_blank:
             assert values[key] == "", f"{profile['name']}: {key} must always be blank"
+        for key in always_blank_slack:
+            assert values[key] == "", f"{profile['name']}: {key} must always be blank (one Slack socket per identity)"
         for section, keys in section_keys.items():
             granted = section in profile["env"]
             for key in keys:
