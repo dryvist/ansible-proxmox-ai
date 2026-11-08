@@ -9,6 +9,8 @@ from _defaults import load_defaults
 
 BUILD = "Build agent DSL URLs from every catalog manifest entry"
 CHECK = "Fail when a selected catalog entry name is not in the manifest"
+MAIN = IMPORT_LOOP.with_name("main.yml")
+WIRE = "Wire the tier2 rotation to each agent's webhook trigger"
 
 
 def _render(expression, **variables):
@@ -53,3 +55,19 @@ def test_a_selected_name_missing_from_the_manifest_fails_before_any_fetch():
     assert names.index(BUILD) < names.index(CHECK) < names.index(
         "Fetch and verify all catalog agent DSLs before importing any"
     )
+
+
+def test_a_sliced_import_wires_the_rotation_only_with_the_rotation_app():
+    condition = _task(_yaml(MAIN), WIRE)["when"][-1]
+    rotation = load_defaults()["dify_docker_rotation_app_name"]
+
+    def wires(select):
+        return _render(
+            condition,
+            dify_docker_agent_dsl_select=select,
+            dify_docker_rotation_app_name=rotation,
+        ) == "True"
+
+    assert wires([])
+    assert wires(["zammad-triage", rotation])
+    assert not wires(["code-simplifier", "commit-grouper"])
