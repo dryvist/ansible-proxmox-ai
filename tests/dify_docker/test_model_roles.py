@@ -136,6 +136,22 @@ def test_empty_role_preflight_is_first_dify_action_and_has_clear_failure():
     )
 
 
+def test_preflight_fails_when_the_default_model_is_not_a_listed_chat_role():
+    preflight_tasks = yaml.safe_load(PREFLIGHT_TASKS.read_text(encoding="utf-8"))
+    guard = next(
+        task for task in preflight_tasks
+        if task.get("name") == "Assert the default LLM model is one of Dify's router chat roles"
+    )
+    condition = "{{ " + guard["ansible.builtin.assert"]["that"][0] + " }}"
+    listed = [{"name": "medium"}, {"name": "small"}]
+
+    assert preflight_tasks.index(guard) == 1
+    assert _render(condition, {"dify_docker_default_llm_model": "medium", "dify_docker_llm_models": listed}) is True
+    assert _render(
+        condition, {"dify_docker_default_llm_model": "medium", "dify_docker_llm_models": [{"name": "small"}]}
+    ) is False
+
+
 def test_unlisted_provider_model_is_removed_and_listed_model_is_kept():
     provider_tasks = yaml.safe_load(MODEL_PROVIDER_TASKS.read_text(encoding="utf-8"))
     preview_task = next(
