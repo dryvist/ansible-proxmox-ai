@@ -145,14 +145,19 @@ trailing slash and each `<AGENT>_WEBHOOK_ID` to the bare webhook id through one
 the rotation's own schedule trigger and each agent's webhook trigger are
 enabled when Dify reports them disabled. The step is idempotent: when every
 value already matches, no draft sync or publish is sent. Dify masks secret
-values in the draft response, so a seeded `<AGENT>_WEBHOOK_ID` is recognized
-by its non-empty masked value, and its expected SHA-256 digest is kept in a
-fact instead of comparing or printing the secret. To force a reseed after a
-webhook is recreated, delete the `<AGENT>_WEBHOOK_ID` variable once in the
-console. The live operator inputs `ROTATION_SPEED`, `ROTATION_OFFSET` and
-`ROTATION_PAUSED` are never written. Check mode reads the same endpoints,
-reports the variable names that would change, and writes nothing. All Dify
-1.18.0 console endpoints above are verified against that release's source.
+values in the draft response, so a masked non-empty `<AGENT>_WEBHOOK_ID`
+cannot prove the stored id is current. Each agent instead keeps a non-secret
+companion string variable `<AGENT>_WEBHOOK_DIGEST` holding the SHA-256 digest
+of the webhook id: the id and the digest are rewritten together whenever the
+stored digest is missing or differs and left alone when it matches, with the
+digest appended through the same patch under a deterministic id when the
+variable is new and the existing variable's id reused when it is already
+present by name. To force a reseed after a webhook is recreated, delete the
+`<AGENT>_WEBHOOK_DIGEST` variable once in the console. The live operator
+inputs `ROTATION_SPEED`, `ROTATION_OFFSET` and `ROTATION_PAUSED` are never
+written. Check mode reads the same endpoints, reports the variable names that
+would change, and writes nothing. All Dify 1.18.0 console endpoints above are
+verified against that release's source.
 
 ## What in this stack needs protecting
 

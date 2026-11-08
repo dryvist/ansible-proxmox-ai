@@ -3,8 +3,13 @@
 # (dify_docker_rotation_agent_key, set by the including loop). Resolves the
 # agent's Dify app id with the role's paged app lookup, locates its webhook
 # trigger, reads the bare webhook id, enables the trigger when Dify reports it
-# disabled, and adds the paired draft variables to the single rotation patch
-# when their values are missing or differ.
+# disabled, and adds the agent's draft variables to the single rotation patch
+# when they differ: the trigger URL is compared as an exact string against
+# the slash-stripped dify_docker_trigger_url, and the webhook id plus its
+# companion <AGENT>_WEBHOOK_DIGEST string variable (sha256 of the id, the
+# currency proof because Dify masks secret values) are rewritten together
+# whenever the stored digest is missing or differs, and left alone when it
+# matches.
 - name: Map the rotation agent key to its Dify app name
   ansible.builtin.set_fact:
     dify_docker_rotation_agent_app_name: >-
@@ -110,13 +115,12 @@
     fail_msg: >-
       The webhook endpoint for the agent app
       "{{ dify_docker_rotation_agent_app_name }}" returned no webhook id.
+  no_log: true
 
-- name: Record the expected agent webhook id digest without exposing the value
+- name: Record the expected agent webhook id digest
   ansible.builtin.set_fact:
-    dify_docker_rotation_webhook_id_hashes: >-
-      {{ dify_docker_rotation_webhook_id_hashes | default({}) | combine(
-           {dify_docker_rotation_agent_key:
-            dify_docker_rotation_agent_webhook.json.webhook_id | hash('sha256')}) }}
+    dify_docker_rotation_agent_webhook_id_digest: >-
+      {{ dify_docker_rotation_agent_webhook.json.webhook_id | hash('sha256') }}
   no_log: true
 
 - name: Enable the agent webhook trigger when it is disabled
@@ -147,27 +151,58 @@
     dify_docker_rotation_agent_webhook_id_var: >-
       {{ dify_docker_rotation_draft.json.environment_variables | default([])
          | selectattr('name', 'equalto', dify_docker_rotation_agent_key ~ '_WEBHOOK_ID') | list }}
+    dify_docker_rotation_agent_webhook_digest_var: >-
+      {{ dify_docker_rotation_draft.json.environment_variables | default([])
+         | selectattr('name', 'equalto', dify_docker_rotation_agent_key ~ '_WEBHOOK_DIGEST') | list }}
   no_log: true
 
 - name: Detect whether the agent draft variables need the wiring
   ansible.builtin.set_fact:
-    dify_docker_rotation_agent_needs_wiring: >-
-      {{ (dify_docker_rotation_agent_trigger_url_var[0].value | default('', true)
-          | regex_replace('/+$', '')) != (dify_docker_trigger_url | regex_replace('/+$', ''))
-         or (dify_docker_rotation_agent_webhook_id_var[0].value | default('', true)) | length == 0 }}
+    dify_docker_rotation_agent_trigger_url_matches: >-
+      {{ dify_docker_rotation_agent_trigger_url_var[0].value | default('', true)
+         == (dify_docker_trigger_url | regex_replace('/+$', '')) }}
+    dify_docker_rotation_agent_webhook_digest_matches: >-
+      {{ dify_docker_rotation_agent_webhook_digest_var[0].value | default('', true)
+         == dify_docker_rotation_agent_webhook_id_digest }}
   no_log: true
 
-- name: Add the agent draft variables to the rotation patch when the wiring changed
+- name: Add the agent trigger URL to the rotation patch when it differs
   ansible.builtin.set_fact:
     dify_docker_rotation_patch_variables: >-
       {{ dify_docker_rotation_patch_variables | default([])
          + [dify_docker_rotation_agent_trigger_url_var[0]
-            | combine({'value': dify_docker_trigger_url | regex_replace('/+$', '')}),
-            dify_docker_rotation_agent_webhook_id_var[0]
+            | combine({'value': dify_docker_trigger_url | regex_replace('/+$', '')})] }}
+    dify_docker_rotation_change_names: >-
+      {{ dify_docker_rotation_change_names | default([])
+         + [dify_docker_rotation_agent_key ~ '_TRIGGER_URL'] }}
+  when: not dify_docker_rotation_agent_trigger_url_matches | bool
+  no_log: true
+
+- name: Add the agent webhook id to the rotation patch when the stored digest differs
+  ansible.builtin.set_fact:
+    dify_docker_rotation_patch_variables: >-
+      {{ dify_docker_rotation_patch_variables | default([])
+         + [dify_docker_rotation_agent_webhook_id_var[0]
             | combine({'value': dify_docker_rotation_agent_webhook.json.webhook_id})] }}
     dify_docker_rotation_change_names: >-
       {{ dify_docker_rotation_change_names | default([])
-         + [dify_docker_rotation_agent_key ~ '_TRIGGER_URL',
-            dify_docker_rotation_agent_key ~ '_WEBHOOK_ID'] }}
-  when: dify_docker_rotation_agent_needs_wiring | bool
+         + [dify_docker_rotation_agent_key ~ '_WEBHOOK_ID'] }}
+  when: not dify_docker_rotation_agent_webhook_digest_matches | bool
+  no_log: true
+
+- name: Add the agent webhook digest to the rotation patch when the stored digest differs
+  ansible.builtin.set_fact:
+    dify_docker_rotation_patch_variables: >-
+      {{ dify_docker_rotation_patch_variables | default([])
+         + [dify_docker_rotation_agent_webhook_digest_var[0] | default(
+             {'id': (dify_docker_rotation_app_name ~ ':' ~ dify_docker_rotation_agent_key
+                     ~ '_WEBHOOK_DIGEST') | to_uuid,
+              'name': dify_docker_rotation_agent_key ~ '_WEBHOOK_DIGEST',
+              'value_type': 'string'},
+             true)
+            | combine({'value': dify_docker_rotation_agent_webhook_id_digest})] }}
+    dify_docker_rotation_change_names: >-
+      {{ dify_docker_rotation_change_names | default([])
+         + [dify_docker_rotation_agent_key ~ '_WEBHOOK_DIGEST'] }}
+  when: not dify_docker_rotation_agent_webhook_digest_matches | bool
   no_log: true
