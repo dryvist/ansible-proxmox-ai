@@ -1,13 +1,11 @@
 """Catalog agent apps are published as MCP servers; their URLs live in OpenBao."""
 
-from pathlib import Path
-
 import yaml
 from jinja2 import Environment
 
+from _agent_dsl_shared import ROOT, _yaml
 from _defaults import load_defaults
 
-ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "roles/dify_docker/tasks/main.yml"
 PUBLISH = ROOT / "roles/dify_docker/tasks/publish_agent_mcp.yml"
 RESOLVE = ROOT / "roles/dify_docker/tasks/resolve_agent_app_id.yml"
@@ -27,10 +25,6 @@ NAME_ONLY_TASKS = (
 )
 
 
-def _yaml(path):
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
 def _task(tasks, name):
     return next(task for task in tasks if task.get("name") == name)
 
@@ -40,7 +34,9 @@ def _render(expression, **context):
     source = expression.strip()
     if not source.startswith("{{"):
         source = "{{ " + source + " }}"
-    return Environment().from_string(source).render(**context)
+    env = Environment()
+    env.filters["bool"] = bool
+    return env.from_string(source).render(**context)
 
 
 def _flat(text):
@@ -189,11 +185,31 @@ def test_every_task_touching_the_server_code_or_url_is_no_log():
 
     # The shared helpers no_log every task that receives, holds or writes the
     # server code or URL; the resolve asserts stay loggable on app names only.
-    shared_read = [task for task in _yaml(READ) if "community.hashi_vault.vault_kv2_get" in task]
-    assert all(task["no_log"] is True for task in shared_read)
+    assert all(task["no_log"] is True for task in _yaml(READ))
     seed_block = next(task for task in _yaml(SEED) if "block" in task)
     assert seed_block["block"][0]["no_log"] is True
     assert all(task["no_log"] is True for task in seed_block["rescue"])
+
+
+def test_check_mode_plans_activation_only_for_an_existing_server():
+    # Dify 1.18 creates a new MCP server active, so a live run never activates one it just created.
+    planned = _task(_yaml(PUBLISH), "Detect whether the agent app MCP server needs changes")[
+        "ansible.builtin.set_fact"
+    ]["dify_docker_agent_mcp_planned_changes"]
+
+    def plan(read_json, url_matches=False):
+        return yaml.safe_load(
+            _render(
+                planned,
+                dify_docker_agent_mcp_server_read={"json": read_json},
+                dify_docker_agent_mcp_server=read_json,
+                dify_docker_agent_mcp_url_matches=url_matches,
+            )
+        )
+
+    assert plan({}) == ["create its MCP server", "store its MCP server URL"]
+    assert plan({"id": "s1", "status": "inactive"}, url_matches=True) == ["activate its MCP server"]
+    assert plan({"id": "s1", "status": "active"}, url_matches=True) == []
 
 
 def test_check_mode_reports_by_app_name_only():
