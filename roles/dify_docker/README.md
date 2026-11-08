@@ -118,6 +118,10 @@ failures fail the converge. Check mode previews public and private app creates
 or overwrites, reads the pinned manifest and DSLs into memory, and writes no
 files to the target or Dify APIs.
 
+`dify_docker_agent_dsl_select` (default `[]`) names the catalog entries one run
+imports. Empty imports every manifest entry. A name missing from the manifest
+fails the run before any fetch.
+
 `dify_docker_private_agent_dsls` (default `[]`) adds private sources alongside
 the public catalog entries, each as `name`, `url` and `sha256`. The list and
 `dify_docker_private_agent_dsl_token` (default empty) are supplied at converge time
