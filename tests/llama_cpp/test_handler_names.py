@@ -20,8 +20,16 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TASK_FILES = sorted((REPO_ROOT / "roles" / "llama_cpp" / "tasks").glob("*.yml"))
-HANDLER_FILES = sorted((REPO_ROOT / "roles").glob("*/handlers/*.yml"))
+YAML_SUFFIXES = (".yml", ".yaml")
+
+
+def _yaml_files(root: Path, pattern: str) -> list[Path]:
+    """Every YAML file matching pattern under root, both suffixes."""
+    return sorted(p for p in root.glob(pattern) if p.suffix in YAML_SUFFIXES)
+
+
+TASK_FILES = _yaml_files(REPO_ROOT / "roles" / "llama_cpp" / "tasks", "**/*")
+HANDLER_FILES = _yaml_files(REPO_ROOT / "roles", "*/handlers/**/*")
 
 # block/rescue/always wrap task lists at any depth, and notifies sit inside
 # them too (install-release.yml notifies from inside a nested block).
@@ -48,7 +56,7 @@ def _as_list(value):
 
 
 def _notifies() -> set[str]:
-    """Every notify value in any tasks/*.yml of the llama_cpp role."""
+    """Every notify value in any YAML file under the llama_cpp role's tasks/."""
     values: set[str] = set()
     for path in TASK_FILES:
         tasks = yaml.safe_load(path.read_text()) or []
@@ -60,12 +68,11 @@ def _notifies() -> set[str]:
 def _handler_identifiers() -> set[str]:
     """Top-level handler names plus listen groups in llama_cpp's handlers."""
     identifiers: set[str] = set()
-    for path in sorted((REPO_ROOT / "roles" / "llama_cpp" / "handlers").glob("*.yml")):
+    for path in _yaml_files(REPO_ROOT / "roles" / "llama_cpp" / "handlers", "**/*"):
         for handler in yaml.safe_load(path.read_text()) or []:
             if not isinstance(handler, dict):
                 continue
-            if isinstance(handler.get("name"), str):
-                identifiers.add(handler["name"])
+            identifiers.update(_as_list(handler.get("name")))
             identifiers.update(_as_list(handler.get("listen")))
     return identifiers
 
@@ -73,7 +80,7 @@ def _handler_identifiers() -> set[str]:
 def test_every_notify_resolves_to_a_notifiable_handler() -> None:
     """Each notify value must name a top-level handler name or listen group."""
     notifies = _notifies()
-    assert notifies, "no notify values found in tasks/*.yml; the walk broke"
+    assert notifies, "no notify values found under tasks/; the walk broke"
     unaddressed = sorted(notifies - _handler_identifiers())
     assert not unaddressed, (
         f"notify values {unaddressed} name no top-level handler name or listen group"
