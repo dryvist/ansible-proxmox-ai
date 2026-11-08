@@ -53,5 +53,12 @@ def test_wait_bounds_default_to_two_minutes() -> None:
 
 def test_assert_still_reads_only_loaded_models() -> None:
     check = _task("Assert every declared model fits and stayed resident together")
-    resident = check["vars"]["_llama_cpp_resident_model_ids"]
-    assert "'loaded'" in resident
+    expression = check["vars"]["_llama_cpp_resident_model_ids"].strip()
+    assert expression.startswith("{{") and expression.endswith("}}")
+    resident = jinja2.Environment().compile_expression(expression[2:-2].strip())
+    data = [
+        {"id": "a", "status": {"value": "loaded"}},
+        {"id": "b", "status": {"value": "loading"}},
+        {"id": "c", "status": {"value": "unloaded"}},
+    ]
+    assert list(resident(llama_cpp_models_status={"json": {"data": data}})) == ["a"]
