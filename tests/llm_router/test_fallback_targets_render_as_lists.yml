@@ -1,0 +1,122 @@
+---
+# Pins the parsed types of LiteLLM router fallback targets.
+#
+# A string fallback target makes LiteLLM v1.108.1+ refuse to start. This test
+# checks the parsed render so a quoted or folded YAML scalar cannot pass.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_fallback_targets_render_as_lists.yml -i localhost, -c local
+- name: Verify every router fallback target renders as a list of strings
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: medium
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+    _invalid_fallback_entry_groups: >-
+      {% set invalid = namespace(groups=[]) %}
+      {% for entry in _fallback_entries %}
+      {% if entry is not mapping %}
+      {% set invalid.groups = invalid.groups + ['<non-mapping>'] %}
+      {% else %}
+      {% set groups = entry.keys() | list %}
+      {% if groups | length != 1 %}
+      {% if groups | length == 0 %}
+      {% set invalid.groups = invalid.groups + ['<empty-mapping>'] %}
+      {% else %}
+      {% set invalid.groups = invalid.groups + groups %}
+      {% endif %}
+      {% else %}
+      {% set group = groups | first %}
+      {% set target = entry[group] %}
+      {% if target is not sequence
+            or target is string
+            or target is mapping
+            or target | reject('string') | list | length > 0 %}
+      {% set invalid.groups = invalid.groups + [group] %}
+      {% endif %}
+      {% endif %}
+      {% endif %}
+      {% endfor %}
+      {{ invalid.groups | to_json }}
+  tasks:
+    - name: Produce the fully credentialed render
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: Check the validator reports exactly the malformed fixture groups [fallback-target-lists-fixture]
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _invalid_fallback_entry_groups | from_json == ['c', 'e']
+        fail_msg: >-
+          fallback target fixture expected offending groups ['c', 'e'] but found
+          {{ _invalid_fallback_entry_groups | from_json }}; fixture value is
+          {{ _fallback_entries | type_debug }}: {{ _fallback_entries }}
+      vars:
+        _fallback_entries: [{'a': ['b']}, {'c': 'd'}, {'e': {'f': 'g'}}]
+
+    - name: Fallback groups exist and render as non-empty lists [fallback-target-lists-shape]
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.router_settings[item] is defined
+          - _config.router_settings[item] is sequence
+          - _config.router_settings[item] is not string
+          - _config.router_settings[item] is not mapping
+          - _config.router_settings[item] | length > 0
+        fail_msg: >-
+          router_settings.{{ item }} must be a non-empty list but rendered as
+          {{ (_config.router_settings[item] | default('<missing>')) | type_debug }}:
+          {{ _config.router_settings[item] | default('<missing>') }}
+      loop: [fallbacks, context_window_fallbacks, default_fallbacks]
+
+    - name: Fallback entries have one group and list-of-string targets [fallback-target-lists-entries]
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _invalid_fallback_entry_groups | from_json == []
+        fail_msg: >-
+          router_settings.{{ item }} has invalid fallback target groups
+          {{ _invalid_fallback_entry_groups | from_json }}; value is
+          {{ _config.router_settings[item] | type_debug }}:
+          {{ _config.router_settings[item] }}
+      loop: [fallbacks, context_window_fallbacks]
+      vars:
+        _fallback_entries: "{{ _config.router_settings[item] }}"
+
+    - name: Default fallback targets are strings [fallback-target-lists-default]
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.router_settings.default_fallbacks | reject('string') | list | length == 0
+        fail_msg: >-
+          router_settings.default_fallbacks must contain only strings but rendered as
+          {{ _config.router_settings.default_fallbacks | type_debug }}:
+          {{ _config.router_settings.default_fallbacks }}
