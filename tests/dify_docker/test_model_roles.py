@@ -214,3 +214,22 @@ def test_model_without_a_saved_credential_is_created_not_updated():
         assert not applies(update_task, missing)
     assert not applies(create_task, "fixture-credential-id")
     assert applies(update_task, "fixture-credential-id")
+
+
+def test_credential_already_in_the_model_list_is_not_a_failure():
+    # Dify answers 400 "Can't add same credential" when the model list already holds the credential.
+    provider_tasks = yaml.safe_load(MODEL_PROVIDER_TASKS.read_text(encoding="utf-8"))
+    add_task = next(
+        task for task in provider_tasks if task.get("name") == "Add Dify LLM credentials to the model list"
+    )
+
+    def failed(status, payload):
+        variables = {"dify_docker_model_list_add": {"status": status, "json": payload}}
+        return _render("{{ " + add_task["failed_when"] + " }}", variables)
+
+    assert not failed(200, {"result": "success"})
+    assert not failed(400, {"code": "invalid_param", "message": "Can't add same credential"})
+    assert failed(400, {"code": "invalid_param", "message": "Credential not found"})
+    assert failed(500, {"message": "Can't add same credential"})
+    assert failed(500, None)
+    assert failed(-1, None)
