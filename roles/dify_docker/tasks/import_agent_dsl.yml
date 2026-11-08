@@ -1,112 +1,18 @@
 ---
-# One agent DSL: the public catalog file is pre-fetched and verified before the
-# import loop; private entries are fetched here with their supplied checksum.
-# Existing app names are skipped. Tasks that carry the DSL or console cookie
-# are no_log.
+# Each stage is kept in a focused task file for bounded review and validation.
+- name: Fetch and verify the agent DSL source
+  ansible.builtin.include_tasks: import_agent_dsl_fetch.yml
 
-# Facts persist across loop iterations, so clear the previous DSL before fetching.
-- name: Clear the previous agent DSL before fetching
-  ansible.builtin.set_fact:
-    dify_docker_dsl_content: ""
-    dify_docker_dsl_name: ""
-  no_log: true
+- name: Reconcile the catalog app and publish its workflow
+  ansible.builtin.include_tasks: import_agent_dsl_reconcile.yml
 
-# Private entries (marked by import_agent_dsls.yml) send the bearer token.
-- name: Fetch the pinned agent DSL and verify its sha256
-  ansible.builtin.get_url:
-    url: "{{ dify_docker_agent_dsl.url }}"
-    headers: >-
-      {{ {'Authorization': 'Bearer ' ~ dify_docker_private_agent_dsl_token}
-         if (dify_docker_agent_dsl.private | default(false) | bool) else {} }}
-    dest: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
-    checksum: "sha256:{{ dify_docker_agent_dsl.sha256 }}"
-    mode: "0600"
-    force: true
-  register: dify_docker_dsl_fetch
-  ignore_errors: true
-  check_mode: false
-  when: dify_docker_agent_dsl.private | default(false) | bool
-  no_log: true
-
-- name: Read the verified agent DSL
-  ansible.builtin.slurp:
-    src: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
-  register: dify_docker_dsl_raw
-  when: >-
-    not (dify_docker_agent_dsl.private | default(false) | bool)
-    or dify_docker_dsl_fetch is not failed
-  no_log: true
-
-- name: Keep the DSL content and its app name
-  ansible.builtin.set_fact:
-    dify_docker_dsl_content: "{{ dify_docker_dsl_raw.content | b64decode }}"
-    dify_docker_dsl_name: "{{ (dify_docker_dsl_raw.content | b64decode | from_yaml).app.name }}"
-  when: dify_docker_dsl_raw is defined and dify_docker_dsl_raw.content is defined
-  no_log: true
-
-- name: Remove the fetched agent DSL copy
-  ansible.builtin.file:
-    path: "/tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name }}.yml"
-    state: absent
-  changed_when: false
-  check_mode: false
-  no_log: true
-
-- name: Report a DSL that failed its pin or fetch
-  ansible.builtin.debug:
-    msg: "agent DSL {{ dify_docker_agent_dsl.name }}: fetch or sha256 check failed; not imported"
-  when: dify_docker_dsl_content | length == 0
-  changed_when: false
-  no_log: true
-
-- name: Import the agent DSL (skipped when its app name already exists)
-  ansible.builtin.uri:
-    url: "{{ dify_docker_console_api_base }}/apps/imports"
-    method: POST
-    headers:
-      Cookie: "{{ dify_docker_console_cookies }}"
-      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
-    body_format: json
-    body:
-      mode: yaml-content
-      yaml_content: "{{ dify_docker_dsl_content }}"
-    # 200 completed, 202 pending a DSL version confirm; 400 is a failed import.
-    status_code: [200, 202, 400]
-    return_content: true
-  register: dify_docker_dsl_import
-  changed_when: >-
-    (dify_docker_dsl_import.json | default({})).status | default('')
-    in ['completed', 'completed-with-warnings']
-  failed_when: false
-  when:
-    - dify_docker_dsl_content | length > 0
-    - dify_docker_dsl_name not in (dify_docker_dsl_apps_list.json.data | default([]) | map(attribute='name') | list)
-    - not ansible_check_mode
-  no_log: true
-
-- name: Confirm the agent DSL import (DSL version mismatch)
-  ansible.builtin.uri:
-    url: "{{ dify_docker_console_api_base }}/apps/imports/{{ dify_docker_dsl_import.json.id }}/confirm"
-    method: POST
-    headers:
-      Cookie: "{{ dify_docker_console_cookies }}"
-      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
-    status_code: [200, 400]
-    return_content: true
-  register: dify_docker_dsl_confirm
-  changed_when: >-
-    (dify_docker_dsl_confirm.json | default({})).status | default('')
-    in ['completed', 'completed-with-warnings']
-  failed_when: false
-  when:
-    - (dify_docker_dsl_import.json | default({})).status | default('') == 'pending'
-    - not ansible_check_mode
-  no_log: true
+- name: Record the published catalog app version
+  ansible.builtin.include_tasks: import_agent_dsl_record.yml
 
 - name: Agent DSL import result
   ansible.builtin.debug:
     msg: >-
-      agent DSL {{ dify_docker_agent_dsl.name }}:
+      agent DSL {{ dify_docker_agent_dsl.name | default(dify_docker_dsl_preview_name, true) }}:
       {{ (dify_docker_dsl_confirm.json | default(dify_docker_dsl_import.json | default({})))
          .status | default('skipped: app exists or no import call') }}
   changed_when: false
@@ -116,5 +22,10 @@
   ansible.builtin.include_tasks: ensure_agent_app_api_key.yml
   when:
     - dify_docker_dsl_name | length > 0
+    - dify_docker_dsl_content | length > 0
     - not ansible_check_mode
+    - >-
+      not (dify_docker_dsl_import_needed | bool)
+      or (dify_docker_dsl_confirm.json | default(dify_docker_dsl_import.json | default({})))
+         .status | default('') in ['completed', 'completed-with-warnings']
   no_log: true

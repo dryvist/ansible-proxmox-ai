@@ -1,0 +1,190 @@
+---
+- name: Report a DSL that failed its pin or fetch
+  ansible.builtin.debug:
+    msg: >-
+      agent DSL {{ dify_docker_agent_dsl.name | default(dify_docker_dsl_preview_name, true) }}:
+      fetch or sha256 check failed; not imported
+  when: dify_docker_dsl_content | length == 0
+  changed_when: false
+  no_log: true
+
+- name: Resolve the exact existing Dify app for this catalog entry
+  ansible.builtin.set_fact:
+    dify_docker_dsl_app_matches: >-
+      {{ dify_docker_dsl_apps_all | default([])
+         | selectattr('name', 'equalto', dify_docker_dsl_name) | list }}
+  when: dify_docker_dsl_content | length > 0
+  no_log: true
+
+- name: Reject duplicate Dify apps with the same catalog name
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_app_matches | length <= 1
+    fail_msg: "More than one Dify app matches a catalog entry name."
+  when: dify_docker_dsl_content | length > 0
+  no_log: true
+
+- name: Record the existing Dify app for this catalog entry
+  ansible.builtin.set_fact:
+    dify_docker_dsl_existing_app: "{{ dify_docker_dsl_app_matches | first | default({}) }}"
+  when: dify_docker_dsl_content | length > 0
+  no_log: true
+
+- name: Decide whether the catalog app needs an import
+  ansible.builtin.set_fact:
+    dify_docker_dsl_import_needed: >-
+      {{ dify_docker_dsl_app_matches | length == 0
+         or ('[catalog sha256:' ~ dify_docker_agent_dsl.sha256 ~ ']')
+            not in (dify_docker_dsl_existing_app.description | default('')) }}
+  when: dify_docker_dsl_content | length > 0
+  no_log: true
+
+- name: Prepare the catalog app description
+  ansible.builtin.set_fact:
+    dify_docker_dsl_catalog_description: >-
+      {{ dify_docker_dsl_document.app.description | default('') | truncate(318, true, '...', 0) | trim }}
+  when: dify_docker_dsl_content | length > 0
+  no_log: true
+
+- name: Prepare the Dify import payload
+  ansible.builtin.set_fact:
+    dify_docker_dsl_import_body: >-
+      {{ {
+           'mode': 'yaml-content',
+           'yaml_content': dify_docker_dsl_content,
+           'description': dify_docker_dsl_catalog_description
+         }
+         | combine(
+             {'app_id': dify_docker_dsl_existing_app.id}
+             if dify_docker_dsl_existing_app.id is defined else {}
+           ) }}
+  when: dify_docker_dsl_content | length > 0
+  no_log: true
+
+- name: Preview the catalog app create or update
+  ansible.builtin.debug:
+    msg: >-
+      Would {{ 'create' if dify_docker_dsl_app_matches | length == 0 else 'overwrite' }}
+      {{ 'private Dify app "' ~ dify_docker_dsl_preview_name ~ '"'
+         if dify_docker_agent_dsl.private | default(false) | bool
+         else 'Dify app "' ~ dify_docker_dsl_name ~ '"' }}.
+  changed_when: true
+  when:
+    - dify_docker_dsl_content | length > 0
+    - dify_docker_dsl_import_needed | bool
+    - ansible_check_mode
+
+- name: Report an unchanged catalog app
+  ansible.builtin.debug:
+    msg: "Catalog SHA-256 matches the Dify app description; no import was sent."
+  changed_when: false
+  when:
+    - dify_docker_dsl_content | length > 0
+    - not (dify_docker_dsl_import_needed | bool)
+  no_log: true
+
+- name: Require a workflow app mode before importing a changed catalog workflow
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_document.app.mode in ['workflow', 'advanced-chat']
+    fail_msg: "A changed catalog app must use a Dify workflow mode."
+  when:
+    - dify_docker_dsl_content | length > 0
+    - dify_docker_dsl_import_needed | bool
+    - not ansible_check_mode
+  no_log: true
+
+- name: Import the catalog DSL when its checksum is new
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps/imports"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body: "{{ dify_docker_dsl_import_body }}"
+    # 200 completed, 202 pending a DSL version confirm; 400 is a failed import.
+    status_code: [200, 202, 400]
+    return_content: true
+  register: dify_docker_dsl_import
+  changed_when: >-
+    (dify_docker_dsl_import.json | default({})).status | default('')
+    in ['completed', 'completed-with-warnings']
+  failed_when: >-
+    (dify_docker_dsl_import.json | default({})).status | default('')
+    not in ['pending', 'completed', 'completed-with-warnings']
+  when:
+    - dify_docker_dsl_content | length > 0
+    - dify_docker_dsl_import_needed | bool
+    - not ansible_check_mode
+  no_log: true
+
+- name: Confirm the agent DSL import (DSL version mismatch)
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps/imports/{{ dify_docker_dsl_import.json.id }}/confirm"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: [200, 400]
+    return_content: true
+  register: dify_docker_dsl_confirm
+  changed_when: >-
+    (dify_docker_dsl_confirm.json | default({})).status | default('')
+    in ['completed', 'completed-with-warnings']
+  failed_when: >-
+    (dify_docker_dsl_confirm.json | default({})).status | default('')
+    not in ['completed', 'completed-with-warnings']
+  when:
+    - (dify_docker_dsl_import.json | default({})).status | default('') == 'pending'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Resolve the Dify app id returned by the catalog import
+  ansible.builtin.set_fact:
+    dify_docker_dsl_imported_app_id: >-
+      {{ (dify_docker_dsl_confirm.json | default({})).app_id
+         | default((dify_docker_dsl_import.json | default({})).app_id, true)
+         | default(dify_docker_dsl_existing_app.id | default(''), true) }}
+  when:
+    - dify_docker_dsl_content | length > 0
+    - dify_docker_dsl_import_needed | bool
+    - not ansible_check_mode
+  no_log: true
+
+- name: Require the Dify app id before publishing the catalog workflow
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_imported_app_id | length > 0
+    fail_msg: "Dify did not return an app id for the catalog workflow import."
+  when:
+    - dify_docker_dsl_content | length > 0
+    - dify_docker_dsl_import_needed | bool
+    - not ansible_check_mode
+  no_log: true
+
+- name: Publish the changed catalog workflow for API callers
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_dsl_imported_app_id }}/workflows/publish
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body:
+      marked_name: Catalog
+      marked_comment: "catalog sha256:{{ dify_docker_agent_dsl.sha256 }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_dsl_publish
+  changed_when: (dify_docker_dsl_publish.json | default({})).result | default('') == 'success'
+  failed_when: (dify_docker_dsl_publish.json | default({})).result | default('') != 'success'
+  when:
+    - dify_docker_dsl_content | length > 0
+    - dify_docker_dsl_import_needed | bool
+    - not ansible_check_mode
+    - >-
+      (dify_docker_dsl_confirm.json | default(dify_docker_dsl_import.json | default({})))
+      .status | default('') in ['completed', 'completed-with-warnings']
+  no_log: true
