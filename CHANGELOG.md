@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.31.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.31.0...v2.31.1) (2026-11-08)
+
+
+### Bug Fixes
+
+* **hermes_agent:** read Donna's platform app token only as a fallback ([#2187](https://github.com/dryvist/ansible-proxmox-ai/issues/2187)) ([852a876](https://github.com/dryvist/ansible-proxmox-ai/commit/852a876e03db934e8689e8526b19264957268c2e))
+* **llm_router:** keep the primary capability while its route group renders ([#2184](https://github.com/dryvist/ansible-proxmox-ai/issues/2184)) ([b499f35](https://github.com/dryvist/ansible-proxmox-ai/commit/b499f3571f0bb433b16baac541aee3d2f8d4c6bd))
+
 ## [2.31.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.30.4...v2.31.0) (2026-11-08)
 
 
