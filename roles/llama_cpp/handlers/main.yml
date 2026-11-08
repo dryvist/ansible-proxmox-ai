@@ -3,18 +3,21 @@
 # a config or unit change must not bring it up. "Enable and start llama-server"
 # already sets stopped+disabled, but a notified handler runs AFTER that task, and
 # `state: restarted` starts a disabled unit (disabled only suppresses autostart).
-# Ungated, editing the template was enough to serve on a host set never to serve.
+# Handlers must be top-level tasks to be notifiable — a block's name is never
+# registered as a handler name — so the gate lives on each `listen:` member.
 # daemon_reload is not lost: that same task reloads unconditionally.
-- name: Restart llama-server
+- name: Read service state before restart
+  listen: Restart llama-server
   when: llama_cpp_service_enabled
-  block:
-    # A failure before unit deployment still flushes queued notifications.
-    - name: Read service state before restart
-      ansible.builtin.service_facts:
+  # A failure before unit deployment still flushes queued notifications.
+  ansible.builtin.service_facts:
 
-    - name: Restart llama-server when it is serving
-      ansible.builtin.systemd:
-        name: llama-server
-        state: restarted
-        daemon_reload: true
-      when: ansible_facts.services.get('llama-server.service', {}).get('state', '') == 'running'
+- name: Restart llama-server when it is serving
+  listen: Restart llama-server
+  when:
+    - llama_cpp_service_enabled
+    - ansible_facts.services.get('llama-server.service', {}).get('state', '') == 'running'
+  ansible.builtin.systemd:
+    name: llama-server
+    state: restarted
+    daemon_reload: true

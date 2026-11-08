@@ -43,16 +43,20 @@ MAX_PARAM_BILLIONS = 14
 
 def test_restart_handler_requires_the_enabled_active_service() -> None:
     """Queued changes must not restart a missing or non-serving unit."""
-    handler = next(h for h in HANDLERS if h["name"] == "Restart llama-server")
-    tasks = handler.get("block", [handler])
-    restarting = [t for t in tasks if t.get("ansible.builtin.systemd", {}).get("state") == "restarted"]
+    restarting = [
+        h for h in HANDLERS if h.get("ansible.builtin.systemd", {}).get("state") == "restarted"
+    ]
+    facts = [h for h in HANDLERS if "ansible.builtin.service_facts" in h]
 
     assert len(restarting) == 1
-    assert handler.get("when") == SERVE_TOGGLE
-    assert any("ansible.builtin.service_facts" in t for t in tasks[: tasks.index(restarting[0])])
-    assert restarting[0].get("when") == (
-        "ansible_facts.services.get('llama-server.service', {}).get('state', '') == 'running'"
-    )
+    assert len(facts) == 1
+    assert facts[0].get("listen") == "Restart llama-server"
+    assert facts[0].get("when") == SERVE_TOGGLE
+    assert HANDLERS.index(facts[0]) < HANDLERS.index(restarting[0])
+    assert restarting[0].get("when") == [
+        SERVE_TOGGLE,
+        "ansible_facts.services.get('llama-server.service', {}).get('state', '') == 'running'",
+    ]
 
 
 def test_the_service_state_task_follows_the_serve_toggle_both_ways() -> None:
