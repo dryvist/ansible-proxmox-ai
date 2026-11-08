@@ -44,9 +44,11 @@ def test_readback_waits_until_no_model_is_loading() -> None:
     assert _until_holds([])
 
 
-def test_wait_bounds_are_positive_defaults() -> None:
-    assert int(DEFAULTS["llama_cpp_residency_retries"]) > 0
-    assert int(DEFAULTS["llama_cpp_residency_delay_seconds"]) > 0
+def test_wait_bounds_default_to_two_minutes() -> None:
+    retries = int(DEFAULTS["llama_cpp_residency_retries"])
+    delay = int(DEFAULTS["llama_cpp_residency_delay_seconds"])
+    assert retries > 0 and delay > 0
+    assert retries * delay == 120
 
 
 def test_assert_still_reads_only_loaded_models() -> None:
