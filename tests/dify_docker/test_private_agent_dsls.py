@@ -7,7 +7,7 @@ from pathlib import Path
 
 from jinja2 import Environment
 
-from _agent_dsl_shared import _task, _yaml
+from _agent_dsl_shared import _expanded_yaml, _task, _yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -93,7 +93,7 @@ def test_missing_token_is_reported_instead_of_fetching_unauthenticated():
 
 
 def test_fetch_sends_the_bearer_token_only_for_private_entries():
-    fetch = _task(_yaml(IMPORT_ONE), FETCH_TASK)
+    fetch = _task(_expanded_yaml(IMPORT_ONE), FETCH_TASK)
     headers = fetch["ansible.builtin.uri"]["headers"]
 
     private = ast.literal_eval(
@@ -112,7 +112,7 @@ def test_fetch_sends_the_bearer_token_only_for_private_entries():
 
 
 def test_fetch_stays_checksum_verified_and_secret_safe():
-    fetch = _task(_yaml(IMPORT_ONE), FETCH_TASK)
+    fetch = _task(_expanded_yaml(IMPORT_ONE), FETCH_TASK)
     request = fetch["ansible.builtin.uri"]
 
     assert fetch["no_log"] is True
@@ -124,7 +124,7 @@ def test_fetch_stays_checksum_verified_and_secret_safe():
     assert "hash('sha256')" in fetch["failed_when"]
     assert "dify_docker_agent_dsl.sha256" in fetch["failed_when"]
 
-    write = _task(_yaml(IMPORT_ONE), "Write the verified private agent DSL for live import")
+    write = _task(_expanded_yaml(IMPORT_ONE), "Write the verified private agent DSL for live import")
     assert write["ansible.builtin.copy"]["content"] == "{{ dify_docker_dsl_fetch.content }}"
     assert write["ansible.builtin.copy"]["mode"] == "0600"
     assert "not ansible_check_mode" in write["when"]
@@ -132,7 +132,7 @@ def test_fetch_stays_checksum_verified_and_secret_safe():
 
 
 def test_check_mode_previews_private_app_name_without_printing_private_content():
-    importer = _yaml(IMPORT_ONE)
+    importer = _expanded_yaml(IMPORT_ONE)
     resolve_name = _task(importer, "Resolve the private app preview name from its catalog entry")
     preview = next(task for task in importer if task.get("name") == "Preview the catalog app create or update")
     assert resolve_name["no_log"] is True
@@ -205,7 +205,7 @@ def test_check_mode_previews_private_app_name_without_printing_private_content()
 
 
 def test_private_check_mode_reads_verified_dsl_in_memory_without_target_writes_or_deletes():
-    importer = _yaml(IMPORT_ONE)
+    importer = _expanded_yaml(IMPORT_ONE)
     read = _task(importer, "Read the catalog agent DSL into memory for check mode")
     verify = _task(importer, "Verify the catalog agent DSL sha256 in check mode")
     fetch = _task(importer, FETCH_TASK)

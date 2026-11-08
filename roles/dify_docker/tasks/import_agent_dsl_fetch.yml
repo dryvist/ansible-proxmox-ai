@@ -1,0 +1,137 @@
+---
+# One agent DSL: the public catalog file is pre-fetched and verified before the
+# import loop; private entries are fetched here with their supplied checksum.
+# Existing apps are overwritten only when their recorded catalog hash differs.
+# Tasks that carry the DSL or console cookie are no_log.
+
+# Facts persist across loop iterations, so clear the previous DSL before fetching.
+- name: Clear the previous agent DSL before fetching
+  ansible.builtin.set_fact:
+    dify_docker_dsl_content: ""
+    dify_docker_dsl_name: ""
+    dify_docker_dsl_preview_name: ""
+    dify_docker_dsl_raw: {}
+  no_log: true
+
+- name: Resolve the private app preview name from its catalog entry
+  ansible.builtin.set_fact:
+    dify_docker_dsl_preview_name: >-
+      {{ dify_docker_agent_dsl.name
+         | default(
+             dify_docker_agent_dsl.path | default(dify_docker_agent_dsl.url)
+             | regex_replace('^.*[\\/]', '')
+             | regex_replace('[?#].*$', '')
+             | regex_replace('\\.dsl\\.ya?ml$', '')
+             | regex_replace('\\.ya?ml$', ''),
+             true
+           ) }}
+  when: dify_docker_agent_dsl.private | default(false) | bool
+  no_log: true
+
+# Check mode reads either source directly into memory so it can verify the pin
+# and preview the app without writing the content to the target filesystem.
+- name: Read the catalog agent DSL into memory for check mode
+  ansible.builtin.uri:
+    url: "{{ dify_docker_agent_dsl.url }}"
+    method: GET
+    headers: >-
+      {{ {'Authorization': 'Bearer ' ~ dify_docker_private_agent_dsl_token}
+         if (dify_docker_agent_dsl.private | default(false) | bool) else {} }}
+    status_code: 200
+    follow_redirects: none
+    return_content: true
+  register: dify_docker_dsl_check_read
+  check_mode: false
+  changed_when: false
+  when:
+    - ansible_check_mode
+  no_log: true
+
+- name: Verify the catalog agent DSL sha256 in check mode
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_check_read.content is defined
+      - dify_docker_dsl_check_read.content | hash('sha256') == dify_docker_agent_dsl.sha256
+    fail_msg: "The catalog agent DSL did not match its pinned sha256."
+  when:
+    - ansible_check_mode
+  no_log: true
+
+# Private entries (marked by import_agent_dsls.yml) send the bearer token.
+- name: Fetch the pinned agent DSL and verify its sha256 without redirects
+  ansible.builtin.uri:
+    url: "{{ dify_docker_agent_dsl.url }}"
+    method: GET
+    headers: >-
+      {{ {'Authorization': 'Bearer ' ~ dify_docker_private_agent_dsl_token}
+         if (dify_docker_agent_dsl.private | default(false) | bool) else {} }}
+    status_code: 200
+    follow_redirects: none
+    return_content: true
+  register: dify_docker_dsl_fetch
+  failed_when: >-
+    (dify_docker_dsl_fetch.status | default(0) | int) != 200
+    or (dify_docker_dsl_fetch.content | default('') | hash('sha256'))
+    != dify_docker_agent_dsl.sha256
+  ignore_errors: true
+  check_mode: false
+  when:
+    - dify_docker_agent_dsl.private | default(false) | bool
+    - not ansible_check_mode
+  no_log: true
+
+- name: Write the verified private agent DSL for live import
+  ansible.builtin.copy:
+    content: "{{ dify_docker_dsl_fetch.content }}"
+    dest: >-
+      /tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name
+      | default(dify_docker_dsl_preview_name, true) }}.yml
+    mode: "0600"
+  when:
+    - dify_docker_agent_dsl.private | default(false) | bool
+    - not ansible_check_mode
+    - dify_docker_dsl_fetch is not failed
+  no_log: true
+
+- name: Read the verified agent DSL
+  ansible.builtin.slurp:
+    src: >-
+      /tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name
+      | default(dify_docker_dsl_preview_name, true) }}.yml
+  register: dify_docker_dsl_file_read
+  when:
+    - not ansible_check_mode
+    - >-
+      not (dify_docker_agent_dsl.private | default(false) | bool)
+      or dify_docker_dsl_fetch is not failed
+  no_log: true
+
+- name: Select the verified in-memory or file-backed agent DSL
+  ansible.builtin.set_fact:
+    dify_docker_dsl_raw:
+      content: >-
+        {{ (dify_docker_dsl_check_read.content | b64encode)
+           if ansible_check_mode else dify_docker_dsl_file_read.content }}
+  when: >-
+    (ansible_check_mode and dify_docker_dsl_check_read.content is defined)
+    or (not ansible_check_mode and dify_docker_dsl_file_read.content is defined)
+  no_log: true
+
+- name: Parse the verified DSL document and app name
+  ansible.builtin.set_fact:
+    dify_docker_dsl_content: "{{ dify_docker_dsl_raw.content | b64decode }}"
+    dify_docker_dsl_document: "{{ dify_docker_dsl_raw.content | b64decode | from_yaml }}"
+    dify_docker_dsl_name: "{{ (dify_docker_dsl_raw.content | b64decode | from_yaml).app.name }}"
+  when: dify_docker_dsl_raw is defined and dify_docker_dsl_raw.content is defined
+  no_log: true
+
+- name: Remove the fetched agent DSL copy
+  ansible.builtin.file:
+    path: >-
+      /tmp/dify-agent-dsl-{{ dify_docker_agent_dsl.name
+      | default(dify_docker_dsl_preview_name, true) }}.yml
+    state: absent
+  changed_when: false
+  when:
+    - not ansible_check_mode
+  no_log: true

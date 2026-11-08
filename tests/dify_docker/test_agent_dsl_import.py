@@ -1,268 +1,10 @@
-"""Agent DSL imports use the pinned catalog manifest and verify every source."""
+"""Dify agent app listing, reconciliation, and workflow publication."""
 
 import ast
-import json
-import os
-import re
-import subprocess
-import sys
-from copy import deepcopy
-from pathlib import Path
 
 from jinja2 import Environment
 
-from _agent_dsl_shared import _task, _yaml
-
-
-ROOT = Path(__file__).resolve().parents[2]
-AGENT_DSLS = ROOT / "roles/dify_docker/vars/agent_dsls.yml"
-IMPORT_LOOP = ROOT / "roles/dify_docker/tasks/import_agent_dsls.yml"
-IMPORT_ONE = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
-LIST_CATALOG_PAGE = ROOT / "roles/dify_docker/tasks/list_catalog_app_page.yml"
-
-def test_catalog_manifest_is_pinned_to_the_release_commit_and_checksum():
-    pins = _yaml(AGENT_DSLS)
-    source = AGENT_DSLS.read_text(encoding="utf-8")
-
-    assert re.fullmatch(r"[0-9a-f]{40}", pins["dify_docker_agent_dsl_commit"])
-    assert re.fullmatch(r"[0-9a-f]{64}", pins["dify_docker_agent_dsl_manifest_sha256"])
-    assert "dify_docker_agent_dsls" not in pins
-    assert "currentValue=v1.77.0" in source
-
-
-def test_manifest_entries_keep_their_url_and_sha256_through_public_import():
-    tasks = _yaml(IMPORT_LOOP)
-    manifest_fetch = _task(tasks, "Fetch the pinned agent DSL catalog manifest and verify its sha256")
-    manifest_check_read = _task(tasks, "Read the pinned agent DSL catalog manifest into memory for check mode")
-    manifest_check_verify = _task(tasks, "Verify the agent DSL catalog manifest sha256 in check mode")
-    manifest_read = _task(tasks, "Read the verified agent DSL catalog manifest")
-    build_list = _task(tasks, "Build agent DSL URLs from every catalog manifest entry")
-    public_fetch = _task(tasks, "Fetch and verify all catalog agent DSLs before importing any")
-    public_import = _task(tasks, "Reconcile each catalog agent DSL")
-    importer = _yaml(IMPORT_ONE)
-    import_task = _task(importer, "Import the catalog DSL when its checksum is new")
-
-    assert manifest_fetch["ansible.builtin.get_url"]["url"] == (
-        "{{ dify_docker_agent_dsl_base }}/agents/dify/manifest.json"
-    )
-    assert manifest_fetch["ansible.builtin.get_url"]["checksum"] == (
-        "sha256:{{ dify_docker_agent_dsl_manifest_sha256 }}"
-    )
-    assert "not ansible_check_mode" in manifest_fetch["when"]
-    assert manifest_check_read["ansible.builtin.uri"]["url"] == (
-        "{{ dify_docker_agent_dsl_base }}/agents/dify/manifest.json"
-    )
-    assert manifest_check_read["ansible.builtin.uri"]["return_content"] is True
-    assert manifest_check_read["check_mode"] is False
-    assert manifest_check_read["changed_when"] is False
-    assert manifest_check_read["no_log"] is True
-    assert "ansible_check_mode" in manifest_check_read["when"]
-    assert "content | hash('sha256')" in str(manifest_check_verify["ansible.builtin.assert"]["that"])
-    assert manifest_check_verify["no_log"] is True
-    assert manifest_read["ansible.builtin.slurp"]["src"] == (
-        "/tmp/dify-agent-dsl-manifest-{{ dify_docker_agent_dsl_commit }}.json"
-    )
-    assert manifest_read["register"] == "dify_docker_agent_dsl_manifest_file_read"
-    assert "not ansible_check_mode" in manifest_read["when"]
-    assert "dify_docker_agent_dsl_manifest_content | from_json" in build_list["loop"]
-    assert "dify_docker_agent_dsl_manifest_entry.path" in build_list["ansible.builtin.set_fact"][
-        "dify_docker_agent_dsls"
-    ]
-    assert "combine({'url':" in build_list["ansible.builtin.set_fact"]["dify_docker_agent_dsls"]
-    assert "selectattr" not in build_list["loop"]
-    assert "dify_docker_agent_dsl_manifest_entry.kind" not in str(build_list)
-    assert "dify_docker_agent_dsl_manifest_entry.mode" not in str(build_list)
-
-    environment = Environment()
-    environment.filters["combine"] = lambda base, extra: {**base, **extra}
-    driver = {
-        "kind": "driver",
-        "mode": None,
-        "name": "tier2-rotation",
-        "path": "agents/dify/tier2-rotation.dsl.yml",
-        "sha256": "a" * 64,
-    }
-    rendered_entries = ast.literal_eval(
-        environment.from_string(build_list["ansible.builtin.set_fact"]["dify_docker_agent_dsls"]).render(
-            dify_docker_agent_dsls=[],
-            dify_docker_agent_dsl_base="https://raw.example/catalog/commit",
-            dify_docker_agent_dsl_manifest_entry=driver,
-        )
-    )
-    assert rendered_entries == [
-        {
-            **driver,
-            "url": "https://raw.example/catalog/commit/agents/dify/tier2-rotation.dsl.yml",
-        }
-    ]
-
-    assert public_fetch["loop"] == "{{ dify_docker_agent_dsls }}"
-    assert public_fetch["ansible.builtin.get_url"]["url"] == "{{ dify_docker_agent_dsl.url }}"
-    assert public_fetch["ansible.builtin.get_url"]["checksum"] == (
-        "sha256:{{ dify_docker_agent_dsl.sha256 }}"
-    )
-    assert "not ansible_check_mode" in public_fetch["when"]
-    assert public_import["loop"] == "{{ dify_docker_agent_dsls }}"
-    assert public_import["ansible.builtin.include_tasks"] == "import_agent_dsl.yml"
-    assert "dify_docker_dsl_import_needed | bool" in import_task["when"]
-    assert "app_id" in str(importer)
-    assert import_task["ansible.builtin.uri"]["body"] == "{{ dify_docker_dsl_import_body }}"
-    assert "dify_docker_agent_dsl.mode" not in str(importer)
-
-
-def test_manifest_or_public_dsl_hash_failure_stops_before_any_import(tmp_path):
-    tasks = _yaml(IMPORT_LOOP)
-    by_name = {task.get("name"): (index, task) for index, task in enumerate(tasks)}
-    manifest_fetch_index, manifest_fetch = by_name[
-        "Fetch the pinned agent DSL catalog manifest and verify its sha256"
-    ]
-    public_fetch_index, public_fetch = by_name[
-        "Fetch and verify all catalog agent DSLs before importing any"
-    ]
-    apps_index, _ = by_name["List first page of existing Dify apps (agent DSL catalog hash check)"]
-    public_import_index, _ = by_name["Reconcile each catalog agent DSL"]
-
-    assert "ignore_errors" not in manifest_fetch
-    assert "failed_when" not in manifest_fetch
-    assert "ignore_errors" not in public_fetch
-    assert "failed_when" not in public_fetch
-    assert manifest_fetch_index < public_fetch_index < apps_index < public_import_index
-    assert manifest_fetch["check_mode"] is False
-    assert public_fetch["check_mode"] is False
-
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text('{"fixture": true}\n', encoding="utf-8")
-    wrong_checksum = "sha256:" + "0" * 64
-    fetch_fixture = deepcopy(manifest_fetch)
-    fetch_fixture.pop("no_log", None)
-    fetch_fixture.pop("when", None)
-    fetch_fixture["ansible.builtin.get_url"].update(
-        {
-            "url": manifest.as_uri(),
-            "dest": str(tmp_path / "downloaded-manifest.json"),
-            "checksum": wrong_checksum,
-        }
-    )
-    environment = dict(os.environ)
-    environment["ANSIBLE_LOCAL_TEMP"] = str(tmp_path)
-    result = subprocess.run(
-        [sys.executable, "-m", "ansible.modules.get_url"],
-        cwd=ROOT,
-        env=environment,
-        input=json.dumps({"ANSIBLE_MODULE_ARGS": fetch_fixture["ansible.builtin.get_url"]}),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    output = result.stdout + result.stderr
-    assert result.returncode != 0, output
-    assert "did not match" in output, output
-    assert wrong_checksum.partition(":")[2] in output, output
-
-
-def test_check_mode_previews_catalog_without_importing_or_provisioning_keys():
-    importer = _yaml(IMPORT_ONE)
-    import_task = _task(importer, "Import the catalog DSL when its checksum is new")
-    confirm_task = _task(importer, "Confirm the agent DSL import (DSL version mismatch)")
-    preview_task = _task(importer, "Preview the catalog app create or update")
-    publish_task = _task(importer, "Publish the changed catalog workflow for API callers")
-    key_task = _task(importer, "Ensure the agent app API key is stored in OpenBao")
-
-    assert "not ansible_check_mode" in import_task["when"]
-    assert "not ansible_check_mode" in confirm_task["when"]
-    assert "not ansible_check_mode" in key_task["when"]
-    assert "not (dify_docker_dsl_import_needed | bool)" in key_task["when"][-1]
-    assert "ansible_check_mode" in preview_task["when"]
-    assert "not ansible_check_mode" in publish_task["when"]
-    assert preview_task["changed_when"] is True
-    assert "dify_docker_dsl_name" in preview_task["ansible.builtin.debug"]["msg"]
-    assert "create" in preview_task["ansible.builtin.debug"]["msg"]
-    assert "overwrite" in preview_task["ansible.builtin.debug"]["msg"]
-    assert preview_task.get("no_log") is not True
-    assert not any(
-        secret_field in preview_task["ansible.builtin.debug"]["msg"]
-        for secret_field in ("cookie", "token", "api_key", "dsl_content")
-    )
-
-
-def test_public_check_mode_reads_manifest_in_memory_and_writes_no_target_files():
-    tasks = _yaml(IMPORT_LOOP)
-    importer = _yaml(IMPORT_ONE)
-    manifest_read = _task(tasks, "Read the pinned agent DSL catalog manifest into memory for check mode")
-    manifest_fetch = _task(tasks, "Fetch the pinned agent DSL catalog manifest and verify its sha256")
-    manifest_slurp = _task(tasks, "Read the verified agent DSL catalog manifest")
-    manifest_cleanup = _task(tasks, "Remove the verified agent DSL catalog manifest copy")
-    public_fetch = _task(tasks, "Fetch and verify all catalog agent DSLs before importing any")
-    dsl_read = _task(importer, "Read the catalog agent DSL into memory for check mode")
-
-    assert manifest_read["ansible.builtin.uri"]["method"] == "GET"
-    assert manifest_read["no_log"] is True
-    assert "ansible_check_mode" in manifest_read["when"]
-    for task in (manifest_fetch, manifest_slurp, manifest_cleanup, public_fetch):
-        assert "not ansible_check_mode" in task["when"], task["name"]
-    assert dsl_read["ansible.builtin.uri"]["method"] == "GET"
-    assert dsl_read["ansible.builtin.uri"]["return_content"] is True
-    assert dsl_read["no_log"] is True
-
-    # All target filesystem changes and remote API writes in these import files
-    # are gated off in check mode. GET requests may read their pinned sources.
-    target_mutating_modules = (
-        "ansible.builtin.get_url",
-        "ansible.builtin.file",
-        "ansible.builtin.copy",
-        "ansible.builtin.template",
-        "ansible.builtin.lineinfile",
-        "ansible.builtin.blockinfile",
-        "ansible.builtin.replace",
-        "ansible.builtin.assemble",
-        "ansible.builtin.unarchive",
-        "ansible.builtin.synchronize",
-        "ansible.builtin.command",
-        "ansible.builtin.shell",
-    )
-    for task in [*tasks, *importer]:
-        mutates_filesystem = any(module in task for module in target_mutating_modules)
-        uri = task.get("ansible.builtin.uri", {})
-        writes_remote_api = uri.get("method", "GET") not in ("GET", "HEAD", "OPTIONS")
-        assert not ("dest" in uri), task.get("name")
-        if mutates_filesystem or writes_remote_api:
-            assert "not ansible_check_mode" in task.get("when", []), task.get("name")
-
-
-def test_check_mode_uses_separate_source_registers_before_selecting_dsl_content():
-    importer = _yaml(IMPORT_ONE)
-    source_read = _task(importer, "Read the catalog agent DSL into memory for check mode")
-    file_read = _task(importer, "Read the verified agent DSL")
-    selection = _task(importer, "Select the verified in-memory or file-backed agent DSL")
-    parse = _task(importer, "Parse the verified DSL document and app name")
-
-    assert source_read["register"] == "dify_docker_dsl_check_read"
-    assert file_read["register"] == "dify_docker_dsl_file_read"
-    assert source_read["register"] != file_read["register"]
-    assert "ansible_check_mode" in source_read["when"]
-    assert "not ansible_check_mode" in file_read["when"]
-    assert "dify_docker_dsl_check_read.content | b64encode" in str(
-        selection["ansible.builtin.set_fact"]["dify_docker_dsl_raw"]
-    )
-    assert "dify_docker_dsl_file_read.content" in str(
-        selection["ansible.builtin.set_fact"]["dify_docker_dsl_raw"]
-    )
-    assert selection["no_log"] is True
-    assert "dify_docker_dsl_raw.content" in str(parse["ansible.builtin.set_fact"])
-    assert parse["no_log"] is True
-
-
-def test_private_catalog_entries_are_included_in_check_mode_preview():
-    private = _task(_yaml(IMPORT_LOOP), "Reconcile each private agent DSL")
-    public = _task(_yaml(IMPORT_LOOP), "Reconcile each catalog agent DSL")
-
-    assert private["loop"] == (
-        "{{ dify_docker_private_agent_dsls | map('combine', {'private': true}) | list }}"
-    )
-    assert "dify_docker_private_agent_dsl_token | length > 0" in private["when"]
-    assert "not ansible_check_mode" not in private["when"]
-    assert "not ansible_check_mode" not in public["when"]
-    assert private["ansible.builtin.include_tasks"] == public["ansible.builtin.include_tasks"]
+from _agent_dsl_shared import IMPORT_LOOP, IMPORT_ONE, LIST_CATALOG_PAGE, _expanded_yaml, _task, _yaml
 
 
 def test_catalog_app_listing_fetches_and_validates_every_page():
@@ -306,7 +48,7 @@ def test_catalog_app_listing_fetches_and_validates_every_page():
 
 
 def test_changed_workflow_is_published_after_successful_import_and_failure_is_fatal():
-    importer = _yaml(IMPORT_ONE)
+    importer = _expanded_yaml(IMPORT_ONE)
     environment = Environment()
     tasks_by_name = {task.get("name"): (index, task) for index, task in enumerate(importer)}
     _, import_task = tasks_by_name["Import the catalog DSL when its checksum is new"]
@@ -314,7 +56,7 @@ def test_changed_workflow_is_published_after_successful_import_and_failure_is_fa
     app_id_index, app_id_task = tasks_by_name["Resolve the Dify app id returned by the catalog import"]
     publish_index, publish_task = tasks_by_name["Publish the changed catalog workflow for API callers"]
     metadata_index, metadata_task = tasks_by_name[
-        "Read the published app metadata before recording the catalog hash"
+        "Load the app record after publishing"
     ]
     record_index, record_task = tasks_by_name["Record the catalog hash after publishing the workflow"]
     key_index, key_task = tasks_by_name["Ensure the agent app API key is stored in OpenBao"]
@@ -406,7 +148,7 @@ def test_changed_workflow_is_published_after_successful_import_and_failure_is_fa
 
 
 def test_catalog_hash_decides_whether_to_import_and_payload_targets_existing_app():
-    importer = _yaml(IMPORT_ONE)
+    importer = _expanded_yaml(IMPORT_ONE)
     decision_task = _task(importer, "Decide whether the catalog app needs an import")
     payload_task = _task(importer, "Prepare the Dify import payload")
     import_task = _task(importer, "Import the catalog DSL when its checksum is new")
@@ -467,7 +209,7 @@ def test_catalog_hash_decides_whether_to_import_and_payload_targets_existing_app
 
 
 def test_catalog_hash_description_is_committed_after_publish_within_dify_limit():
-    importer = _yaml(IMPORT_ONE)
+    importer = _expanded_yaml(IMPORT_ONE)
     description_task = _task(importer, "Prepare the catalog app description")
     import_payload_task = _task(importer, "Prepare the Dify import payload")
     record_task = _task(importer, "Record the catalog hash after publishing the workflow")
