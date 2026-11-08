@@ -34,13 +34,22 @@
     owner: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     group: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     mode: "{{ '0644' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
-    regexp: >-
-      (?m)^[ \t]*(?!#)(?!{{ llm_router_llm_large_ip | regex_escape }}[ \t])\S+[ \t]+{{ _llm_router_pin_name_rx
-      }}[ \t]*(?:#[^\n]*)?(?:\n|$)
+    regexp: "{{ item }}"
     replace: ""
+  loop:
+    # A line for any other IP.
+    - "{{ _llm_router_pin_stale_rx }}"
+    # A current-IP line that a later current-IP line duplicates.
+    - '(?m)^{{ _llm_router_pin_current_rx }}\n(?=[\s\S]*^{{ _llm_router_pin_current_rx }}$)'
   vars:
+    _llm_router_pin_ip_rx: "{{ llm_router_llm_large_ip | regex_escape }}"
+    _llm_router_pin_stale_rx: >-
+      (?m)^[ \t]*(?!#)(?!{{ _llm_router_pin_ip_rx }}[ \t])\S+[ \t]+{{
+      _llm_router_pin_name_rx }}[ \t]*(?:#[^\n]*)?(?:\n|$)
     _llm_router_pin_name_rx: >-
       (?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[ \t#]|$)
+    _llm_router_pin_current_rx: >-
+      [ \t]*{{ _llm_router_pin_ip_rx }}[ \t]+{{ _llm_router_pin_name_rx }}[ \t]*(?:#[^\n]*)?
   notify: Restart litellm
 
 - name: Remove the serving-host name from lines that also map other names
