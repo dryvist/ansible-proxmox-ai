@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.30.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.30.0...v2.30.1) (2026-11-08)
+
+
+### Bug Fixes
+
+* **llm_router:** collapse and rebuild duplicate serving-host pins ([#2150](https://github.com/dryvist/ansible-proxmox-ai/issues/2150)) ([ed4d4cc](https://github.com/dryvist/ansible-proxmox-ai/commit/ed4d4cc048869c9febacf60bbfb8d0a113973386))
+
 ## [2.30.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.29.1...v2.30.0) (2026-11-08)
 
 
