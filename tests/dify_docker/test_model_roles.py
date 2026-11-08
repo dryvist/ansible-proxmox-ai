@@ -230,5 +230,6 @@ def test_credential_already_in_the_model_list_is_not_a_failure():
     assert not failed(200, {"result": "success"})
     assert not failed(400, {"code": "invalid_param", "message": "Can't add same credential"})
     assert failed(400, {"code": "invalid_param", "message": "Credential not found"})
+    assert failed(500, {"message": "Can't add same credential"})
     assert failed(500, None)
     assert failed(-1, None)
