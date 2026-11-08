@@ -26,54 +26,52 @@
       Could not resolve {{ llm_router_llm_large_fqdn }} to an IPv4 address for
       the LiteLLM /etc/hosts pin.
 
-# Comment lines are never touched, and the line that already maps the current
-# IP stays, so a converge with a correct pin changes nothing.
-- name: Remove stale lines that map only the serving-host name for LiteLLM
-  ansible.builtin.replace:
-    path: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
-    owner: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
-    group: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
-    mode: "{{ '0644' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
-    regexp: >-
-      (?m)^[ \t]*(?!#)(?!{{ llm_router_llm_large_ip | regex_escape }}[ \t])\S+[ \t]+{{ _llm_router_pin_name_rx
-      }}[ \t]*(?:#[^\n]*)?(?:\n|$)
-    replace: ""
-  vars:
-    _llm_router_pin_name_rx: >-
-      (?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[ \t#]|$)
-  notify: Restart litellm
+- name: Read /etc/hosts for the LiteLLM serving-host pin
+  ansible.builtin.slurp:
+    src: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
+  register: _llm_router_hosts_current
+  # Only a missing file reads as empty; any other read error stops the pin
+  # before it could replace the file with the pin line alone.
+  failed_when: >-
+    _llm_router_hosts_current.failed | default(false)
+    and 'not found' not in (_llm_router_hosts_current.msg | default('') | lower)
 
-- name: Remove the serving-host name from lines that also map other names
-  ansible.builtin.replace:
-    path: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
-    owner: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
-    group: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
-    mode: "{{ '0644' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
-    regexp: "{{ item }}"
-    replace: '\1'
-  loop:
-    # The name after another name on the line.
-    - '(?m)^([ \t]*(?!#)\S+[ \t]+[^\s#]+(?:[ \t]+[^\s#]+)*?)[ \t]+{{ _llm_router_pin_name_rx }}'
-    # The name first, before another name.
-    - '(?m)^([ \t]*(?!#)\S+)[ \t]+{{ _llm_router_pin_name_rx }}(?=[ \t]+[^\s#])'
-  vars:
-    _llm_router_pin_name_rx: >-
-      (?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[ \t#]|$)
-  notify: Restart litellm
-
+# Keep the first line that already maps the current IP exactly as it is, drop
+# the serving name from every other line (a line left with no name goes), and
+# add the pin only when no current line was kept. Comments are never changed.
+# copy writes only on a difference, so a correct pin never restarts LiteLLM.
 - name: Pin the Mac Studio apex in /etc/hosts for LiteLLM
   # Keep a local resolver pin here so the router hosts do not depend on their
   # own DNS path before they can reach the gate.
-  ansible.builtin.lineinfile:
-    path: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
+  ansible.builtin.copy:
+    dest: "{{ llm_router_hosts_file | default('/etc/hosts') }}"
     owner: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     group: "{{ 'root' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
     mode: "{{ '0644' if (llm_router_hosts_file | default('/etc/hosts')) == '/etc/hosts' else omit }}"
-    regexp: >-
-      ^\s*(?!#)[^#\s]\S*\s+[^#]*(?<!\S){{ llm_router_llm_large_fqdn | regex_escape }}(?=[\s#]|$).*$
-    line: >-
-      {{ llm_router_llm_large_ip }}
-      {{ llm_router_llm_large_fqdn }}
-    create: true
-    state: present
+    content: |-
+      {% set ns = namespace(lines=[], kept=false) %}
+      {% for line in (_llm_router_hosts_current.content | default('') | b64decode).splitlines() %}
+      {%   set body = line.split('#', 1)[0] %}
+      {%   set fields = body.split() %}
+      {#   Host names match case-insensitively. #}
+      {%   set fqdn = llm_router_llm_large_fqdn | lower %}
+      {%   if fields | length < 2 or fqdn not in (fields[1:] | map('lower') | list) %}
+      {%     set ns.lines = ns.lines + [line] %}
+      {%   elif fields[0] == llm_router_llm_large_ip and not ns.kept %}
+      {%     set ns.lines = ns.lines + [line] %}
+      {%     set ns.kept = true %}
+      {%   else %}
+      {%     set names = fields[1:] | reject('match', '^' ~ (fqdn | regex_escape) ~ '$', true) | list %}
+      {%     set comment = line[body | length:] %}
+      {%     if names %}
+      {%       set ns.lines = ns.lines + [([fields[0]] + names) | join(' ') ~ ((' ' ~ comment) if comment else '')] %}
+      {%     endif %}
+      {%   endif %}
+      {% endfor %}
+      {% if not ns.kept %}
+      {%   set ns.lines = ns.lines + [llm_router_llm_large_ip ~ ' ' ~ llm_router_llm_large_fqdn] %}
+      {% endif %}
+      {% for out in ns.lines %}
+      {{ out }}
+      {% endfor %}
   notify: Restart litellm
