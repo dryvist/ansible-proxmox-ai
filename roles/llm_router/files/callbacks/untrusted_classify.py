@@ -35,6 +35,7 @@ _PROMPT = (
     "of the text is safe to publish."
 )
 _LOG = logging.getLogger("LiteLLM Proxy")
+_MAX_CONCURRENT_CHUNKS = 4
 
 
 def _settings():
@@ -43,9 +44,16 @@ def _settings():
         "url": os.environ["LLM_ROUTER_UNTRUSTED_CLASSIFY_URL"].strip(),
         "key": os.environ["LLM_ROUTER_MASTER_KEY"].strip(),
         "max_chars": int(os.environ["LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHARS"]),
+        "max_chunks": int(os.environ["LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHUNKS"]),
         "timeout": float(os.environ["LLM_ROUTER_UNTRUSTED_CLASSIFY_TIMEOUT_SECONDS"]),
     }
-    if not settings["model"] or not settings["url"] or settings["max_chars"] < 1 or settings["timeout"] <= 0:
+    if (
+        not settings["model"]
+        or not settings["url"]
+        or settings["max_chars"] < 1
+        or settings["max_chunks"] < 1
+        or settings["timeout"] <= 0
+    ):
         raise ValueError("untrusted classify settings are incomplete")
     return settings
 
@@ -99,6 +107,46 @@ async def _post_with_retry(settings, body):
         return await asyncio.wait_for(_post(*args), settings["timeout"])
 
 
+async def _classify_chunk(text, settings, semaphore, stop_event):
+    body = {
+        "model": settings["model"],
+        "messages": [
+            {"role": "system", "content": _PROMPT},
+            {"role": "user", "content": f"<text>\n{text}\n</text>"},
+        ],
+        "temperature": 0,
+        "max_tokens": 4,
+        "stream": False,
+        # Top level, as ci_effort_pin does: a 4-token budget is spent on reasoning otherwise.
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    async with semaphore:
+        if stop_event.is_set():
+            return None
+        try:
+            reply = await _post_with_retry(settings, body)
+        except (asyncio.TimeoutError, httpx.TimeoutException):
+            stop_event.set()
+            return "timeout"
+        except Exception:
+            # Fail closed on any classify failure. The exception is not logged: its text can carry request content.
+            stop_event.set()
+            return "error"
+        try:
+            label = reply["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            stop_event.set()
+            return "unparsable"
+        if not isinstance(label, str):
+            stop_event.set()
+            return "unparsable"
+        label = label.strip().lower()
+        if label == _PUBLIC:
+            return None
+        stop_event.set()
+        return _SENSITIVE if label == _SENSITIVE else "unparsable"
+
+
 async def _refusal_reason(data):
     """None when the request may pass; otherwise the category logged for the refusal."""
     try:
@@ -106,36 +154,33 @@ async def _refusal_reason(data):
         if not text.strip():
             return "no text"
         settings = _settings()
-        if len(text) > settings["max_chars"]:
+        chunk_count = (len(text) + settings["max_chars"] - 1) // settings["max_chars"]
+        if chunk_count > settings["max_chunks"]:
             return "oversized"
-        body = {
-            "model": settings["model"],
-            "messages": [
-                {"role": "system", "content": _PROMPT},
-                {"role": "user", "content": f"<text>\n{text}\n</text>"},
-            ],
-            "temperature": 0,
-            "max_tokens": 4,
-            "stream": False,
-            # Top level, as ci_effort_pin does: a 4-token budget is spent on reasoning otherwise.
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
-        reply = await _post_with_retry(settings, body)
-    except (asyncio.TimeoutError, httpx.TimeoutException):
-        return "timeout"
+        chunks = [
+            text[offset : offset + settings["max_chars"]]
+            for offset in range(0, len(text), settings["max_chars"])
+        ]
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CHUNKS)
+        stop_event = asyncio.Event()
+        tasks = [
+            asyncio.create_task(_classify_chunk(chunk, settings, semaphore, stop_event))
+            for chunk in chunks
+        ]
+        try:
+            for completed in asyncio.as_completed(tasks):
+                reason = await completed
+                if reason is not None:
+                    return reason
+            return None
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
     except Exception:
         # Fail closed on any classify failure. The exception is not logged: its text can carry request content.
         return "error"
-    try:
-        label = reply["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        return "unparsable"
-    if not isinstance(label, str):
-        return "unparsable"
-    label = label.strip().lower()
-    if label == _PUBLIC:
-        return None
-    return _SENSITIVE if label == _SENSITIVE else "unparsable"
 
 
 class UntrustedClassify(CustomLogger):
