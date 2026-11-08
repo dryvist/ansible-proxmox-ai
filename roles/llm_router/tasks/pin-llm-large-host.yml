@@ -53,13 +53,15 @@
       {% for line in (_llm_router_hosts_current.content | default('') | b64decode).splitlines() %}
       {%   set body = line.split('#', 1)[0] %}
       {%   set fields = body.split() %}
-      {%   if fields | length < 2 or llm_router_llm_large_fqdn not in fields[1:] %}
+      {#   Host names match case-insensitively. #}
+      {%   set fqdn = llm_router_llm_large_fqdn | lower %}
+      {%   if fields | length < 2 or fqdn not in (fields[1:] | map('lower') | list) %}
       {%     set ns.lines = ns.lines + [line] %}
       {%   elif fields[0] == llm_router_llm_large_ip and not ns.kept %}
       {%     set ns.lines = ns.lines + [line] %}
       {%     set ns.kept = true %}
       {%   else %}
-      {%     set names = fields[1:] | reject('equalto', llm_router_llm_large_fqdn) | list %}
+      {%     set names = fields[1:] | reject('match', '^' ~ (fqdn | regex_escape) ~ '$', true) | list %}
       {%     set comment = line[body | length:] %}
       {%     if names %}
       {%       set ns.lines = ns.lines + [([fields[0]] + names) | join(' ') ~ ((' ' ~ comment) if comment else '')] %}
