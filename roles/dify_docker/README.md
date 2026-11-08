@@ -104,16 +104,26 @@ dedicated SSRF proxy's signed file and Agent Stub routes.
 The public agent list is read from `agents/dify/manifest.json` at the pinned
 `dify_docker_agent_dsl_commit`. The manifest itself and every listed DSL are
 verified against their pinned SHA-256 values before any public app is imported.
-Catalog entries are imported as listed, including driver entries. Existing app
-names are skipped, so imports do not change an existing app's mode. Check mode
-fetches the catalog for a preview and skips imports.
+Catalog entries are imported as listed, including driver entries. The role
+lists every Dify app page before matching catalog names. Each app description
+records its catalog SHA-256 only after its workflow is published. A missing app
+is created; an existing app is overwritten in place only when its recorded
+SHA-256 differs or is missing. An unchanged SHA-256 makes no import write.
+Dify keeps the existing app ID and mode during an overwrite. Console edits are
+overwritten only when the catalog file changes. Successful workflow imports
+are published so API callers receive the catalog version. API-key provisioning
+also runs for unchanged apps, which lets a later converge repair an app whose
+key was not stored. Import, confirmation, publication and catalog-hash update
+failures fail the converge. Check mode previews public and private app creates
+or overwrites, reads the pinned manifest and DSLs into memory, and writes no
+files to the target or Dify APIs.
 
 `dify_docker_private_agent_dsls` (default `[]`) adds private sources alongside
 the public catalog entries, each as `name`, `url` and `sha256`. The list and
 `dify_docker_private_agent_dsl_token` (default empty) are supplied at converge time
 from a private source and are never committed. Each private entry is fetched with
-`Authorization: Bearer <token>`, verified against its `sha256`, and imported like
-the public DSLs when its source is valid and its app name is not already present.
+`Authorization: Bearer <token>`, verified against its `sha256`, and reconciled
+like the public DSLs when its source is valid.
 Private entries are skipped while the token is empty.
 
 ## What in this stack needs protecting
