@@ -20,7 +20,7 @@ def test_catalog_manifest_is_pinned_to_the_release_commit_and_checksum():
     assert re.fullmatch(r"[0-9a-f]{40}", pins["dify_docker_agent_dsl_commit"])
     assert re.fullmatch(r"[0-9a-f]{64}", pins["dify_docker_agent_dsl_manifest_sha256"])
     assert "dify_docker_agent_dsls" not in pins
-    assert "currentValue=v1.82.2" in source
+    assert "currentValue=v1.85.0" in source
 
 
 def test_manifest_entries_keep_their_url_and_sha256_through_public_import():
