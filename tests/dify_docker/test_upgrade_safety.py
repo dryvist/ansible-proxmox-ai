@@ -203,3 +203,28 @@ def test_weaviate_backup_id_uses_only_characters_weaviate_accepts():
     ).strip()
     assert backup_id == "pre-upgrade-20261108t001500"
     assert re.fullmatch(r"[a-z0-9_-]+", backup_id)
+
+
+def test_live_weaviate_backup_needs_the_module_and_a_collection():
+    # Weaviate answers a backup that selects no collections with HTTP 422.
+    from jinja2 import Environment
+
+    tasks = yaml.safe_load((TASK_DIR / "upgrade_backup_weaviate.yml").read_text(encoding="utf-8"))
+    schema_read = _task(tasks, "Read the Weaviate collections")
+    assert schema_read["no_log"] is True
+    assert schema_read["ansible.builtin.uri"]["use_proxy"] is False
+    expression = _task(tasks, "Detect whether Weaviate supports filesystem backups")["ansible.builtin.set_fact"][
+        "dify_docker_weaviate_backup_module_available"
+    ]
+
+    def render(modules, classes):
+        return Environment().from_string(expression).render(
+            dify_docker_weaviate_meta={"json": {"modules": modules}},
+            dify_docker_weaviate_schema={"json": {"classes": classes}},
+        ).strip()
+
+    module = {"backup-filesystem": {}}
+    assert render(module, [{"class": "Vector_index"}]) == "True"
+    assert render(module, []) == "False"
+    assert render(module, None) == "False"
+    assert render({}, [{"class": "Vector_index"}]) == "False"
