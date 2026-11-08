@@ -1,58 +1,18 @@
 ---
 # One catalog agent app (dify_docker_dsl_name, set by the including loop).
 # Publishes the app's native MCP server, activates it, and stores its URL in
-# the app's OpenBao leaf (dify_docker_agent_mcp_path) for agentgateway. The
-# server_code inside the URL is a bearer secret: it reaches only that leaf,
-# and every task that receives, holds or writes it runs with no_log. Check
-# mode reads the same endpoints and reports what a live run would change, by
-# app name only.
-- name: Initialize the accumulated Dify app list for the MCP publish
-  ansible.builtin.set_fact:
-    dify_docker_agent_apps_all: []
-    dify_docker_agent_apps_more: true
+# the app's OpenBao leaf (dify_docker_agent_mcp_path). The server_code inside
+# the URL is a bearer secret: it reaches only that leaf, and every task that
+# receives, holds or writes it runs with no_log. Check mode reads the same
+# endpoints and reports what a live run would change, by app name only.
+- name: Resolve the agent app id through the shared app lookup
+  ansible.builtin.include_tasks: resolve_agent_app_id.yml
   no_log: true
-
-- name: List Dify apps page by page to resolve the agent app id
-  ansible.builtin.include_tasks: list_agent_app_page.yml
-  loop: "{{ range(1, (dify_docker_app_lookup_max_pages | int) + 1) | list }}"
-  loop_control:
-    loop_var: dify_docker_app_page
-  no_log: true
-
-- name: Resolve exact agent app matches by name
-  ansible.builtin.set_fact:
-    dify_docker_agent_mcp_app_matches: >-
-      {{ dify_docker_agent_apps_all | default([])
-         | selectattr('name', 'equalto', dify_docker_dsl_name) | list }}
-  no_log: true
-
-- name: Assert exactly one agent app matched the name
-  ansible.builtin.assert:
-    that:
-      - dify_docker_agent_mcp_app_matches | length <= 1
-    fail_msg: >-
-      More than one Dify app matches the agent name
-      "{{ dify_docker_dsl_name }}"; resolve the duplicate before publishing
-      its MCP server.
-
-- name: Resolve the agent app id by name
-  ansible.builtin.set_fact:
-    dify_docker_agent_mcp_app_id: >-
-      {{ dify_docker_agent_mcp_app_matches[0].id | default('') }}
-  no_log: true
-
-- name: Assert the agent app was found
-  ansible.builtin.assert:
-    that:
-      - dify_docker_agent_mcp_app_id | length > 0
-    fail_msg: >-
-      The Dify agent app "{{ dify_docker_dsl_name }}" could not be found;
-      import the agent DSL catalog first.
 
 - name: Read the agent app MCP server
   ansible.builtin.uri:
     url: >-
-      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_mcp_app_id }}/server
+      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/server
     method: GET
     headers:
       Cookie: "{{ dify_docker_console_cookies }}"
@@ -67,7 +27,7 @@
 - name: Create the agent app MCP server only when the app has none
   ansible.builtin.uri:
     url: >-
-      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_mcp_app_id }}/server
+      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/server
     method: POST
     headers:
       Cookie: "{{ dify_docker_console_cookies }}"
@@ -94,7 +54,7 @@
 - name: Activate the agent app MCP server when it is not active
   ansible.builtin.uri:
     url: >-
-      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_mcp_app_id }}/server
+      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/server
     method: PUT
     headers:
       Cookie: "{{ dify_docker_console_cookies }}"
@@ -122,25 +82,10 @@
   no_log: true
 
 - name: Read the stored agent app MCP server URL from OpenBao
-  community.hashi_vault.vault_kv2_get:
-    url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
-    auth_method: token
-    token: "{{ openbao_secrets_converge_writer_token }}"
-    engine_mount_point: "{{ openbao_secrets_kv_mount }}"
-    path: "{{ dify_docker_agent_mcp_path }}"
-    validate_certs: "{{ dify_docker_bao_validate_certs }}"
-  register: dify_docker_agent_mcp_lookup
-  check_mode: false
-  failed_when: >-
-    dify_docker_agent_mcp_lookup is failed
-    and 'Invalid or missing path' not in
-      (dify_docker_agent_mcp_lookup.msg | default(''))
-  changed_when: false
-  delegate_to: localhost
-  connection: local
-  become: false
+  ansible.builtin.include_tasks: read_agent_leaf.yml
   vars:
-    ansible_become: false
+    dify_docker_agent_leaf_read_path: "{{ dify_docker_agent_mcp_path }}"
+    dify_docker_agent_leaf_read_register: dify_docker_agent_mcp_lookup
   no_log: true
 
 - name: Detect whether the stored agent app MCP server URL matches
@@ -185,28 +130,13 @@
     - not dify_docker_agent_mcp_url_matches | bool
   block:
     - name: Store the agent app MCP server URL through the shared seed_generated task
-      delegate_to: localhost
-      connection: local
-      become: false
+      ansible.builtin.include_tasks: seed_agent_leaf.yml
       vars:
-        ansible_become: false
-        openbao_secrets_seed_addr: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
-        openbao_secrets_seed_mount: "{{ openbao_secrets_kv_mount }}"
-        openbao_secrets_seed_path: "{{ dify_docker_agent_mcp_path }}"
-        openbao_secrets_seed_fields:
+        dify_docker_agent_leaf_seed_path: "{{ dify_docker_agent_mcp_path }}"
+        dify_docker_agent_leaf_seed_fields:
           - name: url
             value: "{{ dify_docker_agent_mcp_url }}"
-        openbao_secrets_seed_rotate_fields:
+        dify_docker_agent_leaf_seed_rotate_fields:
           - url
-        openbao_secrets_seed_token: "{{ openbao_secrets_converge_writer_token }}"
-        openbao_secrets_seed_expected_writer_policy: ansible-converge
-        openbao_secrets_seed_check_capabilities: "{{ not ansible_check_mode }}"
-        openbao_secrets_seed_revoke_token: false
-        openbao_secrets_seed_register: dify_docker_agent_mcp_seed_result
+        dify_docker_agent_leaf_seed_register: dify_docker_agent_mcp_seed_result
       no_log: true
-      # include_role rejects connection; the block carries it, as in storage_and_secret.yml.
-      block:
-        - name: Run the shared seed_generated task for the agent app MCP server URL
-          ansible.builtin.include_role:
-            name: dryvist.homelab.openbao_secrets
-            tasks_from: seed_generated

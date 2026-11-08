@@ -10,20 +10,20 @@ from _defaults import load_defaults
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "roles/dify_docker/tasks/main.yml"
 PUBLISH = ROOT / "roles/dify_docker/tasks/publish_agent_mcp.yml"
+RESOLVE = ROOT / "roles/dify_docker/tasks/resolve_agent_app_id.yml"
+READ = ROOT / "roles/dify_docker/tasks/read_agent_leaf.yml"
+SEED = ROOT / "roles/dify_docker/tasks/seed_agent_leaf.yml"
 NGINX = ROOT / "roles/dify_docker/templates/nginx-default.conf.j2"
 INCLUDE_NAME = "Publish each catalog agent app as an MCP server"
 CREATE_TASK = "Create the agent app MCP server only when the app has none"
 ACTIVATE_TASK = "Activate the agent app MCP server when it is not active"
 STORE_BLOCK = "Store the agent app MCP server URL in OpenBao"
 STORE_TASK = "Store the agent app MCP server URL through the shared seed_generated task"
-SEED_INCLUDE_TASK = "Run the shared seed_generated task for the agent app MCP server URL"
+RESOLVE_INCLUDE_TASK = "Resolve the agent app id through the shared app lookup"
 # Name-only tasks: the app name is loggable, the server code and URL are not.
 NAME_ONLY_TASKS = (
-    "Assert exactly one agent app matched the name",
-    "Assert the agent app was found",
     "Report the agent app MCP server changes a live run would make",
     "Report a published agent app MCP server",
-    SEED_INCLUDE_TASK,
 )
 
 
@@ -140,32 +140,42 @@ def test_the_leaf_is_seeded_only_when_the_stored_url_is_missing_or_differs():
 def test_the_url_is_written_through_the_shared_seed_task_into_the_leaf():
     tasks = _yaml(PUBLISH)
     seed = _task(_task(tasks, STORE_BLOCK)["block"], STORE_TASK)
-    include = seed["block"][0]
 
-    assert include["ansible.builtin.include_role"]["tasks_from"] == "seed_generated"
-    assert include["ansible.builtin.include_role"]["name"] == "dryvist.homelab.openbao_secrets"
-    assert seed["vars"]["openbao_secrets_seed_path"] == "{{ dify_docker_agent_mcp_path }}"
-    fields = seed["vars"]["openbao_secrets_seed_fields"]
+    assert seed["ansible.builtin.include_tasks"] == "seed_agent_leaf.yml"
+    assert seed["vars"]["dify_docker_agent_leaf_seed_path"] == "{{ dify_docker_agent_mcp_path }}"
+    fields = seed["vars"]["dify_docker_agent_leaf_seed_fields"]
     assert len(fields) == 1
     assert fields[0]["name"] == "url"
     assert fields[0]["value"] == "{{ dify_docker_agent_mcp_url }}"
     # A stored URL that differs from the seeded one must be rewritten.
-    assert seed["vars"]["openbao_secrets_seed_rotate_fields"] == ["url"]
-    assert seed["vars"]["openbao_secrets_seed_register"] == "dify_docker_agent_mcp_seed_result"
+    assert seed["vars"]["dify_docker_agent_leaf_seed_rotate_fields"] == ["url"]
+    assert seed["vars"]["dify_docker_agent_leaf_seed_register"] == "dify_docker_agent_mcp_seed_result"
     assert seed["no_log"] is True
+
+    seed_block = next(task for task in _yaml(SEED) if "block" in task)
+    seed_task = seed_block["block"][0]
+    include = seed_task["block"][0]
+    assert include["ansible.builtin.include_role"]["tasks_from"] == "seed_generated"
+    assert include["ansible.builtin.include_role"]["name"] == "dryvist.homelab.openbao_secrets"
+    assert seed_task["vars"]["openbao_secrets_seed_path"] == "{{ dify_docker_agent_leaf_seed_path }}"
+    assert seed_task["no_log"] is True
 
 
 def test_the_leaf_read_matches_the_agent_app_api_key_read():
-    read = _task(_yaml(PUBLISH), "Read the stored agent app MCP server URL from OpenBao")[
-        "community.hashi_vault.vault_kv2_get"
-    ]
+    read = next(
+        task for task in _yaml(READ) if "community.hashi_vault.vault_kv2_get" in task
+    )["community.hashi_vault.vault_kv2_get"]
 
     assert read["auth_method"] == "token"
     assert read["token"] == "{{ openbao_secrets_converge_writer_token }}"
     assert read["engine_mount_point"] == "{{ openbao_secrets_kv_mount }}"
-    assert read["path"] == "{{ dify_docker_agent_mcp_path }}"
+    assert read["path"] == "{{ dify_docker_agent_leaf_read_path }}"
     assert read["validate_certs"] == "{{ dify_docker_bao_validate_certs }}"
     assert load_defaults()["dify_docker_bao_validate_certs"] is True
+
+    caller = _task(_yaml(PUBLISH), "Read the stored agent app MCP server URL from OpenBao")
+    assert caller["vars"]["dify_docker_agent_leaf_read_path"] == "{{ dify_docker_agent_mcp_path }}"
+    assert caller["vars"]["dify_docker_agent_leaf_read_register"] == "dify_docker_agent_mcp_lookup"
 
 
 def test_every_task_touching_the_server_code_or_url_is_no_log():
@@ -176,6 +186,14 @@ def test_every_task_touching_the_server_code_or_url_is_no_log():
             continue
         assert task.get("no_log") is True, task["name"]
     assert _task(_task(tasks, STORE_BLOCK)["block"], STORE_TASK)["no_log"] is True
+
+    # The shared helpers no_log every task that receives, holds or writes the
+    # server code or URL; the resolve asserts stay loggable on app names only.
+    shared_read = [task for task in _yaml(READ) if "community.hashi_vault.vault_kv2_get" in task]
+    assert all(task["no_log"] is True for task in shared_read)
+    seed_block = next(task for task in _yaml(SEED) if "block" in task)
+    assert seed_block["block"][0]["no_log"] is True
+    assert all(task["no_log"] is True for task in seed_block["rescue"])
 
 
 def test_check_mode_reports_by_app_name_only():
@@ -206,12 +224,11 @@ def test_the_url_is_built_from_the_role_public_url_and_the_mcp_route():
 
 def test_the_app_lookup_uses_the_page_cap():
     tasks = _yaml(PUBLISH)
-    page_loop = next(
-        task
-        for task in tasks
-        if task.get("ansible.builtin.include_tasks") == "list_agent_app_page.yml"
-    )
+    resolve_include = _task(tasks, RESOLVE_INCLUDE_TASK)
+    assert resolve_include["ansible.builtin.include_tasks"] == "resolve_agent_app_id.yml"
+    assert resolve_include["no_log"] is True
 
+    page_loop = _task(_yaml(RESOLVE), "List Dify apps page by page until no more pages remain")
     assert page_loop["loop"] == "{{ range(1, (dify_docker_app_lookup_max_pages | int) + 1) | list }}"
     assert page_loop["loop_control"] == {"loop_var": "dify_docker_app_page"}
     assert page_loop["no_log"] is True
@@ -219,18 +236,20 @@ def test_the_app_lookup_uses_the_page_cap():
 
 def test_duplicate_and_missing_apps_fail_before_the_server_is_touched():
     tasks = _yaml(PUBLISH)
-    duplicate = _task(tasks, "Assert exactly one agent app matched the name")
-    missing = _task(tasks, "Assert the agent app was found")
+    resolve_tasks = _yaml(RESOLVE)
+    duplicate = _task(resolve_tasks, "Assert exactly one Dify agent app matched the name")
+    missing = _task(resolve_tasks, "Assert the Dify agent app was found")
     first_api_call = tasks.index(_task(tasks, "Read the agent app MCP server"))
 
     assert duplicate["ansible.builtin.assert"]["that"] == [
-        "dify_docker_agent_mcp_app_matches | length <= 1"
+        "dify_docker_agent_app_matches | length <= 1"
     ]
     assert "{{ dify_docker_dsl_name }}" in duplicate["ansible.builtin.assert"]["fail_msg"]
-    assert missing["ansible.builtin.assert"]["that"] == ["dify_docker_agent_mcp_app_id | length > 0"]
+    assert missing["ansible.builtin.assert"]["that"] == ["dify_docker_agent_app_id | length > 0"]
     assert "{{ dify_docker_dsl_name }}" in missing["ansible.builtin.assert"]["fail_msg"]
-    assert tasks.index(duplicate) < first_api_call
-    assert tasks.index(missing) < first_api_call
+    # The shared asserts run inside the lookup, which the publish includes
+    # before its first server API call.
+    assert tasks.index(_task(tasks, RESOLVE_INCLUDE_TASK)) < first_api_call
 
 
 def test_the_nginx_template_routes_mcp_to_the_api():
@@ -238,6 +257,33 @@ def test_the_nginx_template_routes_mcp_to_the_api():
 
     assert "location /mcp {" in text
     body = text.split("location /mcp {", 1)[1].split("\n    }", 1)[0]
-    assert body.strip() == "proxy_pass http://api:{{ dify_docker_api_port }};"
+    assert "proxy_pass http://api:{{ dify_docker_api_port }};" in body
     # Same trimmed style as the existing API path blocks.
     assert "location /triggers {" in text and "location /v1 {" in text
+
+
+def _includes(items):
+    """Collect include_tasks targets from every nesting level of a task list."""
+    for task in items or []:
+        if not isinstance(task, dict):
+            continue
+        if "ansible.builtin.include_tasks" in task:
+            yield task["ansible.builtin.include_tasks"]
+        for section in ("block", "rescue", "always"):
+            yield from _includes(task.get(section))
+
+
+def test_both_callers_share_the_helpers_and_mcp_access_log_is_off():
+    task_dir = ROOT / "roles/dify_docker/tasks"
+    helpers = ("resolve_agent_app_id.yml", "read_agent_leaf.yml", "seed_agent_leaf.yml")
+
+    for caller in ("ensure_agent_app_api_key.yml", "publish_agent_mcp.yml"):
+        tasks = _yaml(task_dir / caller)
+        includes = set(_includes(tasks))
+        for helper in helpers:
+            assert helper in includes, (caller, helper)
+
+    # The server code in the request path is a bearer secret; nginx must not
+    # log any request to it.
+    body = NGINX.read_text(encoding="utf-8").split("location /mcp {", 1)[1].split("\n    }", 1)[0]
+    assert "access_log off;" in body

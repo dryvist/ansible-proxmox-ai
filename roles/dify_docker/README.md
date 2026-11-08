@@ -167,22 +167,15 @@ verified against that release's source.
 ## Agent MCP server publishing
 
 `dify_docker_publish_agent_mcp` (default `false`) publishes every catalog
-agent app as its native Dify MCP server after the DSL import, so agents reach
-each other by name through the gateway in a later step. The app id is resolved
-through the same paged exact-name lookup as the API keys, the console MCP
-server is created only when the app has none, and a server Dify reports as not
-`active` is activated. Each server's URL — `dify_docker_public_url` plus
-Dify's `/mcp/server/<server_code>/mcp` route, served through the stack's own
-nginx `/mcp` location — is stored in that app's OpenBao leaf
-`dify_docker_agent_mcp_path` (`dify_docker_openbao_path` plus
-`/agent-mcp/` plus the catalog entry name) as the field `url`. The
-`server_code` inside the URL is a bearer secret: it reaches only that leaf and
-every task that receives, holds or writes it runs with `no_log`. The leaf is
-seeded through the shared `openbao_secrets` seed task only when the stored
-`url` is missing or differs, so an unchanged app costs no write. A sliced run
-(`dify_docker_agent_dsl_select`) publishes only its selected apps. Check mode
-makes no POST, PUT or storage write and reports what a live run would change,
-by app name only.
+agent app as its native Dify MCP server after the DSL import, and stores each
+server's URL at `dify_docker_agent_mcp_path`. The app id is resolved through
+the same paged exact-name lookup as the API keys, the console MCP server is
+created only when the app has none, and a server Dify reports as not `active`
+is activated. The stored `url` is written through the shared `openbao_secrets`
+seed task only when it is missing or differs, so an unchanged app costs no
+write. A sliced run (`dify_docker_agent_dsl_select`) publishes only its
+selected apps. Check mode makes no POST, PUT or storage write and reports
+what a live run would change, by app name only.
 
 ## What in this stack needs protecting
 

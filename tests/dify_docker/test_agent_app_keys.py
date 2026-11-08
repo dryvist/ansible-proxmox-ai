@@ -12,14 +12,17 @@ ROOT = Path(__file__).resolve().parents[2]
 IMPORT_TASKS = ROOT / "roles/dify_docker/tasks/import_agent_dsl.yml"
 API_KEY_TASKS = ROOT / "roles/dify_docker/tasks/ensure_agent_app_api_key.yml"
 APP_PAGE_TASKS = ROOT / "roles/dify_docker/tasks/list_agent_app_page.yml"
+RESOLVE_TASKS = ROOT / "roles/dify_docker/tasks/resolve_agent_app_id.yml"
+READ_TASKS = ROOT / "roles/dify_docker/tasks/read_agent_leaf.yml"
+SEED_TASKS = ROOT / "roles/dify_docker/tasks/seed_agent_leaf.yml"
 
 READ_TASK = "Read the stored Dify agent app API key from OpenBao"
 CREATE_TASK = "Create the Dify agent app API key only when OpenBao has none"
 STORE_TASK = "Store the Dify agent app API key through the shared seed_generated task"
 APP_ASSERT_TASK = "Assert the Dify agent app was found"
 DUPLICATE_APP_ASSERT_MSG = (
-    "More than one Dify app has the agent name; resolve the duplicate before "
-    "provisioning the agent key."
+    'More than one Dify app has the agent name "{{ dify_docker_dsl_name }}"; '
+    "resolve the duplicate before continuing."
 )
 
 
@@ -64,7 +67,18 @@ def test_token_tasks_are_secret_safe_and_create_only_when_missing():
     assert by_name[STORE_TASK]["no_log"] is True
     assert top_level_by_name[READ_TASK]["no_log"] is True
 
-    assert "community.hashi_vault.vault_kv2_get" in top_level_by_name[READ_TASK]
+    # The leaf read lives in the shared file; the caller binds the API-key
+    # leaf path and the register name the create condition reads.
+    read_include = top_level_by_name[READ_TASK]
+    assert read_include["ansible.builtin.include_tasks"] == "read_agent_leaf.yml"
+    assert read_include["vars"] == {
+        "dify_docker_agent_leaf_read_path": "{{ dify_docker_agent_app_api_key_path }}",
+        "dify_docker_agent_leaf_read_register": "dify_docker_agent_app_api_key_lookup",
+    }
+    shared_read = next(task for task in _yaml(READ_TASKS) if "community.hashi_vault.vault_kv2_get" in task)
+    assert "community.hashi_vault.vault_kv2_get" in shared_read
+    assert shared_read["no_log"] is True
+
     assert top_level_by_name[CREATE_TASK]["ansible.builtin.uri"]["method"] == "POST"
     assert top_level_by_name[CREATE_TASK]["ansible.builtin.uri"]["status_code"] == 201
     assert top_level_by_name[CREATE_TASK]["when"] == [
@@ -75,52 +89,57 @@ def test_token_tasks_are_secret_safe_and_create_only_when_missing():
     assert api_key_block["when"] == "dify_docker_agent_app_api_key_create.status | default(0) == 201"
 
     seed = by_name[STORE_TASK]
-    include = next(task for task in seed["block"] if "ansible.builtin.include_role" in task)
-    assert include["ansible.builtin.include_role"]["tasks_from"] == "seed_generated"
-    fields = seed["vars"]["openbao_secrets_seed_fields"]
+    fields = seed["vars"]["dify_docker_agent_leaf_seed_fields"]
     assert fields[0]["name"] == "api_key"
     assert fields[0]["value"] == "{{ dify_docker_agent_app_api_key_create.json.token }}"
-    assert seed["vars"]["openbao_secrets_seed_path"] == "{{ dify_docker_agent_app_api_key_path }}"
+    assert seed["vars"]["dify_docker_agent_leaf_seed_path"] == "{{ dify_docker_agent_app_api_key_path }}"
 
 
 def test_seed_rescue_reads_leaf_before_deleting_created_key():
     tasks = _yaml(API_KEY_TASKS)
     api_key_block = next(task for task in tasks if "block" in task)
     top_level_by_name = {task["name"]: task for task in tasks}
-    block_names = {task["name"] for task in api_key_block["block"]}
-    rescue = api_key_block["rescue"]
 
     assert CREATE_TASK in top_level_by_name
-    assert block_names == {STORE_TASK}
+    assert len(api_key_block["block"]) == 1
+
+    seed_block = next(task for task in _yaml(SEED_TASKS) if "block" in task)
+    rescue = seed_block["rescue"]
+
     assert len(rescue) == 3
     readback, delete, fail = rescue
     assert "community.hashi_vault.vault_kv2_get" in readback
-    assert readback["register"] == "dify_docker_agent_app_api_key_readback"
-    assert readback["community.hashi_vault.vault_kv2_get"]["path"] == "{{ dify_docker_agent_app_api_key_path }}"
+    assert readback["register"] == "dify_docker_agent_leaf_seed_readback"
+    assert readback["community.hashi_vault.vault_kv2_get"]["path"] == "{{ dify_docker_agent_leaf_seed_path }}"
     assert readback["no_log"] is True
     assert delete["ansible.builtin.uri"]["method"] == "DELETE"
     assert delete["ansible.builtin.uri"]["status_code"] == 204
     assert delete["ansible.builtin.uri"]["headers"] == top_level_by_name[CREATE_TASK][
         "ansible.builtin.uri"
     ]["headers"]
-    assert delete["when"] == (
-        "((dify_docker_agent_app_api_key_readback.secret | default({})).api_key "
-        "| default('', true)) != dify_docker_agent_app_api_key_create.json.token"
-    )
+    assert delete["ansible.builtin.uri"]["url"] == "{{ dify_docker_agent_leaf_seed_rollback_url }}"
+    # The rollback only runs when a caller bound one and the leaf does not
+    # hold the value that caller created.
+    assert "dify_docker_agent_leaf_seed_rollback_url is defined" in delete["when"]
+    assert "dify_docker_agent_leaf_seed_fields[0].name" in delete["when"]
+    assert "dify_docker_agent_leaf_seed_fields[0].value" in delete["when"]
     assert delete["no_log"] is True
-    delete_url = delete["ansible.builtin.uri"]["url"]
-    assert delete_url.startswith(
-        "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/api-keys/"
-    )
-    assert "dify_docker_agent_app_api_key_create.json.id" in delete_url
     assert fail["ansible.builtin.fail"]["msg"] == (
-        "The Dify agent app API key could not be stored in OpenBao."
+        "The agent app leaf could not be stored in OpenBao."
     )
     assert fail["no_log"] is True
 
+    # The API-key caller binds the rollback to the key Dify just created.
+    store = next(task for task in api_key_block["block"] if task["name"] == STORE_TASK)
+    rollback_url = store["vars"]["dify_docker_agent_leaf_seed_rollback_url"]
+    assert rollback_url.startswith(
+        "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_agent_app_id }}/api-keys/"
+    )
+    assert "dify_docker_agent_app_api_key_create.json.id" in rollback_url
+
 
 def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
-    tasks = _yaml(API_KEY_TASKS)
+    tasks = _yaml(RESOLVE_TASKS)
     page_tasks = _yaml(APP_PAGE_TASKS)
     initialize = next(
         task for task in tasks if "dify_docker_agent_apps_all" in task.get("ansible.builtin.set_fact", {})
@@ -163,7 +182,7 @@ def test_app_list_is_filtered_by_dsl_name_and_resolution_stays_exact():
 def test_app_list_pagination_is_a_bounded_loop_with_cap_and_shape_guards():
     # Recursive include_tasks cannot reference its own page variable: Ansible
     # raises "Recursive loop detected", so pages come from a bounded loop.
-    tasks = _yaml(API_KEY_TASKS)
+    tasks = _yaml(RESOLVE_TASKS)
     page_tasks = _yaml(APP_PAGE_TASKS)
     page_loop = next(
         task for task in tasks if task.get("ansible.builtin.include_tasks") == "list_agent_app_page.yml"
@@ -207,7 +226,7 @@ def test_app_list_pagination_is_a_bounded_loop_with_cap_and_shape_guards():
 
 
 def test_duplicate_agent_apps_fail_before_agent_app_id_is_used():
-    tasks = _yaml(API_KEY_TASKS)
+    tasks = _yaml(RESOLVE_TASKS)
     uniqueness_assertions = [
         (index, task)
         for index, task in enumerate(tasks)
@@ -231,7 +250,7 @@ def test_duplicate_agent_apps_fail_before_agent_app_id_is_used():
 
 
 def test_missing_agent_app_fails_with_assert():
-    tasks = _yaml(API_KEY_TASKS)
+    tasks = _yaml(RESOLVE_TASKS)
     resolve_index = next(
         index for index, task in enumerate(tasks) if task["name"] == "Resolve the Dify agent app id by name"
     )
@@ -250,7 +269,7 @@ def test_missing_agent_app_fails_with_assert():
 
 
 def test_exact_name_uniqueness_uses_apps_aggregated_from_all_pages():
-    tasks = _yaml(API_KEY_TASKS)
+    tasks = _yaml(RESOLVE_TASKS)
     page_tasks = _yaml(APP_PAGE_TASKS)
     accumulate = next(
         task for task in page_tasks if task["name"] == "Accumulate this page of Dify apps"
@@ -327,11 +346,10 @@ def test_api_key_leaf_is_derived_from_the_dify_openbao_base_path():
 
 
 def test_openbao_reads_take_validate_certs_from_a_role_default():
-    tasks = _yaml(API_KEY_TASKS)
-    api_key_block = next(task for task in tasks if "block" in task)
+    seed_block = next(task for task in _yaml(SEED_TASKS) if "block" in task)
     reads = [
         task["community.hashi_vault.vault_kv2_get"]
-        for task in tasks + api_key_block["rescue"]
+        for task in list(_yaml(READ_TASKS)) + seed_block["rescue"]
         if "community.hashi_vault.vault_kv2_get" in task
     ]
 
@@ -354,5 +372,5 @@ def test_every_app_lookup_caller_uses_the_page_cap():
         if isinstance(task, dict) and task.get("ansible.builtin.include_tasks") == "list_agent_app_page.yml"
     ]
 
-    assert len(callers) == 4
+    assert len(callers) == 3
     assert all(task["loop"] == loop for task in callers)

@@ -30,9 +30,15 @@ def test_no_include_role_task_sets_connection():
 
 
 def test_agent_app_api_key_seed_runs_on_the_controller():
-    tasks = list(_tasks(yaml.safe_load((TASKS / "ensure_agent_app_api_key.yml").read_text(encoding="utf-8"))))
+    caller_tasks = list(_tasks(yaml.safe_load((TASKS / "ensure_agent_app_api_key.yml").read_text(encoding="utf-8"))))
+    caller = next(
+        task for task in caller_tasks if task.get("name", "").startswith("Store the Dify agent app API key through")
+    )
+    assert caller["ansible.builtin.include_tasks"] == "seed_agent_leaf.yml"
+
+    tasks = list(_tasks(yaml.safe_load((TASKS / "seed_agent_leaf.yml").read_text(encoding="utf-8"))))
     wrapper = next(
-        task for task in tasks if task.get("name", "").startswith("Store the Dify agent app API key through")
+        task for task in tasks if task.get("name", "").startswith("Store the agent app leaf through")
     )
     assert wrapper["delegate_to"] == "localhost" and wrapper["connection"] == "local"
     assert any(INCLUDES & task.keys() for task in wrapper["block"])
