@@ -90,9 +90,12 @@ def test_seed_rescue_reads_leaf_before_deleting_created_key():
 
     assert len(rescue) == 3
     readback, delete, fail = rescue
-    assert "community.hashi_vault.vault_kv2_get" in readback
-    assert readback["register"] == "dify_docker_agent_leaf_seed_readback"
-    assert readback["community.hashi_vault.vault_kv2_get"]["path"] == "{{ dify_docker_agent_leaf_seed_path }}"
+    # The read-back reuses the shared leaf read under the register the rollback reads.
+    assert readback["ansible.builtin.include_tasks"] == "read_agent_leaf.yml"
+    assert readback["vars"] == {
+        "dify_docker_agent_leaf_read_path": "{{ dify_docker_agent_leaf_seed_path }}",
+        "dify_docker_agent_leaf_read_register": "dify_docker_agent_leaf_seed_readback",
+    }
     assert readback["no_log"] is True
     assert delete["ansible.builtin.uri"]["method"] == "DELETE"
     assert delete["ansible.builtin.uri"]["status_code"] == 204
@@ -129,13 +132,13 @@ def test_api_key_leaf_is_derived_from_the_dify_openbao_base_path():
 
 
 def test_openbao_reads_take_validate_certs_from_a_role_default():
-    seed_block = next(task for task in _yaml(SEED_TASKS) if "block" in task)
+    # Every OpenBao leaf read, the seed read-back included, goes through read_agent_leaf.yml.
     reads = [
         task["community.hashi_vault.vault_kv2_get"]
-        for task in list(_yaml(READ_TASKS)) + seed_block["rescue"]
+        for task in _yaml(READ_TASKS)
         if "community.hashi_vault.vault_kv2_get" in task
     ]
 
-    assert len(reads) == 2
+    assert len(reads) == 1
     assert {read["validate_certs"] for read in reads} == {"{{ dify_docker_bao_validate_certs }}"}
     assert load_defaults()["dify_docker_bao_validate_certs"] is True
