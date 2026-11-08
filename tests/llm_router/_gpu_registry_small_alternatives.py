@@ -34,7 +34,7 @@ def assert_small_alternatives(
         assert entry["servable"] is False
         assert entry["route_group"] == "small"
         assert entry["co_resident_only"] is True
-        assert entry["order"] == 2
+        assert entry["order"] == 1
         assert entry["context_window"] + entry["max_output_tokens"] == 65536
         assert artifact["artifact_id"] == artifact_id
         assert artifact["serving_profile"] == profile_name
