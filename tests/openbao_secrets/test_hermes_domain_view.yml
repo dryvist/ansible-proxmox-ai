@@ -35,8 +35,6 @@
       - GH_TOKEN_SECURITY_ALERTS_READ
       - GH_TOKEN_ORG_READ
       - HERMES_VIKUNJA_API_TOKEN
-      - SLACK_BOT_TOKEN
-      - SLACK_APP_TOKEN
       - LLM_ROUTER_MASTER_KEY
     _local_llm: "{{ dict(_fields | zip(_fields | map('regex_replace', '^', 'local-llm:'))) }}"
     _own: "{{ dict(_fields[:-1] | zip(_fields[:-1] | map('regex_replace', '^', 'own:'))) }}"
@@ -51,8 +49,6 @@
       - hermes_agent_github_alerts_token
       - hermes_agent_github_read_token
       - hermes_agent_vikunja_bridge_token
-      - hermes_agent_slack_bot_token
-      - hermes_agent_slack_app_token
     _expected_hermes_paths:
       - ai/hermes
       - ai/mcp/splunk
@@ -100,36 +96,13 @@
     - name: Assert a second identity never inherits local-llm through its own view
       vars:
         hermes_agent_identity: donna
-        hermes_agent_id: donna
-        hermes_agent_env_prefix: DONNA
         bao_local_llm_secrets: "{{ _local_llm }}"
         openbao_secrets_by_domain: {local-llm: "{{ _local_llm }}", donna: "{{ _own }}"}
       ansible.builtin.assert:
         that:
           - hermes_agent_bao.values() | select('search', '^local-llm:') | list == []
           - hermes_agent_bao.WEBHOOK_SECRET == 'own:WEBHOOK_SECRET'
-          - hermes_agent_slack_bot_token == 'own:SLACK_BOT_TOKEN'
-          - hermes_agent_slack_app_token == 'own:SLACK_APP_TOKEN'
         fail_msg: donna's view carries local-llm values.
-
-    - name: Assert Pepper reads the shared Slack fields from its own view
-      vars:
-        hermes_agent_identity: pepper
-        hermes_agent_id: pepper
-        hermes_agent_env_prefix: PEPPER
-        bao_local_llm_secrets: "{{ _local_llm }}"
-        openbao_secrets_by_domain:
-          local-llm: "{{ _local_llm }}"
-          pepper:
-            SLACK_BOT_TOKEN: pepper:bot-token
-            SLACK_APP_TOKEN: pepper:app-token
-            SLACK_PEPPER_BOT_TOKEN: stale-prefixed-bot-token
-            SLACK_PEPPER_APP_TOKEN: stale-prefixed-app-token
-      ansible.builtin.assert:
-        that:
-          - hermes_agent_slack_bot_token == 'pepper:bot-token'
-          - hermes_agent_slack_app_token == 'pepper:app-token'
-        fail_msg: pepper did not read the shared Slack fields from its own view.
 
     - name: Assert private Hermes uses its own view for Slack and shared Splunk access
       vars:

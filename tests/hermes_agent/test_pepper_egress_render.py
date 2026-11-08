@@ -4,15 +4,8 @@ import subprocess
 
 import pytest
 import yaml
-from jinja2.nativetypes import NativeEnvironment
 
-from _pepper_egress_shared import (
-    ROOT,
-    _verify_pepper_proxy_policy,
-    endpoint_store,
-    pepper_roster,
-    pepper_secret_paths,
-)
+from _pepper_egress_shared import ROOT, _verify_pepper_proxy_policy, endpoint_store
 
 @pytest.mark.parametrize('tags,limit,prepared,rendered', [
     ([tag], '', True, True) for tag in yaml.safe_load((ROOT / 'playbooks/agent-egress.yml').read_text())[1]['tags']
@@ -37,8 +30,7 @@ def test_unavailable_client_endpoint_refuses_the_proxy_render(tmp_path, endpoint
     store['status'] = status
     # Even a readable path is insufficient when either endpoint field is absent.
     store['data'] = dict(PEPPER_VAULT_REPO_URL='https://evidence.example.test/repository.git')
-    roster = pepper_roster()
-    pepper_paths = pepper_secret_paths(roster)
+    roster = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/11-roster-domains.yml').read_text())
     task_file = ROOT / 'playbooks/tasks/pepper_egress_endpoints.yml'
     read = yaml.safe_load(task_file.read_text())[0]['block'][0]
     assert read['ansible.builtin.include_role']['name'] == 'dryvist.homelab.openbao_secrets'
@@ -46,16 +38,13 @@ def test_unavailable_client_endpoint_refuses_the_proxy_render(tmp_path, endpoint
     assert read['ansible.builtin.include_role']['apply']['become'] is False
     assert 'delegate_to' not in read and 'become' not in read
     assert read['vars']['ansible_become'] is False
-    domains = read['vars']['openbao_secrets_domains']
-    assert domains == [{
+    assert read['vars']['openbao_secrets_domains'] == [{
         'name': 'pepper',
         'role_id_env': 'OPENBAO_APPROLE_PEPPER_ROLE_ID',
         'secret_id_env': 'OPENBAO_APPROLE_PEPPER_SECRET_ID',
-        'paths': '{{ openbao_secrets_pepper_paths }}',
+        'paths': ['{{ openbao_secrets_pepper_path }}'],
         'required': True,
     }]
-    assert NativeEnvironment().from_string(domains[0]['paths']).render(
-        openbao_secrets_pepper_paths=pepper_paths) == pepper_paths
     assert read['vars']['openbao_secrets_active_groups'] == (
         "{{ openbao_secrets_domain_groups.get('pepper', []) }}")
     assert read['vars']['openbao_secrets_operator_domains'] == []
@@ -63,7 +52,7 @@ def test_unavailable_client_endpoint_refuses_the_proxy_render(tmp_path, endpoint
     playbook = tmp_path / 'verify.yml'
     playbook.write_text(yaml.safe_dump([dict(
         name='Verify unavailable Pepper endpoints', hosts='localhost', gather_facts=False,
-        vars=dict(openbao_secrets_pepper_paths=pepper_paths),
+        vars=dict(openbao_secrets_kv_mount='secret', openbao_secrets_pepper_path=roster['openbao_secrets_pepper_path']),
         tasks=[dict(name='Resolve production endpoint hosts',
                     **{'ansible.builtin.include_tasks': str(task_file)})])]))
     result = subprocess.run(

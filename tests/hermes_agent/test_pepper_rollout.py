@@ -36,36 +36,27 @@ def test_pepper_secret_domain_is_selected_only_for_its_runtime(identities, run_t
     identity_domains = yaml.safe_load((directory / '10-domains-identities.yml').read_text())
     fleet = yaml.safe_load((directory / '10-domains.yml').read_text())
     roster = yaml.safe_load((directory / '11-roster-domains.yml').read_text())
-    seed_vars = yaml.safe_load((directory / '00-seed-vars.yml').read_text())
     static = (fleet['_openbao_secrets_static_domains_fleet']
               + identity_domains['_openbao_secrets_static_domains_identities'])
     # Include an unprovisioned roster entry: only the selected runtime may require its domain.
     context = dict(_openbao_secrets_static_domains=static, ai_agents={'pepper': {'container': 'fixture'}},
                    ai_agent_owner={}, ai_callers={}, openbao_app_agent_tier_reader_domains=[],
                    ansible_play_hosts_all=identities, ansible_run_tags=run_tags, ansible_skip_tags=skip_tags,
-                   openbao_secrets_kv_mount=seed_vars['openbao_secrets_kv_mount'],
                    hostvars={identity: {'hermes_agent_identity': identity} for identity in identities})
     env = NativeEnvironment(undefined=StrictUndefined)
     env.filters.update(intersect=lambda a, b: list(set(a) & set(b)),
                        difference=lambda a, b: list(set(a) - set(b)), bool=bool)
-    context['openbao_secrets_pepper_paths'] = env.from_string(
-        roster['openbao_secrets_pepper_paths']).render(context)
+    context['openbao_secrets_pepper_path'] = roster['openbao_secrets_pepper_path']
     context['hermes_agent_pepper_play_tags'] = roster['hermes_agent_pepper_play_tags']
     context['hermes_agent_pepper_runtime_selected'] = env.from_string(
         roster['hermes_agent_pepper_runtime_selected']).render(context)
     assert context['hermes_agent_pepper_runtime_selected'] is selected
     domains = env.from_string(roster['openbao_secrets_domains']).render(context)
     pepper = [d for d in domains if d['name'] == 'pepper']
-    expected_paths = [
-        {'mount': 'secrets-external', 'path': 'slack/pepper/rw'},
-        {'mount': seed_vars['openbao_secrets_kv_mount'], 'path': 'youtrack/pepper/rw'},
-        {'mount': seed_vars['openbao_secrets_kv_mount'], 'path': 'apps/pepper'},
-    ]
-    assert pepper == ([{'name': 'pepper', 'paths': expected_paths, 'required': True}]
+    assert pepper == ([{'name': 'pepper', 'paths': ['ai/pepper'], 'required': True}]
                       if 'pepper' in identities and selected else [])
     assert [d for d in domains if d['name'] in {s['name'] for s in static}] == static
-    assert all(path != 'ai/pepper'
-               for domain in domains for path in domain['paths'])
+    assert all('ai/pepper' not in d['paths'] for d in domains if d['name'] != 'pepper')
     play = yaml.safe_load((ROOT / 'playbooks/agents.yml').read_text())[0]
     runtime = next(task for task in play['tasks'][0]['block'] if task['name'] == 'Include hermes_agent role')
     for identity in ['pepper', 'hermes', 'hermes-private', 'donna']:

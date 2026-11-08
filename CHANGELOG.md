@@ -1,14 +1,5 @@
 # Changelog
 
-## [2.29.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.29.0...v2.29.1) (2026-11-07)
-
-
-### Bug Fixes
-
-* **hermes:** read the summary cron prompt from the catalog ([#2132](https://github.com/dryvist/ansible-proxmox-ai/issues/2132)) ([d000ca7](https://github.com/dryvist/ansible-proxmox-ai/commit/d000ca77c422666bd9cf88cfb0b5529c39f86912))
-* **laya_systemone:** require the card at start and in the converge ([#2129](https://github.com/dryvist/ansible-proxmox-ai/issues/2129)) ([d0e43cc](https://github.com/dryvist/ansible-proxmox-ai/commit/d0e43cc4088ca8b6738fd9950ba914a96661afa5))
-* **model-policy:** check the router against served weights ([#2125](https://github.com/dryvist/ansible-proxmox-ai/issues/2125)) ([5838420](https://github.com/dryvist/ansible-proxmox-ai/commit/5838420042213bb2a161f0f3ca7e48f81c72ecd8))
-
 ## [2.29.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.28.0...v2.29.0) (2026-11-07)
 
 

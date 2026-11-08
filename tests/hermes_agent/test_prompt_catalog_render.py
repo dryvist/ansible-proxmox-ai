@@ -14,6 +14,7 @@ from _role_files import role_defaults
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PRIVATE = {
+    "hermes_agent_summary_cron_prompt",
     "hermes_agent_voice_learn_cron_prompt",
     "hermes_agent_app_seeding_endpoints",
     "hermes_agent_daily_status_endpoints",
@@ -34,7 +35,7 @@ def test_prompt_sources_preserve_the_original_literal_bytes():
     )
 
 
-def test_defaults_hold_prompt_references_with_only_the_four_private_exceptions():
+def test_defaults_hold_prompt_references_with_only_the_five_private_exceptions():
     found = set()
 
     def check(value, path):
@@ -61,7 +62,7 @@ def test_defaults_hold_prompt_references_with_only_the_four_private_exceptions()
 
 @pytest.mark.parametrize("identity", ["fixture", "alternate"])
 @pytest.mark.parametrize("tags", [None, "hermes_profiles_env", "hermes_units_gateways"])
-def test_every_rendered_cron_body_matches_the_contract_hashes(tmp_path, identity, tags):
+def test_every_rendered_cron_body_matches_the_before_migration_hashes(tmp_path, identity, tags):
     defaults = raw_defaults()
     catalog = tmp_path / "catalog"
     catalog.mkdir()

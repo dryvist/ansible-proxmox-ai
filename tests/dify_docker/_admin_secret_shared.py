@@ -11,9 +11,8 @@ import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 
-from _defaults import DEFAULTS, load_defaults
-
 ROOT =Path(__file__).resolve().parents[2]
+DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 TASKS = ROOT / "roles/dify_docker/tasks/storage_and_secret.yml"
 GROUP_VARS = ROOT / "inventory/group_vars/dify_group.yml"
 SEED_TASK = "Seed the Dify SECRET_KEY through the shared seed_generated task"
@@ -31,8 +30,6 @@ OWNER_EMAIL = "owner-email-marker"
 
 
 def load_yaml(path):
-    if path.is_dir():
-        return load_defaults()
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
@@ -75,7 +72,7 @@ UNANSWERED_SETUP = {"status": -1}
 
 
 def email_gate_context(monkeypatch, query, setup_state):
-    defaults = load_defaults()
+    defaults = load_yaml(DEFAULTS)
     monkeypatch.delenv("DIFY_ADMIN_EMAIL", raising=False)
     return {
         **defaults,

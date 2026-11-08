@@ -1,8 +1,7 @@
 ---
 # =============================================================================
-# Verify the pinned public catalog inputs before reconciling any app. Then list
-# existing apps once; import_agent_dsl.yml uses catalog hashes to decide whether
-# to create, update, or skip each app.
+# Verify the pinned public catalog inputs before importing any app. Then list
+# existing apps once; import_agent_dsl.yml skips names already in the console.
 # =============================================================================
 
 - name: Load the pinned agent DSL catalog settings
@@ -24,61 +23,15 @@
   when:
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
-    - not ansible_check_mode
-  no_log: true
-
-- name: Read the pinned agent DSL catalog manifest into memory for check mode
-  ansible.builtin.uri:
-    url: "{{ dify_docker_agent_dsl_base }}/agents/dify/manifest.json"
-    method: GET
-    status_code: 200
-    return_content: true
-  register: dify_docker_agent_dsl_manifest_check_read
-  check_mode: false
-  changed_when: false
-  when:
-    - dify_docker_provision_model_provider | bool
-    - dify_docker_import_agent_dsls | bool
-    - ansible_check_mode
-  no_log: true
-
-- name: Verify the agent DSL catalog manifest sha256 in check mode
-  ansible.builtin.assert:
-    that:
-      - dify_docker_agent_dsl_manifest_check_read.content | hash('sha256') == dify_docker_agent_dsl_manifest_sha256
-    fail_msg: "The agent DSL catalog manifest did not match its pinned sha256."
-  when:
-    - dify_docker_provision_model_provider | bool
-    - dify_docker_import_agent_dsls | bool
-    - ansible_check_mode
-  no_log: true
-
-- name: Keep the verified agent DSL catalog manifest in memory during check mode
-  ansible.builtin.set_fact:
-    dify_docker_agent_dsl_manifest_content: "{{ dify_docker_agent_dsl_manifest_check_read.content }}"
-  when:
-    - dify_docker_provision_model_provider | bool
-    - dify_docker_import_agent_dsls | bool
-    - ansible_check_mode
   no_log: true
 
 - name: Read the verified agent DSL catalog manifest
   ansible.builtin.slurp:
     src: "/tmp/dify-agent-dsl-manifest-{{ dify_docker_agent_dsl_commit }}.json"
-  register: dify_docker_agent_dsl_manifest_file_read
+  register: dify_docker_agent_dsl_manifest_raw
   when:
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
-    - not ansible_check_mode
-  no_log: true
-
-- name: Keep the verified agent DSL catalog manifest from the live file
-  ansible.builtin.set_fact:
-    dify_docker_agent_dsl_manifest_content: "{{ dify_docker_agent_dsl_manifest_file_read.content | b64decode }}"
-  when:
-    - dify_docker_provision_model_provider | bool
-    - dify_docker_import_agent_dsls | bool
-    - not ansible_check_mode
   no_log: true
 
 - name: Initialize catalog-derived agent DSL sources
@@ -95,7 +48,7 @@
       {{ dify_docker_agent_dsls
          + [dify_docker_agent_dsl_manifest_entry
             | combine({'url': dify_docker_agent_dsl_base ~ '/' ~ dify_docker_agent_dsl_manifest_entry.path})] }}
-  loop: "{{ dify_docker_agent_dsl_manifest_content | from_json }}"
+  loop: "{{ dify_docker_agent_dsl_manifest_raw.content | b64decode | from_json }}"
   loop_control:
     loop_var: dify_docker_agent_dsl_manifest_entry
     label: "{{ dify_docker_agent_dsl_manifest_entry.name }}"
@@ -113,7 +66,6 @@
   when:
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
-    - not ansible_check_mode
   no_log: true
 
 - name: Fetch and verify all catalog agent DSLs before importing any
@@ -131,10 +83,9 @@
   when:
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
-    - not ansible_check_mode
   no_log: true
 
-- name: List first page of existing Dify apps (agent DSL catalog hash check)
+- name: List existing Dify apps (agent DSL import idempotency check)
   ansible.builtin.uri:
     url: "{{ dify_docker_console_api_base }}/apps?page=1&limit=100"
     method: GET
@@ -150,71 +101,10 @@
     - dify_docker_provision_model_provider | bool
     - dify_docker_import_agent_dsls | bool
   changed_when: false
+  failed_when: false
   no_log: true
 
-- name: Validate the first Dify app page
-  ansible.builtin.assert:
-    that:
-      - dify_docker_dsl_apps_list.json.total is integer
-      - dify_docker_dsl_apps_list.json.limit is integer
-      - dify_docker_dsl_apps_list.json.limit > 0
-      - dify_docker_dsl_apps_list.json.data is sequence
-      - dify_docker_dsl_apps_list.json.data | length <= dify_docker_dsl_apps_list.json.limit
-      - dify_docker_dsl_apps_list.json.total >= dify_docker_dsl_apps_list.json.data | length
-      - dify_docker_dsl_apps_list.json.has_more is boolean
-    fail_msg: "Dify returned an invalid paginated app list."
-  when:
-    - dify_docker_provision_model_provider | bool
-    - dify_docker_import_agent_dsls | bool
-  no_log: true
-
-- name: Initialize the catalog Dify app list and page count
-  ansible.builtin.set_fact:
-    dify_docker_dsl_apps_all: "{{ dify_docker_dsl_apps_list.json.data }}"
-    dify_docker_dsl_apps_total: "{{ dify_docker_dsl_apps_list.json.total | int }}"
-    dify_docker_dsl_apps_limit: "{{ dify_docker_dsl_apps_list.json.limit | int }}"
-    dify_docker_dsl_apps_page_count: >-
-      {{ ((dify_docker_dsl_apps_list.json.total | int)
-          + (dify_docker_dsl_apps_list.json.limit | int) - 1)
-         // (dify_docker_dsl_apps_list.json.limit | int) }}
-  when:
-    - dify_docker_provision_model_provider | bool
-    - dify_docker_import_agent_dsls | bool
-  no_log: true
-
-- name: Check the catalog Dify app page count is addressable
-  ansible.builtin.assert:
-    that:
-      - dify_docker_dsl_apps_page_count | int <= 99999
-    fail_msg: "Dify reported more apps than its app-list API can address."
-  when:
-    - dify_docker_provision_model_provider | bool
-    - dify_docker_import_agent_dsls | bool
-  no_log: true
-
-- name: List every remaining Dify app page
-  ansible.builtin.include_tasks: list_catalog_app_page.yml
-  loop: "{{ range(2, (dify_docker_dsl_apps_page_count | int) + 1) | list }}"
-  loop_control:
-    loop_var: dify_docker_dsl_page
-  when:
-    - dify_docker_provision_model_provider | bool
-    - dify_docker_import_agent_dsls | bool
-  no_log: true
-
-- name: Verify every Dify app was listed exactly once
-  ansible.builtin.assert:
-    that:
-      - dify_docker_dsl_apps_all | length == dify_docker_dsl_apps_total | int
-      - (dify_docker_dsl_apps_all | map(attribute='id') | unique | list | length)
-        == (dify_docker_dsl_apps_total | int)
-    fail_msg: "Dify app pagination did not return every app exactly once."
-  when:
-    - dify_docker_provision_model_provider | bool
-    - dify_docker_import_agent_dsls | bool
-  no_log: true
-
-- name: Reconcile each catalog agent DSL
+- name: Import each catalog agent DSL (skips existing app names)
   ansible.builtin.include_tasks: import_agent_dsl.yml
   loop: "{{ dify_docker_agent_dsls }}"
   loop_control:
@@ -227,9 +117,8 @@
 
 # Private entries come from the converge-time variable and are fetched with the
 # bearer token. They are marked here so an entry cannot be fetched without it,
-# and are skipped while the token is empty. Check mode reads them to preview the
-# same create or overwrite decision as the public catalog.
-- name: Reconcile each private agent DSL
+# and are skipped while the token is empty.
+- name: Import each private agent DSL (skips existing app names)
   ansible.builtin.include_tasks: import_agent_dsl.yml
   loop: "{{ dify_docker_private_agent_dsls | map('combine', {'private': true}) | list }}"
   loop_control:
@@ -240,6 +129,7 @@
     - dify_docker_import_agent_dsls | bool
     - dify_docker_dsl_apps_list.status | default(0) == 200
     - dify_docker_private_agent_dsl_token | length > 0
+    - not ansible_check_mode
 
 - name: Report private agent DSLs skipped for a missing token
   ansible.builtin.debug:

@@ -5,13 +5,12 @@ import re
 
 import yaml
 
-from _defaults import load_defaults
-
 
 ROOT = Path(__file__).resolve().parents[2]
 TASK_DIR = ROOT / "roles/dify_docker/tasks"
 MAIN_TASKS = TASK_DIR / "main.yml"
 UPGRADE_TASKS = TASK_DIR / "upgrade_safety.yml"
+DEFAULTS = ROOT / "roles/dify_docker/defaults/main.yml"
 COMPOSE_TEMPLATE = ROOT / "roles/dify_docker/templates/docker-compose.yml.j2"
 CONFIG_TASKS = TASK_DIR / "config_and_deploy.yml"
 COMPOSE_TEST = ROOT / "tests/dify_docker/test_compose_ssr_api_url.yml"
@@ -143,7 +142,7 @@ def test_backup_preflight_and_all_live_backups_precede_drain():
     assert block_tasks.index(retention) > block_tasks.index(
         _task(block_tasks, "Verify the cold Weaviate pre-upgrade archive integrity")
     )
-    defaults = load_defaults()
+    defaults = yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))
     assert defaults["dify_docker_upgrade_backup_retention_count"] == 3
 
     timeout = defaults["dify_docker_stop_timeout_seconds"]
@@ -186,45 +185,3 @@ def test_password_pepper_is_preserved_from_existing_compose_and_rendered_only_wh
     test_play = COMPOSE_TEST.read_text(encoding="utf-8")
     assert "environment.get('PASSWORD_PEPPER') is none" in test_play
     assert "fixture-password-pepper" in test_play
-
-
-def test_weaviate_backup_id_uses_only_characters_weaviate_accepts():
-    # Weaviate refuses a backup id outside [a-z0-9_-] with HTTP 422; the timestamp carries an uppercase "T".
-    from jinja2 import Environment
-
-    prepare = yaml.safe_load((TASK_DIR / "upgrade_backup_prepare.yml").read_text(encoding="utf-8"))
-    expression = next(
-        task["ansible.builtin.set_fact"]["dify_docker_weaviate_backup_id"]
-        for task in prepare
-        if "dify_docker_weaviate_backup_id" in task.get("ansible.builtin.set_fact", {})
-    )
-    backup_id = Environment().from_string(expression).render(
-        dify_docker_upgrade_backup_timestamp="20261108T001500"
-    ).strip()
-    assert backup_id == "pre-upgrade-20261108t001500"
-    assert re.fullmatch(r"[a-z0-9_-]+", backup_id)
-
-
-def test_live_weaviate_backup_needs_the_module_and_a_collection():
-    # Weaviate answers a backup that selects no collections with HTTP 422.
-    from jinja2 import Environment
-
-    tasks = yaml.safe_load((TASK_DIR / "upgrade_backup_weaviate.yml").read_text(encoding="utf-8"))
-    schema_read = _task(tasks, "Read the Weaviate collections")
-    assert schema_read["no_log"] is True
-    assert schema_read["ansible.builtin.uri"]["use_proxy"] is False
-    expression = _task(tasks, "Detect whether Weaviate supports filesystem backups")["ansible.builtin.set_fact"][
-        "dify_docker_weaviate_backup_module_available"
-    ]
-
-    def render(modules, classes):
-        return Environment().from_string(expression).render(
-            dify_docker_weaviate_meta={"json": {"modules": modules}},
-            dify_docker_weaviate_schema={"json": {"classes": classes}},
-        ).strip()
-
-    module = {"backup-filesystem": {}}
-    assert render(module, [{"class": "Vector_index"}]) == "True"
-    assert render(module, []) == "False"
-    assert render(module, None) == "False"
-    assert render({}, [{"class": "Vector_index"}]) == "False"

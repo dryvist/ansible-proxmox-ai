@@ -16,23 +16,6 @@ from _role_files import role_defaults
 ROOT = Path(__file__).resolve().parents[2]
 MISSING_ENDPOINT_ERROR = "Pepper proxy requires both client endpoint URLs from Pepper's identity domain"
 INVALID_HOST_ERROR = 'Pepper egress requires a DNS hostname'
-PEPPER_SECRET_PATHS = {
-    '/v1/secrets-external/data/slack/pepper/rw': ('SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'),
-    '/v1/secret/data/youtrack/pepper/rw': ('YOUTRACK_MCP_URL', 'YOUTRACK_MCP_TOKEN'),
-    '/v1/secret/data/apps/pepper': ('pepper_llm_router_key', 'PEPPER_VAULT_REPO_URL'),
-}
-
-
-def pepper_roster():
-    return yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/11-roster-domains.yml').read_text())
-
-
-def pepper_secret_paths(roster=None):
-    roster = roster or pepper_roster()
-    seed_vars = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/00-seed-vars.yml').read_text())
-    return NativeEnvironment().from_string(roster['openbao_secrets_pepper_paths']).render(
-        openbao_secrets_kv_mount=seed_vars['openbao_secrets_kv_mount'])
-
 
 @pytest.fixture
 def endpoint_store():
@@ -48,12 +31,10 @@ def endpoint_store():
             elif path == '/v1/auth/token/lookup-self':
                 assert self.headers.get('X-Vault-Token') == 'fixture-approle-token'
                 status, data = 200, {'data': {'policies': ['fixture-reader']}}
-            elif path in PEPPER_SECRET_PATHS:
+            elif path == '/v1/secret/data/ai/pepper':
                 state['read_tokens'].append(self.headers.get('X-Vault-Token'))
                 assert self.headers.get('X-Vault-Token') == 'fixture-approle-token'
-                values = {field: state['data'][field]
-                          for field in PEPPER_SECRET_PATHS[path] if field in state['data']}
-                status, data = state['status'], {'data': {'data': values, 'metadata': {}}}
+                status, data = state['status'], {'data': {'data': state['data'], 'metadata': {}}}
             else:
                 status, data = 404, {'errors': ['Unexpected fixture path']}
             self.send_response(status)
@@ -99,23 +80,15 @@ def endpoint_store():
 def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid, tags, limit,
                                 prepared=False, rendered=True, expected_error=None):
     address, store = endpoint_store
-    store['data'] = dict(
-        PEPPER_VAULT_REPO_URL=vault,
-        YOUTRACK_MCP_URL=youtrack,
-        YOUTRACK_MCP_TOKEN='fixture-private-token',
-        SLACK_BOT_TOKEN='fixture-slack-bot-token',
-        SLACK_APP_TOKEN='fixture-slack-app-token',
-        pepper_llm_router_key='fixture-router-key',
-    )
+    store['data'] = dict(PEPPER_VAULT_REPO_URL=vault, YOUTRACK_MCP_URL=youtrack,
+                         YOUTRACK_MCP_TOKEN='fixture-private-token')
     defaults = role_defaults(ROOT / 'roles/agent_guest')
     defaults.update(yaml.safe_load((ROOT / 'roles/squid/defaults/main.yml').read_text()))
     endpoints = dict(
         # No agent facts, secrets or client hostname inventory are available.
         hermes_agent_bao="{{ undef('The proxy cannot use the agent play secret view') }}",
     )
-    roster = pepper_roster()
-    pepper_paths = pepper_secret_paths(roster)
-    seed_vars = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/00-seed-vars.yml').read_text())
+    roster = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/11-roster-domains.yml').read_text())
     domain_groups = NativeEnvironment().from_string(
         roster['openbao_secrets_domain_groups']
     ).render(ai_agents={'pepper': {'container': 'fixture-pepper'}})
@@ -124,8 +97,7 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
         agent_guest_proxy_host='proxy.example.test', agent_guest_proxy_port=3128,
         agent_guest_no_proxy='{{ agent_guest_loopback_no_proxy }}',
         hermes_agent_pepper_openbao_host='secrets.example.test',
-        openbao_secrets_kv_mount=seed_vars['openbao_secrets_kv_mount'],
-        openbao_secrets_pepper_paths=pepper_paths,
+        openbao_secrets_kv_mount='secret', openbao_secrets_pepper_path=roster['openbao_secrets_pepper_path'],
         openbao_secrets_domain_groups=domain_groups, openbao_secrets_active_groups=[],
         ansible_managed='fixture',
         tofu_data={'constants': {'service_ports': {'squid_proxy': 3128}}},
@@ -200,25 +172,21 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
                  ANSIBLE_OPENTELEMETRY_ENABLED='true',
                  ANSIBLE_OPENTELEMETRY_STORE_SPANS_IN_FILE='/dev/null'),
         text=True, capture_output=True, check=False)
-    assert result.returncode == (0 if valid else 2), (
-        result.stdout + result.stderr
-        + f"\nOpenBao request paths: {[urlsplit(path).path for path in store['requests']]}"
-    )
-    expected_fetches = int(prepared) + int(rendered)
-    expected_reads = expected_fetches * len(PEPPER_SECRET_PATHS)
-    actual_reads = sum(urlsplit(path).path in PEPPER_SECRET_PATHS for path in store['requests'])
+    assert result.returncode == (0 if valid else 2), result.stdout + result.stderr
+    expected_reads = int(prepared) + int(rendered)
+    actual_reads = sum(urlsplit(path).path == '/v1/secret/data/ai/pepper' for path in store['requests'])
     assert actual_reads == expected_reads, result.stdout + result.stderr
-    assert len(store['role_logins']) == expected_fetches
+    assert len(store['role_logins']) == expected_reads
     assert store['role_logins'] == [
         {'role_id': 'fixture-role-id', 'secret_id': 'fixture-secret-id'}
-    ] * expected_fetches
+    ] * expected_reads
     assert store['read_tokens'] == ['fixture-approle-token'] * expected_reads
     if valid:
         assert ('Check the identity boundary and shared environment' in result.stdout) is rendered
         preparation = result.stdout.split('PLAY [Verify Pepper egress]')[0]
         assert ('Validate and project each Pepper hostname' in preparation) is prepared
     assert all(urlsplit(path).path in {
-        '/v1/sys/health', '/v1/auth/approle/login', *PEPPER_SECRET_PATHS,
+        '/v1/sys/health', '/v1/auth/approle/login', '/v1/secret/data/ai/pepper',
         '/v1/auth/token/lookup-self',
     } for path in store['requests'])
     assert 'fixture-password' not in result.stdout + result.stderr
