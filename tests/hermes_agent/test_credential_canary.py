@@ -162,6 +162,7 @@ def test_direct_cron_can_create_no_agent_script_jobs_without_changing_agentic_jo
             "hermes_agent_bin": "/usr/local/bin/hermes",
             "hermes_agent_cli_profile_args": [],
             "item": item,
+            "hermes_agent_direct_no_agent": item.get("no_agent", False),
             "hermes_agent_direct_prompt": prompt,
             "hermes_agent_direct_model": model,
             "hermes_agent_direct_model_provider": "custom",
