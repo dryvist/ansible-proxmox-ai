@@ -1,13 +1,16 @@
 ---
 # Pins the phoenix_docker render contract and pre-change database dump contract.
 #
-# Two things the compose template must hold at render time, offline:
+# Three things the compose template must hold at render time, offline:
 #   1. The Authelia OIDC env block appears iff a client secret is present.
 #      phoenix_docker_oidc_enabled DERIVES from the secret, so an empty secret
 #      (Authelia not converged yet) must produce a stack with local login only,
 #      never a half-configured OIDC provider that fails every SSO attempt.
 #   2. Every published port comes from tofu constants. A literal that slipped
 #      into the template would render fine and diverge from Traefik silently.
+#   3. The trace retention env var carries phoenix_docker_retention_days: the
+#      shipped default (30) must render on its own and an override must render
+#      its own value, proving the template names the variable, not a literal.
 #
 # Run (from the REPO ROOT — roles_path is cwd-relative in ansible.cfg):
 #   ansible-playbook tests/phoenix_docker/test_compose_render.yml -i localhost, -c local
@@ -53,22 +56,27 @@
       vars:
         _render_name: "{{ item.name }}"
         _render_secret: "{{ item.secret }}"
+        _render_days: "{{ item.days | default('') }}"
       loop:
         - { name: with_oidc, secret: fixture-oidc-client-secret }
         - { name: without_oidc, secret: "" }
+        # Last on purpose: the retention override is a host fact and would
+        # otherwise leak into the renders above, which must ship the default.
+        - { name: short_retention, secret: "", days: 7 }
       loop_control:
         label: "{{ item.name }}"
 
-    - name: Read both renders
+    - name: Read every render
       ansible.builtin.slurp:
         src: "{{ _render_dir }}/{{ item }}.yml"
-      loop: [with_oidc, without_oidc]
+      loop: [with_oidc, without_oidc, short_retention]
       register: _renders
 
-    - name: Decode both renders
+    - name: Decode every render
       ansible.builtin.set_fact:
         _with_oidc: "{{ _renders.results[0].content | b64decode }}"
         _without_oidc: "{{ _renders.results[1].content | b64decode }}"
+        _short_retention: "{{ _renders.results[2].content | b64decode }}"
 
     - name: The OIDC block renders iff a client secret is present
       vars:
@@ -100,6 +108,22 @@
         fail_msg: >-
           A published port in docker-compose.yml.j2 is not sourced from
           tofu_data.constants.service_ports.phoenix_* (ip-addressing rule).
+
+    - name: The retention env var tracks phoenix_docker_retention_days
+      vars:
+        _default_line: 'PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "30"'
+        _override_line: 'PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "7"'
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _default_line in _with_oidc
+          - _default_line in _without_oidc
+          - _override_line in _short_retention
+          - _override_line not in _with_oidc
+        fail_msg: >-
+          The compose render no longer carries PHOENIX_DEFAULT_RETENTION_POLICY_DAYS
+          from phoenix_docker_retention_days: the shipped default must render 30 and
+          an overridden variable must render its own value.
 
     - name: The database exporter service renders from the role defaults
       vars:
