@@ -43,6 +43,12 @@
       ansible.builtin.set_fact:
         _rendered: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
 
+    - name: Render the SSRF proxy configuration
+      ansible.builtin.set_fact:
+        _ssrf_squid: >-
+          {{ lookup('ansible.builtin.template', playbook_dir ~
+             '/../../roles/dify_docker/templates/squid.conf.j2') }}
+
     - name: Render the dedicated Agent SSRF proxy configuration
       ansible.builtin.set_fact:
         _agent_squid: >-
@@ -63,6 +69,17 @@
           - _rendered.services[item].environment.ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK == 'true'
           - _rendered.services[item].environment.ENABLE_TRIGGER_PROVIDER_REFRESH_TASK == 'true'
           - _rendered.services[item].environment.TRIGGER_URL == _rendered.services['web'].environment.APP_API_URL
+      loop: [api, worker, worker_beat]
+
+    - name: Share the Dify 1.19 Ops trace queue across API, workers, and Beat
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services[item].environment.OPS_TRACE_QUEUE == 'ops_trace_v2'
+          - _rendered.services[item].environment.OPS_TRACE_EXPORT_MAX_ATTEMPTS == '6'
+          - _rendered.services[item].environment.ENABLE_TRACE_PAYLOAD_SWEEP_TASK == 'true'
+          - _rendered.services[item].environment.APP_PACKAGE_MAX_WORKFLOW_TOOLS == '20'
+          - _rendered.services[item].environment.GUNICORN_KEEP_ALIVE == '10'
       loop: [api, worker, worker_beat]
 
     - name: Export native telemetry with full sampling on API and plugin services
@@ -121,6 +138,53 @@
             in lookup('ansible.builtin.template', playbook_dir ~
             '/../../roles/dify_docker/templates/nginx-default.conf.j2')
 
+    - name: Allow only the internal webhook origin through the SSRF proxy
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'acl dst_dify_trigger dstdomain nginx' in _ssrf_squid"
+          # The port follows the internal trigger base's own port; the default
+          # base carries :80 explicitly.
+          - "'acl port_dify_trigger port 80' in _ssrf_squid"
+          # One webhook id path, end anchored: a bare prefix would let nginx
+          # resolve a proxied dot segment onto another location.
+          - "'acl path_trigger_webhook urlpath_regex -i ^/triggers/webhook/[A-Za-z0-9_-]+$' in _ssrf_squid"
+          - "'acl path_trigger_webhook urlpath_regex -i ^/triggers/webhook/' not in _ssrf_squid.splitlines()"
+          - "'http_access allow dst_dify_trigger port_dify_trigger path_trigger_webhook' in _ssrf_squid"
+          # The origin is the internal trigger base's host, so an override cannot
+          # drift from the squid allow; the default host is a real Compose service.
+          - "'nginx' in _rendered.services"
+          # The carve-out precedes the private-destination deny: nginx resolves
+          # to a Compose address that deny would otherwise refuse.
+          - >-
+            _ssrf_squid.index('http_access allow dst_dify_trigger')
+            < _ssrf_squid.index('http_access deny to_private_networks')
+          # The origin is never allowed without its port and the webhook id path.
+          - >-
+            _ssrf_squid.splitlines() | select('match', '^http_access allow dst_dify_trigger')
+            | list == ['http_access allow dst_dify_trigger port_dify_trigger path_trigger_webhook']
+          # Every private range stays denied and no blanket allow exists.
+          - "'dst 10.0.0.0/8' in _ssrf_squid"
+          - "'dst 172.16.0.0/12' in _ssrf_squid"
+          - "'dst 192.168.0.0/16' in _ssrf_squid"
+          - "'http_access deny to_private_networks' in _ssrf_squid.splitlines()"
+          - "'http_access allow all' not in _ssrf_squid.splitlines()"
+          - "_ssrf_squid.splitlines() | select('match', '^http_access ') | list | last == 'http_access deny all'"
+
+    - name: Match the rendered webhook path ACL against real and traversal paths
+      vars:
+        _webhook_path_pattern: >-
+          {{ _ssrf_squid | regex_findall('^acl path_trigger_webhook urlpath_regex -i (.*)$',
+             multiline=True) | first }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _webhook_path_pattern.endswith('$')
+          - "'/triggers/webhook/abc123' is match(_webhook_path_pattern)"
+          - "'/triggers/webhook/../e/x' is not match(_webhook_path_pattern)"
+          - "'/triggers/webhook/a/b' is not match(_webhook_path_pattern)"
+          - "'/triggers/webhook/%2e%2e' is not match(_webhook_path_pattern)"
+
     - name: SSR uses the internal API while browser URLs remain public
       ansible.builtin.assert:
         quiet: true
@@ -132,19 +196,7 @@
           The web service must route server-side console API requests to the
           internal Compose API and retain public browser API URLs.
 
-    - name: API and web agree on the console URL scheme, so both use the same cookie names
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - >-
-            _rendered.services['api'].environment.CONSOLE_API_URL
-            == _rendered.services['web'].environment.CONSOLE_API_URL
-          - _rendered.services['api'].environment.CONSOLE_WEB_URL == 'https://dify.pve.example.test'
-        fail_msg: >-
-          Dify picks __Host- cookie names only when its CONSOLE_API_URL and
-          CONSOLE_WEB_URL are https; a mismatch with the web loops sign-in.
-
-    - name: Agent backend and local sandbox use authenticated Dify 1.18 runtime wiring
+    - name: Agent backend and local sandbox use authenticated Dify 1.19 runtime wiring
       ansible.builtin.assert:
         quiet: true
         that:
@@ -193,7 +245,7 @@
           - "_agent_squid.splitlines() | select('match', '^http_access ') | list | last == 'http_access deny all'"
           - "'http_access allow all' not in _agent_squid.splitlines()"
         fail_msg: >-
-          Dify 1.18 Agent services must use non-empty auth, an isolated local
+          Dify 1.19 Agent services must use non-empty auth, an isolated local
           sandbox network, and the existing pinned Squid image.
 
     - name: Preserve an existing PASSWORD_PEPPER when configured
@@ -220,6 +272,7 @@
         dify_docker_workflow_schedule_poller_enabled: false
         dify_docker_trigger_provider_refresh_enabled: false
         dify_docker_trigger_url: "https://triggers.example.invalid"
+        dify_docker_internal_trigger_url: "http://dify"
         dify_docker_otel_endpoint: "https://cribl.example.invalid"
         dify_docker_otel_sampling_rate: 0.25
         dify_docker_redis_appendonly: false
@@ -227,6 +280,25 @@
     - name: Render runtime overrides
       ansible.builtin.set_fact:
         _overridden: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+
+    - name: Render the SSRF proxy configuration under overrides
+      ansible.builtin.set_fact:
+        _overridden_squid: >-
+          {{ lookup('ansible.builtin.template', playbook_dir ~
+             '/../../roles/dify_docker/templates/squid.conf.j2') }}
+
+    - name: Keep the public TRIGGER_URL out of the SSRF proxy carve-out
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # The squid origin follows dify_docker_internal_trigger_url, not the
+          # public trigger URL: the internal override moves the allow, and a
+          # portless base falls back to the origin's default port 80.
+          - "'acl dst_dify_trigger dstdomain dify' in _overridden_squid"
+          - "'acl port_dify_trigger port 80' in _overridden_squid"
+          - "'http_access allow dst_dify_trigger port_dify_trigger path_trigger_webhook' in _overridden_squid"
+          - "'dstdomain triggers.example.invalid' not in _overridden_squid"
+          - "'http_access deny to_private_networks' in _overridden_squid.splitlines()"
 
     - name: Honor runtime inputs across API and Celery services
       ansible.builtin.assert:

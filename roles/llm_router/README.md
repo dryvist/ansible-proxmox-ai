@@ -223,15 +223,6 @@ so repeated inference runs do not consume a caller's daily ceiling. Its source
 remains the existing `apps/benchmark` field; it seeds only while that value and
 at least one direct route are available.
 
-## Untrusted request classification
-
-Requests from untrusted keys are classified locally before routing. Text is
-split into chunks of at most `llm_router_untrusted_classify_max_chars` (16,000
-by default); every chunk must receive a `public` label. A non-public label,
-classifier error, timeout, or more than
-`llm_router_untrusted_classify_max_chunks` chunks (8 by default) refuses the
-request. At most four chunks are classified concurrently.
-
 MCP server IDs, tool allowlists, caller grants, OpenBao sources, and the OAuth
 boundary are documented in
 [LLM_ROUTER_MCP_GATEWAY.md](../../docs/LLM_ROUTER_MCP_GATEWAY.md).

@@ -13,6 +13,7 @@ Deploys the Dify LLMOps platform as a Docker Compose stack in an LXC.
 | `dify_docker_workflow_schedule_poller_enabled` | `true` | `ENABLE_WORKFLOW_SCHEDULE_POLLER_TASK` |
 | `dify_docker_trigger_provider_refresh_enabled` | `true` | `ENABLE_TRIGGER_PROVIDER_REFRESH_TASK` |
 | `dify_docker_trigger_url` | `dify_docker_public_url` | `TRIGGER_URL`, the public webhook base URL |
+| `dify_docker_internal_trigger_url` | `http://nginx:80` | per-agent `<AGENT>_TRIGGER_URL` variables, the compose-internal webhook base |
 | `dify_docker_otel_endpoint` | `ai_orchestration_otel_endpoint` | `OTLP_BASE_ENDPOINT`, the Cribl OpenTelemetry collector base URL |
 
 Celery concurrency applies per worker container across its subscribed queues.
@@ -144,10 +145,10 @@ its webhook trigger is located through the console triggers API, and its bare
 webhook id is read from the webhook endpoint for the trigger's node. A missing
 agent app or webhook trigger fails the converge with the agent's app name.
 
-Each `<AGENT>_TRIGGER_URL` is set to `dify_docker_trigger_url` without a
-trailing slash and each `<AGENT>_WEBHOOK_ID` to the bare webhook id through one
-`environment_variable_patch` on the rotation draft, which is then published;
-the rotation's own schedule trigger and each agent's webhook trigger are
+Each `<AGENT>_TRIGGER_URL` is set to `dify_docker_internal_trigger_url`
+without a trailing slash and each `<AGENT>_WEBHOOK_ID` to the bare webhook id
+through one `environment_variable_patch` on the rotation draft, which is then
+published; the rotation's own schedule trigger and each agent's webhook trigger are
 enabled when Dify reports them disabled. The step is idempotent: when every
 value already matches, no draft sync or publish is sent. Dify masks secret
 values in the draft response, so a masked non-empty `<AGENT>_WEBHOOK_ID`
@@ -163,6 +164,22 @@ inputs `ROTATION_SPEED`, `ROTATION_OFFSET` and `ROTATION_PAUSED` are never
 written. Check mode reads the same endpoints, reports the variable names that
 would change, and writes nothing. All Dify 1.18.0 console endpoints above are
 verified against that release's source.
+
+The rotation's HTTP request node dispatches from inside the stack, through the
+ssrf_proxy. The per-agent variables therefore carry
+`dify_docker_internal_trigger_url` — the stack's own `nginx` service on the
+Compose network over plain HTTP, which routes `/triggers` to the API — rather
+than the public `dify_docker_trigger_url`, whose name resolves to a private
+address the proxy refuses. The ssrf_proxy squid config allows exactly that
+origin (derived from the variable, so an override moves the rule with it) on
+that origin's own port, for one webhook id path — `/triggers/webhook/<id>`
+where the id is a single run of letters, digits, underscores or hyphens, end
+anchored — placed before the deny-private rule. The end anchor matters: nginx
+resolves dot segments before location matching, so a bare path prefix would
+let a proxied traversal land on another location. Dot segments,
+percent-encoded paths, extra segments, other ports, and every other path on
+the internal origin remain denied. `TRIGGER_URL` itself stays the public base
+for callers outside the stack.
 
 ## Agent MCP server publishing
 

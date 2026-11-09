@@ -10,15 +10,17 @@
 # All literals live here; templates reference vars only (DRY). Var names carry
 # the role prefix to satisfy ansible-lint's production profile.
 
-# Image tags — single source of truth, Renovate-trackable. Bump here.
-dify_docker_api_image: "langgenius/dify-api:1.18.0"
-dify_docker_web_image: "langgenius/dify-web:1.18.0"
-dify_docker_plugin_daemon_image: "langgenius/dify-plugin-daemon:0.6.13-local"
+# Image tags — single source of truth, Renovate-trackable. Bump together.
+# 1.19.0 pins: api/web/agent backend/local sandbox 1.19.0, plugin daemon
+# 0.6.14-local; upstream still pins the code sandbox at 0.2.15.
+dify_docker_api_image: "langgenius/dify-api:1.19.0"
+dify_docker_web_image: "langgenius/dify-web:1.19.0"
+dify_docker_plugin_daemon_image: "langgenius/dify-plugin-daemon:0.6.14-local"
 dify_docker_sandbox_image: "langgenius/dify-sandbox:0.2.15"
-# Keep deployed 1.40.3; Dify 1.18.0 upstream's 1.39.13 would downgrade the vector store.
+# Keep deployed 1.40.3; Dify 1.19.0 upstream's 1.39.13 would downgrade the vector store.
 dify_docker_weaviate_image: "cr.weaviate.io/semitechnologies/weaviate:1.40.3"
-dify_docker_agent_backend_image: "langgenius/dify-agent-backend:1.18.0"
-dify_docker_local_sandbox_image: "langgenius/dify-agent-local-sandbox:1.18.0"
+dify_docker_agent_backend_image: "langgenius/dify-agent-backend:1.19.0"
+dify_docker_local_sandbox_image: "langgenius/dify-agent-local-sandbox:1.19.0"
 dify_docker_postgres_image: "postgres:15-alpine@sha256:a8e042598834300dfaa17a54f695b87b7f25d3490433bbbe2ef3bffbb9747f24"
 dify_docker_redis_image: "redis:8-alpine@sha256:0bf6577d7774e592b29d093e3ac9390eb91e13d72c21e506afce736de5e0eeb0"
 dify_docker_nginx_image: "nginx:1.31-alpine@sha256:a3554c0d0b48177b1413c26e01f695334428020d9df01243fbae3e11cfd17417"
@@ -42,7 +44,7 @@ dify_docker_stop_timeout_seconds: 120
 # Restart policy applied to every service in the stack.
 dify_docker_restart_policy: unless-stopped
 
-# Native workflow runtime inputs (Dify 1.18).
+# Native workflow runtime inputs (Dify 1.19).
 dify_docker_workflow_max_execution_time: "{{ ai_tier_2_router_request_timeout_seconds }}"
 # Allow extended runs to include nested workflow tool steps.
 dify_docker_workflow_max_execution_steps: 5000
@@ -53,10 +55,33 @@ dify_docker_celery_worker_amount: "{{ ai_agent_default_concurrency }}"
 dify_docker_workflow_schedule_poller_enabled: true
 dify_docker_trigger_provider_refresh_enabled: true
 dify_docker_trigger_url: "{{ dify_docker_public_url }}"
+# Base written into the rotation draft's per-agent <AGENT>_TRIGGER_URL
+# variables. The workflow's HTTP request node dispatches from inside the stack
+# through the ssrf_proxy, so it targets this stack's own nginx service over
+# plain HTTP (nginx routes /triggers to the API) — the public name above
+# resolves to a private address the proxy's deny-private rule refuses. The
+# squid.conf.j2 allow rule derives its origin from this same value; TRIGGER_URL
+# itself stays public for callers outside the stack.
+dify_docker_internal_trigger_url: "http://nginx:80"
 dify_docker_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
 dify_docker_otel_sampling_rate: 1.0
 dify_docker_otel_protocol: http/protobuf
 dify_docker_otel_trace_endpoint: "{{ dify_docker_otel_endpoint }}/v1/traces"
+
+# Dify 1.19 Ops tracing v2 (https://github.com/langgenius/dify/releases/tag/1.19.0).
+# OPS_TRACE_QUEUE is the shared Celery queue for the new trace pipeline: API,
+# workers, and Beat must render the same name, which the compose env anchor
+# guarantees. The remaining values mirror the upstream application defaults.
+dify_docker_ops_trace_queue: "ops_trace_v2"
+dify_docker_ops_trace_export_max_attempts: 6
+dify_docker_trace_payload_sweep_enabled: true
+dify_docker_app_package_max_workflow_tools: 20
+dify_docker_gunicorn_keep_alive: 10
+
+# Dify 1.19.0's compose needs Docker Compose 2.35.0+ so root .env overrides take
+# precedence when resolving service defaults; the role asserts the deployed
+# plugin meets this before rendering the stack.
+dify_docker_compose_min_version: "2.35.0"
 
 # Database identity. POSTGRES_USER is created as the superuser of its own DB,
 # which lets Dify's migrations create the extensions they need. The plugin
