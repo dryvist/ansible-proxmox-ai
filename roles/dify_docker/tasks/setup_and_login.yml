@@ -3,11 +3,19 @@
 # GET /console/api/setup reports {"step":"not_started"} until installation is
 # finished; the POST creates the admin workspace and completes setup so the UI
 # never shows /install. Skipped on every converge after the first.
+# This GET is the first console API call after the compose deploy: nginx
+# answers 502 while a recreated api container boots, so wait it out here —
+# the setup POST and the console login below both run after it.
 - name: Check whether Dify setup is finished
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ dify_docker_web_port }}/console/api/setup"
     return_content: true
+    status_code: 200
   register: dify_docker_setup_state
+  retries: 36
+  delay: 5
+  until: dify_docker_setup_state.status | default(0) == 200
+  changed_when: false
 
 - name: Complete Dify setup (create admin)
   ansible.builtin.uri:
