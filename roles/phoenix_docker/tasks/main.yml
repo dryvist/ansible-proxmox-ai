@@ -196,7 +196,17 @@
 # so a deployment that booted before the variable was set keeps its old rule.
 # Read the live policy through the admin GraphQL API (v21: strawberry schema,
 # bearer-authenticated as the system user, which Phoenix treats as admin) and
-# patch it only when its maxDays differs from phoenix_docker_retention_days.
+# walk it down in steps of phoenix_docker_retention_step_days toward
+# phoenix_docker_retention_days. Phoenix's hourly TraceDataSweeper applies
+# MaxDaysRule with one unbounded DELETE of every trace past the limit (pinned
+# source: server/retention.py, db/types/trace_retention.py), so a policy
+# lowered straight to the target would purge the whole expired backlog in a
+# single sweep. When the live rule carries no effective day limit (maxDays
+# 0 or absent), the first step starts from the age in whole days of the
+# oldest trace under the policy — Project.startTime resolves to
+# min(trace.start_time) in the pinned source (server/api/types/Project.py) —
+# minus the step, never below the target. Raising the limit, or a live value
+# already within one step of the target, sets the target directly.
 
 - name: Read the live Phoenix default trace retention policy
   ansible.builtin.uri:
@@ -237,6 +247,65 @@
     quiet: true
   when: not ansible_check_mode
 
+- name: Read the oldest trace times under the default policy when the rule has no day limit
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ phoenix_docker_web_port }}/graphql"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ phoenix_docker_admin_secret }}"
+    body_format: json
+    body:
+      query: >-
+        query DefaultPolicyProjectTraceStartTimes {
+          defaultProjectTraceRetentionPolicy {
+            projects(first: 100) {
+              edges {
+                node {
+                  startTime
+                }
+              }
+            }
+          }
+        }
+    status_code: 200
+  register: phoenix_docker_retention_oldest
+  changed_when: false
+  failed_when: >-
+    (phoenix_docker_retention_oldest.json.errors | default([])) | length > 0
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - >-
+      phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
+      | default(0) | int <= 0
+
+- name: Compute the retention step toward the configured days
+  vars:
+    phoenix_docker_retention_live_days: >-
+      {{ phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
+      | default(0) | int }}
+    phoenix_docker_retention_starts: >-
+      {{ phoenix_docker_retention_oldest.json.data.defaultProjectTraceRetentionPolicy.projects.edges
+      | map(attribute='node.startTime') | select('string') | list
+      if phoenix_docker_retention_oldest.json is defined else [] }}
+    phoenix_docker_retention_oldest_days: >-
+      {{ ((now(utc=true)
+      - ((phoenix_docker_retention_starts | min
+      | regex_replace('\.\d+', '') | regex_replace('Z$', '+00:00'))
+      | to_datetime('%Y-%m-%dT%H:%M:%S%z'))).days)
+      if phoenix_docker_retention_starts else 0 }}
+    phoenix_docker_retention_next_days: >-
+      {{ ([phoenix_docker_retention_days | int,
+      (phoenix_docker_retention_oldest_days - phoenix_docker_retention_step_days | int)] | max)
+      if phoenix_docker_retention_live_days | int <= 0
+      else ([phoenix_docker_retention_days | int,
+      (phoenix_docker_retention_live_days | int - phoenix_docker_retention_step_days | int)] | max) }}
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_live_days: "{{ phoenix_docker_retention_live_days }}"
+    phoenix_docker_retention_next_days: "{{ phoenix_docker_retention_next_days }}"
+  changed_when: false
+  when: not ansible_check_mode
+
 - name: Patch the Phoenix default trace retention policy when it differs
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ phoenix_docker_web_port }}/graphql"
@@ -249,7 +318,7 @@
           'variables': {'input': {'id':
           phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.id,
           'rule': {'maxDays': {'maxDays':
-          phoenix_docker_retention_days | int}}}} }}
+          phoenix_docker_retention_next_days | int}}}} }}
     status_code: 200
   register: phoenix_docker_retention_patch
   changed_when: true
@@ -264,12 +333,20 @@
           node { id }
         }
       }
-    phoenix_docker_retention_live_days: >-
-      {{ phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
-      | default(0) }}
   no_log: true
   when:
     - not ansible_check_mode
     - >-
-      phoenix_docker_retention_live_days | int
-      != phoenix_docker_retention_days | int
+      phoenix_docker_retention_next_days | int
+      != phoenix_docker_retention_live_days | int
+
+- name: Report the retention step applied to the live policy
+  ansible.builtin.debug:
+    msg: >-
+      Phoenix trace retention maxDays
+      {{ 'unlimited' if phoenix_docker_retention_live_days | int <= 0
+      else phoenix_docker_retention_live_days | int }}
+      -> {{ phoenix_docker_retention_next_days | int }}
+      (step {{ phoenix_docker_retention_step_days | int }})
+  changed_when: false
+  when: phoenix_docker_retention_patch is not skipped
