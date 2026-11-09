@@ -187,3 +187,182 @@
   when:
     - not ansible_check_mode
     - phoenix_docker_enable_prometheus | bool
+
+# =============================================================================
+# Trace retention policy
+# =============================================================================
+# PHOENIX_DEFAULT_RETENTION_POLICY_DAYS seeds the Default policy row on FIRST
+# boot only — the upstream facilitator makes no changes once the row exists —
+# so a deployment that booted before the variable was set keeps its old rule.
+# Read the live policy through the admin GraphQL API (v21: strawberry schema,
+# bearer-authenticated as the system user, which Phoenix treats as admin) and
+# walk it down in steps of phoenix_docker_retention_step_days toward
+# phoenix_docker_retention_days. Phoenix's hourly TraceDataSweeper applies
+# MaxDaysRule with one unbounded DELETE of every trace past the limit (pinned
+# source: server/retention.py, db/types/trace_retention.py), so a policy
+# lowered straight to the target would purge the whole expired backlog in a
+# single sweep. When the live rule carries no effective day limit (maxDays
+# 0 or absent), the first step starts from the age in whole days of the
+# oldest trace under the policy — Project.startTime resolves to
+# min(trace.start_time) in the pinned source (server/api/types/Project.py) —
+# minus the step, never below the target. The policy's projects connection
+# is a relay connection over an unordered project list (pinned source:
+# server/api/types/ProjectTraceRetentionPolicy.py), so the oldest start time
+# is read by walking every page of it — a single first: 100 page can miss
+# the true oldest and drop the step far past one step's worth of traces.
+# The walk is bounded by phoenix_docker_retention_max_project_pages; when
+# pages remain after the bound is spent, the converge fails before the
+# patch instead of stepping from a partial walk. Raising the limit, or a
+# live value already within one step of the target, sets the target directly.
+
+- name: Read the live Phoenix default trace retention policy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ phoenix_docker_web_port }}/graphql"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ phoenix_docker_admin_secret }}"
+    body_format: json
+    body:
+      query: >-
+        query DefaultTraceRetentionPolicy {
+          defaultProjectTraceRetentionPolicy {
+            id
+            rule {
+              __typename
+              ... on TraceRetentionRuleMaxDays {
+                maxDays
+              }
+            }
+          }
+        }
+    status_code: 200
+  register: phoenix_docker_retention_current
+  changed_when: false
+  failed_when: >-
+    (phoenix_docker_retention_current.json.errors | default([])) | length > 0
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Require the live Phoenix default trace retention policy to be readable
+  ansible.builtin.assert:
+    that:
+      - phoenix_docker_retention_current.json.errors is not defined
+      - >-
+        phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.id
+        is defined
+    fail_msg: Phoenix did not return the default trace retention policy.
+    quiet: true
+  when: not ansible_check_mode
+
+- name: Seed the project page walk under the default policy when the rule has no day limit
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_project_start_times: []
+    phoenix_docker_retention_projects_cursor: ""
+    phoenix_docker_retention_projects_has_next: true
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - >-
+      phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
+      | default(0) | int <= 0
+
+- name: Read the oldest trace times under the default policy when the rule has no day limit
+  ansible.builtin.include_tasks: retention_project_page.yml
+  loop: "{{ range(0, phoenix_docker_retention_max_project_pages | int) | list }}"
+  loop_control:
+    label: "project page {{ item + 1 }}"
+  when:
+    - not ansible_check_mode
+    - >-
+      phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
+      | default(0) | int <= 0
+
+- name: Require the project page walk to have covered every project
+  ansible.builtin.assert:
+    that:
+      - not (phoenix_docker_retention_projects_has_next | default(false) | bool)
+    fail_msg: >-
+      The project start-time walk reached its page bound with pages still
+      unreported, so the first retention step must not be computed from a
+      partial walk.
+    quiet: true
+  when:
+    - not ansible_check_mode
+    - >-
+      phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
+      | default(0) | int <= 0
+
+- name: Compute the retention step toward the configured days
+  vars:
+    phoenix_docker_retention_live_days: >-
+      {{ phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
+      | default(0) | int }}
+    phoenix_docker_retention_starts: >-
+      {{ phoenix_docker_retention_project_start_times | default([]) }}
+    # now(utc=true) is naive under the pinned ansible-core while the %z parse
+    # is offset-aware, and naive minus aware raises TypeError. Re-stamp the
+    # now side with an explicit +00:00 and parse it the same way, so both
+    # sides of the subtraction are aware UTC.
+    phoenix_docker_retention_oldest_days: >-
+      {{ (((now(utc=true).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+      | to_datetime('%Y-%m-%dT%H:%M:%S%z'))
+      - ((phoenix_docker_retention_starts | min
+      | regex_replace('\.\d+', '') | regex_replace('Z$', '+00:00'))
+      | to_datetime('%Y-%m-%dT%H:%M:%S%z'))).days)
+      if phoenix_docker_retention_starts else 0 }}
+    phoenix_docker_retention_next_days: >-
+      {{ ([phoenix_docker_retention_days | int,
+      (phoenix_docker_retention_oldest_days - phoenix_docker_retention_step_days | int)] | max)
+      if phoenix_docker_retention_live_days | int <= 0
+      else ([phoenix_docker_retention_days | int,
+      (phoenix_docker_retention_live_days | int - phoenix_docker_retention_step_days | int)] | max) }}
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_live_days: "{{ phoenix_docker_retention_live_days }}"
+    phoenix_docker_retention_next_days: "{{ phoenix_docker_retention_next_days }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Patch the Phoenix default trace retention policy when it differs
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ phoenix_docker_web_port }}/graphql"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ phoenix_docker_admin_secret }}"
+    body_format: json
+    body: >-
+      {{ {'query': phoenix_docker_retention_mutation,
+          'variables': {'input': {'id':
+          phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.id,
+          'rule': {'maxDays': {'maxDays':
+          phoenix_docker_retention_next_days | int} } } } } }}
+    status_code: 200
+  register: phoenix_docker_retention_patch
+  changed_when: true
+  failed_when: >-
+    (phoenix_docker_retention_patch.json.errors | default([])) | length > 0
+  vars:
+    phoenix_docker_retention_mutation: |-
+      mutation PatchDefaultTraceRetentionPolicy(
+        $input: PatchProjectTraceRetentionPolicyInput!
+      ) {
+        patchProjectTraceRetentionPolicy(input: $input) {
+          node { id }
+        }
+      }
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - >-
+      phoenix_docker_retention_next_days | int
+      != phoenix_docker_retention_live_days | int
+
+- name: Report the retention step applied to the live policy
+  ansible.builtin.debug:
+    msg: >-
+      Phoenix trace retention maxDays
+      {{ 'unlimited' if phoenix_docker_retention_live_days | int <= 0
+      else phoenix_docker_retention_live_days | int }}
+      -> {{ phoenix_docker_retention_next_days | int }}
+      (step {{ phoenix_docker_retention_step_days | int }})
+  changed_when: false
+  when: phoenix_docker_retention_patch is not skipped

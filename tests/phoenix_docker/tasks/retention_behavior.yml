@@ -1,0 +1,154 @@
+---
+# Behavioral half of the trace-retention contract (the structural half lives
+# in retention_contract.yml, which includes this file): the decision
+# expressions carried from the role tasks are evaluated against recorded
+# replies — the data envelope, the errors list, and the bounded-step cases —
+# so reading the wrong envelope, dropping the errors guard, or stepping past
+# one phoenix_docker_retention_step_days per converge fails here instead of
+# on a live converge. Split by behavior, each file under the repo's per-file
+# token cap: recorded-reply behavior in retention_behavior_replies.yml, the
+# bounded-step cases in retention_behavior_steps.yml, and the >100-project
+# page-walk case in retention_behavior_walk.yml.
+
+# The decision expressions are carried verbatim from the parsed tasks, so the
+# checks below evaluate what the role ships, not a copy of it.
+- name: Carry the retention decision expressions out of the role tasks
+  vars:
+    _read_name: Read the live Phoenix default trace retention policy
+    _readable_name: Require the live Phoenix default trace retention policy to be readable
+    _oldest_name: Read the oldest trace times under the default policy when the rule has no day limit
+    _patch_name: Patch the Phoenix default trace retention policy when it differs
+    _compute_name: Compute the retention step toward the configured days
+    _coverage_name: Require the project page walk to have covered every project
+    _fetch_name: Read one page of project start times under the default policy
+    _carry_name: Carry the page start times and walk the cursor forward
+    _read_task: "{{ phoenix_docker_retention_by_name[_read_name] }}"
+    _readable_task: "{{ phoenix_docker_retention_by_name[_readable_name] }}"
+    _oldest_task: "{{ phoenix_docker_retention_by_name[_oldest_name] }}"
+    _patch_task: "{{ phoenix_docker_retention_by_name[_patch_name] }}"
+    _compute_task: "{{ phoenix_docker_retention_by_name[_compute_name] }}"
+    _coverage_task: "{{ phoenix_docker_retention_by_name[_coverage_name] }}"
+    _fetch_task: "{{ phoenix_docker_retention_page_by_name[_fetch_name] }}"
+    _carry_task: "{{ phoenix_docker_retention_page_by_name[_carry_name] }}"
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_contract_read_failed_when: "{{ _read_task.failed_when }}"
+    phoenix_docker_retention_contract_readable_thats: "{{ _readable_task['ansible.builtin.assert'].that }}"
+    phoenix_docker_retention_contract_patch_failed_when: "{{ _patch_task.failed_when }}"
+    phoenix_docker_retention_contract_patch_body: "{{ _patch_task['ansible.builtin.uri'].body }}"
+    phoenix_docker_retention_contract_mutation: "{{ _patch_task.vars.phoenix_docker_retention_mutation }}"
+    phoenix_docker_retention_contract_live_expr: "{{ _compute_task.vars.phoenix_docker_retention_live_days }}"
+    phoenix_docker_retention_contract_oldest_expr: "{{ _compute_task.vars.phoenix_docker_retention_oldest_days }}"
+    phoenix_docker_retention_contract_next_expr: "{{ _compute_task.vars.phoenix_docker_retention_next_days }}"
+    phoenix_docker_retention_contract_patch_gate: "{{ _patch_task.when | last }}"
+    phoenix_docker_retention_contract_oldest_read_gate: "{{ _oldest_task.when | last }}"
+    phoenix_docker_retention_contract_walk_coverage_expr: "{{ _coverage_task['ansible.builtin.assert'].that | last }}"
+    phoenix_docker_retention_contract_walk_after_expr: "{{ _fetch_task['ansible.builtin.uri'].body.variables.after }}"
+    phoenix_docker_retention_contract_walk_starts_expr: >-
+      {{ _carry_task['ansible.builtin.set_fact'].phoenix_docker_retention_project_start_times }}
+    phoenix_docker_retention_contract_walk_cursor_expr: >-
+      {{ _carry_task['ansible.builtin.set_fact'].phoenix_docker_retention_projects_cursor }}
+    phoenix_docker_retention_contract_walk_has_next_expr: >-
+      {{ _carry_task['ansible.builtin.set_fact'].phoenix_docker_retention_projects_has_next }}
+
+# Recorded replies shaped like the pinned Phoenix GraphQL API: results ride
+# under `data`; failures arrive as a non-empty `errors` list with HTTP 200.
+- name: Set the recorded GraphQL replies for the retention contract
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_contract_fixtures:
+      read_ok:
+        json:
+          data:
+            defaultProjectTraceRetentionPolicy:
+              id: UG9saWN5OmRlZmF1bHQ=
+              rule:
+                __typename: TraceRetentionRuleMaxDays
+                maxDays: 30
+      read_errors:
+        json:
+          errors:
+            - message: validation failed (DefaultTraceRetentionPolicy)
+      patch_ok:
+        json:
+          data:
+            patchProjectTraceRetentionPolicy:
+              node:
+                id: UG9saWN5OmRlZmF1bHQ=
+      patch_errors:
+        json:
+          errors:
+            - message: patch rejected (DefaultTraceRetentionPolicy)
+
+- name: Write the patch body template for rendering
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+  block:
+    - name: Create the retention contract render directory
+      ansible.builtin.file:
+        path: "{{ _render_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Write the patch body template
+      ansible.builtin.copy:
+        dest: "{{ _render_dir }}/patch_body.j2"
+        content: "{{ phoenix_docker_retention_contract_patch_body }}"
+        mode: "0600"
+
+    - name: Write the step decision templates for rendering
+      vars:
+        _templates:
+          - name: live_days
+            content: "{{ phoenix_docker_retention_contract_live_expr }}"
+          - name: oldest_days
+            content: "{{ phoenix_docker_retention_contract_oldest_expr }}"
+          - name: next_days
+            content: "{{ phoenix_docker_retention_contract_next_expr }}"
+          - name: patch_gate
+            content: "{{ '{{ (' ~ phoenix_docker_retention_contract_patch_gate ~ ') }}' }}"
+          - name: oldest_read_gate
+            content: "{{ '{{ (' ~ phoenix_docker_retention_contract_oldest_read_gate ~ ') }}' }}"
+          - name: walk_coverage
+            content: "{{ '{{ (' ~ phoenix_docker_retention_contract_walk_coverage_expr ~ ') }}' }}"
+          - name: walk_after
+            content: "{{ phoenix_docker_retention_contract_walk_after_expr }}"
+          - name: walk_starts
+            content: "{{ phoenix_docker_retention_contract_walk_starts_expr }}"
+          - name: walk_cursor
+            content: "{{ phoenix_docker_retention_contract_walk_cursor_expr }}"
+          - name: walk_has_next
+            content: "{{ phoenix_docker_retention_contract_walk_has_next_expr }}"
+          # The read/patch guards and readable-assert conditions are rendered
+          # from disk rather than templated inline: expressions extracted from
+          # the slurped role source are untrusted to ansible-core's template
+          # trust model, and a disk render is what launders them.
+          - name: read_guard
+            content: "{{ '{{ (not (' ~ phoenix_docker_retention_contract_read_failed_when ~ ')) }}' }}"
+          - name: patch_guard
+            content: "{{ '{{ (not (' ~ phoenix_docker_retention_contract_patch_failed_when ~ ')) }}' }}"
+          - name: readable_all
+            content: "{{ '{{ (' ~ (phoenix_docker_retention_contract_readable_thats | join(') and (')) ~ ') }}' }}"
+          - name: readable_none
+            content: >-
+              {{ '{{ (not (' ~ (phoenix_docker_retention_contract_readable_thats
+              | join(') and not (')) ~ ')) }}' }}
+      ansible.builtin.copy:
+        dest: "{{ _render_dir }}/{{ item.name }}.j2"
+        content: "{{ item.content }}"
+        mode: "0600"
+      loop: "{{ _templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Verify the recorded-reply behavior of the read and patch tasks
+      ansible.builtin.include_tasks: retention_behavior_replies.yml
+
+    - name: Verify the bounded-step cases against the extracted expressions
+      ansible.builtin.include_tasks: retention_behavior_steps.yml
+
+    - name: Verify the >100-project page-walk case against the recorded pages
+      ansible.builtin.include_tasks: retention_behavior_walk.yml
+  always:
+    - name: Remove the retention contract render directory
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+        state: absent
