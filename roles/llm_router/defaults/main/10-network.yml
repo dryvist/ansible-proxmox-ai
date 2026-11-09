@@ -1,182 +1,32 @@
----
-# Internal subdomain (pve.<apex>), never hardcoded — the derived model endpoints
-# are built from it.
-llm_router_subdomain: >-
-  {{ lookup('env', 'PROXMOX_SUBDOMAIN') or undef('PROXMOX_SUBDOMAIN required') }}
+commit 4548eced2c9b18efeea6202b1aaad5b8c0334112
+Author: nix-agent-sandbox <agent@users.noreply.github.com>
+Date:   Mon Nov 9 01:30:38 2026 +0000
 
-# --- Ports (DRY from the tofu ports registry; no hardcodes) ------------------
-# The proxy's own listen port + the backend tiers' ports. Hard-required like
-# every other role's port so a missing constant fails loud rather than guessing.
-# NOTE: service_ports.llm_router_api and service_ports.llm_fast_api are added by
-# the parallel terraform-proxmox constants PR — this role depends on both.
-llm_router_api_port: "{{ tofu_data.constants.service_ports.llm_router_api }}"
-# On-host checks reach the router API through its loopback listener.
-llm_router_local_api_url: "http://127.0.0.1:{{ llm_router_api_port }}"
-llm_router_light_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}"
-# llm-large speaks the Ollama-compatible API on the standard Ollama port.
-llm_router_large_port: "{{ tofu_data.constants.service_ports.ollama_api }}"
+    test(llm_router): assert the small group's single 4080 rung and slot-sized caps
+    
+    The small-capability render contract now counts exactly one 4080
+    deployment per priority tier (first, at the lane's two-slot cap, equal
+    to the registry's projected limit) and exactly one RTX 6000 small
+    deployment per tier at the second order.
 
-# --- Backend base URLs (derived; never a hardcoded IP) -----------------------
-llm_router_llm_fast_base_url: "http://llm-fast.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
-llm_router_llm_fast_accelerator: gpu-secondary
-llm_router_llm_light_base_url: "http://llm-light.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
-llm_router_llm_light_accelerator: cpu
-llm_router_cloud_accelerator: cloud
-
-# CPU pool — api_base from tofu inventory `ip`. Tag vocabulary is
-# constants.llm_cpu_scaler.tags — never restated here. One map keyed by registry
-# tier; absent scaler / no matching containers → empty lists (registry_enabled
-# then drops those tiers).
-llm_router_cpu_pool_backend_urls_by_tier: >-
-  {%- set ns = namespace(out={}) -%}
-  {%- set scaler = tofu_data.constants.llm_cpu_scaler | default({}) -%}
-  {%- set tags = scaler.tags | default({}) -%}
-  {%- set containers = tofu_data.containers | default({}) -%}
-  {%- set port = llm_router_light_port | string -%}
-  {%- for attr, tier in [('moe', 'cpu-moe'), ('nine_b', 'cpu-9b')] -%}
-  {%- set urls_ns = namespace(urls=[]) -%}
-  {%- set tag = tags[attr] | default('', true) -%}
-  {%- if tag -%}
-  {%- for name, c in containers.items() | sort -%}
-  {%- if tag in (c.tags | default([])) -%}
-  {%- set urls_ns.urls = urls_ns.urls + ['http://' ~ c.ip ~ ':' ~ port ~ '/v1'] -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {%- endif -%}
-  {%- set _ = ns.out.update({tier: urls_ns.urls}) -%}
-  {%- endfor -%}
-  {{ ns.out }}
-llm_router_cpu_moe_backend_urls: >-
-  {{ llm_router_cpu_pool_backend_urls_by_tier['cpu-moe'] | default([]) }}
-llm_router_cpu_9b_backend_urls: >-
-  {{ llm_router_cpu_pool_backend_urls_by_tier['cpu-9b'] | default([]) }}
-
-# The NVIDIA/CUDA serving guest (vLLM). Same serving-API port as the light tier
-# — the port names the protocol, and the HOST is what distinguishes the backend,
-# so a second constant for the same OpenAI API would be a second place to keep
-# in sync for no gain.
-#
-# Single deployment, deliberately: there is no CPU standby for this model. vLLM
-# serves ONE model per instance, so a drain-to-CPU pair like the light tier's
-# would need a second backend actually serving the same weights, and none
-# exists. A failure here surfaces as that model being unavailable rather than
-# silently degrading to something slower and different.
-#
-# THE TIER'S SWITCH. False takes the whole tier out of this router: no
-# deployment renders for it, the Hermes fallback rung over it drops out, and
-# its base URL below is not resolved by assert-endpoint-dns.yml. The role rows
-# keep their catalogued target, and the seed creates a role only once that
-# target is live (seed-roles.yml). assert-registry-render-parity.yml holds both
-# directions: nothing only this tier owns renders while it is off, and
-# everything it owns does while it is on.
-llm_router_llm_vllm_enabled: true
-# The medium profile's primary-route rung is independently switchable for
-# maintenance. It does not change the profile's Hermes complexity-router tier.
-llm_router_vllm_medium_enabled: true
-# APEX-level, unlike the llm-fast and llm-light URLs above, and the difference
-# is not cosmetic — it is the difference between resolving and not.
-#
-# technitium_dns publishes A records under the subdomain ONLY for guests that
-# carry a declared address. Leased guests are skipped there deliberately: their
-# address lives in the DHCP lease, the gateway answers for its own lease-table
-# clients, and publishing a second copy in a second system is the drift that
-# addressing model exists to prevent. So a leased guest resolves at
-# `<hostname>.<apex>` and NOT at `<hostname>.<subdomain>`.
-#
-# llm-light has a declared address, so its subdomain form works. The optional
-# llm-fast capability uses the same endpoint form when its router flag is on.
-# This guest is leased, so it does not — and
-# copying their pattern here is exactly the mistake that shipped. Measured from
-# a router guest: the sibling backends resolve under the subdomain, this one
-# resolves only at the apex and returns no record under the subdomain.
-#
-# The failure mode is worth naming, because nothing reported it. The router
-# advertised the model in /v1/models and every request to it failed with
-# "OpenAIException - Connection error" and no fallback group, while the backend
-# itself was healthy — a TCP connect to its serving port succeeded and an HTTP
-# request to the apex name returned 200. An entry that is advertised while its
-# upstream cannot be resolved looks identical to a working one from the model
-# list alone.
-llm_router_llm_vllm_base_url: >-
-  {{ 'http://' ~ groups['llm_vllm_group'][0] ~ '.' ~ llm_router_apex_domain
-     ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
-     if (groups['llm_vllm_group'] | default([]) | length > 0) else '' }}
-llm_router_llm_vllm_accelerator: "{{ llm_router_llm_fast_accelerator }}"
-# shortcut: mirrors laya_systemone_port's role default; move both to a tofu service_ports constant when one exists.
-llm_router_classifier_port: 8000
-llm_router_classifier_url: >-
-  {{ 'http://' ~ groups['llm_classify'][0] ~ '.' ~ llm_router_apex_domain ~ ':'
-     ~ (hostvars[groups['llm_classify'][0]].laya_systemone_port | default(llm_router_classifier_port) | string)
-     ~ '/v1/systemone'
-     if (groups['llm_classify'] | default([]) | length > 0) else '' }}
-# GPU serving endpoints are derived per llm_gpu_group member in 20-registry.yml.
-# The large-tier gate (a caddy TLS front on the Mac Studio, apex-level cert via
-# Route53 DNS-01) reverse-proxies to the host's llama-swap. It has always been
-# addressed apex-level (one label under the subdomain's parent), because the
-# ACME client locates the hosted zone by stripping a single label — an
-# <alias>.<subdomain> name fails the TLS handshake (no SNI cert).
-#
-# The host is reached by its OWN permanent name, not a floating `llm-large`
-# service alias. The alias needed a *second* DNS record published + maintained
-# by something outside this fabric; on 2026-07-06 that record silently vanished
-# (resolved fine at 21:51, NXDOMAIN by 22:42) and every brain request 500'd with
-# ClientConnectorDNSError — a single point of failure with no benefit while there
-# is exactly one serving host. Its own `<serving-host>.<apex>` record — the name
-# resolved from constants.serving.host — is that canonical record (stable, also
-# its SSH name) and is on the very same caddy cert, so it satisfies
-# the apex-cert constraint identically with no extra record to keep alive.
-# (Restoring/decoupling behind an alias again is a DNS follow-up, not a router
-# concern — see PR notes.)
-llm_router_apex_domain: "{{ llm_router_subdomain | split('.', 1) | last }}"
-# Host comes from the `llm_large_serving_host` single source (group_vars/all/), which
-# now reads tofu-proxmox's published constants.serving.host rather than a value
-# committed here — so the name is not a literal repeated across roles OR across
-# repositories. Still its own permanent per-host record, NOT the floating alias
-# (see above).
-llm_router_llm_large_host: "{{ llm_large_serving_host }}"
-llm_router_llm_large_fqdn: "{{ llm_router_llm_large_host }}.{{ llm_router_apex_domain }}"
-llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_large_port }}/v1"
-llm_router_llm_large_accelerator: mac-primary
-# --- Standby brain backend (default OFF) -------------------------------------
-# A SAME-MODEL, SAME-CONTEXT failover sibling for the default brain, addressing
-# the single-Studio brain SPOF (Zammad INC-17080: a Studio reboot takes the sole
-# large-tier backend unreachable, so Hermes' brain-watchdog pauses the cron
-# fleet). This is NOT a cross-tier alias: the standby serves the IDENTICAL model
-# id at the IDENTICAL context window, so it fails over without the
-# smaller-context "poison the caller" failure the no-cross-tier-fallback rule
-# guards against (a smaller-context fallback is still forbidden).
-#
-# Default empty = DISABLED: with no URL set, the rendered config.yaml is
-# byte-identical to today (no standby deployment, no extra env var). To enable:
-#   1. Provide a second backend serving the identical model and context.
-#   2. Set llm_router_llm_large_standby_base_url to its /v1 URL and
-#      seed llm_router_llm_large_standby_bearer (OpenBao, same pattern).
-#
-# WIRED CEILING — both hosts are pinned to the SAME iogpu.wired_limit_mb
-# (102400, measured on both 2026-07-24). This is deliberate: it matches the
-# memory the MacBook makes available, and the Studio runs the same number on
-# purpose — accepting unused memory there — to keep the two hosts identical and
-# the setup simple. Raising the Studio later is a possible future, NOT the
-# current design; do not treat a higher ceiling as a prerequisite for anything
-# here. Unbounded wired previously wedged a host (INC-17076), which is why the
-# ceiling is enforced rather than advisory.
-#
-# The enforcement wiring landed in nix-darwin #1769 and both hosts are rebuilt
-# on it (both on darwin-system 26.05.adda04f, verified 2026-07-24), so that
-# prerequisite is SATISFIED. OptiQ+shard coexistence must still be validated
-# EMPIRICALLY under the deployed ceiling, not assumed.
-# Dedicated standby port. A Nix literal rather than a tofu service constant;
-# the standalone agent and its gate must agree before enabling the URL below.
-llm_router_llm_large_standby_port: 11442
-# DEFAULT EMPTY = DISABLED: with no URL the standby block is skipped and the
-# rendered config.yaml/litellm.env are byte-identical to today (verified by
-# render). Merging this PR is therefore behavior-neutral — nothing changes on
-# converge until the URL below is set. To ACTIVATE (one line), only after both:
-# (a) the standalone :11442 OptiQ agent exists and is live-validated.
-# (b) the wired ceiling is deployed — SATISFIED; see the wired-ceiling note above.
-# Then set this to the large FQDN + standby port /v1 URL — converging while (a)
-# is unmet routes hermes-brain failover at a port that does not exist yet.
-llm_router_llm_large_standby_base_url: ""
-llm_router_llm_large_standby_accelerator: "{{ llm_router_llm_large_accelerator }}"
-# Same bearer as the llm-large gate (the OptiQ site shares its token + cert).
-llm_router_llm_large_standby_bearer: "{{ llm_router_llm_large_bearer }}"
+diff --git a/tests/llm_router/tasks/pro6000_small_fallback_case.yml b/tests/llm_router/tasks/pro6000_small_fallback_case.yml
+index 622b7e6..0c98fff 100644
+--- a/tests/llm_router/tasks/pro6000_small_fallback_case.yml
++++ b/tests/llm_router/tasks/pro6000_small_fallback_case.yml
+@@ -5,9 +5,14 @@
+     quiet: true
+     that:
+       - _small_route_members | map(attribute='litellm_params.order') | map('int') | unique | sort == [1, 2]
+-      - _small_4080 | length > 0
++      - _small_4080 | length == llm_router_priority_tiers | length
+       - _small_4080 | map(attribute='litellm_params.order') | map('int') | unique | list == [1]
+-      - _small_6000 | length > 0
++      - _small_4080 | map(attribute='litellm_params.max_parallel_requests') | unique | list == [2]
++      - >-
++        _small_4080 | map(attribute='litellm_params.max_parallel_requests') | unique | list
++        == [(llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | first)
++            .max_parallel_requests]
++      - _small_6000 | length == llm_router_priority_tiers | length
+       - _small_6000 | map(attribute='litellm_params.order') | map('int') | unique | list == [2]
+       # One endpoint, rendered in its single lower-case form: a case variant
+       # of the same host is a second deployment to the router, not an alias.
