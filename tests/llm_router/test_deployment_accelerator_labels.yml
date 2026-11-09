@@ -30,14 +30,12 @@
         cpu-fixture:
           ip: 192.0.2.53
           tags: [fixture-cpu-small]
-    bao_local_llm_secrets:
-      CHATGPT_LOGIN_FILE: /dev/null
-      DASHSCOPE_API_KEY: fixture-dashscope
-      GEMINI_API_KEY: fixture-gemini
-      OPENAI_API_KEY: fixture-openai
-      OPENCODE_API_KEY: fixture-opencode
-      OPENROUTER_API_KEY: fixture-openrouter
-      OPENROUTER_HERMES_KEY: fixture-hermes-openrouter
+    # Synthetic credentials from the shared fixture. This play keeps its own
+    # lane URLs and containers, so it reads the one var instead of including
+    # the file — vars_files would override the vars below with the fixture's.
+    bao_local_llm_secrets: >-
+      {{ (lookup('file', playbook_dir ~ '/ladder_keys_fixture.yml')
+          | from_yaml).bao_local_llm_secrets }}
     bao_apps_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -78,16 +76,25 @@
           profile: medium-b
           port: 11445
 
-    - name: Add the small-lane serving host outside the legacy group
+    # The small lane's serving host is a legacy-group member, so its label
+    # resolves through the legacy branch of the host mapping.
+    - name: Add the small-lane serving host from the legacy group
       ansible.builtin.add_host:
         name: llm-vllm-fixture
-        groups: llm_vllm_group
+        groups: [llm_vllm_group, llm_gpu_legacy_group]
         ansible_connection: local
         llama_cpp_parallel: 2
 
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
+
+    # set_fact, and before the registry load: the catalog projection bakes each
+    # entry's enabled state when registry.yml runs, and the included role
+    # default (false) outranks a play var here.
+    - name: Enable the 4080 entry before the registry load bakes its state
+      ansible.builtin.set_fact:
+        llm_router_4080_profiles_enabled: true
 
     - name: Load the model registry through the role
       ansible.builtin.include_role:
@@ -147,7 +154,10 @@
           - _mislabeled | length == 0
         fail_msg: "Deployment accelerator labels missing or naming the wrong machine: {{ _mislabeled }}"
 
-    - name: The small lane names the GPU tier's machine, not the fast lane's card
+    # The 4080 entry is the tier's only registry entry; it renders because the
+    # fixture enables llm_router_4080_profiles_enabled, and every deployment
+    # on the lane carries the serving machine's accelerator.
+    - name: The rendered 4080 entry labels the legacy machine that serves the lane
       vars:
         _small_lane: >-
           {{ _config.model_list
@@ -157,9 +167,9 @@
         quiet: true
         that:
           - _small_lane | length > 0
-          - _small_lane | map(attribute='model_info.accelerator') | unique | list == ['gpu-primary']
-          - llm_router_llm_vllm_accelerator == llm_router_gpu_accelerator
-          - llm_router_gpu_accelerator == 'gpu-primary'
+          - _small_lane | map(attribute='model_info.accelerator') | unique | list == ['gpu-secondary']
+          - llm_router_llm_vllm_accelerator == llm_router_llm_fast_accelerator
+          - llm_router_llm_fast_accelerator == 'gpu-secondary'
           - >-
             _small_lane | selectattr('litellm_params.model', 'equalto', 'openai/' ~ _lane_model)
             | list | length > 0
