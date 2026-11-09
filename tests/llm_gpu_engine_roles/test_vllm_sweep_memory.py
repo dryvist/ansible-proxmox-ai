@@ -73,7 +73,7 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
     } | {
         (131072, 2, "fp8"),
         (131072, 11, "fp8"),
-        (98304, 32, "fp8"),
+        (98304, 11, "fp8"),
         (262144, 5, "fp8"),
         (65536, 16, "fp8"),
     }
@@ -127,12 +127,7 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         dtype_scale = 0.5 if profile["kv_cache_dtype"] == "fp8" else 1.0
         assert profile["kv_cache_dtype"] in {"auto", "fp8"}
         required_tokens = profile["max_model_len"]
-        if profile.get("memory_screen_prompt_lengths"):
-            required_tokens = (
-                max(profile["memory_screen_prompt_lengths"])
-                + profile["memory_screen_output_tokens"]
-            ) * profile["max_num_seqs"]
-        elif (
+        if (
             name.startswith(("qwen38-262k-", "flash-next-262k-", "nemotron-lightning-1m-"))
             or "mtp" in name
             or name in {"nemotron-lightning-256k-8-fp8", "nemotron-super-vl-64k-8"}
@@ -169,7 +164,7 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
             assert (ple_bytes / GIB) + kv_offloading_gib <= HOST_MEMORY_RESERVE_GIB
 
 
-def test_co_resident_qwen38_profile_fits_thirty_two_sessions_within_the_estimated_pool():
+def test_co_resident_qwen38_profile_fits_eleven_sessions_within_the_estimated_pool():
     profiles = _profiles()
     artifacts = {artifact["artifact_id"]: artifact for artifact in _artifacts()}
     profile = profiles["qwen38-96k-11-fp8-mtp"]
@@ -181,38 +176,19 @@ def test_co_resident_qwen38_profile_fits_thirty_two_sessions_within_the_estimate
         measured_pool_tokens
         - (GPU_MEMORY_GIB * GIB * utilization_delta / bytes_per_fp8_token)
     )
-    output_tokens = profile["memory_screen_output_tokens"]
-    allocated_tokens_by_prompt = {
-        prompt_tokens: profile["max_num_seqs"] * (prompt_tokens + output_tokens)
-        for prompt_tokens in profile["memory_screen_prompt_lengths"]
-    }
-    supported_concurrency_by_prompt = {
-        prompt_tokens: projected_pool_tokens // (prompt_tokens + output_tokens)
-        for prompt_tokens in profile["memory_screen_prompt_lengths"]
-    }
-    max_prompt_tokens = max(profile["memory_screen_prompt_lengths"])
+    allocated_tokens = profile["max_model_len"] * profile["max_num_seqs"]
 
     assert profile["max_model_len"] == 98_304
     assert profile["max_model_len"] % 1024 == 0
-    assert profile["max_num_seqs"] == 32
+    assert profile["max_num_seqs"] == 11
     assert profile["kv_cache_dtype"] == "fp8"
     assert profile["quantization"] == "modelopt"
     assert profile["speculative_config"] == {"method": "mtp", "num_speculative_tokens": 3}
     assert profile["gpu_memory_utilization"] == 0.75
-    assert profile["max_num_batched_tokens"] == 32_768
-    assert profile["enable_chunked_prefill"] is True
-    assert profile["memory_screen_prompt_lengths"] == [2_048, 8_192, 32_768]
-    assert output_tokens == 512
-    assert all(tokens <= projected_pool_tokens for tokens in allocated_tokens_by_prompt.values())
-    assert all(
-        concurrency >= profile["max_num_seqs"]
-        for concurrency in supported_concurrency_by_prompt.values()
-    )
-    assert (
-        projected_pool_tokens - allocated_tokens_by_prompt[max_prompt_tokens]
-        >= projected_pool_tokens * 0.07
-    )
-    assert profile["max_model_len"] * profile["max_num_seqs"] > projected_pool_tokens
+    assert allocated_tokens == 1_081_344
+    assert allocated_tokens <= projected_pool_tokens
+    assert projected_pool_tokens - allocated_tokens >= projected_pool_tokens * 0.07
+    assert profile["max_model_len"] * 12 > projected_pool_tokens
 
 
 def test_sweep_artifact_sizes_match_the_hugging_face_reads():

@@ -180,7 +180,7 @@ def test_ada_small_profile_keeps_the_light_lane_and_selects_its_cache():
     assert "'llm-gpu' not in (item.value.tags | default([]))" in groups
 
 
-def test_co_resident_gpu_host_selects_the_32_slot_main_and_small_profile():
+def test_co_resident_gpu_host_selects_the_eleven_slot_main_and_small_profile():
     host_vars = _load(REPO_ROOT / "inventory/host_vars/llm-blackwell-7-96GB-medium.yml")
 
     assert host_vars["llm_active_profile"] == "qwen38-96k-11-fp8-mtp"
