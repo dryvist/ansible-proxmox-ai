@@ -247,12 +247,12 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     co_resident_main = next(entry for entry in entries if entry["profile"] == "qwen38-96k-11-fp8-mtp")
     co_resident_main_profile = serving_profiles[co_resident_main["profile"]]
     assert co_resident_main_profile["max_model_len"] == 98_304
-    assert co_resident_main_profile["max_num_seqs"] == 11
+    assert co_resident_main_profile["max_num_seqs"] == 32
     assert co_resident_main_profile["gpu_memory_utilization"] == 0.75
     assert co_resident_main_profile["kv_cache_dtype"] == "fp8"
     assert co_resident_main["context_window"] == 90_112
     assert co_resident_main["max_output_tokens"] == 8_192
-    assert co_resident_main["max_parallel_requests"] == 11
+    assert co_resident_main["max_parallel_requests"] == 32
     assert co_resident_main["context_window"] + co_resident_main["max_output_tokens"] == 98_304
 
     for entry in entries:

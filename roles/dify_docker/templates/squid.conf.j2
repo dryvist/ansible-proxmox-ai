@@ -5,6 +5,16 @@
 # dropped — the port is rendered directly and the SSRF deny-private default is
 # kept. The `deny to_private_networks` rule is the security boundary that stops
 # sandboxed code from reaching internal hosts; do not remove it.
+# One carve-out sits before that deny: the workflow HTTP request node's webhook
+# dispatch. Its target is this stack's own nginx (the per-agent
+# <AGENT>_TRIGGER_URL base, dify_docker_internal_trigger_url), whose address is
+# private and would be refused by the deny. Plain HTTP keeps the URL path
+# visible to the proxy, so the allow is scoped to one webhook id path on the
+# internal origin's own port: the id is a single run of letters, digits,
+# underscores or hyphens, end anchored, because nginx resolves dot segments
+# before location matching and a bare prefix would let a proxied traversal
+# like /triggers/webhook/../e/x land on another location; CONNECT and every
+# other path, host or port fall through to the denies below.
 acl client_localnet src 10.0.0.0/8
 acl client_localnet src 172.16.0.0/12
 acl client_localnet src 192.168.0.0/16
@@ -26,6 +36,9 @@ acl Safe_ports port 443
 acl Safe_ports port 1025-65535
 acl CONNECT method CONNECT
 acl allowed_domains dstdomain .marketplace.dify.ai
+acl dst_dify_trigger dstdomain {{ dify_docker_internal_trigger_url | urlsplit('hostname') }}
+acl port_dify_trigger port {{ dify_docker_internal_trigger_url | urlsplit('port') | default(80, true) }}
+acl path_trigger_webhook urlpath_regex -i ^/triggers/webhook/[A-Za-z0-9_-]+$
 
 http_port {{ dify_docker_ssrf_proxy_port }}
 
@@ -33,6 +46,7 @@ http_access deny !Safe_ports
 http_access deny CONNECT !SSL_ports
 http_access allow localhost manager
 http_access deny manager
+http_access allow dst_dify_trigger port_dify_trigger path_trigger_webhook
 http_access deny to_private_networks
 http_access allow allowed_domains
 http_access allow client_localnet

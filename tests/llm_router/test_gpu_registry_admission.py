@@ -28,4 +28,4 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
     assert caps == expected_caps
 
     assert caps["medium-a"] == 64
-    assert caps["qwen38-96k-11-fp8-mtp"] == 11
+    assert caps["qwen38-96k-11-fp8-mtp"] == 32
