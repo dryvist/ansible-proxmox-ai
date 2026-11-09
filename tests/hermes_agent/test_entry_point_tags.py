@@ -17,6 +17,7 @@ from _role_files import include_file
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 TASKS = ROLE / "tasks"
+PLAYBOOK = Path(__file__).resolve().parents[2] / "playbooks" / "agents.yml"
 COMPONENT_TAGS = {
     "hermes_runtime_install",
     "hermes_delivery_probe",
@@ -123,3 +124,44 @@ def test_main_task_files_have_static_tags_and_one_owner_tag_each() -> None:
 
     every_file = {p.name for p in TASKS.glob("*.yml")} - {"main.yml"}
     assert reachable == every_file - EGRESS_FILES
+
+
+def test_registry_loaders_carry_every_brain_assertion_tag() -> None:
+    assertion_tags: set[str] = set()
+    for source, target in (
+        (TASKS / "main.yml", "assert_wiring.yml"),
+        (TASKS / "assert_wiring.yml", "assert.yml"),
+        (TASKS / "assert.yml", "assert_brain_and_bridge.yml"),
+    ):
+        tasks = yaml.safe_load(source.read_text()) or []
+        imported = next(
+            task
+            for task in _task_items(tasks)
+            if include_file(task, "ansible.builtin.import_tasks") == target
+        )
+        assertion_tags.update(_as_tag_list(imported))
+
+    brain_assertion = next(
+        task
+        for task in _task_items(
+            yaml.safe_load((TASKS / "assert_brain_and_bridge.yml").read_text()) or []
+        )
+        if task.get("name") == "Assert Hermes Agent brain-wiring contracts hold before converging"
+    )
+    assertion_tags.update(_as_tag_list(brain_assertion))
+    assert assertion_tags
+
+    play = yaml.safe_load(PLAYBOOK.read_text())[0]
+    loaders = {
+        include_file(task, "ansible.builtin.import_tasks"): task
+        for task in play["pre_tasks"]
+        if include_file(task, "ansible.builtin.import_tasks")
+        in {"tasks/load_model_catalog.yml", "tasks/load_fabric_registry.yml"}
+    }
+    assert set(loaders) == {
+        "tasks/load_model_catalog.yml",
+        "tasks/load_fabric_registry.yml",
+    }
+    for target, loader in loaders.items():
+        missing = assertion_tags - set(_as_tag_list(loader))
+        assert not missing, f"{target} skips brain assertion tags: {sorted(missing)}"
