@@ -10,4 +10,6 @@ The sources are `nvidia-smi --query-gpu=name,driver_version,memory.total
 --format=csv`, a relative listing of the active model-store repositories and
 files, and `systemctl cat llm-gpu-serving-medium-a.service`. The captured unit
 uses `LISTEN_ADDRESS` and `{{ llm_gpu_serving_model_cache_path }}` in place of
-deployment-specific values.
+deployment-specific values. The captured unit's `--max-model-len` line tracks
+the repo's medium-a profile between live re-captures; every other line stays
+as captured.

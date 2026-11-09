@@ -238,7 +238,7 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
     medium_a_serving = serving_profiles[qwen_profile["profile"]]
     assert serving_core["vllm_serving_version"] == gpu_core["llm_gpu_serving_vllm_version"]
     assert serving_core["vllm_serving_b12x_version"] == gpu_core["llm_gpu_serving_b12x_version"]
-    assert medium_a_serving["max_model_len"] == 196608
+    assert medium_a_serving["max_model_len"] == qwen_artifact["context_window_tokens"]
     assert qwen_artifact["context_window_tokens"] == 262144
     assert medium_a_serving["max_num_seqs"] == 8
     assert medium_a_serving["kv_cache_dtype"] == "auto"
