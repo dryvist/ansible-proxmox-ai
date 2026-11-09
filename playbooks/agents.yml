@@ -30,14 +30,26 @@
     # fabric: a scoped `--tags llm` run of the whole LLM estate must reach it.
     - llm
   pre_tasks:
+    # Registry-backed defaults resolve in the cron/env/verify templates of
+    # these four components; the install, patches and probe components never
+    # render them, so those tags skip the load. The imports are static, so
+    # the tag list reaches the registry contents unchanged.
     - name: Load the shared model catalog
       ansible.builtin.import_tasks: tasks/load_model_catalog.yml
-      tags: always
+      tags:
+        - hermes_content_scripts
+        - hermes_profiles_env
+        - hermes_crons
+        - hermes_units_gateways
     # hermes_brain_model (inventory/group_vars/all/) resolves an
     # llm_router selector once GPU profiles are enabled.
     - name: Load the fabric model registry
       ansible.builtin.import_tasks: tasks/load_fabric_registry.yml
-      tags: always
+      tags:
+        - hermes_content_scripts
+        - hermes_profiles_env
+        - hermes_crons
+        - hermes_units_gateways
   tasks:
     - name: Converge hermes_agent + fabric_watchdog (isolated — failure does not abort downstream plays)
       block:
@@ -58,6 +70,13 @@
         - name: Include fabric_watchdog role
           ansible.builtin.include_role:
             name: fabric_watchdog
+            apply:
+              tags:
+                - fabric_watchdog
+          # apply carries the tag into the dynamic contents, so
+          # --tags fabric_watchdog reaches the watchdog's own tasks.
+          tags:
+            - fabric_watchdog
       rescue:
         - name: Record isolated failure and continue
           ansible.builtin.include_tasks:
