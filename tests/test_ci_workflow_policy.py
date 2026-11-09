@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -96,7 +97,7 @@ def _context(
     }
 
 
-def _evaluate_timeout(expression: str, context: dict[str, str | None]) -> object:
+def _evaluate_timeout(expression: str, context: Mapping[str, str | int | None]) -> object:
     # Substitute the context values, then map the expression's && and || onto Python's and/or.
     body = expression.removeprefix("${{").removesuffix("}}")
     for key, value in context.items():
@@ -120,8 +121,8 @@ def test_promotion_timeout_is_sixty_only_for_same_repo_develop_into_main(
 
 ROUTER_TIMEOUT = "${{ inputs.timeout_minutes < 30 && 30 || inputs.timeout_minutes }}"
 ROUTER_DEPENDENCIES_TIMEOUT = "${{ github.event_name == 'pull_request' && 5 || inputs.timeout_minutes }}"
-# The broad pytest job documents a timeout-exception in the workflow: the suite plus a cold install passes five.
-ROLE_SELF_CHECKS_TIMEOUT = "${{ github.event_name == 'pull_request' && 10 || inputs.timeout_minutes }}"
+# The broad pytest job documents a timeout-exception in the workflow: the suite plus a cold install passes ten.
+ROLE_SELF_CHECKS_TIMEOUT = "${{ github.event_name == 'pull_request' && 15 || inputs.timeout_minutes }}"
 # The merge gate only aggregates results, so it takes the shared policy's five-minute PR cap.
 GATE_TIMEOUT = "${{ github.event_name == 'pull_request' && 5 || 10 }}"
 
