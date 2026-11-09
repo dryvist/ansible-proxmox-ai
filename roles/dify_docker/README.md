@@ -95,10 +95,15 @@ Dify 1.18.0 runs an Agent backend and local shell sandbox. The role generates
 and stores three independent secrets at `dify_docker_openbao_path`:
 `DIFY_AGENT_API_TOKEN` authenticates the API/backend pair,
 `DIFY_AGENT_SERVER_SECRET_KEY` protects Agent Stub tokens, and
-`DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN` authenticates shellctl requests. Stored
-values remain authoritative; values supplied through the environment seed
-only missing fields. The local sandbox reaches the API only through the
-dedicated SSRF proxy's signed file and Agent Stub routes.
+`DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN` authenticates shellctl requests.
+`DIFY_AGENT_SERVER_SECRET_KEY` is 43 characters of unpadded base64url that
+decodes to exactly 32 bytes (its last character carries zero unused bits),
+the format the Dify 1.18 Agent Stub enforces; a stored value that fails it
+is replaced with a freshly generated one while every other stored field is
+kept. Stored values remain authoritative except in that case; values supplied
+through the environment seed only missing or rejected fields. The local
+sandbox reaches the API only through the dedicated SSRF proxy's signed file
+and Agent Stub routes.
 
 ## Agent DSL imports
 
