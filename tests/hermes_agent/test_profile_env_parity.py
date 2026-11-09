@@ -52,7 +52,6 @@ _STORE_SPECIFIC_KEYS = {
     # Local-embedded memory daemon: one per gateway, not one per profile.
     "HINDSIGHT_LLM_API_KEY",
     # The Browser Use CLI wiring — the profile template deliberately omits it.
-    "BROWSER_INACTIVITY_TIMEOUT",
     "BROWSER_USE_HOME",
     "BH_HOME",
     "BH_CHROME_PATH",

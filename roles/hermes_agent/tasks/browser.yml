@@ -1,14 +1,8 @@
 ---
-# Browser capability: Chromium + the agent-browser CLI + Browser Use CLI on
-# every Hermes guest. Hermes's native tools keep using agent-browser; Browser
-# Use is separately available through the terminal toolset and its upstream
-# skill, attached to the loopback-only CDP service below.
-#
-# What the release DOES provide, from tools/browser_tool.py at v2026.8.3, is
-# the CDP-driven family: browser_navigate, browser_snapshot, browser_click,
-# browser_type, browser_scroll, browser_press, browser_back, browser_vision,
-# browser_console, browser_get_images, browser_screenshots. Local mode is the
-# default (no cloud_provider configured, no CDP override).
+# Browser capability: Hermes 0.23 browser_exec plus the Browser Use CLI on
+# every Hermes guest. browser_exec uses Hermes's bundled browser-harness;
+# Browser Use remains available through the terminal toolset and its skill,
+# attached to the loopback-only CDP service below.
 #
 # WHY PER-INSTANCE, not a shared browser container. Hermes auto-spawns a local
 # Chromium for private/loopback/LAN URLs whatever backend is configured, and
@@ -49,13 +43,8 @@
 # own, which is what makes floating safe here rather than invisible: apt is the
 # authority and the converge is the refresh.
 #
-# Installing Chromium from apt rather than letting agent-browser download its
-# own Playwright build is deliberate. agent-browser checks, in order:
-# AGENT_BROWSER_EXECUTABLE_PATH, then system chrome/chromium on PATH, then its
-# Playwright cache (tools/browser_tool.py::_chromium_installed). Pointing it at
-# the distro package means one browser on the guest, patched by apt on the same
-# cadence as everything else, instead of a second unmanaged copy in a cache
-# directory that nothing upgrades.
+# Installing Chromium from apt gives Hermes and the Browser Use CLI one
+# patched system browser rather than a second unmanaged copy in a cache.
 - name: Install Chromium and the fonts a headless render needs
   ansible.builtin.apt:
     name:
@@ -70,42 +59,6 @@
     cache_valid_time: 3600
   notify: Restart hermes-gateway
 
-# agent-browser is a Node process. npx is the upstream fallback path, but a
-# global install is what makes the CLI resolvable without a network round-trip
-# on first use — and a cron turn is a bad place to discover npx is fetching a
-# package.
-- name: Install Node.js and npm for the agent-browser CLI
-  ansible.builtin.apt:
-    name:
-      - nodejs
-      - npm
-    state: present
-    update_cache: true
-    cache_valid_time: 3600
-
-# Pinned and Renovate-annotated at the variable itself, in
-# defaults/main/75-browser.yml — an annotation here would be invisible, because
-# the shared annotation manager only scans role DEFAULTS files.
-- name: Install the agent-browser CLI globally
-  community.general.npm:
-    name: agent-browser
-    version: "{{ hermes_agent_agent_browser_version }}"
-    global: true
-    state: present
-  notify: Restart hermes-gateway
-
-# Proves the CLI RUNS rather than merely resolving. Upstream's own
-# agent_browser_runnable() does exactly this and explains why: npm's
-# postinstall can leave a dangling global symlink that `which` still reports
-# while exec fails with 127, silently breaking every browser tool.
-- name: Verify the agent-browser CLI actually executes
-  ansible.builtin.command:
-    cmd: agent-browser --version
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_agent_browser_probe
-  changed_when: false
-
 # Proves the browser starts, not merely that the package resolved.
 # --no-sandbox is required here and is not a weakened check: Chromium's sandbox
 # needs user namespaces an unprivileged LXC does not grant, and the container
@@ -116,7 +69,7 @@
   ansible.builtin.command:
     cmd: >-
       {{ hermes_agent_chromium_executable }}
-      --headless --no-sandbox --disable-gpu --dump-dom about:blank
+      --headless {{ hermes_agent_browser_args | join(' ') }} --disable-gpu --dump-dom about:blank
   become: true
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_chromium_probe

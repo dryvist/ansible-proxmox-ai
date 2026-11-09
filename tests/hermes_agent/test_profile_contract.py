@@ -54,6 +54,20 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_timezone": "UTC",
 }
 
+_RENDER_CONTEXT.update(
+    {
+        key: value
+        for key, value in role_defaults(ROLE_ROOT).items()
+        if key
+        in {
+            "hermes_agent_browser_allow_private_urls",
+            "hermes_agent_browser_args",
+            "hermes_agent_browser_inactivity_timeout",
+            "hermes_agent_chromium_executable",
+        }
+    }
+)
+
 
 def _jinja_env() -> Environment:
     # A loader, so `{% include %}` in an env template resolves out of the
