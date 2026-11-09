@@ -32,12 +32,23 @@
 #
 # Capability names and aliases are projections of registry route_group and
 # stable_aliases. The role selectors use serving_role / embedding metadata.
+# Keep catalogued capability names for the existing gated tiers, while an OCR
+# group is advertised only when an enabled OCR entry supplies it.
 _llm_router_capability_names_source: >-
-  {{ llm_router_model_registry
-     | selectattr('tier', 'in', llm_router_local_registry_tiers)
-     | selectattr('route_group', 'defined')
-     | map(attribute='route_group')
-     | difference(llm_router_agent_only_groups) | unique | list }}
+  {%- set _entries = llm_router_model_registry
+        | selectattr('tier', 'in', llm_router_local_registry_tiers)
+        | selectattr('route_group', 'defined') | list -%}
+  {%- set _ocr_groups = _entries | selectattr('serving_role', 'defined')
+        | selectattr('serving_role', 'equalto', 'ocr')
+        | map(attribute='route_group') | list -%}
+  {%- set _enabled_ocr_groups = llm_router_registry_enabled
+        | selectattr('tier', 'in', llm_router_local_registry_tiers)
+        | selectattr('serving_role', 'defined')
+        | selectattr('serving_role', 'equalto', 'ocr')
+        | map(attribute='route_group') | list -%}
+  {{ (_entries | map(attribute='route_group') | list)
+     | difference(_ocr_groups | difference(_enabled_ocr_groups)
+                  + llm_router_agent_only_groups) | unique | list }}
 llm_router_capability_names: "{{ _llm_router_m_capability_names }}"
 _llm_router_declared_primary: >-
   {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')

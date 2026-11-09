@@ -16,8 +16,8 @@ def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> 
         }
     ]
     capabilities = {entry["route_group"] for entry in local_entries}
-    # Parked model trials have no route group until their serving route exists.
-    assert len(capabilities) == 4, capabilities
+    # OCR is optional and absent while its only deployment is disabled.
+    assert capabilities == {"embed", "medium", "small"}, capabilities
 
     enabled_alias_entries = [
         entry for entry in registry
