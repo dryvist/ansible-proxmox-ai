@@ -34,7 +34,11 @@
           ip: 127.0.0.1
           tags: [fixture-cpu-small]
     bao_local_llm_secrets:
+      DASHSCOPE_API_KEY: fixture-dashscope
+      GEMINI_API_KEY: fixture-gemini
       OPENCODE_API_KEY: fixture-opencode
+      OPENROUTER_API_KEY: fixture-openrouter
+      OPENROUTER_HERMES_KEY: fixture-hermes-openrouter
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
@@ -168,6 +172,61 @@
              | rejectattr('model_info.disable_background_health_check', 'defined')
              | map(attribute='model_name') | list
              + _opencode_entries
+             | selectattr('model_info.disable_background_health_check', 'defined')
+             | rejectattr('model_info.disable_background_health_check')
+             | map(attribute='model_name') | list }}
+
+    - name: Every rendered non-local deployment is excluded from probing
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _nonlocal_entries | length > 0
+          - _probed_nonlocal | length == 0
+        fail_msg: >-
+          Non-local deployment(s) {{ _probed_nonlocal }} lack
+          model_info.disable_background_health_check: true. Every probe is a
+          real paid completion or a draw on a subscription quota, every
+          interval, on every router; passive recovery (allowed_fails plus
+          cooldown) already re-admits a failed deployment.
+        success_msg: >-
+          All {{ _nonlocal_entries | length }} non-local deployment(s)
+          ({{ _nonlocal_names | join(', ') }}) are excluded from probing.
+      vars:
+        # The class of every rendered name, derived the way the router derives
+        # it — never a hard-coded list. The D1 ladder's group class
+        # (llm_router_d1_group_class_by_name) speaks for the names it keys;
+        # the registry's per-model class (llm_router_deployment_class_by_model
+        # — 'local' exactly when the entry's tier is a local one) covers the
+        # names the ladder does not key, such as standalone cloud entries and
+        # ladder-exempt ids. A rendered name in neither map points at a local
+        # backend (the "*" passthrough, a direct route alias), so it defaults
+        # to local and passes this task either way.
+        _registry_class_by_name: >-
+          {%- set ns = namespace(classes={}) -%}
+          {%- for m in llm_router_registry_enabled -%}
+          {%- set _name = m.route_group | default(m.client_model_id) -%}
+          {%- set _ = ns.classes.update({_name:
+                llm_router_deployment_class_by_model[m.client_model_id]}) -%}
+          {%- endfor -%}
+          {{ ns.classes }}
+        _nonlocal_entries: >-
+          {%- set ns = namespace(entries=[]) -%}
+          {%- for entry in _config.model_list -%}
+          {%- set _class = llm_router_d1_group_class_by_name.get(entry.model_name, '')
+                or _registry_class_by_name.get(entry.model_name, '') or 'local' -%}
+          {%- if _class != 'local' -%}
+          {%- set _ = ns.entries.append({'name': entry.model_name, 'class': _class}) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.entries }}
+        _nonlocal_names: "{{ _nonlocal_entries | map(attribute='name') | unique | list }}"
+        _probed_nonlocal: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _nonlocal_names)
+             | rejectattr('model_info.disable_background_health_check', 'defined')
+             | map(attribute='model_name') | list
+             + _config.model_list
+             | selectattr('model_name', 'in', _nonlocal_names)
              | selectattr('model_info.disable_background_health_check', 'defined')
              | rejectattr('model_info.disable_background_health_check')
              | map(attribute='model_name') | list }}
