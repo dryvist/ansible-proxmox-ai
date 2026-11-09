@@ -58,8 +58,12 @@ llm_router_local_only_fail_fast_names: >-
 
 # A role whose chain is non-empty but entirely local is written into the config
 # with that exact chain, so its local-only property doesn't depend on the seeded
-# record alone. The small capability also gets the rendered Studio model route
-# as its final rung. Keys are route or role names; values are the chains.
+# record alone. When the small lane renders, the Studio model route is its final
+# rung. Without that lane the small selector still never dead-ends: its chain
+# leads with its own group (whose deployments serve in registry order), then
+# hands off to the existing local review chain, keeping cron callers local when
+# the small group is saturated or down. Keys are route or role names; values
+# are the chains.
 llm_router_local_only_chains: >-
   {%- set ns = namespace(out={}) -%}
   {%- for d in llm_router_role_deployments
@@ -72,6 +76,10 @@ llm_router_local_only_chains: >-
   {%- if llm_router_small_capability_name in llm_router_rendered_capability_names
         and _studio_route | length > 0 -%}
   {%- set _discard = ns.out.update({llm_router_small_capability_name: [_studio_route]}) -%}
+  {%- else -%}
+  {%- set _discard = ns.out.update({llm_router_small_capability_name:
+        ([llm_router_small_capability_name] + llm_router_review_local_chain)
+        | unique | list}) -%}
   {%- endif -%}
   {{ ns.out }}
 
