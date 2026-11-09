@@ -1,7 +1,8 @@
 ---
-# Reconcile ONE agentic direct-deliver digest cron (Phase 5). Unlike the
-# --no-agent enqueuers (reconcile_enqueuer_cron.yml), the gateway RUNS the
-# prompt and delivers the model's final response straight to Slack. Mirrors the
+# Reconcile ONE direct-deliver cron (Phase 5). By default, the gateway RUNS the
+# prompt and delivers the model's final response straight to Slack. An item
+# with `no_agent: true` instead runs its script and delivers stdout verbatim.
+# Mirrors the
 # same create-if-absent + checksum-marker remove/recreate idempotency (the CLI's
 # `cron edit` is not relied on — recreate re-pins schedule/prompt/skill/model/
 # provider/deliver deterministically).
@@ -14,11 +15,9 @@
 # (outcome-based routing: the catalog's quiet-when-healthy footer is appended).
 # A job may also pin `model` and `model_provider` through Hermes's native
 # per-job inference pin; its HERMES_HOME supplies that profile's router key.
-# Also optional: script, a path under ~/.hermes/scripts/ attached WITHOUT
-# --no-agent (monitor mode) — the script decides per tick whether to wake the
-# agent at all (upstream's `wakeAgent` gate). The job stays fully agentic
-# either way, unlike the `--no-agent --script` enqueuers in
-# reconcile_enqueuer_cron.yml.
+# Also optional: script, a path under ~/.hermes/scripts/. By default it is
+# attached in monitor mode and the script decides whether to wake the agent.
+# Set `no_agent: true` for a script-only job with no prompt or model.
 # A job runs here only if it is enabled AND belongs to THIS agent identity.
 # Both halves matter and they are not interchangeable: `enabled: false` alone
 # has never removed anything (every task below is gated on it, so a disabled
@@ -29,6 +28,16 @@
 - name: "Direct cron | Decide agent ownership for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_wanted: "{{ hermes_agent_direct_job_wanted }}"
+
+- name: "Direct cron | Validate script-only item {{ item.name }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - item.script | default('') | length > 0
+      - item.enabled_toolsets is not defined
+    fail_msg: >-
+      A no-agent direct cron requires a script and cannot set enabled_toolsets.
+  when: item.no_agent | default(false) | bool
 
 # A named profile's single Slack target moves to that profile's routed report
 # channel when one is configured (152-profile-slack-routes.yml).
@@ -42,8 +51,12 @@
       {{ ('slack:' ~ hermes_agent_slack_profile_channels[_profile])
          if (_profile in hermes_agent_slack_profile_channels and _deliver is match('slack:[^,]+$'))
          else _deliver }}
-    hermes_agent_direct_model: "{{ item.model | default(hermes_agent_cron_model) }}"
-    hermes_agent_direct_model_provider: "{{ item.model_provider | default(hermes_agent_cron_model_provider) }}"
+    hermes_agent_direct_model: >-
+      {{ '' if item.no_agent | default(false) | bool
+         else item.model | default(hermes_agent_cron_model) }}
+    hermes_agent_direct_model_provider: >-
+      {{ '' if item.no_agent | default(false) | bool
+         else item.model_provider | default(hermes_agent_cron_model_provider) }}
     hermes_agent_direct_failure_deliver: "{{ item.failure_deliver | default(hermes_agent_cron_failure_deliver) }}"
 
 - name: "Direct cron | Load prompt + append reporting footer for {{ item.name }}"
@@ -65,7 +78,16 @@
     hermes_agent_direct_prompt_paths: >-
       {{ (item.prompt_files | default([item.prompt_file | default('')]))
          | map('regex_replace', '^', hermes_agent_prompts_path ~ '/') | list }}
-  when: hermes_agent_direct_wanted | bool
+  when:
+    - hermes_agent_direct_wanted | bool
+    - not (item.no_agent | default(false) | bool)
+
+- name: "Direct cron | Set empty prompt for script-only {{ item.name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_prompt: ""
+  when:
+    - hermes_agent_direct_wanted | bool
+    - item.no_agent | default(false) | bool
 
 # --workdir is not cosmetic: read from the pinned hermes-agent v2026.8.3
 # source (hermes_cli/subcommands/cron.py) and its own docs (website/docs/
@@ -88,10 +110,12 @@
     hermes_agent_cli_home: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_argv: >-
-      {{ [hermes_agent_bin] + hermes_agent_cli_profile_args + ['cron', 'create', item.schedule,
-          hermes_agent_direct_prompt, '--name', item.name]
+      {{ [hermes_agent_bin] + hermes_agent_cli_profile_args + ['cron', 'create', item.schedule]
+         + ([hermes_agent_direct_prompt] if not (item.no_agent | default(false) | bool) else [])
+         + ['--name', item.name]
          + (['--skill', item.skill] if (item.skill | default('') | length > 0) else [])
          + (['--script', item.script] if (item.script | default('') | length > 0) else [])
+         + (['--no-agent'] if item.no_agent | default(false) | bool else [])
          + (['--model', hermes_agent_direct_model]
             if hermes_agent_direct_model | length > 0 else [])
          + (['--provider', hermes_agent_direct_model_provider]
@@ -193,6 +217,7 @@
   ansible.builtin.set_fact:
     hermes_agent_direct_checksum: >-
       {{ ({'schedule': item.schedule, 'prompt': hermes_agent_direct_prompt,
+          'no_agent': item.no_agent | default(false) | bool,
           'skill': item.skill | default(''),
           'script': item.script | default(''),
           'deliver': hermes_agent_direct_deliver,

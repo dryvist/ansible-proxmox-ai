@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from _prompt_catalog import catalog_files, prompt_bodies
-from _prompt_catalog_render import ROLE, raw_defaults, render_hashes
+from _prompt_catalog_render import ROLE, _direct_job_kind, raw_defaults, render_hashes
 from _role_files import role_defaults
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -19,6 +19,14 @@ PRIVATE = {
     "hermes_agent_daily_status_endpoints",
     "hermes_agent_service_pulse_endpoints",
 }
+
+
+def test_enabled_script_job_is_not_classified_as_retired():
+    assert _direct_job_kind({"enabled": True, "script": "credential-canary.py"}) == "script"
+
+
+def test_enabled_job_without_prompt_or_script_is_still_classified_as_retired():
+    assert _direct_job_kind({"enabled": True}) == "retired"
 
 
 def test_prompt_sources_preserve_the_original_literal_bytes():
