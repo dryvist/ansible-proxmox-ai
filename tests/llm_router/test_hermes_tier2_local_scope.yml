@@ -70,25 +70,6 @@
               + llm_router_hermes_default_fallback_chain)
              | reject('in', _llm_router_agent_excluded_groups) | unique | list }}
 
-    - name: Add a tier-1 public Hermes fixture to the key projection
-      ansible.builtin.set_fact:
-        _llm_router_hermes_profile_keys: >-
-          {{ _llm_router_hermes_profile_keys + [{
-               'alias': 'hermes-tier1-public-fixture',
-               'value': 'fixture-key',
-               'enabled': true,
-               'allowed_classes': _llm_router_consumer_classes_all,
-               'models': _tier_1_public_fixture_models,
-               'models_authoritative': true,
-               'sensitivity_tag': '&sensitivity:public',
-               'tags': []}] }}
-      no_log: true
-
-    - name: Refresh the rendered virtual-key projection with the tier-1 fixture
-      ansible.builtin.include_role:
-        name: llm_router
-        tasks_from: assertion-inputs.yml
-
     - name: Select the rendered tier-2 cron profile keys by scope
       ansible.builtin.set_fact:
         _tier_2_cron_keys: >-
@@ -111,18 +92,22 @@
             | intersect(_cloud_groups) | length == 0
           - _tier_2_cron_keys | selectattr('models', 'contains', llm_router_review_aliases.local)
             | list | length == 4
+      vars:
+        _cloud_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
 
     - name: Assert the rendered Hermes profiles satisfy their tier and tag scopes
       ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-hermes-profile-key-brain-model.yml"
 
-    - name: Select a rendered tier-1 public Hermes key for the negative check
+    - name: Model a tier-1 public Hermes key holding the whole chain
       ansible.builtin.set_fact:
-        _tier_1_public_profile_key: >-
-          {{ _llm_router_virtual_keys_without_values
-             | selectattr('priority_tier', 'equalto', 1)
-             | selectattr('sensitivity_tag', 'equalto', '&sensitivity:public')
-             | rejectattr('tags', 'contains', '&zdr') | first }}
-      no_log: true
+        _tier_1_public_profile_key:
+          alias: hermes-tier1-public-fixture
+          priority_tier: 1
+          sensitivity_tag: "&sensitivity:public"
+          tags: []
+          models: "{{ _tier_1_public_fixture_models }}"
 
     - name: Save the rendered tier-1 public key's complete chain
       ansible.builtin.set_fact:
