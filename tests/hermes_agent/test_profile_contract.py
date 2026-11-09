@@ -55,7 +55,7 @@ _RENDER_CONTEXT: dict[str, Any] = {
 _RENDER_CONTEXT.update(
     role_default_subset(
         ROLE_ROOT,
-        "hermes_agent_browser_allow_private_urls",
+        "hermes_agent_browser_auto_local_for_private_urls",
         "hermes_agent_browser_args",
         "hermes_agent_browser_inactivity_timeout",
         "hermes_agent_chromium_executable",

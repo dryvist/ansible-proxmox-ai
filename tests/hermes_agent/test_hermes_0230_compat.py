@@ -22,16 +22,29 @@ def test_gateway_and_profiles_render_hermes_023_browser_config() -> None:
     expected = {
         "headed": False,
         "inactivity_timeout": 120,
+        "auto_local_for_private_urls": True,
         "executable_path": "/usr/bin/chromium",
         "chromium_args": ["--no-sandbox"],
     }
     for template in ("config.yaml.j2", "config-profile.yaml.j2"):
         rendered, config = _render(template, {})
         assert config["browser"] == expected, template
-        assert config["security"]["allow_private_urls"] is True, template
         assert "record_sessions" not in rendered
         assert "allow_private_urls" not in config["browser"]
         assert "backend" not in config["browser"]
+
+
+def test_named_profile_does_not_enable_private_url_fetch_bypass() -> None:
+    _, config = _render("config-profile.yaml.j2", {})
+    assert config["security"]["allow_private_urls"] is False
+    assert "allow_private_urls" not in config["browser"]
+
+
+def test_gateway_keeps_private_browser_routing_without_private_fetch_bypass() -> None:
+    _, config = _render("config.yaml.j2", {})
+    assert config["security"]["allow_private_urls"] is False
+    assert config["browser"]["auto_local_for_private_urls"] is True
+    assert "allow_private_urls" not in config["browser"]
 
 
 def test_pepper_keeps_browser_access_denied_after_the_browser_tool_change() -> None:
