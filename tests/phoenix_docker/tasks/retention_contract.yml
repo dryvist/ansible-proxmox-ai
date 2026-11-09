@@ -1,0 +1,166 @@
+---
+# Offline contract for the trace-retention sync in roles/phoenix_docker/tasks/main.yml:
+# PHOENIX_DEFAULT_RETENTION_POLICY_DAYS only seeds the Default policy row on first
+# boot, so the role must read the live policy through the admin GraphQL API and
+# patch it only when its maxDays differs from phoenix_docker_retention_days —
+# never when it already matches.
+#
+# The GraphQL checks are behavioral: the decision expressions are extracted
+# from the parsed role tasks and evaluated against recorded replies shaped
+# like Phoenix's — results under the `data` envelope, failures as a non-empty
+# `errors` list carried with HTTP 200 — so reading the wrong envelope or
+# dropping the errors guard fails here instead of on a live converge. The
+# bounded-step cases render the compute expressions against recorded live
+# rules, pinning the one-step-per-converge walk toward the target.
+- name: Read the Phoenix role sources for the retention contract
+  ansible.builtin.slurp:
+    src: "{{ item.path }}"
+  loop:
+    - path: "{{ playbook_dir }}/../../roles/phoenix_docker/tasks/main.yml"
+    - path: "{{ playbook_dir }}/../../roles/phoenix_docker/defaults/main.yml"
+    - path: "{{ playbook_dir }}/../../roles/phoenix_docker/templates/docker-compose.yml.j2"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: phoenix_docker_retention_sources
+
+- name: Decode the Phoenix role sources
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_main_raw: "{{ phoenix_docker_retention_sources.results[0].content | b64decode }}"
+    phoenix_docker_retention_defaults_source: "{{ phoenix_docker_retention_sources.results[1].content | b64decode }}"
+    phoenix_docker_retention_template_source: "{{ phoenix_docker_retention_sources.results[2].content | b64decode }}"
+
+- name: Parse the retention tasks out of the role source
+  vars:
+    _tasks: "{{ phoenix_docker_retention_main_raw | from_yaml }}"
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_task_names: "{{ _tasks | selectattr('name', 'defined') | map(attribute='name') | list }}"
+    phoenix_docker_retention_by_name: >-
+      {{ dict(_tasks | selectattr('name', 'defined') | map(attribute='name')
+              | zip(_tasks | selectattr('name', 'defined'))) }}
+
+- name: Assert the retention sync runs on a healthy stack and never precedes the patch
+  vars:
+    _names: "{{ phoenix_docker_retention_task_names }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        _names.index('Deploy Phoenix via docker compose')
+        < _names.index('Wait for Phoenix web port to be ready')
+      - >-
+        _names.index('Wait for Phoenix web port to be ready')
+        < _names.index('Read the live Phoenix default trace retention policy')
+      - >-
+        _names.index('Read the live Phoenix default trace retention policy')
+        < _names.index('Read the oldest trace times under the default policy when the rule has no day limit')
+      - >-
+        _names.index('Read the oldest trace times under the default policy when the rule has no day limit')
+        < _names.index('Compute the retention step toward the configured days')
+      - >-
+        _names.index('Compute the retention step toward the configured days')
+        < _names.index('Patch the Phoenix default trace retention policy when it differs')
+      - >-
+        _names.index('Patch the Phoenix default trace retention policy when it differs')
+        < _names.index('Report the retention step applied to the live policy')
+    fail_msg: >-
+      The retention sync must follow compose deployment and the port wait, and
+      must read the live policy (and, for a rule with no day limit, the oldest
+      trace), compute the step, patch, then report — so the policy is only
+      ever patched against a serving server and every step is visible.
+
+- name: Assert the retention read queries the live default policy through the admin API
+  vars:
+    _read_task: "{{ phoenix_docker_retention_by_name['Read the live Phoenix default trace retention policy'] }}"
+    _read_uri: "{{ _read_task['ansible.builtin.uri'] }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'/graphql' in _read_uri.url"
+      - _read_uri.method == 'POST'
+      - _read_uri.body.query is search('defaultProjectTraceRetentionPolicy')
+      - _read_uri.body.query is search('TraceRetentionRuleMaxDays')
+      - "'Authorization' in _read_uri.headers"
+      - _read_task.no_log is true
+      - _read_task.changed_when is false
+      - "'not ansible_check_mode' in _read_task.when"
+    fail_msg: >-
+      The read must POST the defaultProjectTraceRetentionPolicy query with the
+      admin bearer header, be read-only and check-mode safe.
+
+- name: Assert the retention patch carries the mutation and the configured days
+  vars:
+    _patch_task_name: Patch the Phoenix default trace retention policy when it differs
+    _patch_task: "{{ phoenix_docker_retention_by_name[_patch_task_name] }}"
+    _patch_uri: "{{ _patch_task['ansible.builtin.uri'] }}"
+    _patch_when: "{{ _patch_task.when | join(' ') }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'/graphql' in _patch_uri.url"
+      - _patch_uri.method == 'POST'
+      - "'Authorization' in _patch_uri.headers"
+      - _patch_task.no_log is true
+      - >-
+        _patch_task.vars.phoenix_docker_retention_mutation
+        is search('patchProjectTraceRetentionPolicy')
+      - >-
+        _patch_task.vars.phoenix_docker_retention_mutation
+        is search('PatchProjectTraceRetentionPolicyInput')
+      - "'| default(0)' in phoenix_docker_retention_main_raw"
+      - >-
+        phoenix_docker_retention_main_raw
+        is search('phoenix_docker_retention_next_days \| int[}]')
+      - "'not ansible_check_mode' in _patch_when"
+      - "'phoenix_docker_retention_next_days | int' in _patch_when"
+      - "'phoenix_docker_retention_live_days | int' in _patch_when"
+    fail_msg: >-
+      The patch must target the live policy id read from the API, send the
+      stepped maxDays as a JSON number, and be guarded so it is skipped when
+      the computed step already equals the live maxDays.
+
+- name: Assert the bounded step reads the oldest trace and reports its size
+  vars:
+    _oldest_name: Read the oldest trace times under the default policy when the rule has no day limit
+    _compute_name: Compute the retention step toward the configured days
+    _report_name: Report the retention step applied to the live policy
+    _oldest_task: "{{ phoenix_docker_retention_by_name[_oldest_name] }}"
+    _oldest_uri: "{{ _oldest_task['ansible.builtin.uri'] }}"
+    _oldest_when: "{{ _oldest_task.when | join(' ') }}"
+    _compute_task: "{{ phoenix_docker_retention_by_name[_compute_name] }}"
+    _report_task: "{{ phoenix_docker_retention_by_name[_report_name] }}"
+    _compute_source: >-
+      {{ _compute_task.vars.phoenix_docker_retention_next_days
+      ~ _compute_task.vars.phoenix_docker_retention_oldest_days
+      ~ _compute_task.vars.phoenix_docker_retention_starts }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'/graphql' in _oldest_uri.url"
+      - _oldest_uri.method == 'POST'
+      - _oldest_uri.body.query is search('defaultProjectTraceRetentionPolicy')
+      - _oldest_uri.body.query is search('startTime')
+      - "'Authorization' in _oldest_uri.headers"
+      - _oldest_task.no_log is true
+      - _oldest_task.changed_when is false
+      - "'not ansible_check_mode' in _oldest_when"
+      - "'| default(0) | int <= 0' in _oldest_when"
+      - _oldest_task.failed_when is search('errors')
+      - _compute_task.changed_when is false
+      - "'not ansible_check_mode' in _compute_task.when"
+      - "'phoenix_docker_retention_step_days' in _compute_source"
+      - "'to_datetime' in _compute_source"
+      - "'| min' in _compute_source"
+      - "'| max' in _compute_source"
+      - "'phoenix_docker_retention_oldest.json is defined' in _compute_source"
+      - _report_task.changed_when is false
+      - "'phoenix_docker_retention_live_days' in _report_task['ansible.builtin.debug'].msg"
+      - "'phoenix_docker_retention_next_days' in _report_task['ansible.builtin.debug'].msg"
+      - "'phoenix_docker_retention_step_days' in _report_task['ansible.builtin.debug'].msg"
+    fail_msg: >-
+      The oldest-trace read must query the project start times through the
+      admin API only when the live rule has no effective day limit, the compute
+      step must lower the policy one phoenix_docker_retention_step_days at a
+      time toward the target, and the run must report the old and new maxDays.
+
+- name: Verify the retention contract's behavior against the recorded replies
+  ansible.builtin.include_tasks: retention_behavior.yml

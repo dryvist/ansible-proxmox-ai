@@ -1,0 +1,235 @@
+---
+# Behavioral half of the trace-retention contract (the structural half lives
+# in retention_contract.yml, which includes this file): the decision
+# expressions carried from the role tasks are evaluated against recorded
+# replies — the data envelope, the errors list, and the bounded-step cases —
+# so reading the wrong envelope, dropping the errors guard, or stepping past
+# one phoenix_docker_retention_step_days per converge fails here instead of
+# on a live converge.
+
+# The decision expressions are carried verbatim from the parsed tasks, so the
+# checks below evaluate what the role ships, not a copy of it.
+- name: Carry the retention decision expressions out of the role tasks
+  vars:
+    _read_name: Read the live Phoenix default trace retention policy
+    _readable_name: Require the live Phoenix default trace retention policy to be readable
+    _oldest_name: Read the oldest trace times under the default policy when the rule has no day limit
+    _patch_name: Patch the Phoenix default trace retention policy when it differs
+    _compute_name: Compute the retention step toward the configured days
+    _read_task: "{{ phoenix_docker_retention_by_name[_read_name] }}"
+    _readable_task: "{{ phoenix_docker_retention_by_name[_readable_name] }}"
+    _oldest_task: "{{ phoenix_docker_retention_by_name[_oldest_name] }}"
+    _patch_task: "{{ phoenix_docker_retention_by_name[_patch_name] }}"
+    _compute_task: "{{ phoenix_docker_retention_by_name[_compute_name] }}"
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_contract_read_failed_when: "{{ _read_task.failed_when }}"
+    phoenix_docker_retention_contract_readable_thats: "{{ _readable_task['ansible.builtin.assert'].that }}"
+    phoenix_docker_retention_contract_patch_failed_when: "{{ _patch_task.failed_when }}"
+    phoenix_docker_retention_contract_patch_body: "{{ _patch_task['ansible.builtin.uri'].body }}"
+    phoenix_docker_retention_contract_mutation: "{{ _patch_task.vars.phoenix_docker_retention_mutation }}"
+    phoenix_docker_retention_contract_live_expr: "{{ _compute_task.vars.phoenix_docker_retention_live_days }}"
+    phoenix_docker_retention_contract_oldest_expr: "{{ _compute_task.vars.phoenix_docker_retention_oldest_days }}"
+    phoenix_docker_retention_contract_next_expr: "{{ _compute_task.vars.phoenix_docker_retention_next_days }}"
+    phoenix_docker_retention_contract_patch_gate: "{{ _patch_task.when | last }}"
+    phoenix_docker_retention_contract_oldest_read_gate: "{{ _oldest_task.when | last }}"
+
+# Recorded replies shaped like the pinned Phoenix GraphQL API: results ride
+# under `data`; failures arrive as a non-empty `errors` list with HTTP 200.
+- name: Set the recorded GraphQL replies for the retention contract
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_contract_fixtures:
+      read_ok:
+        json:
+          data:
+            defaultProjectTraceRetentionPolicy:
+              id: UG9saWN5OmRlZmF1bHQ=
+              rule:
+                __typename: TraceRetentionRuleMaxDays
+                maxDays: 30
+      read_errors:
+        json:
+          errors:
+            - message: validation failed (DefaultTraceRetentionPolicy)
+      patch_ok:
+        json:
+          data:
+            patchProjectTraceRetentionPolicy:
+              node:
+                id: UG9saWN5OmRlZmF1bHQ=
+      patch_errors:
+        json:
+          errors:
+            - message: patch rejected (DefaultTraceRetentionPolicy)
+
+- name: Write the patch body template for rendering
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+  block:
+    - name: Create the retention contract render directory
+      ansible.builtin.file:
+        path: "{{ _render_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Write the patch body template
+      ansible.builtin.copy:
+        dest: "{{ _render_dir }}/patch_body.j2"
+        content: "{{ phoenix_docker_retention_contract_patch_body }}"
+        mode: "0600"
+
+    - name: Write the step decision templates for rendering
+      vars:
+        _templates:
+          - name: live_days
+            content: "{{ phoenix_docker_retention_contract_live_expr }}"
+          - name: oldest_days
+            content: "{{ phoenix_docker_retention_contract_oldest_expr }}"
+          - name: next_days
+            content: "{{ phoenix_docker_retention_contract_next_expr }}"
+          - name: patch_gate
+            content: "{{ '{{ (' ~ phoenix_docker_retention_contract_patch_gate ~ ') }}' }}"
+          - name: oldest_read_gate
+            content: "{{ '{{ (' ~ phoenix_docker_retention_contract_oldest_read_gate ~ ') }}' }}"
+      ansible.builtin.copy:
+        dest: "{{ _render_dir }}/{{ item.name }}.j2"
+        content: "{{ item.content }}"
+        mode: "0600"
+      loop: "{{ _templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # --- Behavior against a recorded success reply --------------------------
+    # The read task must accept the reply, every readable-assert condition
+    # must hold, and the patch body must resolve the policy id out of `data`.
+
+    - name: Point the contract at the recorded success reply
+      ansible.builtin.set_fact:
+        phoenix_docker_retention_current: "{{ phoenix_docker_retention_contract_fixtures.read_ok }}"
+        phoenix_docker_retention_days: 30
+        phoenix_docker_retention_mutation: "{{ phoenix_docker_retention_contract_mutation }}"
+        # The patch body renders the stepped maxDays, so the case loop's first
+        # computed step is seeded to the value a live 30 converges to.
+        phoenix_docker_retention_next_days: 30
+
+    - name: The read task accepts a recorded success reply
+      ansible.builtin.assert:
+        quiet: true
+        that: "{{ ['not (' ~ phoenix_docker_retention_contract_read_failed_when ~ ')'] }}"
+        fail_msg: The read task's errors guard tripped on a recorded success reply.
+
+    - name: The readable-assert conditions hold on a recorded success reply
+      ansible.builtin.assert:
+        quiet: true
+        that: "{{ phoenix_docker_retention_contract_readable_thats }}"
+        fail_msg: >-
+          The readable-assert conditions do not all hold on a reply shaped
+          like Phoenix's — the policy is not read out of the data envelope.
+
+    - name: The patch body carries the policy id from the data envelope
+      vars:
+        _rendered_body: "{{ lookup('ansible.builtin.template', _render_dir ~ '/patch_body.j2') | trim }}"
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'UG9saWN5OmRlZmF1bHQ=' in _rendered_body"
+          - "'None' not in _rendered_body"
+          - "_rendered_body is search('maxDays.: 30')"
+        fail_msg: >-
+          The patch body did not resolve the recorded policy id out of the
+          data envelope alongside the configured days.
+
+    # --- Behavior against a recorded errors reply ---------------------------
+    # GraphQL reports failures with HTTP 200, so the read task's errors guard
+    # must trip and every readable-assert condition must fail.
+
+    - name: Point the contract at the recorded errors reply
+      ansible.builtin.set_fact:
+        phoenix_docker_retention_current: "{{ phoenix_docker_retention_contract_fixtures.read_errors }}"
+
+    - name: The read task refuses a recorded errors reply
+      ansible.builtin.assert:
+        quiet: true
+        that: "{{ [phoenix_docker_retention_contract_read_failed_when] }}"
+        fail_msg: >-
+          The read task's errors guard did not trip on a recorded errors
+          reply, which GraphQL reports with HTTP 200.
+
+    - name: Every readable-assert condition fails on a recorded errors reply
+      ansible.builtin.assert:
+        quiet: true
+        that: >-
+          {{ ['not (' ~ (phoenix_docker_retention_contract_readable_thats
+             | join(') and not (')) ~ ')'] }}
+        fail_msg: >-
+          A readable-assert condition still holds on a recorded errors reply,
+          so a failed read could slip past the assert.
+
+    # --- Behavior of the patch task against its own recorded replies --------
+
+    - name: Point the contract at the recorded patch errors reply
+      ansible.builtin.set_fact:
+        phoenix_docker_retention_patch: "{{ phoenix_docker_retention_contract_fixtures.patch_errors }}"
+
+    - name: The patch task refuses a recorded errors reply
+      ansible.builtin.assert:
+        quiet: true
+        that: "{{ [phoenix_docker_retention_contract_patch_failed_when] }}"
+        fail_msg: The patch task's errors guard did not trip on a recorded errors reply.
+
+    - name: Point the contract at the recorded patch success reply
+      ansible.builtin.set_fact:
+        phoenix_docker_retention_patch: "{{ phoenix_docker_retention_contract_fixtures.patch_ok }}"
+
+    - name: The patch task accepts a recorded success reply
+      ansible.builtin.assert:
+        quiet: true
+        that: "{{ ['not (' ~ phoenix_docker_retention_contract_patch_failed_when ~ ')'] }}"
+        fail_msg: The patch task's errors guard tripped on a recorded success reply.
+
+    # --- Bounded-step cases --------------------------------------------------
+    # The compute expressions must walk the live policy down one step at a
+    # time: target 30 with a step of 7 gives 53 from an unlimited rule whose
+    # oldest trace is 60 whole days old; 37 lands on 30; 33 clamps to 30;
+    # 20 (raising) sets 30 directly; a live 30 makes no change.
+
+    - name: Stamp the recorded oldest trace sixty whole days in the past
+      vars:
+        _stamp_epoch: "{{ (now(utc=True).timestamp() | int) - 60 * 86400 - 3600 }}"
+      ansible.builtin.set_fact:
+        phoenix_docker_retention_contract_oldest_start: >-
+          {{ lookup('pipe', 'date -u -d @' ~ (_stamp_epoch | int | string)
+          ~ ' +%Y-%m-%dT%H:%M:%S+00:00') | trim }}
+
+    - name: Set the retention inputs the compute expressions read
+      ansible.builtin.set_fact:
+        phoenix_docker_retention_days: 30
+        phoenix_docker_retention_step_days: 7
+
+    - name: Assert every bounded-step case against the extracted expressions
+      vars:
+        _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+        _step_cases:
+          - name: unlimited_oldest_60d
+            live_days: 0
+            oldest_start: "{{ phoenix_docker_retention_contract_oldest_start }}"
+            expected_oldest: 60
+            expected_next: 53
+            gate: 'True'
+          - { name: live_37, live_days: 37, expected_oldest: 0, expected_next: 30, gate: 'True' }
+          - { name: live_33, live_days: 33, expected_oldest: 0, expected_next: 30, gate: 'True' }
+          - { name: live_20, live_days: 20, expected_oldest: 0, expected_next: 30, gate: 'True' }
+          - { name: live_30, live_days: 30, expected_oldest: 0, expected_next: 30, gate: 'False' }
+        _case_live_days: "{{ item.live_days }}"
+        _case_expected_oldest: "{{ item.expected_oldest }}"
+        _case_expected_next: "{{ item.expected_next }}"
+        _case_gate: "{{ item.gate }}"
+        _case_oldest_start: "{{ item.oldest_start | default(omit) }}"
+      ansible.builtin.include_tasks: retention_step_case.yml
+      loop: "{{ _step_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+  always:
+    - name: Remove the retention contract render directory
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+        state: absent

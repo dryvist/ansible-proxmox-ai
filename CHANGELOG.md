@@ -1,31 +1,5 @@
 # Changelog
 
-## [2.38.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.37.0...v2.38.0) (2026-11-09)
-
-
-### Features
-
-* **llm_router:** add a local-only router key for the sandbox's opencode-local tool ([#2273](https://github.com/dryvist/ansible-proxmox-ai/issues/2273)) ([566dc8d](https://github.com/dryvist/ansible-proxmox-ai/commit/566dc8df1274bf427a6ea506c3a32f11c42df6e0))
-
-
-### Bug Fixes
-
-* **deps:** update homelab-contracts to v5.58.1 ([#2280](https://github.com/dryvist/ansible-proxmox-ai/issues/2280)) ([ff8bf1e](https://github.com/dryvist/ansible-proxmox-ai/commit/ff8bf1e3001e9d73c80f2d771481f18bf7ec6e68))
-* **hermes_agent:** clean check mode for the Node unpack and a fabric_watchdog tag ([#2277](https://github.com/dryvist/ansible-proxmox-ai/issues/2277)) ([1cd925e](https://github.com/dryvist/ansible-proxmox-ai/commit/1cd925e2654e2707c4e2e993d35bce0f21532b7f))
-* **tests:** keep registry names out of the credential canary test ([#2276](https://github.com/dryvist/ansible-proxmox-ai/issues/2276)) ([7d0898e](https://github.com/dryvist/ansible-proxmox-ai/commit/7d0898e11152fb0766653cd2d3a3ec282dabcb7f))
-
-## [2.37.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.36.0...v2.37.0) (2026-11-09)
-
-
-### Features
-
-* **hermes_agent:** manage the credential canary for the single Slack socket ([#2272](https://github.com/dryvist/ansible-proxmox-ai/issues/2272)) ([6b2844c](https://github.com/dryvist/ansible-proxmox-ai/commit/6b2844c5cc50d5af997b1a4482381a59ec42568b))
-
-
-### Bug Fixes
-
-* **hermes_agent:** probe the gateway API path the pinned Hermes serves ([#2267](https://github.com/dryvist/ansible-proxmox-ai/issues/2267)) ([be6a549](https://github.com/dryvist/ansible-proxmox-ai/commit/be6a549d95c5741c2f74c37f499b2b3d6dab7f19))
-
 ## [2.36.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.35.2...v2.36.0) (2026-11-09)
 
 

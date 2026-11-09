@@ -14,15 +14,6 @@ ROOT = Path(__file__).resolve().parents[2]
 ROLE = ROOT / "roles/hermes_agent"
 
 
-def _direct_job_kind(job):
-    """Classify a direct job by the content the renderer is responsible for."""
-    if any(key in job for key in ("prompt_var", "prompt_file", "prompt_files")):
-        return "prompt"
-    if job.get("script"):
-        return "script"
-    return "retired"
-
-
 def raw_defaults(role=ROLE):
     merged = {}
     for file in sorted((role / "defaults/main").glob("*.yml")):
@@ -52,11 +43,8 @@ def render_hashes(tmp_path, catalog_path, *, role=ROLE, identity="fixture", over
     ]))
     jobs = []
     for job in literal["hermes_agent_direct_cron_jobs"]:
-        kind = _direct_job_kind(job)
-        if kind == "retired":
+        if not any(key in job for key in ("prompt_var", "prompt_file", "prompt_files")):
             assert job["enabled"] is False  # retired placeholders have no body
-            continue
-        if kind == "script":
             continue
         jobs.append({"name": str(len(jobs)), **{
             key: value for key, value in job.items()
