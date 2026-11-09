@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.35.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.35.0...v2.35.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **dify_docker:** correct the catalog manifest checksum pin ([#2243](https://github.com/dryvist/ansible-proxmox-ai/issues/2243)) ([48f0b8e](https://github.com/dryvist/ansible-proxmox-ai/commit/48f0b8efa502db219f5384b7a4194d887cf6b82d))
+* **llm_router:** render the small lane's endpoint as one lower-case api_base ([72a6b10](https://github.com/dryvist/ansible-proxmox-ai/commit/72a6b1048e6cb4b265433a33dcf61c54ee7b28f4))
+* **llm_router:** render the small lane's endpoint as one lower-case api_base ([#2235](https://github.com/dryvist/ansible-proxmox-ai/issues/2235)) ([72a6b10](https://github.com/dryvist/ansible-proxmox-ai/commit/72a6b1048e6cb4b265433a33dcf61c54ee7b28f4))
+* **vllm_serving:** cap the RTX 6000 Qwen profile at 16 sequences ([#2239](https://github.com/dryvist/ansible-proxmox-ai/issues/2239)) ([b079435](https://github.com/dryvist/ansible-proxmox-ai/commit/b079435a59b4c7a6830085271fa5740e380b3dea))
+
 ## [2.35.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.34.0...v2.35.0) (2026-11-09)
 
 
