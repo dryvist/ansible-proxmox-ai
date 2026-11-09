@@ -80,6 +80,18 @@
         group: root
         mode: "0755"
 
+    # Check mode does not run the tasks above, so on a first install or a
+    # version bump the prefix does not exist yet and neither does the runtime
+    # it would hold. bin/node is the unpack's own `creates:` guard, so statting
+    # it tells check mode "already unpacked" from "this run would unpack": with
+    # it absent in check mode, the unpack and the tasks below that consume the
+    # unpacked or fetched artifacts are skipped instead of failing on files
+    # only a real run materializes. A real run keeps the gate open regardless.
+    - name: Check for the pinned Node runtime binary
+      ansible.builtin.stat:
+        path: "{{ hermes_agent_studio_node_prefix }}/bin/node"
+      register: hermes_agent_studio_node_stat
+
     # Version-scoped prefix plus creates: a bump installs the new runtime, a
     # re-run does nothing. Never `state: latest` on a runtime the app pins.
     - name: Unpack the Node runtime
@@ -89,6 +101,7 @@
         remote_src: true
         extra_opts: ["--strip-components=1"]
         creates: "{{ hermes_agent_studio_node_prefix }}/bin/node"
+      when: not ansible_check_mode or hermes_agent_studio_node_stat.stat.exists
 
     - name: Install unzip for the bun release archive
       ansible.builtin.apt:
@@ -110,6 +123,7 @@
         dest: /tmp
         remote_src: true
         creates: /tmp/bun-linux-x64/bun
+      when: not ansible_check_mode or hermes_agent_studio_node_stat.stat.exists
 
     - name: Place bun on PATH
       ansible.builtin.copy:
@@ -119,6 +133,7 @@
         owner: root
         group: root
         mode: "0755"
+      when: not ansible_check_mode or hermes_agent_studio_node_stat.stat.exists
 
     - name: Check the installed hermes-studio package version
       ansible.builtin.stat:
@@ -148,10 +163,12 @@
         BUN_INSTALL: "{{ hermes_agent_bun_install_root }}"
         BUN_INSTALL_GLOBAL_DIR: "{{ hermes_agent_bun_install_root }}/install/global"
       register: hermes_agent_studio_install
-      when: >-
-        not hermes_agent_studio_package_stat.stat.exists
-        or (hermes_agent_studio_package_json.content | b64decode | from_json).version
-        != hermes_agent_studio_version
+      when:
+        - >-
+          not hermes_agent_studio_package_stat.stat.exists
+          or (hermes_agent_studio_package_json.content | b64decode | from_json).version
+          != hermes_agent_studio_version
+        - not ansible_check_mode or hermes_agent_studio_node_stat.stat.exists
       changed_when: not ansible_check_mode
       notify: Restart hermes-studio
 
