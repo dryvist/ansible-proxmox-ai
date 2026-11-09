@@ -30,8 +30,7 @@ def test_inherited_profile_homes_fail_only_for_pepper(tmp_path, identity, state)
     playbook = tmp_path / 'verify.yml'
     playbook.write_text(yaml.safe_dump([dict(
         name='Verify inherited profile isolation', hosts='localhost', gather_facts=False,
-        vars=dict(hermes_agent_identity=identity, hermes_agent_hermes_home=str(profiles.parent),
-                  **yaml.safe_load((ROLE / 'defaults/main/196-entry-point-tags.yml').read_text())),
+        vars=dict(hermes_agent_identity=identity, hermes_agent_hermes_home=str(profiles.parent)),
         tasks=[entry])]))
     result = subprocess.run(
         ['ansible-playbook', str(playbook), '-i', 'localhost,', '-c', 'local', '--tags', 'hermes_profiles_env'],

@@ -1,4 +1,10 @@
 ---
+# The config.yaml webhook block (config_and_content.yml, hermes_profiles_env)
+# reads the webhook prompt resolved below — the catalog builds, resolves its
+# package path, and renders the prompt facts in that component too, so a
+# profiles-only converge renders config.yaml instead of failing on the fact.
+# The two catalog asserts at the bottom stay scoped to the components whose
+# consumers they guard.
 - name: Build the pinned prompt catalog on the controller
   ansible.builtin.command:
     cmd: >-
@@ -14,12 +20,16 @@
   # Builds into the controller's store only; a check run needs the catalog path
   # to preview the prompts.
   check_mode: false
+  tags:
+    - hermes_profiles_env
 
 - name: Resolve the prompt catalog package path
   ansible.builtin.set_fact:
     hermes_agent_prompts_path: >-
       {{ hermes_agent_prompts_build.stdout_lines | last
          }}/share/ai-llm-prompts/auto-ai-agent
+  tags:
+    - hermes_profiles_env
 
 - name: Load Hermes prompt references from the immutable catalog
   ansible.builtin.set_fact:
@@ -40,6 +50,8 @@
   loop_control:
     label: "{{ item.key }}"
   when: item.key not in query('ansible.builtin.varnames', '^' ~ item.key ~ '$')
+  tags:
+    - hermes_profiles_env
 
 - name: Load active Hermes prompts from the immutable catalog
   ansible.builtin.set_fact:
@@ -112,6 +124,8 @@
       {{ lookup('ansible.builtin.template', hermes_agent_prompts_path ~ '/'
          ~ hermes_agent_secrets_audit_cron_prompt_file, keep_trailing_newline=true)
          | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+  tags:
+    - hermes_profiles_env
 
 # The splunk-digest kanban card that used to write memory key
 # "splunk-digest-last" is REMOVED (retired 2026-08-01, well before the
