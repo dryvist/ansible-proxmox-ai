@@ -51,7 +51,7 @@ def ns(monkeypatch):
     monkeypatch.setenv("LLM_ROUTER_MASTER_KEY", MASTER)
     monkeypatch.setenv(MAX_CHARS_ENV, "16000")
     monkeypatch.setenv(MAX_CHUNKS_ENV, "8")
-    monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_TIMEOUT_SECONDS", "30")
     out: dict = {}
     exec(compile(SOURCE.read_text(), str(SOURCE), "exec"), out)  # noqa: S102 - our own file
     return out
@@ -267,6 +267,7 @@ def test_classify_call_is_local_capped_and_uses_the_master_key(ns, monkeypatch):
     call = classifier.calls[0]
     assert call["url"] == URL
     assert call["key"] == MASTER
+    assert call["timeout"] == 30.0
     body = call["body"]
     assert body["model"] == MODEL
     assert body["temperature"] == 0

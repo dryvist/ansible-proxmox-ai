@@ -36,11 +36,16 @@ class MeasuringClassifier(Classifier):
             self.active -= 1
 
 
-def test_role_default_chunk_cap_is_rendered_to_the_callback():
+def test_role_default_chunk_caps_and_timeout_are_rendered_to_the_callback():
     defaults = (REPO_ROOT / "roles/llm_router/defaults/main/56d-untrusted-classify.yml").read_text()
     environment = (REPO_ROOT / "roles/llm_router/templates/litellm.env.j2").read_text()
     assert "llm_router_untrusted_classify_max_chunks: 8" in defaults
     assert "LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHUNKS={{ llm_router_untrusted_classify_max_chunks }}" in environment
+    assert "llm_router_untrusted_classify_timeout_seconds: 30" in defaults
+    assert (
+        "LLM_ROUTER_UNTRUSTED_CLASSIFY_TIMEOUT_SECONDS="
+        "{{ llm_router_untrusted_classify_timeout_seconds }}" in environment
+    )
 
 
 def test_three_max_char_chunks_are_all_classified_and_public_text_passes(ns, monkeypatch):
@@ -92,6 +97,16 @@ def test_classifier_error_on_a_chunk_refuses_request(ns, monkeypatch, caplog):
     _refused(ns, _key("untrusted"), _data("goodfailgood"))
     assert "classifier error" in caplog.text
     assert "request content must not be logged" not in caplog.text
+
+
+def test_chunk_timeout_refuses_request(ns, monkeypatch, caplog):
+    monkeypatch.setenv(MAX_CHARS_ENV, "4")
+    monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_TIMEOUT_SECONDS", "0.01")
+    classifier = Classifier(reply="public", delay=1.0)
+    monkeypatch.setitem(ns, "_post", classifier)
+    _refused(ns, _key("untrusted"), _data("abcdefgh"))
+    assert "classifier timeout" in caplog.text
+    assert "abcdefgh" not in caplog.text
 
 
 def test_chunk_classifier_concurrency_is_bounded_to_four(ns, monkeypatch):
