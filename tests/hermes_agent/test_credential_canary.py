@@ -1,0 +1,1 @@
+@tests/hermes_agent/test_credential_canary.py
