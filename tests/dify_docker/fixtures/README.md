@@ -12,6 +12,12 @@ the converge's first `get_url`. The fixture name carries the commit it
 belongs to: a commit without a fixture is a bump this script has not synced
 yet.
 
+`tier2-rotation-dsl.yml` is a representative rendering of the rotation catalog
+DSL (empty per-agent `<AGENT>_TRIGGER_URL`/`<AGENT>_WEBHOOK_ID` pairs plus
+rotation knobs) used by `test_rotation_wiring.py` to render the roster the
+wiring derives; its agent names are invented, since the real roster lives in
+ai-llm-prompts and must never be hard-coded here.
+
 One command refreshes the fixture and the checksum pin together, after a
 Renovate commit bump:
 

@@ -1,10 +1,13 @@
 """The tier2 rotation wiring: derived agents, patch scope, check mode, secrets."""
 
 import ast
+import re
 from pathlib import Path
 
 import yaml
 from jinja2 import Environment
+
+from _defaults import load_defaults
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +20,7 @@ GATED = ("ansible.builtin.uri",)
 URL_ADD = "Add the agent trigger URL to the rotation patch when it differs"
 ID_ADD = "Add the agent webhook id to the rotation patch when the stored digest differs"
 DIGEST_ADD = "Add the agent webhook digest to the rotation patch when the stored digest differs"
+FIXTURE_DSL = ROOT / "tests/dify_docker/fixtures/tier2-rotation-dsl.yml"
 
 
 def _yaml(path):
@@ -308,3 +312,99 @@ def test_trigger_filters_match_the_dify_1_18_trigger_types():
         expression = next(iter(_task(_yaml(path), name)["ansible.builtin.set_fact"].values()))
         rendered = env.from_string(expression).render({registered: {"json": response}})
         assert ast.literal_eval(rendered.strip()) == [r for r in response["data"] if r["id"] == expected], name
+
+
+def _render_environment():
+    """Jinja2 environment with the Ansible filters/tests the wiring uses."""
+    env = Environment()
+    env.filters["regex_replace"] = lambda value, pattern, replacement: re.sub(
+        pattern, replacement, str(value)
+    )
+    env.filters["combine"] = lambda value, other: {**value, **other}
+    env.tests["match"] = lambda value, pattern: re.match(pattern, str(value)) is not None
+    env.tests["in"] = lambda value, container: value in container
+    return env
+
+
+def test_roster_rendered_from_a_fixture_dsl_seeds_every_agent_variable():
+    dsl = yaml.safe_load(FIXTURE_DSL.read_text(encoding="utf-8"))
+    variables = dsl["workflow"]["environment_variables"]
+    env = _render_environment()
+    wiring_tasks = _yaml(WIRING)
+
+    id_keys = ast.literal_eval(
+        env.from_string(
+            _task(wiring_tasks, "Collect the rotation draft webhook id keys")[
+                "ansible.builtin.set_fact"
+            ]["dify_docker_rotation_webhook_id_keys"]
+        )
+        .render({"dify_docker_rotation_draft": {"json": {"environment_variables": variables}}})
+        .strip()
+    )
+    agent_keys = ast.literal_eval(
+        env.from_string(
+            _task(wiring_tasks, "Derive the rotation agent keys from paired draft variables")[
+                "ansible.builtin.set_fact"
+            ]["dify_docker_rotation_agent_keys"]
+        )
+        .render(
+            {
+                "dify_docker_rotation_draft": {"json": {"environment_variables": variables}},
+                "dify_docker_rotation_webhook_id_keys": id_keys,
+            }
+        )
+        .strip()
+    )
+
+    expected_roster = [
+        variable["name"][: -len("_TRIGGER_URL")]
+        for variable in variables
+        if variable["name"].endswith("_TRIGGER_URL")
+        and any(
+            other["name"] == variable["name"][: -len("_TRIGGER_URL")] + "_WEBHOOK_ID"
+            for other in variables
+        )
+    ]
+    # Only the paired agent variables become agents: the rotation knobs and an
+    # unpaired trigger URL never do.
+    assert agent_keys == expected_roster
+    for knob in KNOBS:
+        assert knob not in id_keys
+        assert knob not in agent_keys
+
+    url_expression = _flat(
+        _task(_yaml(AGENT), URL_ADD)["ansible.builtin.set_fact"]["dify_docker_rotation_patch_variables"]
+    )
+    id_expression = _flat(
+        _task(_yaml(AGENT), ID_ADD)["ansible.builtin.set_fact"]["dify_docker_rotation_patch_variables"]
+    )
+    internal = load_defaults()["dify_docker_internal_trigger_url"]
+    for key in agent_keys:
+        trigger_url_var = next(v for v in variables if v["name"] == key + "_TRIGGER_URL")
+        webhook_id_var = next(v for v in variables if v["name"] == key + "_WEBHOOK_ID")
+        # The fixture DSL ships both empty; the wiring must seed both.
+        assert trigger_url_var["value"] == ""
+        assert webhook_id_var["value"] == ""
+
+        patched_url = ast.literal_eval(
+            env.from_string(url_expression)
+            .render(
+                dify_docker_rotation_agent_trigger_url_var=[trigger_url_var],
+                dify_docker_internal_trigger_url=internal,
+            )
+            .strip()
+        )
+        assert patched_url[0]["name"] == key + "_TRIGGER_URL"
+        assert patched_url[0]["value"] == internal
+
+        webhook_id = "wh-" + key.lower().replace("_", "-")
+        patched_id = ast.literal_eval(
+            env.from_string(id_expression)
+            .render(
+                dify_docker_rotation_agent_webhook_id_var=[webhook_id_var],
+                dify_docker_rotation_agent_webhook={"json": {"webhook_id": webhook_id}},
+            )
+            .strip()
+        )
+        assert patched_id[0]["name"] == key + "_WEBHOOK_ID"
+        assert patched_id[0]["value"] == webhook_id
