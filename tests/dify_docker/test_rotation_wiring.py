@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment
 
+
 ROOT = Path(__file__).resolve().parents[2]
 WIRING = ROOT / "roles/dify_docker/tasks/wire_rotation_webhooks.yml"
 AGENT = ROOT / "roles/dify_docker/tasks/wire_rotation_agent.yml"
@@ -164,13 +165,14 @@ def test_trigger_url_is_compared_exactly_and_a_trailing_slash_is_rewritten():
     # stored trailing slash counts as different and is rewritten.
     assert (
         "dify_docker_rotation_agent_trigger_url_var[0].value | default('', true)"
-        " == (dify_docker_trigger_url | regex_replace('/+$', ''))"
+        " == (dify_docker_internal_trigger_url | regex_replace('/+$', ''))"
     ) in url_detection
     url_add = _task(tasks, URL_ADD)
     assert url_add["when"] == "not dify_docker_rotation_agent_trigger_url_matches | bool"
     assert (
         "dify_docker_rotation_agent_trigger_url_var[0]"
-        " | combine({'value': dify_docker_trigger_url | regex_replace('/+$', '')})"
+        " | combine({'value': dify_docker_internal_trigger_url"
+        " | regex_replace('/+$', '')})"
     ) in _flat(url_add["ansible.builtin.set_fact"]["dify_docker_rotation_patch_variables"])
 
 
@@ -195,7 +197,7 @@ def test_wiring_is_idempotent_and_enables_triggers_only_when_disabled():
     detection = _flat(
         str(_task(agent_tasks, "Detect whether the agent draft variables need the wiring"))
     )
-    assert "dify_docker_trigger_url" in detection
+    assert "dify_docker_internal_trigger_url" in detection
     assert "dify_docker_rotation_agent_webhook_id_digest" in detection
 
     rotation_enable = _task(wiring_tasks, "Enable the rotation schedule trigger when it is disabled")
