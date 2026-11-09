@@ -69,14 +69,7 @@ def test_preflight_is_wired_into_the_role_with_no_log() -> None:
         if task.get("ansible.builtin.import_tasks") == "assert_slack_single_socket.yml"
     ]
     assert len(imports) == 1
-    assert (
-        imports[0]["tags"]
-        == "{{ hermes_agent_entry_point_task_tags['assert_slack_single_socket.yml'] }}"
-    )
-    tag_map = yaml.safe_load(
-        (ROLE_ROOT / "defaults" / "main" / "196-entry-point-tags.yml").read_text()
-    )["hermes_agent_entry_point_task_tags"]
-    assert tag_map["assert_slack_single_socket.yml"] == "hermes_runtime_install"
+    assert imports[0]["tags"] == "hermes_runtime_install"
     for task in _tasks():
         assert task.get("no_log") is True, task["name"]
 
