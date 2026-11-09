@@ -63,8 +63,6 @@ def _base_context() -> dict:
         hermes_agent_zammad_url="",
         hermes_agent_zammad_api_token="",
         hermes_agent_github_read_token="",
-        hermes_agent_chromium_executable="/usr/bin/chromium",
-        hermes_agent_browser_args="",
     )
 
 

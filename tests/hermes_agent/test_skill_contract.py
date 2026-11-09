@@ -16,3 +16,5 @@ def test_browser_use_is_a_terminal_cli_with_a_local_cdp_browser() -> None:
     assert "hermes-browser-use-chromium.service.j2" in TASKS
     assert '"{{ hermes_agent_bundle_path }}/skills/browser-use/"' in TASKS
     assert "BROWSER_USE_API_KEY" not in TASKS
+    browser_tasks = (REPO_ROOT / "roles" / "hermes_agent" / "tasks" / "browser.yml").read_text()
+    assert "agent-browser" not in browser_tasks

@@ -8,7 +8,7 @@ import yaml
 from jinja2 import Environment, FileSystemLoader
 
 from _group_vars import load_group_vars_all
-from _role_files import role_defaults, role_tasks, role_tasks_text, template_text
+from _role_files import role_default_subset, role_defaults, role_tasks, role_tasks_text, template_text
 from _cron_pool_ceiling_shared import wall_timeout_seconds
 
 
@@ -38,9 +38,7 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_session_reset_idle_minutes": 1440,
     "hermes_agent_mcp_tool_timeout_seconds": 180,
     "hermes_agent_docs_mcp_url": "https://mcp.example.com/docs",
-    # grep.app is the one MCP client that dials upstream directly rather than a
-    # gateway route, so the real URL is the fixture value too — there is no
-    # per-estate hostname to stand in for.
+    # Grep dials upstream directly, so use its public fixture URL.
     "hermes_agent_grep_mcp_url": "https://mcp.grep.app",
     "hermes_agent_vikunja_mcp_url": "https://mcp.example.com/vikunja",
     "hermes_agent_nautobot_mcp_url": "https://mcp.example.com/nautobot",
@@ -53,6 +51,16 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_nautobot_mcp_enabled": False,
     "hermes_agent_timezone": "UTC",
 }
+
+_RENDER_CONTEXT.update(
+    role_default_subset(
+        ROLE_ROOT,
+        "hermes_agent_browser_auto_local_for_private_urls",
+        "hermes_agent_browser_args",
+        "hermes_agent_browser_inactivity_timeout",
+        "hermes_agent_chromium_executable",
+    )
+)
 
 
 def _jinja_env() -> Environment:
