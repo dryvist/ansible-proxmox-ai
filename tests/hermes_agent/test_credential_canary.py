@@ -193,3 +193,45 @@ def test_direct_cron_can_create_no_agent_script_jobs_without_changing_agentic_jo
     assert "--no-agent" not in agentic_job
     assert "existing prompt" in agentic_job
     assert "--model" in agentic_job
+
+
+# develop's checksum expression before `no_agent` existed: the desired-state
+# markers of every existing direct cron were written with it.
+DEVELOP_CHECKSUM = (
+    "{{ ({'schedule': item.schedule, 'prompt': hermes_agent_direct_prompt,"
+    " 'skill': item.skill | default(''), 'script': item.script | default(''),"
+    " 'deliver': hermes_agent_direct_deliver,"
+    " 'workdir': item.hermes_home | default(hermes_agent_hermes_home),"
+    " 'failure_deliver': hermes_agent_direct_failure_deliver}"
+    " | combine({'model': hermes_agent_direct_model} if hermes_agent_direct_model | length > 0 else {})"
+    " | combine({'model_provider': hermes_agent_direct_model_provider}"
+    " if hermes_agent_direct_model | length > 0 else {})"
+    " | combine({'enabled_toolsets': item.enabled_toolsets} if item.enabled_toolsets is defined else {}))"
+    " | to_json | hash('sha256') }}"
+)
+
+
+def test_existing_direct_cron_checksums_stay_stable() -> None:
+    tasks = yaml.safe_load((ROLE / "tasks/reconcile_direct_cron.yml").read_text())
+    calc = next(task for task in tasks
+                if task.get("name") == "Direct cron | Calculate desired state for {{ item.name }}")
+    expression = calc["ansible.builtin.set_fact"]["hermes_agent_direct_checksum"]
+
+    def checksum(template: str, item: dict) -> str:
+        templar = Templar(loader=DataLoader())
+        templar.available_variables = {
+            "item": item,
+            "hermes_agent_direct_no_agent": item.get("no_agent", False),
+            "hermes_agent_direct_prompt": "existing prompt",
+            "hermes_agent_direct_model": "hermes-default",
+            "hermes_agent_direct_model_provider": "custom",
+            "hermes_agent_direct_deliver": "slack:test",
+            "hermes_agent_direct_failure_deliver": "",
+            "hermes_agent_hermes_home": "/srv/hermes-home",
+        }
+        return templar.template(trust_as_template(template))
+
+    agentic = {"name": "existing-job", "schedule": "0 7 * * *", "script": "monitor.py"}
+    assert checksum(expression, agentic) == checksum(DEVELOP_CHECKSUM, agentic)
+    script_only = {**agentic, "no_agent": True}
+    assert checksum(expression, script_only) != checksum(DEVELOP_CHECKSUM, script_only)
