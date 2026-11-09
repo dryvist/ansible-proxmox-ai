@@ -42,6 +42,7 @@ def ns(monkeypatch):
     # Only imported by the module; every test replaces _post, so no client is built.
     httpx = types.ModuleType("httpx")
     httpx.TimeoutException = type("TimeoutException", (Exception,), {})
+    httpx.HTTPStatusError = type("HTTPStatusError", (Exception,), {})
     monkeypatch.setitem(sys.modules, "litellm", litellm)
     monkeypatch.setitem(sys.modules, "litellm.integrations", integrations)
     monkeypatch.setitem(sys.modules, "litellm.integrations.custom_logger", custom_logger)
@@ -173,6 +174,84 @@ def test_classifier_timeout_then_error_is_refused(ns, monkeypatch, caplog):
 
 def test_classifier_error_is_not_retried(ns, monkeypatch):
     classifier = Scripted(RuntimeError("backend down"), "public")
+    monkeypatch.setitem(ns, "_post", classifier)
+    _refused(ns, _key("untrusted"), _data())
+    assert len(classifier.calls) == 1
+
+
+class BudgetClock:
+    """A monotonic clock that advances only when the classify path sleeps."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.waits = []
+
+    def monotonic(self):
+        return self.now
+
+    async def sleep(self, seconds):
+        self.waits.append(seconds)
+        self.now += seconds
+
+
+def _saturated_budget(ns, monkeypatch):
+    """Freeze the chunk's budget clock so 429 retries run in an instant."""
+    clock = BudgetClock()
+    fake_time = types.ModuleType("time")
+    fake_time.monotonic = clock.monotonic
+    monkeypatch.setitem(ns, "time", fake_time)
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    return clock
+
+
+def test_saturated_lane_retries_until_the_chunk_is_classified(ns, monkeypatch):
+    clock = _saturated_budget(ns, monkeypatch)
+    classifier = Scripted(ns["_Saturated"](retry_after="2"), "public")
+    monkeypatch.setitem(ns, "_post", classifier)
+    data = _data()
+    assert _run(ns, _key("untrusted"), data) is data
+    assert len(classifier.calls) == 2
+    assert clock.waits == [2.0]
+
+
+def test_saturated_lane_retry_after_is_capped_at_four_seconds(ns, monkeypatch):
+    clock = _saturated_budget(ns, monkeypatch)
+    classifier = Scripted(ns["_Saturated"](retry_after="99"), "public")
+    monkeypatch.setitem(ns, "_post", classifier)
+    data = _data()
+    assert _run(ns, _key("untrusted"), data) is data
+    assert clock.waits == [4.0]
+
+
+def test_saturated_lane_on_every_attempt_refuses_within_budget(ns, monkeypatch, caplog):
+    clock = _saturated_budget(ns, monkeypatch)
+    classifier = Scripted(*[ns["_Saturated"]() for _ in range(32)])
+    monkeypatch.setitem(ns, "_post", classifier)
+    _refused(ns, _key("untrusted"), _data())
+    # The chunk spends its whole timeout budget waiting, and the waits stay
+    # exponential from 0.5 s under the 4 s cap.
+    assert len(classifier.calls) >= 2
+    assert all(0.0 < wait <= 4.0 for wait in clock.waits)
+    assert clock.waits[0] <= 0.5
+    assert clock.now < 30.0
+    assert "classifier error" in caplog.text
+
+
+def test_saturated_retry_does_not_add_a_second_timeout_retry(ns, monkeypatch, caplog):
+    _saturated_budget(ns, monkeypatch)
+    classifier = Scripted(
+        ns["_Saturated"](),
+        ns["httpx"].TimeoutException("slow"),
+        ns["httpx"].TimeoutException("slow"),
+    )
+    monkeypatch.setitem(ns, "_post", classifier)
+    _refused(ns, _key("untrusted"), _data())
+    assert len(classifier.calls) == 3
+    assert "classifier timeout" in caplog.text
+
+
+def test_other_http_errors_refuse_with_exactly_one_attempt(ns, monkeypatch):
+    classifier = Scripted(ns["httpx"].HTTPStatusError("500 Internal Server Error"), "public")
     monkeypatch.setitem(ns, "_post", classifier)
     _refused(ns, _key("untrusted"), _data())
     assert len(classifier.calls) == 1
