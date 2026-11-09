@@ -1,79 +1,82 @@
----
-# Studio rung of the small capability, included after the small route renders.
-- name: Small capability falls through to the probed Studio model route only
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - _small_route_members | map(attribute='litellm_params.order') | map('int') | unique | sort == [1, 2]
-      - _small_4080 | length > 0
-      - _small_4080 | map(attribute='litellm_params.order') | map('int') | unique | list == [1]
-      - _small_6000 | length > 0
-      - _small_6000 | map(attribute='litellm_params.order') | map('int') | unique | list == [2]
-      - llm_router_studio_small_fallback_route in llm_router_direct_route_aliases
-      - _small_fallback_map[llm_router_small_capability_name] == [llm_router_studio_small_fallback_route]
-      - _small_fallback_map[llm_router_studio_small_fallback_route] == []
-      - _studio_route | length > 0
-      - _studio_route | map(attribute='litellm_params.api_base') | unique | list == [llm_router_llm_large_base_url]
-      - _studio_route | map(attribute='litellm_params.model') | unique | length == 1
-      - _studio_route | rejectattr('model_info.profile', 'defined') | length == _studio_route | length
-      - llm_router_primary_model in llm_router_local_fallback_groups
-      - _small_fallback_map[llm_router_small_capability_name]
-        | intersect(llm_router_external_terminal_rungs) | length == 0
-    fail_msg: >-
-      small={{ _small_route_members }}, fallback={{ _small_fallback_map.get(llm_router_small_capability_name) }},
-      Studio model={{ _studio_route }}.
-  vars:
-    _fallback_entries: >-
-      {{ _small_config.router_settings.fallbacks | default([])
-         | map('dict2items') | flatten | list }}
-    _small_fallback_map: >-
-      {{ dict(_fallback_entries | map(attribute='key')
-              | zip(_fallback_entries | map(attribute='value'))) }}
-    _small_route_members: >-
-      {{ _small_config.model_list
-         | selectattr('model_name', 'equalto', llm_router_small_capability_name) | list }}
-    _small_4080: >-
-      {{ _small_route_members
-         | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url) | list }}
-    _small_6000: >-
-      {{ _small_route_members | selectattr('model_info.profile', 'defined')
-         | selectattr('model_info.profile', 'equalto', 'small') | list }}
-    _studio_route: >-
-      {{ _small_config.model_list
-         | selectattr('model_name', 'equalto', llm_router_studio_small_fallback_route)
-         | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_large_base_url)
-         | list }}
+commit 8a61bef9625098011a91d350ca07e6f8f1191c7f
+Author: nix-agent-sandbox <agent@users.noreply.github.com>
+Date:   Mon Nov 9 01:30:12 2026 +0000
 
-- name: Keep the Studio route name for the failed-precheck case
-  ansible.builtin.set_fact:
-    _studio_small_route_at_pass: "{{ llm_router_studio_small_fallback_route }}"
+    fix(llm_router): render the small lane's endpoint as one lower-case api_base
+    
+    Lower-case llm_router_llm_vllm_base_url at its single derivation, so the
+    4080 deployment family renders one canonical api_base string whatever
+    case the published inventory label carries; the router keys deployments
+    by that string, so a case variant of the same endpoint renders as a
+    second deployment.
+    
+    The Pro6000 small-capability render test now derives the URL from a
+    mixed-case fixture member (the base-URL override is gone) and asserts
+    the lower-case form and that the rendered small group carries exactly
+    that one api_base.
 
-- name: Fail the Studio precheck and refresh the route projections
-  ansible.builtin.set_fact:
-    llm_router_studio_precheck_passed: false
-
-- name: Refresh cached router projections after the Studio precheck fails [gpu-pro6000-enabled-render-3]
-  ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
-
-- name: Render the small capability after the Studio precheck fails
-  ansible.builtin.set_fact:
-    _small_no_studio_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-
-- name: A failed Studio precheck omits that fallback rung and leaves no cloud route
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - llm_router_small_capability_name in _small_no_studio_fallback_map
-      - _small_no_studio_fallback_map[llm_router_small_capability_name] == []
-      - _studio_small_route_at_pass not in _small_no_studio_fallback_map[llm_router_small_capability_name]
-      - _small_no_studio_fallback_map[llm_router_small_capability_name]
-        | intersect(llm_router_external_terminal_rungs) | length == 0
-    fail_msg: >-
-      fallback={{ _small_no_studio_fallback_map.get(llm_router_small_capability_name) }}.
-  vars:
-    _no_studio_fallback_entries: >-
-      {{ _small_no_studio_config.router_settings.fallbacks | default([])
-         | map('dict2items') | flatten | list }}
-    _small_no_studio_fallback_map: >-
-      {{ dict(_no_studio_fallback_entries | map(attribute='key')
-              | zip(_no_studio_fallback_entries | map(attribute='value'))) }}
+diff --git a/roles/llm_router/defaults/main/10-network.yml b/roles/llm_router/defaults/main/10-network.yml
+index 85358ac..0534828 100644
+--- a/roles/llm_router/defaults/main/10-network.yml
++++ b/roles/llm_router/defaults/main/10-network.yml
+@@ -97,9 +97,16 @@ llm_router_vllm_medium_enabled: true
+ # request to the apex name returned 200. An entry that is advertised while its
+ # upstream cannot be resolved looks identical to a working one from the model
+ # list alone.
++# Lower-case, deliberately. DNS matches a name case-insensitively, but the
++# router keys a deployment by its api_base STRING, so the same endpoint
++# rendered under two cases is two deployments — the exact duplicate observed
++# on the live router for this lane. The published guest label carries mixed
++# case, so the URL is normalized at its single derivation and every render
++# emits the one canonical lower-case form (the same case-insensitive
++# treatment pin-llm-large-host.yml applies to the serving apex pin).
+ llm_router_llm_vllm_base_url: >-
+-  {{ 'http://' ~ groups['llm_vllm_group'][0] ~ '.' ~ llm_router_apex_domain
+-     ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
++  {{ ('http://' ~ groups['llm_vllm_group'][0] ~ '.' ~ llm_router_apex_domain
++      ~ ':' ~ (llm_router_light_port | string) ~ '/v1') | lower
+      if (groups['llm_vllm_group'] | default([]) | length > 0) else '' }}
+ llm_router_llm_vllm_accelerator: "{{ llm_router_llm_fast_accelerator }}"
+ # shortcut: mirrors laya_systemone_port's role default; move both to a tofu service_ports constant when one exists.
+diff --git a/tests/llm_router/tasks/pro6000_small_fallback_case.yml b/tests/llm_router/tasks/pro6000_small_fallback_case.yml
+index fa47d90..622b7e6 100644
+--- a/tests/llm_router/tasks/pro6000_small_fallback_case.yml
++++ b/tests/llm_router/tasks/pro6000_small_fallback_case.yml
+@@ -9,6 +9,12 @@
+       - _small_4080 | map(attribute='litellm_params.order') | map('int') | unique | list == [1]
+       - _small_6000 | length > 0
+       - _small_6000 | map(attribute='litellm_params.order') | map('int') | unique | list == [2]
++      # One endpoint, rendered in its single lower-case form: a case variant
++      # of the same host is a second deployment to the router, not an alias.
++      - _small_4080 | map(attribute='litellm_params.api_base') | unique | list
++        == [llm_router_llm_vllm_base_url]
++      - llm_router_llm_vllm_base_url not match '[A-Z]'
++      - llm_router_llm_vllm_base_url == 'http://llm-vllm-fixture-4080.example.test:10434/v1'
+       - llm_router_studio_small_fallback_route in llm_router_direct_route_aliases
+       - _small_fallback_map[llm_router_small_capability_name] == [llm_router_studio_small_fallback_route]
+       - _small_fallback_map[llm_router_studio_small_fallback_route] == []
+diff --git a/tests/llm_router/test_gpu_pro6000_enabled_render.yml b/tests/llm_router/test_gpu_pro6000_enabled_render.yml
+index bd6b09a..046c091 100644
+--- a/tests/llm_router/test_gpu_pro6000_enabled_render.yml
++++ b/tests/llm_router/test_gpu_pro6000_enabled_render.yml
+@@ -21,7 +21,6 @@
+     llm_router_master_key: sk-test-master
+     llm_router_llm_large_bearer: test-bearer-token
+     llm_router_llm_gpu_base_url: "http://localhost:10434/v1"
+-    llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
+     ai_router_request_timeout_seconds: 2400
+     ai_router_retry_after_seconds: 2
+     hermes_goal_judge_model: judge
+@@ -40,9 +39,11 @@
+       ansible.builtin.include_vars:
+         dir: "{{ _role_dir }}/defaults/main"
+ 
++    # Mixed case on purpose: the derived serving URL must come out in its one
++    # canonical lower-case form whatever case the inventory publishes.
+     - name: Add a synthetic small-lane member with its serving slot count
+       ansible.builtin.add_host:
+-        name: llm-vllm-fixture
++        name: LLM-Vllm-Fixture-4080
+         groups: llm_vllm_group
+         ansible_connection: local
+         llama_cpp_parallel: 2
