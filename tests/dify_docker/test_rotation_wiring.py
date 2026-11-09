@@ -1,10 +1,14 @@
 """The tier2 rotation wiring: derived agents, patch scope, check mode, secrets."""
 
 import ast
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 from jinja2 import Environment
+
+from _defaults import load_defaults
 
 ROOT = Path(__file__).resolve().parents[2]
 WIRING = ROOT / "roles/dify_docker/tasks/wire_rotation_webhooks.yml"
@@ -164,14 +168,78 @@ def test_trigger_url_is_compared_exactly_and_a_trailing_slash_is_rewritten():
     # stored trailing slash counts as different and is rewritten.
     assert (
         "dify_docker_rotation_agent_trigger_url_var[0].value | default('', true)"
-        " == (dify_docker_trigger_url | regex_replace('/+$', ''))"
+        " == (dify_docker_internal_trigger_url | regex_replace('/+$', ''))"
     ) in url_detection
     url_add = _task(tasks, URL_ADD)
     assert url_add["when"] == "not dify_docker_rotation_agent_trigger_url_matches | bool"
     assert (
         "dify_docker_rotation_agent_trigger_url_var[0]"
-        " | combine({'value': dify_docker_trigger_url | regex_replace('/+$', '')})"
+        " | combine({'value': dify_docker_internal_trigger_url"
+        " | regex_replace('/+$', '')})"
     ) in _flat(url_add["ansible.builtin.set_fact"]["dify_docker_rotation_patch_variables"])
+
+
+def test_agent_trigger_urls_render_to_the_internal_compose_base():
+    defaults = load_defaults()
+    internal = defaults["dify_docker_internal_trigger_url"]
+    parts = urlsplit(internal)
+    # Plain HTTP to the stack's own nginx service on the Compose network: the
+    # HTTP request node reaches it through the ssrf_proxy, whose squid config
+    # allows exactly this origin for the webhook path.
+    assert parts.scheme == "http"
+    services_block = (
+        (ROOT / "roles/dify_docker/templates/docker-compose.yml.j2")
+        .read_text(encoding="utf-8")
+        .split("\nnetworks:", 1)[0]
+    )
+    assert parts.hostname in re.findall(r"^  ([a-zA-Z0-9_-]+):$", services_block, re.MULTILINE)
+    # The public base stays the TRIGGER_URL default for callers outside the stack.
+    assert defaults["dify_docker_trigger_url"] == "{{ dify_docker_public_url }}"
+    # The wiring never consults the public variable: the per-agent dispatch is
+    # compose-internal only.
+    for path in (WIRING, AGENT):
+        assert "dify_docker_trigger_url" not in path.read_text(encoding="utf-8")
+
+    # Render the patch entry the way Ansible would: every per-agent
+    # <AGENT>_TRIGGER_URL value becomes the slash-stripped internal base.
+    env = Environment()
+    env.filters["regex_replace"] = lambda value, pattern, replacement: re.sub(
+        pattern, replacement, str(value)
+    )
+    env.filters["combine"] = lambda value, other: {**value, **other}
+    expression = _flat(
+        _task(_yaml(AGENT), URL_ADD)["ansible.builtin.set_fact"][
+            "dify_docker_rotation_patch_variables"
+        ]
+    )
+    stored = {
+        "id": "var-1",
+        "name": "AI_NEWS_TRIGGER_URL",
+        "value_type": "string",
+        "value": "https://outdated.example.test",
+    }
+    patched = ast.literal_eval(
+        env.from_string(expression).render(
+            dify_docker_rotation_agent_trigger_url_var=[stored],
+            dify_docker_internal_trigger_url=internal + "/",
+        )
+    )
+    assert patched[0]["name"] == "AI_NEWS_TRIGGER_URL"
+    assert patched[0]["value"] == internal
+
+    detection = _flat(
+        _task(_yaml(AGENT), "Detect whether the agent draft variables need the wiring")[
+            "ansible.builtin.set_fact"
+        ]["dify_docker_rotation_agent_trigger_url_matches"]
+    )
+    assert env.from_string(detection).render(
+        dify_docker_rotation_agent_trigger_url_var=[{"value": internal}],
+        dify_docker_internal_trigger_url=internal,
+    ) == "True"
+    assert env.from_string(detection).render(
+        dify_docker_rotation_agent_trigger_url_var=[{"value": internal + "/"}],
+        dify_docker_internal_trigger_url=internal,
+    ) == "False"
 
 
 def test_operator_knobs_are_never_wired():
@@ -195,7 +263,7 @@ def test_wiring_is_idempotent_and_enables_triggers_only_when_disabled():
     detection = _flat(
         str(_task(agent_tasks, "Detect whether the agent draft variables need the wiring"))
     )
-    assert "dify_docker_trigger_url" in detection
+    assert "dify_docker_internal_trigger_url" in detection
     assert "dify_docker_rotation_agent_webhook_id_digest" in detection
 
     rotation_enable = _task(wiring_tasks, "Enable the rotation schedule trigger when it is disabled")
