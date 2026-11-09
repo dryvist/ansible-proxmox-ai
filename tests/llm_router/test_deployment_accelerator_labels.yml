@@ -1,0 +1,245 @@
+---
+# The accelerator label is how a per-machine dashboard tells which box served
+# a deployment (litellm-settings.yaml.j2 custom_prometheus_metadata_labels).
+# This contract pins the rendered model_list to the lane/host mapping: every
+# entry with a local api_base labels the machine that serves it, cloud
+# entries label themselves, and nothing renders without a label at all.
+#
+# Run (from the REPO ROOT — the registry load resolves the llm_router role
+# through ansible.cfg's cwd-relative roles_path):
+#   ansible-playbook tests/llm_router/test_deployment_accelerator_labels.yml -i localhost, -c local
+- name: Verify rendered deployments label their serving machine
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - policy_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 192.0.2.53
+          tags: [fixture-cpu-small]
+    bao_local_llm_secrets:
+      CHATGPT_LOGIN_FILE: /dev/null
+      DASHSCOPE_API_KEY: fixture-dashscope
+      GEMINI_API_KEY: fixture-gemini
+      OPENAI_API_KEY: fixture-openai
+      OPENCODE_API_KEY: fixture-opencode
+      OPENROUTER_API_KEY: fixture-openrouter
+      OPENROUTER_HERMES_KEY: fixture-hermes-openrouter
+    bao_apps_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: fixture-large-bearer
+    # One distinct api_base per serving machine, so an entry matches its
+    # lane's label only by owning that lane's URL.
+    llm_router_llm_fast_base_url: http://127.0.0.1:10434/v1
+    llm_router_llm_light_base_url: http://127.0.0.1:10534/v1
+    llm_router_llm_large_base_url: http://127.0.0.1:11434/v1
+    llm_router_large_passthrough_enabled: true
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hermes_goal_judge_model: judge
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+  tasks:
+    # One GPU-tier member per branch of the host mapping
+    # (21-gpu-profiles.yml llm_router_gpu_profile_accelerators): the member
+    # the legacy group does not claim, and the member it does.
+    - name: Add the GPU-tier members for both accelerator branches
+      ansible.builtin.add_host:
+        name: "{{ item.name }}"
+        groups: "{{ item.groups }}"
+        ansible_connection: local
+        llm_active_profile: "{{ item.profile }}"
+        llm_gpu_serving_api_port: "{{ item.port }}"
+      loop:
+        - name: llm-gpu-fixture
+          groups: llm_gpu_group
+          profile: medium-a
+          port: 11444
+        - name: llm-gpu-legacy-fixture
+          groups: [llm_gpu_group, llm_gpu_legacy_group]
+          profile: medium-b
+          port: 11445
+
+    - name: Add the small-lane serving host outside the legacy group
+      ansible.builtin.add_host:
+        name: llm-vllm-fixture
+        groups: llm_vllm_group
+        ansible_connection: local
+        llama_cpp_parallel: 2
+
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Enable every deployment path the label contract covers
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_router_studio_precheck_passed: true
+        llm_router_llm_fast_enabled: true
+
+    - name: Refresh cached router projections [accelerator-labels-1]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render the complete router configuration
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Map every local lane's URL to the accelerator value its machine carries
+      ansible.builtin.set_fact:
+        _accelerator_by_url: >-
+          {%- set ns = namespace(map={}) -%}
+          {%- set _ = ns.map.update({llm_router_llm_fast_base_url: llm_router_llm_fast_accelerator}) -%}
+          {%- set _ = ns.map.update({llm_router_llm_light_base_url: llm_router_llm_light_accelerator}) -%}
+          {%- set _ = ns.map.update({llm_router_llm_large_base_url: llm_router_llm_large_accelerator}) -%}
+          {%- set _ = ns.map.update({llm_router_llm_vllm_base_url: llm_router_llm_vllm_accelerator}) -%}
+          {%- for url in llm_router_cpu_pool_backend_urls_by_tier.values() | flatten -%}
+          {%- set _ = ns.map.update({url: llm_router_llm_light_accelerator}) -%}
+          {%- endfor -%}
+          {%- for profile, url in llm_router_gpu_profile_base_urls.items() -%}
+          {%- set _ = ns.map.update({url: llm_router_gpu_profile_accelerators[profile]}) -%}
+          {%- endfor -%}
+          {{ ns.map }}
+
+    # Any URL the map does not cover is a cloud lane; an entry without the
+    # label at all surfaces here as the missing value it renders.
+    - name: Every deployment labels the machine that serves it
+      vars:
+        _mislabeled: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _config.model_list -%}
+          {%- set url = d.litellm_params.api_base | default('') -%}
+          {%- set got = d.model_info.accelerator | default('') -%}
+          {%- set want = _accelerator_by_url.get(url, llm_router_cloud_accelerator) -%}
+          {%- if got != want -%}
+          {%- set _ = ns.rows.append(d.model_name ~ ' @ ' ~ url ~ ' says ' ~ got ~ ', expected ' ~ want) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.model_list | length > 0
+          - _mislabeled | length == 0
+        fail_msg: "Deployment accelerator labels missing or naming the wrong machine: {{ _mislabeled }}"
+
+    - name: The small lane names the GPU tier's machine, not the fast lane's card
+      vars:
+        _small_lane: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url) | list }}
+        _lane_model: "{{ llm_router_vllm_models | map(attribute='client_model_id') | first }}"
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _small_lane | length > 0
+          - _small_lane | map(attribute='model_info.accelerator') | unique | list == ['gpu-primary']
+          - llm_router_llm_vllm_accelerator == llm_router_gpu_accelerator
+          - llm_router_gpu_accelerator == 'gpu-primary'
+          - >-
+            _small_lane | selectattr('litellm_params.model', 'equalto', 'openai/' ~ _lane_model)
+            | list | length > 0
+        fail_msg: "Small-lane labels: {{ _small_lane | map(attribute='model_info.accelerator') | unique | list }}"
+
+    - name: The legacy card keeps its lane label on the fast rung and the profiles it serves
+      vars:
+        _fast_rung: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_fast_base_url) | list }}
+        _legacy_profiles: >-
+          {{ llm_router_gpu_profile_accelerators | dict2items
+             | selectattr('value', 'equalto', llm_router_llm_fast_accelerator)
+             | map(attribute='key') | list }}
+        _legacy_urls: >-
+          {{ llm_router_gpu_profile_base_urls | dict2items
+             | selectattr('key', 'in', _legacy_profiles)
+             | map(attribute='value') | list }}
+        _legacy_entries: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'in', _legacy_urls) | list }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _fast_rung | length > 0
+          - _fast_rung | map(attribute='model_info.accelerator') | unique | list == ['gpu-secondary']
+          - llm_router_llm_fast_accelerator == 'gpu-secondary'
+          - _legacy_profiles | length > 0
+          - _legacy_entries | length > 0
+          - _legacy_entries | map(attribute='model_info.accelerator') | unique | list == ['gpu-secondary']
+        fail_msg: "Legacy-card labels: {{ _fast_rung | map(attribute='model_info.accelerator') | unique | list }}"
+
+    - name: The GPU tier's own member labels every profile it serves
+      vars:
+        _gpu_profiles: >-
+          {{ llm_router_gpu_profile_accelerators | dict2items
+             | selectattr('value', 'equalto', llm_router_gpu_accelerator)
+             | map(attribute='key') | list }}
+        _gpu_urls: >-
+          {{ llm_router_gpu_profile_base_urls | dict2items
+             | selectattr('key', 'in', _gpu_profiles)
+             | map(attribute='value') | list }}
+        _gpu_entries: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'in', _gpu_urls) | list }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gpu_profiles | length > 0
+          - _gpu_entries | length > 0
+          - _gpu_entries | map(attribute='model_info.accelerator') | unique | list == ['gpu-primary']
+        fail_msg: "GPU-member labels: {{ _gpu_entries | map(attribute='model_info.accelerator') | unique | list }}"
+
+    - name: The Studio lane keeps its own label
+      vars:
+        _studio: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_large_base_url) | list }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _studio | length > 0
+          - _studio | map(attribute='model_info.accelerator') | unique | list == ['mac-primary']
+          - llm_router_llm_large_accelerator == 'mac-primary'
+        fail_msg: "Studio deployments carry: {{ _studio | map(attribute='model_info.accelerator') | unique | list }}"
+
+    - name: Cloud lanes stay outside the machine vocabulary
+      vars:
+        _cloud_entries: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _config.model_list
+                if d.litellm_params.api_base | default('') not in _accelerator_by_url -%}
+          {%- set ns.rows = ns.rows + [d] -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cloud_entries | length > 0
+          - _cloud_entries | map(attribute='model_info.accelerator') | unique | list == ['cloud']
+        fail_msg: "Cloud labels: {{ _cloud_entries | map(attribute='model_info.accelerator') | unique | list }}"
