@@ -78,8 +78,13 @@ def test_pepper_secret_domain_is_selected_only_for_its_runtime(identities, run_t
 def test_rollout_tag_gate_tracks_the_runtime_entry_points():
     roster = (ROOT / 'inventory/group_vars/all/openbao_secrets/11-roster-domains.yml').read_text()
     agents = yaml.safe_load((ROOT / 'playbooks/agents.yml').read_text())
-    role_tags = yaml.safe_load((ROOT / 'roles/hermes_agent/defaults/main/196-entry-point-tags.yml').read_text())
-    for tag in set(agents[0]['tags']) | set(role_tags['hermes_agent_entry_point_task_tags'].values()):
+    component_tags = set(agents[0]['tags'])
+    for task in yaml.safe_load((ROOT / 'roles/hermes_agent/tasks/main.yml').read_text()):
+        tags = task.get('tags', [])
+        if isinstance(tags, str):
+            tags = [tags]
+        component_tags.update(tag for tag in tags if tag.startswith('hermes_'))
+    for tag in component_tags:
         assert repr(tag) in roster
 
 

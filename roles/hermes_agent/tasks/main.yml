@@ -19,6 +19,17 @@
 # before the units that consume them start, and the verification gate runs LAST
 # so a converge that reaches it has actually left a working gateway. Do not
 # reorder these includes to group work by tool; group by phase, as here.
+#
+# Every include below carries a STATIC tag list naming its component
+# (hermes_runtime_install, hermes_patches, hermes_profiles_env,
+# hermes_content_scripts, hermes_crons, hermes_units_gateways,
+# hermes_delivery_probe). Tags are never rendered from a variable: ansible
+# resolves static-import tags before role defaults exist, so a rendered tag
+# cannot gate the import and the component tag would silently run the whole
+# role. `tags: always` appears only where a task truly guards every component;
+# each such site says why in its comment. tests/hermes_agent/
+# test_component_tag_narrowing.py fails the build when a component tag pulls
+# in another component's work again.
 
 - name: Keep operational profiles off the private identity
   ansible.builtin.set_fact:
@@ -29,9 +40,8 @@
 - name: Reject inherited Pepper profile homes before any runtime changes
   ansible.builtin.import_tasks: pepper_profiles.yml
   when: (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) == 'pepper'
-  tags:
-    - always
-    - "{{ hermes_agent_entry_point_task_tags['pepper_profiles.yml'] }}"
+  # Identity guard: must precede any component's first guest change.
+  tags: always
 
 # Read-only probe mode: report cron delivery routing, then stop this host
 # before any converge task (defaults/main/195-delivery-probe.yml).
@@ -40,11 +50,11 @@
   block:
     - name: Read the cron delivery routing fields
       ansible.builtin.import_tasks: delivery_probe.yml
-      tags: "{{ hermes_agent_entry_point_task_tags['delivery_probe.yml'] }}"
+      tags: hermes_delivery_probe
 
     - name: End the host after the delivery probe
       ansible.builtin.meta: end_host
-      tags: "{{ hermes_agent_entry_point_task_tags['@probe_end_host'] }}"
+      tags: hermes_delivery_probe
 
 # Installed before any task below can notify "Restart hermes-gateway". A
 # notification queued before a failure in this block still flushes at play end
@@ -60,25 +70,23 @@
 
 - name: Assert brain-wiring contracts before converging
   ansible.builtin.import_tasks: assert_wiring.yml
-  tags:
-    - always
-    - "{{ hermes_agent_entry_point_task_tags['assert_wiring.yml'] }}"
+  tags: hermes_runtime_install
 
 - name: Load the pinned prompt catalog for cron and content consumers
   ansible.builtin.import_tasks: prompt_catalog.yml
   tags:
-    - always
-    - "{{ hermes_agent_entry_point_task_tags['prompt_catalog.yml'] }}"
-    - "{{ hermes_agent_entry_point_task_tags['cron_reconcile.yml'] }}"
+    - hermes_content_scripts
+    - hermes_crons
+    - hermes_units_gateways
 
 - name: Install Hermes system prerequisites and normalize the checkout refspec
   ansible.builtin.import_tasks: install_prerequisites.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['install_prerequisites.yml'] }}"
+  tags: hermes_runtime_install
 
 - name: Install the shared OpenBao AppRole CLI
   ansible.builtin.import_role:
     name: dryvist.homelab.bao_approle_cli
-  tags: always
+  tags: hermes_runtime_install
 
 - name: Install the pinned Hermes runtime
   ansible.builtin.import_role:
@@ -95,25 +103,25 @@
     hermes_runtime_bin: "{{ hermes_agent_bin }}"
     hermes_runtime_hermes_home: "{{ hermes_agent_hermes_home }}"
     hermes_runtime_user: "{{ hermes_agent_user }}"
-  tags: "{{ hermes_agent_entry_point_task_tags['@hermes_runtime.install'] }}"
+  tags: hermes_runtime_install
 
 - name: Preserve the installer change state for consumer check-mode guards
   ansible.builtin.set_fact:
     hermes_agent_install:
       changed: "{{ not hermes_agent_existing_binary.stat.exists or hermes_runtime_checkout is changed }}"
-  tags: "{{ hermes_agent_entry_point_task_tags['@install_changed_fact'] }}"
+  tags: hermes_runtime_install
 
 - name: Build and verify the Hermes dashboard bundle
   ansible.builtin.import_tasks: dashboard_build.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['dashboard_build.yml'] }}"
+  tags: hermes_runtime_install
 
 - name: Apply and verify the pinned-source patches
   ansible.builtin.import_tasks: pinned_patches.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['pinned_patches.yml'] }}"
+  tags: hermes_patches
 
 - name: Venv extras (OTEL patch, Slack platform, web-search backend) and the runtime user
   ansible.builtin.import_tasks: venv_extras_and_users.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['venv_extras_and_users.yml'] }}"
+  tags: hermes_runtime_install
 
 # Before config_and_content.yml: config.yaml leaves browser.backend unset so
 # the agent picks up browser_exec by detecting a runnable browser-use CLI. If
@@ -121,30 +129,30 @@
 # not have one yet and come up with no browser tools.
 - name: Chromium and the browser-use CLI (browser_exec tool surface)
   ansible.builtin.import_tasks: browser.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['browser.yml'] }}"
+  tags: hermes_runtime_install
 
 - name: Build the shared Hermes content bundle
   ansible.builtin.import_tasks: bundle_build.yml
   tags:
-    - "{{ hermes_agent_entry_point_task_tags['bundle_build.yml'] }}"
-    - "{{ hermes_agent_entry_point_task_tags['public_gateway.yml'] }}"
+    - hermes_profiles_env
+    - hermes_units_gateways
 
 - name: Prepare Pepper read-only evidence before enabling its MCP server
   ansible.builtin.import_tasks: pepper_vault.yml
   when: hermes_agent_id == 'pepper'
-  tags: "{{ hermes_agent_entry_point_task_tags['pepper_vault.yml'] }}"
+  tags: hermes_profiles_env
 
 - name: Deploy secrets, config.yaml, persona content, and Hindsight provider config
   ansible.builtin.import_tasks: config_and_content.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['config_and_content.yml'] }}"
+  tags: hermes_profiles_env
 
 - name: Harden guest SSH and remove drifted or superseded seeded crons
   ansible.builtin.import_tasks: ssh_and_cron_drift.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['ssh_and_cron_drift.yml'] }}"
+  tags: hermes_crons
 
 - name: Materialize skills and reconcile named operating profiles
   ansible.builtin.import_tasks: skills_and_profiles.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['skills_and_profiles.yml'] }}"
+  tags: hermes_profiles_env
 
 # After skills_and_profiles.yml so every profile home exists. The collection
 # installs each plugin's pinned requirements into the Hermes venv and notifies
@@ -162,11 +170,11 @@
     hermes_runtime_gateway_restart_handler: Restart hermes-gateway
     hermes_runtime_plugins: "{{ hermes_agent_plugins }}"
     hermes_runtime_plugin_homes: "{{ hermes_agent_plugin_homes }}"
-  tags: "{{ hermes_agent_entry_point_task_tags['@hermes_runtime.plugins'] }}"
+  tags: hermes_profiles_env
 
 - name: Assert the installed memory and tracing plugins match their pins
   ansible.builtin.import_tasks: assert_plugins.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['assert_plugins.yml'] }}"
+  tags: hermes_profiles_env
 
 # Presence-gated Home Assistant plugin: installed into the homelab-admin profile home only, so the
 # default gateway's home never carries its platform manifest. Enabled for that profile alone.
@@ -184,31 +192,31 @@
     hermes_runtime_plugins: "{{ hermes_agent_plugins_homeassistant }}"
     hermes_runtime_plugin_homes: "{{ hermes_agent_homeassistant_plugin_homes }}"
   when: hermes_agent_homeassistant_enabled | bool
-  tags: "{{ hermes_agent_entry_point_task_tags['@hermes_runtime.homeassistant_plugin'] }}"
+  tags: hermes_profiles_env
 
 - name: GitHub identity — OpenBao-minted tokens behind a gh wrapper
   ansible.builtin.import_tasks: github_identity.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['github_identity.yml'] }}"
+  tags: hermes_profiles_env
 
 - name: Deploy the versioned curriculum
   ansible.builtin.import_tasks: curriculum_and_scripts.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['curriculum_and_scripts.yml'] }}"
+  tags: hermes_content_scripts
 
 - name: Deploy the script-fed digest/bridge/auto-close scripts and units
   ansible.builtin.import_tasks: script_deploys.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['script_deploys.yml'] }}"
+  tags: hermes_content_scripts
 
 - name: Pre-reconcile checks — web search, Splunk MCP, Slack configuration
   ansible.builtin.import_tasks: mcp_precheck.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['mcp_precheck.yml'] }}"
+  tags: hermes_crons
 
 - name: Reconcile the direct-deliver and script-fed cron fleet
   ansible.builtin.import_tasks: cron_reconcile.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['cron_reconcile.yml'] }}"
+  tags: hermes_crons
 
 - name: Deploy the gateway restart wrapper and remove the stale restart drop-in
   ansible.builtin.import_tasks: gateway_and_dashboard_units.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['gateway_and_dashboard_units.yml'] }}"
+  tags: hermes_units_gateways
 
 - name: Deploy and start the Hermes gateway and dashboard units
   ansible.builtin.import_role:
@@ -253,38 +261,38 @@
       - name: HERMES_DASHBOARD_OIDC_CLIENT_ID
         value: "{{ hermes_agent_dashboard_oidc_client_id }}"
     hermes_runtime_gateway_after_user_manager: true
-  tags: "{{ hermes_agent_entry_point_task_tags['@hermes_runtime.units'] }}"
+  tags: hermes_units_gateways
 
 - name: Re-open named blocked Kanban cards
   ansible.builtin.import_tasks: kanban_unblock.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['kanban_unblock.yml'] }}"
+  tags: hermes_crons
   when: hermes_agent_kanban_unblock | length > 0
 
 - name: Deploy and start (or stop) the public-review gateway
   ansible.builtin.import_tasks: public_gateway.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['public_gateway.yml'] }}"
+  tags: hermes_units_gateways
 
 - name: Deploy the co-located third-party web UIs
   ansible.builtin.import_tasks: companion_uis.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['companion_uis.yml'] }}"
+  tags: hermes_units_gateways
 
 - name: Deploy the brain-health watchdog
   ansible.builtin.import_tasks: brain_watchdog.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['brain_watchdog.yml'] }}"
+  tags: hermes_units_gateways
 
 - name: Deploy the optional brain runtime sync
   ansible.builtin.import_tasks: brain_sync.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['brain_sync.yml'] }}"
+  tags: hermes_units_gateways
 
 - name: Clean up the retired event relay
   ansible.builtin.import_tasks: event_relay_cleanup.yml
   when: hermes_agent_event_relay_cleanup | bool
-  tags: "{{ hermes_agent_entry_point_task_tags['event_relay_cleanup.yml'] }}"
+  tags: hermes_units_gateways
 
 - name: Ship logs, flush handlers, and run the post-converge verification gate
   ansible.builtin.import_tasks: finalize.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['finalize.yml'] }}"
+  tags: hermes_units_gateways
 
 - name: Remove retired runner artifacts after the gateway restart
   ansible.builtin.import_tasks: decommission_retired_runner.yml
-  tags: "{{ hermes_agent_entry_point_task_tags['decommission_retired_runner.yml'] }}"
+  tags: hermes_units_gateways
