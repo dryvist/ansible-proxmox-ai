@@ -30,7 +30,7 @@ def test_high_concurrency_qwen_profile_renders_capacity_arguments():
     assert "--scheduling-policy priority" in exec_start
     assert "--max-model-len 98304" in exec_start
     assert "--max-num-seqs 16" in exec_start
-    assert "--max-num-batched-tokens 32768" in exec_start
+    assert "--max-num-batched-tokens 8192" in exec_start
     assert "--enable-chunked-prefill" in exec_start
     assert "--gpu-memory-utilization 0.75" in exec_start
     assert "--kv-cache-dtype fp8" in exec_start

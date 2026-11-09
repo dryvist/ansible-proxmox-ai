@@ -11,7 +11,7 @@ documented in the [GPU serving role README](../llm_gpu_serving/README.md#stress-
 ## High-concurrency Qwen profile
 
 The `qwen38-96k-11-fp8-mtp` profile defaults to a 98,304-token engine window, 16 sequences,
-32,768 batched tokens, chunked prefill enabled, 0.75 GPU memory utilization, FP8 KV cache,
+8,192 batched tokens, chunked prefill enabled, 0.75 GPU memory utilization, FP8 KV cache,
 ModelOpt quantization, and three speculative MTP tokens. The profile's memory-screen defaults
 are 2,048, 8,192, and 32,768 input tokens with 512 output tokens per sequence. These values
 are role defaults in `defaults/main/10-profiles.yml` and can be overridden through
