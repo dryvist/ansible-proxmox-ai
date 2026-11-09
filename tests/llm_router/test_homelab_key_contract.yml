@@ -24,6 +24,7 @@
       n8n_llm_router_key: sk-fixture-n8n
       homeassistant_llm_router_key: sk-fixture-homeassistant
       langfuse_llm_router_key: sk-fixture-langfuse
+      evals_llm_router_key: sk-fixture-evals
       zammad_llm_router_key: sk-fixture-zammad
       grafana_llm_router_key: sk-fixture-grafana
       agentgateway_llm_router_key: sk-fixture-agentgateway
@@ -81,6 +82,29 @@
           - _evaluation_key.router_settings.content_policy_fallbacks == []
       vars:
         _evaluation_key: "{{ _keys | selectattr('alias', 'equalto', 'langfuse') | first }}"
+        _cloud_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
+
+    - name: Scheduled evals use the tier 2 key with local capabilities and no cloud fallback
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _evals_key.allowed_classes == ['local']
+          - _evals_key.models == ([llm_router_small_model, llm_router_primary_model,
+               llm_router_large_model] | unique | list)
+          - _evals_key.models_authoritative | bool
+          - _evals_key.priority_tier == 2
+          - _evals_key.team_id == 'tier-2'
+          - "'&tier-2' in _evals_key.tags"
+          - "'&local' in _evals_key.tags"
+          - _evals_key.models | intersect(_cloud_groups) | length == 0
+          - _evals_key.router_settings.enable_tag_filtering | bool
+          - _evals_key.router_settings.fallbacks == []
+          - _evals_key.router_settings.context_window_fallbacks == []
+          - _evals_key.router_settings.content_policy_fallbacks == []
+      vars:
+        _evals_key: "{{ _keys | selectattr('alias', 'equalto', 'evals') | first }}"
         _cloud_groups: >-
           {{ llm_router_d1_group_class_by_name | dict2items
              | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
@@ -155,7 +179,7 @@
         fail_msg: "local-only specs={{ _local_only_specs }}, keys={{ _local_only_keys }}"
       vars:
         _local_aliases: [hindsight, recorder, github-actions-ci-fix,
-                         grafana,
+                         evals, grafana,
                          github-actions-pr-review, inference-direct-only, glance,
                          openhands, prometheus-scrape]
         _expected_local_key_aliases: >-
