@@ -1,0 +1,65 @@
+---
+# One Slack socket per identity (templates/hermes-env-profile.j2). SLACK_APP_TOKEN
+# is the Socket Mode credential: two gateways on one guest rendering the same
+# non-empty value open two sockets on one Slack app, and the runtime refuses the
+# duplicate claim and disables Slack on the second — the parked-profile state
+# that stopped named profiles' cron delivery. Named profiles hold no Slack token
+# at all: their cron output rides the main gateway's profile_routes
+# (defaults/main/152-profile-slack-routes.yml).
+#
+# Variable-only checks cannot see a template edit, so this preflight reads the
+# env templates off the controller (lookups run there — the same shape
+# assert_curriculum_and_policy.yml uses for its curriculum contract) and fails
+# the converge when any env surface besides the main gateway's could render the
+# token, before anything is deployed. Read-only; safe in check mode.
+
+- name: Read the env templates that must not carry the Slack app token
+  ansible.builtin.set_fact:
+    hermes_agent_slack_socket_env_sources: >-
+      {{ [
+           lookup('ansible.builtin.file', role_path ~ '/templates/hermes-env-profile.j2'),
+           lookup('ansible.builtin.file', role_path ~ '/templates/hermes-env-public-gateway.j2')
+         ] }}
+  no_log: true
+
+- name: Assert one Slack socket per identity before any config renders
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # The named-profile env template renders both token lines blank by
+      # construction: the line is exactly KEY= (start-of-line to end-of-line)
+      # and the template never NAMES the token variables at all — any render
+      # expression for them (the shared-token shape this replaces) fails here.
+      # The dotenv-override blank is the enforcement: an omitted line would
+      # leave the inherited main-gateway token readable in the profile.
+      - "'hermes_agent_slack_bot_token' not in hermes_agent_slack_socket_env_sources[0]"
+      - "'hermes_agent_slack_app_token' not in hermes_agent_slack_socket_env_sources[0]"
+      - hermes_agent_slack_socket_env_sources[0] is search('(?m)^SLACK_BOT_TOKEN=$')
+      - hermes_agent_slack_socket_env_sources[0] is search('(?m)^SLACK_APP_TOKEN=$')
+      # The standalone public gateway is the only other gateway unit this role
+      # puts on the guest; its env template names no Slack credential, so the
+      # main gateway env is the one remaining render site for a non-empty
+      # SLACK_APP_TOKEN.
+      - "'SLACK_APP_TOKEN' not in hermes_agent_slack_socket_env_sources[1]"
+      # The 'slack' env section is what once carried the identity's tokens into
+      # profile homes; no named profile may declare it. Profiles post through
+      # the main gateway's profile_routes instead.
+      - >-
+        hermes_agent_profiles
+        | selectattr('env', 'defined')
+        | selectattr('env', 'contains', 'slack')
+        | map(attribute='name') | list | length == 0
+    fail_msg: >-
+      One Slack socket per identity: a second gateway or a named profile would
+      render the identity's Slack app token. Only the main gateway's
+      hermes-env.j2 may render SLACK_APP_TOKEN/SLACK_BOT_TOKEN; named profiles
+      post through the main gateway's profile_routes
+      (defaults/main/152-profile-slack-routes.yml). Fix
+      templates/hermes-env-profile.j2 (both token lines must be blank
+      literals), templates/hermes-env-public-gateway.j2 (must name no Slack
+      credential), or remove 'slack' from the offending hermes_agent_profiles
+      entry's env list.
+    success_msg: >-
+      One Slack socket per identity: only the main gateway renders the Slack
+      tokens.
+  no_log: true

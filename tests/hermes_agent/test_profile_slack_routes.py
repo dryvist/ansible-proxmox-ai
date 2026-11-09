@@ -197,3 +197,33 @@ def test_zammad_review_is_bounded_and_gated_on_its_route() -> None:
         if j["name"] == "{{ hermes_agent_zammad_review_cron_name }}"
     )
     assert "'homelab-admin' in hermes_agent_slack_profile_deliver_targets" in str(job["enabled"])
+
+
+PROFILE_ROUTE_FLEET = ("splunk-admin", "homelab-admin")
+
+
+def _two_profile_jobs() -> list[tuple[dict, str]]:
+    found = []
+    for job in _declared_direct_jobs():
+        match = re.search(r"/profiles/([a-z0-9-]+)", str(job.get("hermes_home", "")))
+        if match and match.group(1) in PROFILE_ROUTE_FLEET:
+            found.append((job, match.group(1)))
+    assert found, "the splunk-admin/homelab-admin cron fleet went missing"
+    return found
+
+
+def test_two_profile_fleet_delivers_only_through_the_route_map() -> None:
+    """Every splunk-admin/homelab-admin job delivers to its profile's routed
+    channel on the primary gateway — the profile holds no Slack token (one
+    Slack socket per identity), so a deliver expression naming a literal
+    shared channel or an active gate without the route-membership check would
+    enqueue output nothing can send.
+    """
+    for job, profile in _two_profile_jobs():
+        if "deliver" in job:
+            assert "hermes_agent_slack_profile_deliver_targets" in str(job["deliver"]), job["name"]
+        enabled = job.get("enabled")
+        if enabled is not None and not isinstance(enabled, bool):
+            assert f"'{profile}' in hermes_agent_slack_profile_deliver_targets" in str(enabled), (
+                job["name"]
+            )
