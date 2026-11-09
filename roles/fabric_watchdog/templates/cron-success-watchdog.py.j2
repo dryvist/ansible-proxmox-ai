@@ -33,6 +33,16 @@ of the newest `last_run_at` it has ever OBSERVED carrying `last_status == "ok"`.
 That memory is the last-success timestamp, and it stops advancing the moment a
 job stops succeeding, however loudly it keeps failing.
 
+Every tick also prints one `cron-run` stdout line per RUN the store has gained
+since the last one reported, so journald alone can count how often each job
+actually fired. The store holds only each job's newest run, so "new" means
+`last_run_at` is strictly newer than the newest run already reported; that
+watermark lives in the same per-job memory as the success clock, so a restart
+or a missed tick neither repeats a run nor skips one. The store carries each
+job's delivery target (`deliver`) but no delivery outcome — outcomes live in
+the scheduler's own run ledger, not in this store — so `delivered` reads
+`unknown` instead of inventing one.
+
 Runs as a child of fabric-watchdog.sh, inheriting the same ntfy hub config.
 """
 
@@ -259,8 +269,10 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
     recovered, stores newly paused too long) display lines, each an Alert
     carrying the job or store it concerns.
 
-    Mutates `state` in place: advances each job's remembered last-success and
-    flips its alerted latch. Every job gets a log line whatever is decided.
+    Mutates `state` in place: advances each job's remembered last-success,
+    flips its alerted latch, and advances the `last_reported_run` watermark
+    while printing one `cron-run` stdout line per newly observed run. Every
+    job gets a log line whatever is decided.
     Also stashes this tick's newly-triggered pool-wait alerts into
     `state["waited"]` (see the per-job loop below) rather than a fourth
     return value — every existing caller of evaluate()/run() already
@@ -304,6 +316,26 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
         seen.add(key)
         name = f"{profile}/{job.get('name') or job_id}"
         record = memory.setdefault(key, {"last_ok": None, "alerted": False})
+
+        # --- Countable runs ----------------------------------------------
+        # One stdout line per run the store has gained, whatever the job's
+        # current state: a run that happened is countable even if the job has
+        # since been disabled or its store stopped, so this sits before the
+        # skip paths below. The watermark is this same record's
+        # `last_reported_run`, read strictly, so an unchanged store repeats
+        # nothing and a tick missed while the watchdog was down catches up
+        # without duplicating — the newest run is reported exactly once.
+        observed_run = parse_iso(job.get("last_run_at"))
+        if observed_run is not None and observed_run > record.get("last_reported_run", float("-inf")):
+            record["last_reported_run"] = observed_run
+            deliver = job.get("deliver")
+            target = deliver.strip() if isinstance(deliver, str) and deliver.strip() else "none"
+            print(
+                f"cron-run profile={profile} job={job.get('name') or job_id} "
+                f"status={job.get('last_status') or 'unknown'} "
+                f"run_at={job.get('last_run_at')} delivered=unknown target={target}",
+                flush=True,
+            )
 
         if not job.get("enabled", True) or job.get("state") == "paused":
             # Deliberately off is not silence. Reset the latch so a resumed job
