@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PLAY = ROOT / "playbooks/agents.yml"
 WATCHDOG = "Include fabric_watchdog role"
 HERMES = "Include hermes_agent role"
+# import_role is static, so an untagged --list-tasks shows the role's own tasks, not the import line.
+HERMES_TASKS = "hermes_agent : "
 
 
 def _fixture_inventory(tmp_path):
@@ -48,7 +50,7 @@ def test_an_untagged_listing_still_carries_both_includes(tmp_path):
     everything = _list_tasks(tmp_path)
     assert everything.returncode == 0, everything.stdout + everything.stderr
     assert WATCHDOG in everything.stdout
-    assert HERMES in everything.stdout
+    assert HERMES_TASKS in everything.stdout
 
 
 def test_the_include_passes_its_tag_into_the_role():
@@ -61,4 +63,4 @@ def test_the_include_passes_its_tag_into_the_role():
     )
     assert include["ansible.builtin.include_role"]["name"] == "fabric_watchdog"
     assert include["tags"] == ["fabric_watchdog"]
-    assert include["apply"]["tags"] == ["fabric_watchdog"]
+    assert include["ansible.builtin.include_role"]["apply"]["tags"] == ["fabric_watchdog"]
