@@ -15,8 +15,47 @@
     # Skip the shared trusted-caller fixture so the untrusted ceiling is exercised.
     llm_router_unforced_trust_fixture: true
   tasks:
+    - name: Enable both sandbox aliases for the trust contract
+      ansible.builtin.set_fact:
+        bao_apps_secrets: >-
+          {{ (bao_apps_secrets | default({})) | combine({
+            'sandbox_agent_router_llm_router_key': 'fixture-sandbox-agent-key',
+            'sandbox_agent_local_router_llm_router_key': 'fixture-sandbox-agent-local-key'
+          }) }}
+      no_log: true
+
     - name: Prepare role-backed rendered contract
       ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+
+    - name: Capture the sandbox keys and their trust markers
+      ansible.builtin.set_fact:
+        _sandbox_route_keys: "{{ llm_router_virtual_keys }}"
+        _sandbox_route_meta: "{{ _llm_router_key_trust_metadata }}"
+      no_log: true
+
+    - name: The sandbox-local alias is limited to a local group with fallback access enforcement
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _sandbox_local_key | length == 1
+          - _sandbox_key | length == 1
+          - _sandbox_local_key[0].allowed_classes == ['local']
+          - _sandbox_local_key[0].models == [llm_router_primary_model]
+          - _sandbox_local_key[0].models | difference(_llm_router_local_tier_group_names) | length == 0
+          - "'&local' in _sandbox_local_key[0].tags"
+          - _config.general_settings.enforce_fallback_model_access | bool
+          - _sandbox_route_meta['sandbox-agent-local'].route_local | bool
+          - not (_sandbox_route_meta['sandbox-agent'].route_local | bool)
+          - _sandbox_route_meta['sandbox-agent-local'].trust_tier == _sandbox_route_meta['sandbox-agent'].trust_tier
+        fail_msg: >-
+          Sandbox key scope={{ _sandbox_local_key }}, existing key={{ _sandbox_key }},
+          router enforcement={{ _config.general_settings.enforce_fallback_model_access }},
+          markers={{ _sandbox_route_meta }}.
+      vars:
+        _sandbox_local_key: >-
+          {{ _sandbox_route_keys | selectattr('alias', 'equalto', 'sandbox-agent-local') | list }}
+        _sandbox_key: >-
+          {{ _sandbox_route_keys | selectattr('alias', 'equalto', 'sandbox-agent') | list }}
 
     - name: Name a hosted paid-zdr group from the registry
       ansible.builtin.set_fact:

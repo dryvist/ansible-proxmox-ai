@@ -61,6 +61,9 @@ def test_profile_homed_crons_never_receive_slack_tokens() -> None:
         home = Environment().from_string(home_template).render(
             hermes_agent_hermes_home="/hermes-home",
             hermes_agent_kanban_orchestrator_profile="orchestrator",
+            hermes_agent_credential_canary_profile=(
+                DEFAULTS["hermes_agent_credential_canary_profile"]
+            ),
         )
         match = re.fullmatch(r"/hermes-home/profiles/([^/]+)", home)
         assert match, f"profile-homed cron {cron_name} has unexpected home {home!r}"
