@@ -171,11 +171,15 @@ ssrf_proxy. The per-agent variables therefore carry
 Compose network over plain HTTP, which routes `/triggers` to the API — rather
 than the public `dify_docker_trigger_url`, whose name resolves to a private
 address the proxy refuses. The ssrf_proxy squid config allows exactly that
-origin (derived from the variable, so an override moves the rule with it) for
-the `/triggers/webhook/` path prefix, placed before the deny-private rule;
-every other private destination, and every other path on the internal origin,
-remains denied. `TRIGGER_URL` itself stays the public base for callers outside
-the stack.
+origin (derived from the variable, so an override moves the rule with it) on
+that origin's own port, for one webhook id path — `/triggers/webhook/<id>`
+where the id is a single run of letters, digits, underscores or hyphens, end
+anchored — placed before the deny-private rule. The end anchor matters: nginx
+resolves dot segments before location matching, so a bare path prefix would
+let a proxied traversal land on another location. Dot segments,
+percent-encoded paths, extra segments, other ports, and every other path on
+the internal origin remain denied. `TRIGGER_URL` itself stays the public base
+for callers outside the stack.
 
 ## Agent MCP server publishing
 

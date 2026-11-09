@@ -143,19 +143,26 @@
         quiet: true
         that:
           - "'acl dst_dify_trigger dstdomain nginx' in _ssrf_squid"
-          - "'acl path_trigger_webhook urlpath_regex -i ^/triggers/webhook/' in _ssrf_squid"
+          # The port follows the internal trigger base's own port; the default
+          # base carries :80 explicitly.
+          - "'acl port_dify_trigger port 80' in _ssrf_squid"
+          # One webhook id path, end anchored: a bare prefix would let nginx
+          # resolve a proxied dot segment onto another location.
+          - "'acl path_trigger_webhook urlpath_regex -i ^/triggers/webhook/[A-Za-z0-9_-]+$' in _ssrf_squid"
+          - "'acl path_trigger_webhook urlpath_regex -i ^/triggers/webhook/' not in _ssrf_squid.splitlines()"
+          - "'http_access allow dst_dify_trigger port_dify_trigger path_trigger_webhook' in _ssrf_squid"
           # The origin is the internal trigger base's host, so an override cannot
           # drift from the squid allow; the default host is a real Compose service.
           - "'nginx' in _rendered.services"
           # The carve-out precedes the private-destination deny: nginx resolves
           # to a Compose address that deny would otherwise refuse.
           - >-
-            _ssrf_squid.index('http_access allow dst_dify_trigger path_trigger_webhook')
+            _ssrf_squid.index('http_access allow dst_dify_trigger')
             < _ssrf_squid.index('http_access deny to_private_networks')
-          # The origin is never allowed without the webhook path prefix.
+          # The origin is never allowed without its port and the webhook id path.
           - >-
             _ssrf_squid.splitlines() | select('match', '^http_access allow dst_dify_trigger')
-            | list == ['http_access allow dst_dify_trigger path_trigger_webhook']
+            | list == ['http_access allow dst_dify_trigger port_dify_trigger path_trigger_webhook']
           # Every private range stays denied and no blanket allow exists.
           - "'dst 10.0.0.0/8' in _ssrf_squid"
           - "'dst 172.16.0.0/12' in _ssrf_squid"
@@ -163,6 +170,20 @@
           - "'http_access deny to_private_networks' in _ssrf_squid.splitlines()"
           - "'http_access allow all' not in _ssrf_squid.splitlines()"
           - "_ssrf_squid.splitlines() | select('match', '^http_access ') | list | last == 'http_access deny all'"
+
+    - name: Match the rendered webhook path ACL against real and traversal paths
+      vars:
+        _webhook_path_pattern: >-
+          {{ _ssrf_squid | regex_findall('^acl path_trigger_webhook urlpath_regex -i (.*)$',
+             multiline=True) | first }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _webhook_path_pattern.endswith('$')
+          - "'/triggers/webhook/abc123' is match(_webhook_path_pattern)"
+          - "'/triggers/webhook/../e/x' is not match(_webhook_path_pattern)"
+          - "'/triggers/webhook/a/b' is not match(_webhook_path_pattern)"
+          - "'/triggers/webhook/%2e%2e' is not match(_webhook_path_pattern)"
 
     - name: SSR uses the internal API while browser URLs remain public
       ansible.builtin.assert:
@@ -251,7 +272,7 @@
         dify_docker_workflow_schedule_poller_enabled: false
         dify_docker_trigger_provider_refresh_enabled: false
         dify_docker_trigger_url: "https://triggers.example.invalid"
-        dify_docker_internal_trigger_url: "http://dify:80"
+        dify_docker_internal_trigger_url: "http://dify"
         dify_docker_otel_endpoint: "https://cribl.example.invalid"
         dify_docker_otel_sampling_rate: 0.25
         dify_docker_redis_appendonly: false
@@ -271,8 +292,11 @@
         quiet: true
         that:
           # The squid origin follows dify_docker_internal_trigger_url, not the
-          # public trigger URL: the internal override moves the allow.
+          # public trigger URL: the internal override moves the allow, and a
+          # portless base falls back to the origin's default port 80.
           - "'acl dst_dify_trigger dstdomain dify' in _overridden_squid"
+          - "'acl port_dify_trigger port 80' in _overridden_squid"
+          - "'http_access allow dst_dify_trigger port_dify_trigger path_trigger_webhook' in _overridden_squid"
           - "'dstdomain triggers.example.invalid' not in _overridden_squid"
           - "'http_access deny to_private_networks' in _overridden_squid.splitlines()"
 
