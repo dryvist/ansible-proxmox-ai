@@ -1,0 +1,46 @@
+---
+# Bounded-step cases of the retention contract (included from
+# retention_behavior.yml inside the render directory's lifetime): the compute
+# expressions must walk the live policy down one step at a time — target 30
+# with a step of 7 gives 53 from an unlimited rule whose oldest trace is 60
+# whole days old; 37 lands on 30; 33 clamps to 30; 20 (raising) sets 30
+# directly; a live 30 makes no change.
+- name: Stamp the recorded oldest trace sixty whole days in the past
+  vars:
+    _stamp_epoch: "{{ (now(utc=True).timestamp() | int) - 60 * 86400 - 3600 }}"
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_contract_oldest_start: >-
+      {{ lookup('pipe', 'date -u -d @' ~ (_stamp_epoch | int | string)
+      ~ ' +%Y-%m-%dT%H:%M:%S+00:00') | trim }}
+
+- name: Set the retention inputs the compute expressions read
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_days: 30
+    phoenix_docker_retention_step_days: 7
+
+- name: Assert every bounded-step case against the extracted expressions
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _step_cases:
+      - name: unlimited_oldest_60d
+        live_days: 0
+        oldest_start: "{{ phoenix_docker_retention_contract_oldest_start }}"
+        expected_oldest: 60
+        expected_next: 53
+        gate: 'True'
+      - { name: live_37, live_days: 37, expected_oldest: 0, expected_next: 30, gate: 'True' }
+      - { name: live_33, live_days: 33, expected_oldest: 0, expected_next: 30, gate: 'True' }
+      - { name: live_20, live_days: 20, expected_oldest: 0, expected_next: 30, gate: 'True' }
+      - { name: live_30, live_days: 30, expected_oldest: 0, expected_next: 30, gate: 'False' }
+    _case_live_days: "{{ item.live_days }}"
+    _case_expected_oldest: "{{ item.expected_oldest }}"
+    _case_expected_next: "{{ item.expected_next }}"
+    _case_gate: "{{ item.gate }}"
+    # default(none), never default(omit): omit is only stripped from
+    # module arguments, so an include_tasks var would carry the omit
+    # placeholder string into the step case and feed it to to_datetime.
+    _case_oldest_start: "{{ item.oldest_start | default(none) }}"
+  ansible.builtin.include_tasks: retention_step_case.yml
+  loop: "{{ _step_cases }}"
+  loop_control:
+    label: "{{ item.name }}"

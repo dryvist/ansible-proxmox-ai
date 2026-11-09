@@ -1,0 +1,57 @@
+---
+# One page of the project start-time walk behind the trace-retention sync in
+# tasks/main.yml. Phoenix v21 serves the Default policy's projects as a relay
+# connection over an unordered project list, so the first retention step must
+# be computed from the oldest startTime on EVERY page: reading a single page
+# can miss the true oldest trace and lower maxDays far past one
+# phoenix_docker_retention_step_days, which turns the next hourly sweeper pass
+# into an oversized delete. The include loop in tasks/main.yml bounds the
+# walk; the coverage check there fails the converge before any patch when a
+# page still reports hasNextPage after the bound is spent.
+- name: Read one page of project start times under the default policy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ phoenix_docker_web_port }}/graphql"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ phoenix_docker_admin_secret }}"
+    body_format: json
+    body:
+      query: >-
+        query DefaultPolicyProjectTraceStartTimes($after: String) {
+          defaultProjectTraceRetentionPolicy {
+            projects(first: 100, after: $after) {
+              edges {
+                node {
+                  startTime
+                }
+              }
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+            }
+          }
+        }
+      variables:
+        after: "{{ phoenix_docker_retention_projects_cursor
+          if phoenix_docker_retention_projects_cursor else none }}"
+    status_code: 200
+  register: phoenix_docker_retention_page
+  changed_when: false
+  failed_when: >-
+    (phoenix_docker_retention_page.json.errors | default([])) | length > 0
+  no_log: true
+  when: phoenix_docker_retention_projects_has_next | default(false) | bool
+
+- name: Carry the page start times and walk the cursor forward
+  vars:
+    _page: "{{ phoenix_docker_retention_page.json.data.defaultProjectTraceRetentionPolicy.projects }}"
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_project_start_times: >-
+      {{ phoenix_docker_retention_project_start_times | default([])
+      + ((_page.edges | default([]))
+      | map(attribute='node.startTime') | select('string') | list) }}
+    phoenix_docker_retention_projects_cursor: "{{ _page.pageInfo.endCursor | default('') }}"
+    phoenix_docker_retention_projects_has_next: "{{ _page.pageInfo.hasNextPage | default(false) | bool }}"
+  changed_when: false
+  when: phoenix_docker_retention_projects_has_next | default(false) | bool

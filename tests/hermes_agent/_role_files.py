@@ -57,6 +57,11 @@ def role_defaults(role_root: Path) -> dict:
     return merged
 
 
+def role_default_subset(role_root: Path, *keys: str) -> dict:
+    defaults = role_defaults(role_root)
+    return {key: defaults[key] for key in keys}
+
+
 def role_defaults_text(role_root: Path) -> str:
     """Concatenate defaults/main/*.yml for substring/regex assertions."""
     return "\n".join(

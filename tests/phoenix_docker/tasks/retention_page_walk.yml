@@ -1,0 +1,57 @@
+---
+# One iteration of the >100-project walk case (included in a loop bounded by
+# the role's own phoenix_docker_retention_max_project_pages, from
+# retention_behavior.yml): renders the page fetch's cursor expression carried
+# from roles/phoenix_docker/tasks/retention_project_page.yml against the
+# recorded pages, then re-renders the carry expressions into the walk state —
+# the same facts the role's seeded walk maintains. Once a recorded page
+# reports no next page, every task here skips, mirroring the role's walk.
+- name: Render the page fetch's cursor for this walk iteration
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _rendered: "{{ lookup('ansible.builtin.template', _render_dir ~ '/walk_after.j2', convert_data=true) | trim }}"
+  ansible.builtin.set_fact:
+    _walk_after: "{{ _rendered }}"
+  when: phoenix_docker_retention_projects_has_next | default(false) | bool
+
+- name: The rendered cursor addresses a recorded page
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        _walk_after == 'None'
+        or _walk_after in (phoenix_docker_retention_contract_walk_pages.keys() | list)
+    fail_msg: >-
+      The walk's cursor expression rendered a cursor no recorded page serves,
+      so the role is not carrying the connection's endCursor verbatim.
+  when: phoenix_docker_retention_projects_has_next | default(false) | bool
+
+- name: Select the recorded page the rendered cursor addresses
+  vars:
+    _page_key: "{{ '' if _walk_after == 'None' else _walk_after }}"
+  ansible.builtin.set_fact:
+    _walk_page_key: "{{ _page_key }}"
+    _walk_page: "{{ phoenix_docker_retention_contract_walk_pages[_page_key] }}"
+  when: phoenix_docker_retention_projects_has_next | default(false) | bool
+
+- name: Record the walk's page sequence
+  ansible.builtin.set_fact:
+    _walk_afters: "{{ _walk_afters | default([]) + [_walk_page_key] }}"
+  when: phoenix_docker_retention_projects_has_next | default(false) | bool
+
+- name: Seed the carry expressions' page variable
+  ansible.builtin.set_fact:
+    _page: "{{ _walk_page.json.data.defaultProjectTraceRetentionPolicy.projects }}"
+  when: phoenix_docker_retention_projects_has_next | default(false) | bool
+
+- name: Carry the recorded page through the role's walk expressions
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_project_start_times: >-
+      {{ lookup('ansible.builtin.template', _render_dir ~ '/walk_starts.j2', convert_data=true) }}
+    phoenix_docker_retention_projects_cursor: >-
+      {{ lookup('ansible.builtin.template', _render_dir ~ '/walk_cursor.j2', convert_data=true) }}
+    phoenix_docker_retention_projects_has_next: >-
+      {{ lookup('ansible.builtin.template', _render_dir ~ '/walk_has_next.j2', convert_data=true) | bool }}
+  when: phoenix_docker_retention_projects_has_next | default(false) | bool

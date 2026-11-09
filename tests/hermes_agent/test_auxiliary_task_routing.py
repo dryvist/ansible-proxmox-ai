@@ -8,19 +8,23 @@ from _role_files import role_defaults
 from test_context_limits import ROLE_ROOT, _render, _sample_limits
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "hermes-v2026.9.11-auxiliary-keys.yml"
+FIXTURE = Path(__file__).parent / "fixtures" / "hermes-v0.23.0-auxiliary-keys.yml"
 TEMPLATES = ("config.yaml.j2", "config-profile.yaml.j2")
 
 
 def test_auxiliary_tasks_are_pinned_to_the_router_in_both_configs() -> None:
     fixture = yaml.safe_load(FIXTURE.read_text())
-    assert fixture["version"] == "v2026.9.11"
+    assert fixture["version"] == "v0.23.0"
     expected_keys = set(fixture["auxiliary_task_keys"])
 
     for template in TEMPLATES:
         _, config = _render(template, _sample_limits())
         auxiliary = config["auxiliary"]
         assert set(auxiliary) - {"transient_retries"} == expected_keys, template
+        # 0.23.0 retired skills_hub ("no aux LLM any more, leftover blocks are
+        # ignored") — a rendered block would be dead config drifting from the
+        # runtime's actual routing.
+        assert "skills_hub" not in auxiliary, template
 
         model = config["model"]
         assert auxiliary["transient_retries"] == 1
