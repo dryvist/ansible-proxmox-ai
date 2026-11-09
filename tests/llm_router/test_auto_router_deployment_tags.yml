@@ -194,3 +194,148 @@
           paid_first={{ _paid_first }}
       vars:
         _paid_first: "{{ llm_router_d1_rungs_by_class['paid-zdr'] | first }}"
+
+    - name: Load the Hermes operating profiles the scheduled cron fleet runs under
+      ansible.builtin.import_tasks: "{{ playbook_dir }}/../../playbooks/tasks/load_hermes_profiles.yml"
+      vars:
+        _hermes_agent_role_dir: "{{ playbook_dir }}/../../roles/hermes_agent"
+
+    - name: Seed the cron-hosting profile stores' router keys
+      ansible.builtin.set_fact:
+        bao_apps_secrets: >-
+          {{ (bao_apps_secrets | default({})) | combine({
+               'hermes_splunk_admin_llm_router_key': 'sk-fixture-cron-splunk-admin',
+               'hermes_homelab_admin_llm_router_key': 'sk-fixture-cron-homelab-admin',
+               'hermes_github_maint_llm_router_key': 'sk-fixture-cron-github-maint',
+               'hermes_orchestrator_llm_router_key': 'sk-fixture-cron-orchestrator'}) }}
+      no_log: true
+
+    - name: Read the inventory's cron model selection
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all/00-core.yml"
+        name: _cron_inventory
+
+    - name: The cron model selection names the local review group through the alias map
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cron_inventory.hermes_agent_cron_model == llm_router_review_aliases.local
+          - llm_router_model_group_aliases[_cron_inventory.hermes_agent_cron_model]
+            == llm_router_primary_model
+        success_msg: >-
+          The scheduled cron fleet pins the router's local-only review group,
+          whose alias target is the medium capability.
+
+    - name: The cron-hosting Hermes stores resolve to the tier-2 local lane
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cron_store.priority_tier == 2
+          - "'&tier-2' in _cron_store.tags"
+          - "'&local' in _cron_store.tags"
+          - _cron_store.allowed_classes == ['local']
+          - _cron_store.router_settings.fallbacks == []
+          - _cron_store.router_settings.context_window_fallbacks == []
+          - _cron_store.router_settings.timeout == llm_router_tier_2_timeout_seconds
+          - _cron_store.models | intersect(_cloud_groups) | length == 0
+          - _cron_inventory.hermes_agent_cron_model in _cron_store.models
+        fail_msg: >-
+          {{ item }} tier={{ _cron_store.priority_tier }} tags={{ _cron_store.tags }}
+          classes={{ _cron_store.allowed_classes }} fallbacks={{ _cron_store.router_settings }}
+        success_msg: "{{ item }} serves only tier-2 local deployments with emptied fallback maps."
+      vars:
+        _cron_store: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', item) | first }}"
+        _cloud_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
+      loop:
+        - hermes-splunk-admin
+        - hermes-homelab-admin
+        - hermes-github-maint
+        - hermes-orchestrator
+      loop_control:
+        label: "{{ item }}"
+
+    - name: The cron model group renders only local deployments and never a cloud provider
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cron_deployments | length > 0
+          - _cron_deployments | rejectattr('litellm_params.tags', 'contains', 'local') | list | length == 0
+          - _cron_chain | intersect(_cloud_groups) | length == 0
+          - _cron_chain == llm_router_review_local_chain
+          - _cron_tier2 | length > 0
+          - _cron_tier2_studio | length > 0
+          - _cron_tier2_bad | length == 0
+          - _cloud_tier2 | length == 0
+        fail_msg: >-
+          chain={{ _cron_chain }}, tier2={{ _cron_tier2 | map(attribute='model_name') | list }},
+          tier2_bad={{ _cron_tier2_bad | map(attribute='model_name') | list }},
+          cloud_tier2={{ _cloud_tier2 | map(attribute='model_name') | list }}
+        success_msg: >-
+          The cron group's candidates are local only, carry the tier-2 timeouts and
+          keepalive on their tier-2 copies, and no cloud deployment admits tier 2.
+      vars:
+        _cloud_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
+        _cron_chain: "{{ llm_router_fallback_map[_cron_inventory.hermes_agent_cron_model] }}"
+        _cron_deployments: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto',
+                 llm_router_model_group_aliases[_cron_inventory.hermes_agent_cron_model]) | list }}
+        _cron_tier2: >-
+          {{ _cron_deployments | selectattr('litellm_params.tags', 'contains', 'tier-2') | list }}
+        _cron_tier2_studio: >-
+          {{ _cron_tier2 | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_large_base_url) | list }}
+        _cron_tier2_bad: >-
+          {{ _cron_tier2 | selectattr('litellm_params.timeout', 'defined')
+             | rejectattr('litellm_params.timeout', 'equalto', llm_router_tier_2_timeout_seconds) | list
+             + _cron_tier2 | selectattr('litellm_params.stream_timeout', 'defined')
+               | rejectattr('litellm_params.stream_timeout', 'equalto', llm_router_tier_2_timeout_seconds) | list
+             + _cron_tier2 | rejectattr('litellm_params.keepalive_seconds', 'defined') | list
+             + _cron_tier2 | selectattr('litellm_params.keepalive_seconds', 'defined')
+               | rejectattr('litellm_params.keepalive_seconds', 'equalto',
+                            llm_router_tier_2_keepalive_seconds) | list }}
+        _cloud_tier2: >-
+          {{ _config.model_list | rejectattr('litellm_params.tags', 'contains', 'local')
+             | selectattr('litellm_params.tags', 'contains', 'tier-2') | list }}
+
+    - name: Interactive Hermes keeps its tier, class grants, and cloud fallback chain
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_priority_effective_key_tiers['hermes-default'] == 0
+          - llm_router_priority_effective_key_tiers['donna'] == 0
+          - _interactive_key.priority_tier == 0
+          - _interactive_key.team_id == 'tier-0'
+          - "'&tier-2' not in _interactive_key.tags"
+          - "'fallbacks' not in _interactive_key.router_settings"
+          - _interactive_key.allowed_classes | length == 5
+          - _interactive_chain | intersect(_non_local_rungs) | length > 0
+          - _medium_tier0 | length > 0
+          - >-
+            _medium_tier0 | map(attribute='litellm_params.timeout')
+            | select('ge', llm_router_tier_2_timeout_seconds) | list | length == 0
+          - _medium_tier0 | selectattr('litellm_params.keepalive_seconds', 'defined')
+            | list | length == 0
+        fail_msg: >-
+          hermes-default tier={{ _interactive_key.priority_tier }}
+          classes={{ _interactive_key.allowed_classes }}
+          chain={{ _interactive_chain }} medium_tier0={{ _medium_tier0 | length }}
+        success_msg: >-
+          The chat front door and the personal assistant profile keep tier 0 with
+          their cloud fallback chain and the short local bounds.
+      vars:
+        _interactive_key: >-
+          {{ llm_router_virtual_keys
+             | selectattr('alias', 'search', '-default$') | first }}
+        _interactive_chain: "{{ llm_router_hermes_default_fallback_chain }}"
+        _non_local_rungs: >-
+          {{ (llm_router_d1_rungs_by_class['sub'] + llm_router_d1_rungs_by_class['paid-zdr']
+              + llm_router_d1_rungs_by_class['free'] + llm_router_d1_rungs_by_class['retains'])
+             | unique | list }}
+        _medium_tier0: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', llm_router_primary_model)
+             | selectattr('litellm_params.tags', 'contains', 'tier-0') | list }}
