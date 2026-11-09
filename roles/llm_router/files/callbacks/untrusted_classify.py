@@ -44,6 +44,7 @@ def _settings():
         "url": os.environ["LLM_ROUTER_UNTRUSTED_CLASSIFY_URL"].strip(),
         "key": os.environ["LLM_ROUTER_MASTER_KEY"].strip(),
         "max_chars": int(os.environ["LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHARS"]),
+        "overlap": int(os.environ["LLM_ROUTER_UNTRUSTED_CLASSIFY_OVERLAP_CHARS"]),
         "max_chunks": int(os.environ["LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHUNKS"]),
         "timeout": float(os.environ["LLM_ROUTER_UNTRUSTED_CLASSIFY_TIMEOUT_SECONDS"]),
     }
@@ -51,6 +52,8 @@ def _settings():
         not settings["model"]
         or not settings["url"]
         or settings["max_chars"] < 1
+        or settings["overlap"] < 0
+        or settings["overlap"] >= settings["max_chars"]
         or settings["max_chunks"] < 1
         or settings["timeout"] <= 0
     ):
@@ -154,12 +157,19 @@ async def _refusal_reason(data):
         if not text.strip():
             return "no text"
         settings = _settings()
-        chunk_count = (len(text) + settings["max_chars"] - 1) // settings["max_chars"]
+        max_chars = settings["max_chars"]
+        step = max_chars - settings["overlap"]
+        # The first chunk covers the first max_chars; each further chunk starts
+        # step characters after that one, so it re-reads the previous chunk's
+        # overlap tail. Any span shorter than the overlap therefore lands whole
+        # in at least one chunk, even when it straddles a chunk boundary.
+        excess = len(text) - max_chars
+        chunk_count = 1 if excess <= 0 else 1 + (excess + step - 1) // step
         if chunk_count > settings["max_chunks"]:
             return "oversized"
         chunks = [
-            text[offset : offset + settings["max_chars"]]
-            for offset in range(0, len(text), settings["max_chars"])
+            text[i * step : i * step + max_chars]
+            for i in range(chunk_count)
         ]
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CHUNKS)
         stop_event = asyncio.Event()

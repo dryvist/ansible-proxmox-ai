@@ -78,6 +78,7 @@ def test_sensitive_schema_text_is_refused(ns, monkeypatch, data, location):
 
 def test_tool_definition_counts_toward_character_cap(ns, monkeypatch, data):
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHARS", "20")
+    monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_OVERLAP_CHARS", "0")
     classifier = Classifier(reply="public")
     monkeypatch.setitem(ns, "_post", classifier)
     _refused(ns, _key("untrusted"), data)

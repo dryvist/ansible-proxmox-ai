@@ -20,6 +20,7 @@ MASTER = "sk-master-under-test"
 MODEL = "classify-under-test"
 URL = "http://classify.example.test/v1/chat/completions"
 MAX_CHARS_ENV = "LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHARS"
+OVERLAP_CHARS_ENV = "LLM_ROUTER_UNTRUSTED_CLASSIFY_OVERLAP_CHARS"
 MAX_CHUNKS_ENV = "LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHUNKS"
 
 
@@ -50,6 +51,7 @@ def ns(monkeypatch):
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_URL", URL)
     monkeypatch.setenv("LLM_ROUTER_MASTER_KEY", MASTER)
     monkeypatch.setenv(MAX_CHARS_ENV, "16000")
+    monkeypatch.setenv(OVERLAP_CHARS_ENV, "512")
     monkeypatch.setenv(MAX_CHUNKS_ENV, "8")
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_TIMEOUT_SECONDS", "30")
     out: dict = {}
@@ -261,6 +263,7 @@ def test_route_local_marker_on_a_trusted_key_changes_nothing(ns, monkeypatch):
 
 def test_classify_call_is_local_capped_and_uses_the_master_key(ns, monkeypatch):
     monkeypatch.setenv(MAX_CHARS_ENV, "5")
+    monkeypatch.setenv(OVERLAP_CHARS_ENV, "2")
     classifier = Classifier(reply="public")
     monkeypatch.setitem(ns, "_post", classifier)
     _run(ns, _key("untrusted"), _data("abcde"))
