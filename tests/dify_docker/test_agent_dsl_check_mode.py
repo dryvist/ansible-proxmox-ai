@@ -5,7 +5,7 @@ from _agent_dsl_shared import IMPORT_LOOP, IMPORT_ONE, _expanded_yaml, _task, _y
 
 def test_check_mode_previews_catalog_without_importing_or_provisioning_keys():
     importer = _expanded_yaml(IMPORT_ONE)
-    import_task = _task(importer, "Import the catalog DSL when its checksum is new")
+    import_task = _task(importer, "Import the catalog DSL when reconciliation requires it")
     confirm_task = _task(importer, "Confirm the agent DSL import (DSL version mismatch)")
     preview_task = _task(importer, "Preview the catalog app create or update")
     publish_task = _task(importer, "Publish the changed catalog workflow for API callers")

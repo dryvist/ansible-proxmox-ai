@@ -34,6 +34,10 @@
   ansible.builtin.set_fact:
     dify_docker_dsl_import_needed: >-
       {{ dify_docker_dsl_app_matches | length == 0
+         or (
+              not (dify_docker_agent_dsl.private | default(false) | bool)
+              and (dify_docker_agent_dsl_update_existing | bool)
+            )
          or ('[catalog sha256:' ~ dify_docker_agent_dsl.sha256 ~ ']')
             not in (dify_docker_dsl_existing_app.description | default('')) }}
   when: dify_docker_dsl_content | length > 0
@@ -94,7 +98,11 @@
     - not ansible_check_mode
   no_log: true
 
-- name: Import the catalog DSL when its checksum is new
+# Dify 1.18.0 accepts app_id for an overwrite and retains it through pending
+# confirmation (services/entities/dsl_entities.py:25-37;
+# controllers/console/app/app_import.py:45-132;
+# services/app_dsl_service.py:330-380, 419-427, 447-531).
+- name: Import the catalog DSL when reconciliation requires it
   ansible.builtin.uri:
     url: "{{ dify_docker_console_api_base }}/apps/imports"
     method: POST
@@ -188,3 +196,79 @@
       (dify_docker_dsl_confirm.json | default(dify_docker_dsl_import.json | default({})))
       .status | default('') in ['completed', 'completed-with-warnings']
   no_log: true
+
+# Dify 1.18.0 publishes and returns the published WorkflowResponse graph on this
+# route with a graph response (controllers/console/app/workflow.py:317-335,
+# 1301-1330, 1332-1365).
+- name: Read the published catalog workflow for update verification
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_console_api_base }}/apps/{{ dify_docker_dsl_imported_app_id }}/workflows/publish
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_dsl_published_workflow
+  changed_when: false
+  when:
+    - dify_docker_dsl_import_needed | default(false) | bool
+    - not ansible_check_mode
+    - not (dify_docker_agent_dsl.private | default(false) | bool)
+    - dify_docker_agent_dsl_update_existing | bool
+    - (dify_docker_dsl_publish.json | default({})).result | default('') == 'success'
+  no_log: true
+
+- name: Verify the existing catalog app id is unchanged
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_imported_app_id == dify_docker_dsl_existing_app.id
+      - >-
+        (dify_docker_dsl_confirm.json | default({})).app_id
+        | default(
+            (dify_docker_dsl_import.json | default({})).app_id | default('', true),
+            true
+          )
+        == dify_docker_dsl_existing_app.id
+    fail_msg: >-
+      Catalog app {{ dify_docker_dsl_name }} did not retain its existing Dify app id.
+  when:
+    - dify_docker_dsl_import_needed | default(false) | bool
+    - not ansible_check_mode
+    - not (dify_docker_agent_dsl.private | default(false) | bool)
+    - dify_docker_agent_dsl_update_existing | bool
+    - dify_docker_dsl_existing_app.id is defined
+    - (dify_docker_dsl_publish.json | default({})).result | default('') == 'success'
+
+- name: Select the published catalog LLM nodes
+  ansible.builtin.set_fact:
+    dify_docker_dsl_published_llm_nodes: >-
+      {{ dify_docker_dsl_published_workflow.json.graph.nodes | default([])
+         | selectattr('data.type', 'defined')
+         | selectattr('data.type', 'equalto', 'llm') | list }}
+  when:
+    - dify_docker_dsl_import_needed | default(false) | bool
+    - not ansible_check_mode
+    - not (dify_docker_agent_dsl.private | default(false) | bool)
+    - dify_docker_agent_dsl_update_existing | bool
+    - (dify_docker_dsl_publish.json | default({})).result | default('') == 'success'
+  no_log: true
+
+- name: Verify every published catalog LLM node has context
+  ansible.builtin.assert:
+    # A code-only catalog app (tier2-rotation) publishes nodes but no LLM node.
+    that:
+      - dify_docker_dsl_published_workflow.json.graph.nodes | default([]) | length > 0
+      - >-
+        dify_docker_dsl_published_llm_nodes
+        | selectattr('data.context', 'defined') | list | length
+        == dify_docker_dsl_published_llm_nodes | length
+    fail_msg: >-
+      Published workflow for catalog app {{ dify_docker_dsl_name }} has an LLM node without context.
+  when:
+    - dify_docker_dsl_import_needed | default(false) | bool
+    - not ansible_check_mode
+    - not (dify_docker_agent_dsl.private | default(false) | bool)
+    - dify_docker_agent_dsl_update_existing | bool
+    - (dify_docker_dsl_publish.json | default({})).result | default('') == 'success'

@@ -108,16 +108,24 @@ verified against their pinned SHA-256 values before any public app is imported.
 Catalog entries are imported as listed, including driver entries. The role
 lists every Dify app page before matching catalog names. Each app description
 records its catalog SHA-256 only after its workflow is published. A missing app
-is created; an existing app is overwritten in place only when its recorded
-SHA-256 differs or is missing. An unchanged SHA-256 makes no import write.
-Dify keeps the existing app ID and mode during an overwrite. Console edits are
-overwritten only when the catalog file changes. Successful workflow imports
-are published so API callers receive the catalog version. API-key provisioning
+is created; by default, an existing app is overwritten in place only when its
+recorded SHA-256 differs or is missing. An unchanged SHA-256 makes no import
+write. Dify keeps the existing app ID and mode during an overwrite. By default,
+console edits are overwritten only when the catalog file changes. Successful
+workflow imports are published so API callers receive the catalog version. API-key provisioning
 also runs for unchanged apps, which lets a later converge repair an app whose
 key was not stored. Import, confirmation, publication and catalog-hash update
 failures fail the converge. Check mode previews public and private app creates
 or overwrites, reads the pinned manifest and DSLs into memory, and writes no
 files to the target or Dify APIs.
+
+`dify_docker_agent_dsl_update_existing` (default `false`) re-imports every
+selected public catalog app that already exists, even when its recorded
+SHA-256 matches. The import targets the existing app ID, confirms pending
+imports, republishes the workflow, and verifies that the ID is unchanged and
+each published LLM node has `context`. New catalog apps still follow the normal
+create path, apps outside the selected catalog are untouched, and private DSL
+entries keep their existing reconciliation behavior.
 
 `dify_docker_agent_dsl_select` (default `[]`) names the catalog entries one run
 imports. Empty imports every manifest entry. A name missing from the manifest
