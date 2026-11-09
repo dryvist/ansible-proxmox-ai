@@ -154,6 +154,74 @@ def include_file(task: dict, key: str = "ansible.builtin.include_tasks") -> str 
     return target.get("file") if isinstance(target, dict) else target
 
 
+def task_tags(task: dict) -> list[str]:
+    """A task's declared tags, in either YAML scalar or list form."""
+    tags = task.get("tags", [])
+    return [tags] if isinstance(tags, str) else list(tags or [])
+
+
+def walk_tagged_tasks(
+    tasks: list[dict],
+    base: Path,
+    inherited: tuple[str, ...] = (),
+    source: str = "main.yml",
+    self_role: str = "hermes_agent",
+    self_tasks_dir: Path | None = None,
+) -> list[tuple[dict, tuple[str, ...], str, bool]]:
+    """Resolve a task list the way ansible's tag selection lists it, as
+    (task, effective tags, source file, opaque) in execution order — the
+    one traversal the component tag tests share.
+
+    Static import_tasks targets splice in place and inherit the import's
+    tags; block/rescue/always children flatten; an import_role of
+    `self_role` splices its tasks_from file in place. Everything that lists
+    as ONE entry — a dynamic include_tasks/include_role and a foreign
+    import_role — comes back with opaque=True: callers modeling
+    --list-tasks keep it, callers attributing facts or behavior to
+    individual tasks skip it. A foreign import_role (hermes_runtime,
+    bao_approle_cli) is opaque because its contents resolve from the
+    installed collection, so one entry inheriting the import tags is
+    exactly how the selection treats it.
+    """
+    if self_tasks_dir is None:
+        self_tasks_dir = base
+    walked: list[tuple[dict, tuple[str, ...], str, bool]] = []
+    for task in tasks:
+        effective = tuple(sorted(set(inherited) | set(task_tags(task))))
+        static_target = include_file(task, "ansible.builtin.import_tasks")
+        if isinstance(static_target, str) and static_target.endswith(".yml"):
+            walked.extend(walk_tagged_tasks(
+                yaml.safe_load((base / static_target).read_text()) or [],
+                base, effective, static_target, self_role, self_tasks_dir))
+            continue
+        imported_role = task.get("ansible.builtin.import_role")
+        if imported_role is not None:
+            if isinstance(imported_role, dict) and imported_role.get("name") == self_role:
+                tasks_from = (imported_role.get("tasks_from") or "main") + ".yml"
+                walked.extend(walk_tagged_tasks(
+                    yaml.safe_load((self_tasks_dir / tasks_from).read_text()) or [],
+                    self_tasks_dir, effective, tasks_from, self_role, self_tasks_dir))
+                continue
+            walked.append((task, effective, source, True))
+            continue
+        dynamic_target = include_file(task, "ansible.builtin.include_tasks")
+        if isinstance(dynamic_target, str) and dynamic_target.endswith(".yml"):
+            walked.append((task, effective, source, True))
+            continue
+        if task.get("ansible.builtin.include_role") is not None:
+            walked.append((task, effective, source, True))
+            continue
+        nested = [task.get(key) for key in ("block", "rescue", "always")]
+        nested = [children for children in nested if isinstance(children, list)]
+        if nested:
+            for children in nested:
+                walked.extend(walk_tagged_tasks(
+                    children, base, effective, source, self_role, self_tasks_dir))
+            continue
+        walked.append((task, effective, source, False))
+    return walked
+
+
 def role_tasks(role_root: Path, entry: str = "main.yml") -> list:
     """Resolve tasks/<entry> into the flat task list Ansible would actually
     run, in REAL execution order — not alphabetical file order.

@@ -13,7 +13,7 @@ import subprocess
 
 import yaml
 
-from _role_files import _task_items, include_file
+from _role_files import _task_items, include_file, task_tags, walk_tagged_tasks
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "playbooks" / "agents.yml"
@@ -22,8 +22,6 @@ HERMES_ROLE = REPO / "roles/hermes_agent"
 WATCHDOG_ROLE = REPO / "roles/fabric_watchdog"
 PLAY_TAGS = ["hermes_agent", "agent", "ai", "llm"]
 
-INCLUDE_KEYS = ("ansible.builtin.import_tasks", "ansible.builtin.include_tasks")
-IMPORT_ROLE_KEY = "ansible.builtin.import_role"
 INCLUDE_ROLE_KEY = "ansible.builtin.include_role"
 # A block container groups children (block/rescue/always) and carries no
 # module of its own, so it never appears in a --list-tasks listing.
@@ -33,74 +31,34 @@ _CONTAINER_KEYS = {"name", "tags", "when", "vars", "block", "rescue", "always"}
 EGRESS_FILES = {"egress.yml", "egress_domains.yml", "egress_host.yml"}
 
 
-def _tags(task: dict) -> list[str]:
-    tags = task.get("tags", [])
-    return [tags] if isinstance(tags, str) else list(tags or [])
-
-
-def _import_target(task: dict) -> str | None:
-    """The target of a STATIC import, whose contents list in place."""
-    target = include_file(task, "ansible.builtin.import_tasks")
-    return target if isinstance(target, str) and target.endswith(".yml") else None
-
-
-def _include_target(task: dict) -> str | None:
-    """The target of a DYNAMIC include, which lists as one entry."""
+def _listed_name(task: dict, opaque: bool) -> str:
+    """The name --list-tasks shows for a walked entry: the task's own name,
+    or the include/role attribute the listing falls back to."""
+    if task.get("name"):
+        return task["name"]
     target = include_file(task, "ansible.builtin.include_tasks")
-    return target if isinstance(target, str) and target.endswith(".yml") else None
-
-
-def _walk(tasks: list[dict], base: Path, inherited: tuple[str, ...],
-          source: str) -> list[tuple[str, tuple[str, ...], str]]:
-    """Resolve local imports to inspect task names and effective tag paths."""
-    listed: list[tuple[str, tuple[str, ...], str]] = []
-    for task in tasks:
-        effective = tuple(sorted(set(inherited) | set(_tags(task))))
-        static_target = _import_target(task)
-        dynamic_target = _include_target(task)
-        if static_target is not None:
-            listed.extend(_walk(yaml.safe_load((base / static_target).read_text()) or [],
-                                base, effective, static_target))
-            continue
-        if dynamic_target is not None:
-            listed.append((task.get("name", dynamic_target), effective, source))
-            continue
-        if IMPORT_ROLE_KEY in task:
-            role = task[IMPORT_ROLE_KEY]
-            tasks_from = (role.get("tasks_from") or "main") + ".yml"
-            if role["name"] != "hermes_agent":
-                # Shared collection roles (hermes_runtime, bao_approle_cli):
-                # their contents resolve from the installed collection, so
-                # they are modeled as one opaque entry inheriting the import
-                # tags — exactly how the selection treats them.
-                listed.append((task.get("name", tasks_from), effective, source))
-                continue
-            listed.extend(_walk(yaml.safe_load((HERMES_TASKS / tasks_from).read_text()) or [],
-                                HERMES_TASKS, effective, tasks_from))
-            continue
-        if INCLUDE_ROLE_KEY in task:
-            role = task[INCLUDE_ROLE_KEY]
-            tasks_from = (role.get("tasks_from") or "main") + ".yml"
-            listed.append((task.get("name", tasks_from), effective, source))
-            continue
-        child_lists = [task.get(k) for k in ("block", "rescue", "always")]
-        child_lists = [children for children in child_lists if isinstance(children, list)]
-        if child_lists:
-            # block/rescue/always carry no module of their own; the children
-            # of ALL of them list (a block's rescue runs on its failure).
-            for children in child_lists:
-                listed.extend(_walk(children, base, effective, source))
-            continue
-        listed.append((task.get("name", "?"), effective, source))
-    return listed
+    if opaque and isinstance(target, str) and target.endswith(".yml"):
+        return target
+    for key in ("ansible.builtin.import_role", INCLUDE_ROLE_KEY):
+        role = task.get(key)
+        if opaque and role is not None:
+            tasks_from = role.get("tasks_from") if isinstance(role, dict) else None
+            return (tasks_from or "main") + ".yml"
+    return "?"
 
 
 def _play_listing() -> list[tuple[str, tuple[str, ...], str]]:
     play = yaml.safe_load(PLAYBOOK.read_text())[0]
     listed: list[tuple[str, tuple[str, ...], str]] = []
     for section in ("pre_tasks", "tasks"):
-        listed.extend(_walk(play.get(section) or [], REPO / "playbooks", tuple(PLAY_TAGS),
-                            "play"))
+        entries = walk_tagged_tasks(
+            play.get(section) or [], REPO / "playbooks", tuple(PLAY_TAGS), "play",
+            self_tasks_dir=HERMES_TASKS,
+        )
+        listed.extend(
+            (_listed_name(task, opaque), effective, source)
+            for task, effective, source, opaque in entries
+        )
     return listed
 
 
@@ -169,7 +127,7 @@ def test_hermes_crons_native_task_listing_stays_below_ceiling(tmp_path: Path) ->
 def test_untagged_run_lists_the_whole_static_tree() -> None:
     # Narrowing must never cost an untagged run anything: without --tags the
     # selection covers every real task in the static import tree. The tree is
-    # re-read file-by-file here, not through _walk.
+    # re-read file-by-file here, not through the shared traversal.
     untagged = set(_selected(_play_listing(), None))
     static_files: set[str] = set()
     pending = ["main.yml"]
@@ -206,6 +164,6 @@ def test_watchdog_tag_reaches_the_watchdog() -> None:
     block = play["tasks"][0]["block"]
     include = next(t for t in block if t.get(INCLUDE_ROLE_KEY))
     assert include[INCLUDE_ROLE_KEY]["apply"]["tags"] == ["fabric_watchdog"]
-    assert "fabric_watchdog" in _tags(include)
+    assert "fabric_watchdog" in task_tags(include)
     watchdog = yaml.safe_load((WATCHDOG_ROLE / "tasks" / "main.yml").read_text())
     assert watchdog, "fabric_watchdog lost its tasks"
