@@ -133,7 +133,7 @@ def test_high_concurrency_qwen_profile_renders_capacity_arguments_through_legacy
     exec_start = _exec_start(_render_legacy("qwen38-96k-11-fp8-mtp", profile))
 
     assert "--max-num-seqs 16" in exec_start
-    assert "--max-num-batched-tokens 32768" in exec_start
+    assert "--max-num-batched-tokens 8192" in exec_start
     assert "--enable-chunked-prefill" in exec_start
 
 
