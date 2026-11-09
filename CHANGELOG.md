@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.40.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.39.0...v2.40.0) (2026-11-09)
+
+
+### Features
+
+* **agent:** autonomous opencode-local run j-b42e0fde4fe55d1e ([#2303](https://github.com/dryvist/ansible-proxmox-ai/issues/2303)) ([897729f](https://github.com/dryvist/ansible-proxmox-ai/commit/897729f4c01e698379c82dcbd2bf949e6041db56))
+* **agent:** opencode-local run j-5295bfd7e5c32aec ([1968a4f](https://github.com/dryvist/ansible-proxmox-ai/commit/1968a4f3b6c2d06fbc8385b3de16398e89208686))
+* **agent:** opencode-local run j-b42e0fde4fe55d1e ([897729f](https://github.com/dryvist/ansible-proxmox-ai/commit/897729f4c01e698379c82dcbd2bf949e6041db56))
+* **agent:** zcode run j-bca4395954ba988d ([a58f0cc](https://github.com/dryvist/ansible-proxmox-ai/commit/a58f0cc38f6df0724be4384a863f6cc93c9209d6))
+
+
+### Bug Fixes
+
+* **hermes_agent:** let each component tag run only its own tasks ([#2299](https://github.com/dryvist/ansible-proxmox-ai/issues/2299)) ([a58f0cc](https://github.com/dryvist/ansible-proxmox-ai/commit/a58f0cc38f6df0724be4384a863f6cc93c9209d6))
+* **llm_router:** retry a saturated small lane before refusing untrusted content ([#2300](https://github.com/dryvist/ansible-proxmox-ai/issues/2300)) ([1968a4f](https://github.com/dryvist/ansible-proxmox-ai/commit/1968a4f3b6c2d06fbc8385b3de16398e89208686))
+
 ## [2.39.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.38.1...v2.39.0) (2026-11-09)
 
 
