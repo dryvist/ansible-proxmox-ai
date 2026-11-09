@@ -53,7 +53,7 @@ def test_manifest_entries_keep_their_url_and_sha256_through_public_import():
     public_fetch = _task(tasks, "Fetch and verify all catalog agent DSLs before importing any")
     public_import = _task(tasks, "Reconcile each catalog agent DSL")
     importer = _expanded_yaml(IMPORT_ONE)
-    import_task = _task(importer, "Import the catalog DSL when its checksum is new")
+    import_task = _task(importer, "Import the catalog DSL when reconciliation requires it")
 
     assert manifest_fetch["ansible.builtin.get_url"]["url"] == (
         "{{ dify_docker_agent_dsl_base }}/agents/dify/manifest.json"
