@@ -20,9 +20,10 @@ GPU_MEMORY_GIB = 96
 HOST_MEMORY_RESERVE_GIB = 64
 # Sanitized from the production vLLM unit's non-default-args journal output on
 # 2026-10-07, with utilization lowered to share the card with the small guest;
-# paths, host and address are intentionally omitted.
+# paths, host and address are intentionally omitted. max_model_len tracks the
+# repo's medium-a profile between live re-captures.
 TARGET_MEDIUM_A_ARGS = {
-    "max_model_len": 196608,
+    "max_model_len": 262144,
     "max_num_seqs": 8,
     "gpu_memory_utilization": 0.85,
     "linear_backend": "b12x",

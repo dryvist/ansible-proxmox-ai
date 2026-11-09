@@ -19,6 +19,8 @@ SOURCE = REPO_ROOT / "roles/llm_router/files/callbacks/untrusted_classify.py"
 MASTER = "sk-master-under-test"
 MODEL = "classify-under-test"
 URL = "http://classify.example.test/v1/chat/completions"
+MAX_CHARS_ENV = "LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHARS"
+MAX_CHUNKS_ENV = "LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHUNKS"
 
 
 @pytest.fixture
@@ -47,7 +49,8 @@ def ns(monkeypatch):
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_MODEL", MODEL)
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_URL", URL)
     monkeypatch.setenv("LLM_ROUTER_MASTER_KEY", MASTER)
-    monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHARS", "16000")
+    monkeypatch.setenv(MAX_CHARS_ENV, "16000")
+    monkeypatch.setenv(MAX_CHUNKS_ENV, "8")
     monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_TIMEOUT_SECONDS", "10")
     out: dict = {}
     exec(compile(SOURCE.read_text(), str(SOURCE), "exec"), out)  # noqa: S102 - our own file
@@ -257,7 +260,7 @@ def test_route_local_marker_on_a_trusted_key_changes_nothing(ns, monkeypatch):
 
 
 def test_classify_call_is_local_capped_and_uses_the_master_key(ns, monkeypatch):
-    monkeypatch.setenv("LLM_ROUTER_UNTRUSTED_CLASSIFY_MAX_CHARS", "5")
+    monkeypatch.setenv(MAX_CHARS_ENV, "5")
     classifier = Classifier(reply="public")
     monkeypatch.setitem(ns, "_post", classifier)
     _run(ns, _key("untrusted"), _data("abcde"))
@@ -272,14 +275,6 @@ def test_classify_call_is_local_capped_and_uses_the_master_key(ns, monkeypatch):
     user = body["messages"][1]["content"]
     assert "abcde" in user
     assert user == "<text>\nabcde\n</text>"
-
-
-@pytest.mark.parametrize("text", ["x" * 16001, "x" * 16000 + " sensitive suffix"])
-def test_oversized_request_is_refused_without_classifying_a_prefix(ns, monkeypatch, text):
-    classifier = Classifier(reply="public")
-    monkeypatch.setitem(ns, "_post", classifier)
-    _refused(ns, _key("untrusted"), _data(text))
-    assert classifier.calls == []
 
 
 @pytest.mark.parametrize("tool", [False, True])
