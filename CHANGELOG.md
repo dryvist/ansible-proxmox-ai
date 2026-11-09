@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.35.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.35.1...v2.35.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** render batched-token and chunked-prefill flags in the GPU unit ([#2248](https://github.com/dryvist/ansible-proxmox-ai/issues/2248)) ([47781ae](https://github.com/dryvist/ansible-proxmox-ai/commit/47781ae0453d8ec6b01cefbbc8333ecba0f25a31))
+* **llm_router:** give the untrusted classifier a 30 s chunk timeout ([#2245](https://github.com/dryvist/ansible-proxmox-ai/issues/2245)) ([765b1c9](https://github.com/dryvist/ansible-proxmox-ai/commit/765b1c982d705cc068e5391d3df32280211ca06d))
+
 ## [2.35.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.35.0...v2.35.1) (2026-11-09)
 
 
