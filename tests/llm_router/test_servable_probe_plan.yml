@@ -100,16 +100,25 @@
             _disabled_precheck_models | map(attribute='upstream_model_id') | list
             | intersect(llm_router_probe_prechecks | map(attribute='model') | list)
             | length == 0
+          - _studio_models | length == 1
+          - _studio_models[0].client_model_id == llm_router_primary_serving_model
+          - _studio_prechecks | length == 1
+          - _studio_prechecks[0].model == _studio_models[0].upstream_model_id
+          - _studio_models | map(attribute='first_byte_timeout') | map('int') | list == [60]
+          - _studio_prechecks | map(attribute='first_byte_timeout') | map('int') | list == [60]
         fail_msg: >-
           Pre-render probes must match active opt-ins and exclude disabled ones:
           active={{ _precheck_models | map(attribute='upstream_model_id') | list }};
           disabled={{ _disabled_precheck_models | map(attribute='upstream_model_id') | list }};
+          Studio={{ _studio_models }}; Studio probes={{ _studio_prechecks }};
           planned={{ llm_router_probe_prechecks }}.
         success_msg: The probe plan follows active registry opt-ins and excludes disabled opt-ins.
       vars:
         _studio_models: >-
           {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'local-large')
              | selectattr('servable', 'defined') | selectattr('servable') | list }}
+        _studio_prechecks: >-
+          {{ llm_router_probe_prechecks | selectattr('tier', 'equalto', 'local-large') | list }}
         _precheck_models: >-
           {{ llm_router_registry_enabled | selectattr('probe_before_render', 'defined')
              | selectattr('probe_before_render') | list }}
