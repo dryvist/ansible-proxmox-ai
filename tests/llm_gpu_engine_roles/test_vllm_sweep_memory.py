@@ -73,7 +73,7 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
     } | {
         (131072, 2, "fp8"),
         (131072, 11, "fp8"),
-        (98304, 32, "fp8"),
+        (98304, 16, "fp8"),
         (262144, 5, "fp8"),
         (65536, 16, "fp8"),
     }
@@ -169,7 +169,7 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
             assert (ple_bytes / GIB) + kv_offloading_gib <= HOST_MEMORY_RESERVE_GIB
 
 
-def test_co_resident_qwen38_profile_fits_thirty_two_sessions_within_the_estimated_pool():
+def test_co_resident_qwen38_profile_fits_sixteen_sessions_within_the_estimated_pool():
     profiles = _profiles()
     artifacts = {artifact["artifact_id"]: artifact for artifact in _artifacts()}
     profile = profiles["qwen38-96k-11-fp8-mtp"]
@@ -194,7 +194,7 @@ def test_co_resident_qwen38_profile_fits_thirty_two_sessions_within_the_estimate
 
     assert profile["max_model_len"] == 98_304
     assert profile["max_model_len"] % 1024 == 0
-    assert profile["max_num_seqs"] == 32
+    assert profile["max_num_seqs"] == 16
     assert profile["kv_cache_dtype"] == "fp8"
     assert profile["quantization"] == "modelopt"
     assert profile["speculative_config"] == {"method": "mtp", "num_speculative_tokens": 3}

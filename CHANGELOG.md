@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.35.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.34.0...v2.35.0) (2026-11-09)
+
+
+### Features
+
+* **vllm:** tune medium profile concurrency ([#2232](https://github.com/dryvist/ansible-proxmox-ai/issues/2232)) ([900142c](https://github.com/dryvist/ansible-proxmox-ai/commit/900142cc403dc7b294a2504c739db3ac5f1c4071))
+
+
+### Bug Fixes
+
+* **dify_docker:** dispatch rotation webhooks to the internal nginx through the SSRF proxy ([57bf8a5](https://github.com/dryvist/ansible-proxmox-ai/commit/57bf8a50383c97766476aecdef174a01d129f2bc))
+* **dify_docker:** send rotation webhooks to the internal nginx ([#2236](https://github.com/dryvist/ansible-proxmox-ai/issues/2236)) ([57bf8a5](https://github.com/dryvist/ansible-proxmox-ai/commit/57bf8a50383c97766476aecdef174a01d129f2bc))
+
 ## [2.34.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.33.1...v2.34.0) (2026-11-09)
 
 
