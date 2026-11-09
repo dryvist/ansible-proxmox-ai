@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.38.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.38.0...v2.38.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **llm_router:** probe only the Studio model the Studio serves ([#2266](https://github.com/dryvist/ansible-proxmox-ai/issues/2266)) ([4df0ca7](https://github.com/dryvist/ansible-proxmox-ai/commit/4df0ca791b017e7dea45574efa770c17fc2d1322))
+
 ## [2.38.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.37.0...v2.38.0) (2026-11-09)
 
 
