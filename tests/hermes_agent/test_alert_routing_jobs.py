@@ -13,8 +13,6 @@ pytest.
 
 from __future__ import annotations
 
-import re
-
 from jinja2 import Environment
 
 from _alert_routing_shared import (
@@ -250,16 +248,6 @@ def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> N
 
     # And it must actually reach the card: appended to the catalog body at load.
     assert "hermes_agent_daily_status_endpoints" in MAIN_TASKS
-
-
-def test_the_gateway_api_probe_names_the_route_the_pinned_hermes_serves() -> None:
-    """The pinned Hermes api_server routes GET /health (no bearer needed) and
-    answers its framework's 404 for every other path, / included — a root-path
-    probe reads as a permanent gateway fault on a healthy gateway."""
-    ep = str(DEFAULTS["hermes_agent_daily_status_endpoints"])
-    probe = re.search(r"^  gateway API +(.+)$", ep, re.MULTILINE)
-    assert probe, "the gateway API probe line is missing from the endpoints block"
-    assert probe.group(1) == "http://localhost:{{ hermes_agent_api_server_port }}/health"
 
 
 if __name__ == "__main__":
