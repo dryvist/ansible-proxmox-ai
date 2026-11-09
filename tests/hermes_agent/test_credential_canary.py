@@ -188,7 +188,7 @@ def test_direct_cron_can_create_no_agent_script_jobs_without_changing_agentic_jo
         {"name": "existing-job", "schedule": "0 7 * * *", "script": "monitor.py",
          "hermes_home": "/srv/hermes-home"},
         prompt="existing prompt",
-        model="hermes-default",
+        model="test-model",
     )
     assert "--no-agent" not in agentic_job
     assert "existing prompt" in agentic_job
@@ -223,7 +223,7 @@ def test_existing_direct_cron_checksums_stay_stable() -> None:
             "item": item,
             "hermes_agent_direct_no_agent": item.get("no_agent", False),
             "hermes_agent_direct_prompt": "existing prompt",
-            "hermes_agent_direct_model": "hermes-default",
+            "hermes_agent_direct_model": "test-model",
             "hermes_agent_direct_model_provider": "custom",
             "hermes_agent_direct_deliver": "slack:test",
             "hermes_agent_direct_failure_deliver": "",
