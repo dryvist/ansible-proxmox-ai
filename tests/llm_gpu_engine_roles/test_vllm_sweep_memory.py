@@ -199,7 +199,7 @@ def test_co_resident_qwen38_profile_fits_sixteen_sessions_within_the_estimated_p
     assert profile["quantization"] == "modelopt"
     assert profile["speculative_config"] == {"method": "mtp", "num_speculative_tokens": 3}
     assert profile["gpu_memory_utilization"] == 0.75
-    assert profile["max_num_batched_tokens"] == 32_768
+    assert profile["max_num_batched_tokens"] == 8_192
     assert profile["enable_chunked_prefill"] is True
     assert profile["memory_screen_prompt_lengths"] == [2_048, 8_192, 32_768]
     assert output_tokens == 512

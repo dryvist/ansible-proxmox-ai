@@ -247,6 +247,29 @@
     - not (llm_gpu_serving_render_only | default(false) | bool)
     - llm_gpu_serving_co_resident_profiles | length > 0
 
+- name: Assert the combined co-resident GPU reserve fits outside vLLM
+  ansible.builtin.assert:
+    that:
+      - >-
+        (llm_gpu_serving_co_resident_profiles
+        | map('extract', llm_gpu_serving_profiles)
+        | map(attribute='gpu_memory_reserve_gib') | map('float') | sum)
+        <= ((nvidia_gpu_guest_fit_gpu_memory_mib | int / 1024)
+        * (1 - llm_gpu_serving_profiles[llm_active_profile].gpu_memory_utilization | float))
+    fail_msg: >-
+      The selected co-resident profiles reserve
+      {{ llm_gpu_serving_co_resident_profiles
+      | map('extract', llm_gpu_serving_profiles)
+      | map(attribute='gpu_memory_reserve_gib') | map('float') | sum }}
+      GiB combined outside the vLLM allocation, but only
+      {{ (nvidia_gpu_guest_fit_gpu_memory_mib | int / 1024)
+      * (1 - llm_gpu_serving_profiles[llm_active_profile].gpu_memory_utilization | float) }}
+      GiB remains outside it.
+    quiet: true
+  when:
+    - not (llm_gpu_serving_render_only | default(false) | bool)
+    - llm_gpu_serving_co_resident_profiles | length > 0
+
 - name: Resolve active profile model paths
   ansible.builtin.set_fact:
     llm_gpu_serving_health_host: >-

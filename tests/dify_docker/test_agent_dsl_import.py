@@ -51,7 +51,7 @@ def test_changed_workflow_is_published_after_successful_import_and_failure_is_fa
     importer = _expanded_yaml(IMPORT_ONE)
     environment = Environment()
     tasks_by_name = {task.get("name"): (index, task) for index, task in enumerate(importer)}
-    _, import_task = tasks_by_name["Import the catalog DSL when its checksum is new"]
+    _, import_task = tasks_by_name["Import the catalog DSL when reconciliation requires it"]
     _, confirm_task = tasks_by_name["Confirm the agent DSL import (DSL version mismatch)"]
     app_id_index, app_id_task = tasks_by_name["Resolve the Dify app id returned by the catalog import"]
     publish_index, publish_task = tasks_by_name["Publish the changed catalog workflow for API callers"]
@@ -147,65 +147,31 @@ def test_changed_workflow_is_published_after_successful_import_and_failure_is_fa
     assert record_after_publish_success.render(dify_docker_dsl_publish={"json": {"result": "error"}}) == "False"
 
 
-def test_catalog_hash_decides_whether_to_import_and_payload_targets_existing_app():
-    importer = _expanded_yaml(IMPORT_ONE)
-    decision_task = _task(importer, "Decide whether the catalog app needs an import")
-    payload_task = _task(importer, "Prepare the Dify import payload")
-    import_task = _task(importer, "Import the catalog DSL when its checksum is new")
+def test_default_mode_skips_an_existing_app_with_the_current_catalog_hash():
+    tasks = _expanded_yaml(IMPORT_ONE)
+    decision = _task(tasks, "Decide whether the catalog app needs an import")[
+        "ansible.builtin.set_fact"
+    ]["dify_docker_dsl_import_needed"]
+    import_task = _task(tasks, "Import the catalog DSL when reconciliation requires it")
     environment = Environment()
-    environment.filters["combine"] = lambda base, extra: {**base, **extra}
+    environment.filters["bool"] = lambda value: value is True or str(value).lower() in (
+        "true", "yes", "on", "1"
+    )
     digest = "a" * 64
-    old_digest = "b" * 64
 
-    decision = decision_task["ansible.builtin.set_fact"]["dify_docker_dsl_import_needed"]
-    unchanged = environment.from_string(decision).render(
+    result = environment.from_string(decision).render(
         dify_docker_dsl_app_matches=[
-            {"id": "app-1", "description": f"notes [catalog sha256:{digest}]"}
+            {"id": "existing-app", "description": f"[catalog sha256:{digest}]"}
         ],
-        dify_docker_agent_dsl={"sha256": digest},
+        dify_docker_agent_dsl={"sha256": digest, "private": False},
+        dify_docker_agent_dsl_update_existing=False,
         dify_docker_dsl_existing_app={
-            "id": "app-1", "description": f"notes [catalog sha256:{digest}]"
+            "id": "existing-app", "description": f"[catalog sha256:{digest}]"
         },
     )
-    changed = environment.from_string(decision).render(
-        dify_docker_dsl_app_matches=[
-            {"id": "app-1", "description": f"notes [catalog sha256:{old_digest}]"}
-        ],
-        dify_docker_agent_dsl={"sha256": digest},
-        dify_docker_dsl_existing_app={
-            "id": "app-1", "description": f"notes [catalog sha256:{old_digest}]"
-        },
-    )
-    created = environment.from_string(decision).render(
-        dify_docker_dsl_app_matches=[],
-        dify_docker_agent_dsl={"sha256": digest},
-        dify_docker_dsl_existing_app={},
-    )
-    assert unchanged == "False"
-    assert changed == "True"
-    assert created == "True"
 
-    payload_expression = payload_task["ansible.builtin.set_fact"]["dify_docker_dsl_import_body"]
-    update_payload = ast.literal_eval(
-        environment.from_string(payload_expression).render(
-            dify_docker_dsl_content="version: 0.1.0",
-            dify_docker_dsl_catalog_description="Catalog description",
-            dify_docker_dsl_existing_app={"id": "app-1"},
-        )
-    )
-    create_payload = ast.literal_eval(
-        environment.from_string(payload_expression).render(
-            dify_docker_dsl_content="version: 0.1.0",
-            dify_docker_dsl_catalog_description="Catalog description",
-            dify_docker_dsl_existing_app={},
-        )
-    )
-    assert update_payload["app_id"] == "app-1"
-    assert update_payload["description"] == "Catalog description"
-    assert "catalog sha256:" not in update_payload["description"]
-    assert "app_id" not in create_payload
-    assert create_payload["description"] == "Catalog description"
-    assert import_task["ansible.builtin.uri"]["body"] == "{{ dify_docker_dsl_import_body }}"
+    assert result == "False"
+    assert "dify_docker_dsl_import_needed | bool" in import_task["when"]
 
 
 def test_catalog_hash_description_is_committed_after_publish_within_dify_limit():
