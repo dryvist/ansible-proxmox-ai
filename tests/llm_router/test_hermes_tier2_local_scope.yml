@@ -63,16 +63,43 @@
     - name: Model the trusted callers these projections assume
       ansible.builtin.import_tasks: "{{ playbook_dir }}/tasks/trust_fixture_callers.yml"
 
-    - name: Confirm the four cron profiles use the tier-2 local projection
-      vars:
+    - name: Define the tier-1 public Hermes chain for the rendered fixture
+      ansible.builtin.set_fact:
+        _tier_1_public_fixture_models: >-
+          {{ (_llm_router_directly_callable_ladder_names
+              + llm_router_hermes_default_fallback_chain)
+             | reject('in', _llm_router_agent_excluded_groups) | unique | list }}
+
+    - name: Add a tier-1 public Hermes fixture to the key projection
+      ansible.builtin.set_fact:
+        _llm_router_hermes_profile_keys: >-
+          {{ _llm_router_hermes_profile_keys + [{
+               'alias': 'hermes-tier1-public-fixture',
+               'value': 'fixture-key',
+               'enabled': true,
+               'allowed_classes': _llm_router_consumer_classes_all,
+               'models': _tier_1_public_fixture_models,
+               'models_authoritative': true,
+               'sensitivity_tag': '&sensitivity:public',
+               'tags': []}] }}
+      no_log: true
+
+    - name: Refresh the rendered virtual-key projection with the tier-1 fixture
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: Select the rendered tier-2 cron profile keys by scope
+      ansible.builtin.set_fact:
         _tier_2_cron_keys: >-
           {{ _llm_router_virtual_keys_without_values
-             | selectattr('alias', 'in', [
-                 'hermes-splunk-admin', 'hermes-homelab-admin',
-                 'hermes-github-maint', 'hermes-orchestrator']) | list }}
-        _cloud_groups: >-
-          {{ llm_router_d1_group_class_by_name | dict2items
-             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
+             | selectattr('priority_tier', 'equalto', 2)
+             | selectattr('allowed_classes', 'equalto', ['local'])
+             | selectattr('models', 'contains', llm_router_review_aliases.local)
+             | rejectattr('models', 'equalto', [llm_router_review_aliases.local]) | list }}
+      no_log: true
+
+    - name: Confirm the four cron profiles use the tier-2 local projection
       ansible.builtin.assert:
         quiet: true
         that:
@@ -87,14 +114,25 @@
     - name: Assert the rendered Hermes profiles satisfy their tier and tag scopes
       ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-hermes-profile-key-brain-model.yml"
 
+    - name: Select a rendered tier-1 public Hermes key for the negative check
+      ansible.builtin.set_fact:
+        _tier_1_public_profile_key: >-
+          {{ _llm_router_virtual_keys_without_values
+             | selectattr('priority_tier', 'equalto', 1)
+             | selectattr('sensitivity_tag', 'equalto', '&sensitivity:public')
+             | rejectattr('tags', 'contains', '&zdr') | first }}
+      no_log: true
+
+    - name: Save the rendered tier-1 public key's complete chain
+      ansible.builtin.set_fact:
+        _tier_1_public_required_models: "{{ _tier_1_public_profile_key.models }}"
+
     - name: Select a cloud-class group and the rendered tier-2 profile for a negative check
       ansible.builtin.set_fact:
         _tier_2_cloud_group: >-
           {{ llm_router_d1_group_class_by_name | dict2items
              | rejectattr('value', 'equalto', 'local') | map(attribute='key') | first }}
-        _tier_2_profile_key: >-
-          {{ _llm_router_virtual_keys_without_values
-             | selectattr('alias', 'equalto', 'hermes-splunk-admin') | first }}
+        _tier_2_profile_key: "{{ _tier_2_cron_keys | first }}"
 
     - name: Add a cloud group to the tier-2 key fixture
       ansible.builtin.set_fact:
@@ -119,26 +157,10 @@
           - _tier_2_cloud_scope_failure is defined
           - _tier_2_cloud_group in (_tier_2_cloud_scope_failure | to_json)
 
-    - name: Select the full chain and default profile for the tier-1 public negative check
-      ansible.builtin.set_fact:
-        _tier_1_public_required_models: >-
-          {{ (_llm_router_directly_callable_ladder_names
-              + llm_router_hermes_default_fallback_chain)
-             | reject('in', _llm_router_agent_excluded_groups) | unique | list }}
-        _tier_1_public_profile_key: >-
-          {{ _llm_router_virtual_keys_without_values
-             | selectattr('alias', 'equalto', 'hermes-default') | first }}
-
     - name: Model a tier-1 public Hermes key missing one chain member
       ansible.builtin.set_fact:
-        llm_router_priority_effective_key_tiers: >-
-          {{ llm_router_priority_effective_key_tiers
-             | combine({'hermes-default': 1}) }}
         _llm_router_virtual_keys_without_values: >-
           {{ [_tier_1_public_profile_key | combine({
-               'priority_tier': 1,
-               'tags': ['&tier-1'],
-               'sensitivity_tag': '&sensitivity:public',
                'models': _tier_1_public_required_models[:-1]})] }}
 
     - name: Capture rejection of an under-scoped tier-1 public key
