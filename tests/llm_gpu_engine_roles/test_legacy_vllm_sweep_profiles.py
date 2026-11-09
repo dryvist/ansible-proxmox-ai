@@ -128,6 +128,26 @@ def test_selected_sweep_profiles_render_legacy_units_with_vllm_flags_and_paths()
             assert "--trust-remote-code" in exec_start
 
 
+def test_high_concurrency_qwen_profile_renders_capacity_arguments_through_legacy_units():
+    profile = _vllm_profiles()["qwen38-96k-11-fp8-mtp"]
+    exec_start = _exec_start(_render_legacy("qwen38-96k-11-fp8-mtp", profile))
+
+    assert "--max-num-seqs 16" in exec_start
+    assert "--max-num-batched-tokens 32768" in exec_start
+    assert "--enable-chunked-prefill" in exec_start
+
+
+def test_profile_without_the_keys_renders_the_legacy_unit_without_the_new_flags():
+    legacy_profiles = yaml.safe_load(
+        (LEGACY_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8")
+    )["llm_profiles"]
+    exec_start = _exec_start(_render_legacy("medium-a", legacy_profiles["medium-a"]))
+
+    assert "--max-num-batched-tokens" not in exec_start
+    assert "--enable-chunked-prefill" not in exec_start
+    assert "--max-num-seqs 8" in exec_start
+
+
 def test_qwen38_long_context_profiles_render_through_legacy_units():
     profiles = _vllm_profiles()
     expected = {
