@@ -1,0 +1,164 @@
+---
+# The >100-project page-walk case of the retention contract (included from
+# retention_behavior.yml inside the render directory's lifetime): the
+# projects connection is an unordered relay connection, so the first step
+# toward the target must come from the oldest startTime on EVERY page. The
+# recorded policy holds 250 projects over three pages whose true oldest
+# trace (200 whole days) sits on the last page; page one's oldest (35 whole
+# days) is what a single first: 100 read would see and lower the policy 170
+# days past — far more than one step's worth.
+- name: Stamp the recorded page-walk oldest traces
+  vars:
+    _stamp_epochs:
+      - "{{ (now(utc=True).timestamp() | int) - 35 * 86400 - 3600 }}"
+      - "{{ (now(utc=True).timestamp() | int) - 90 * 86400 - 3600 }}"
+      - "{{ (now(utc=True).timestamp() | int) - 200 * 86400 - 3600 }}"
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_contract_walk_stamp_35: >-
+      {{ lookup('pipe', 'date -u -d @' ~ (_stamp_epochs[0] | int | string)
+      ~ ' +%Y-%m-%dT%H:%M:%S+00:00') | trim }}
+    phoenix_docker_retention_contract_walk_stamp_90: >-
+      {{ lookup('pipe', 'date -u -d @' ~ (_stamp_epochs[1] | int | string)
+      ~ ' +%Y-%m-%dT%H:%M:%S+00:00') | trim }}
+    phoenix_docker_retention_contract_walk_stamp_200: >-
+      {{ lookup('pipe', 'date -u -d @' ~ (_stamp_epochs[2] | int | string)
+      ~ ' +%Y-%m-%dT%H:%M:%S+00:00') | trim }}
+
+- name: Set the recorded project pages for the walk case
+  vars:
+    _page_starts:
+      - "{{ phoenix_docker_retention_contract_walk_stamp_35 }}"
+      - "{{ phoenix_docker_retention_contract_walk_stamp_90 }}"
+      - "{{ phoenix_docker_retention_contract_walk_stamp_200 }}"
+    _page_sizes: [100, 100, 50]
+    _page_afters: ["", "Y29ubmVjdGlvbjoxMDA=", "Y29ubmVjdGlvbjoyMDA="]
+    _page_next_cursors: ["Y29ubmVjdGlvbjoxMDA=", "Y29ubmVjdGlvbjoyMDA=", ""]
+    _page_has_nexts: [true, true, false]
+    _page_replies:
+      - >-
+        {{ {'json': {'data': {'defaultProjectTraceRetentionPolicy':
+        {'projects': {'edges': [{'node': {'startTime': _page_starts[0]}}]
+        * _page_sizes[0], 'pageInfo': {'hasNextPage': _page_has_nexts[0],
+        'endCursor': _page_next_cursors[0]}}}}}} }}
+      - >-
+        {{ {'json': {'data': {'defaultProjectTraceRetentionPolicy':
+        {'projects': {'edges': [{'node': {'startTime': _page_starts[1]}}]
+        * _page_sizes[1], 'pageInfo': {'hasNextPage': _page_has_nexts[1],
+        'endCursor': _page_next_cursors[1]}}}}}} }}
+      - >-
+        {{ {'json': {'data': {'defaultProjectTraceRetentionPolicy':
+        {'projects': {'edges': [{'node': {'startTime': _page_starts[2]}}]
+        * _page_sizes[2], 'pageInfo': {'hasNextPage': _page_has_nexts[2],
+        'endCursor': _page_next_cursors[2]}}}}}} }}
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_contract_walk_pages: "{{ dict(_page_afters | zip(_page_replies)) }}"
+    # The state the role's seed task starts the walk from.
+    phoenix_docker_retention_project_start_times: []
+    phoenix_docker_retention_projects_cursor: ""
+    phoenix_docker_retention_projects_has_next: true
+    _walk_afters: []
+
+- name: Drive the project page walk against the recorded pages
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+  ansible.builtin.include_tasks: retention_page_walk.yml
+  loop: "{{ range(0, phoenix_docker_retention_contract_max_pages | int) | list }}"
+  loop_control:
+    label: "walk page {{ item + 1 }}"
+
+- name: Point the compute expressions at the walked policy
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_live_days: 0
+    phoenix_docker_retention_days: 30
+    phoenix_docker_retention_step_days: 7
+    # The role's compute task maps the walk's accumulation onto
+    # phoenix_docker_retention_starts; the test bridges the same way.
+    phoenix_docker_retention_starts: "{{ phoenix_docker_retention_project_start_times }}"
+
+- name: Render the walked oldest trace age
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _oldest_j2: "{{ _render_dir }}/oldest_days.j2"
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_oldest_days: "{{ lookup('ansible.builtin.template', _oldest_j2) | trim | int }}"
+
+- name: Render the walked step toward the target
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _next_j2: "{{ _render_dir }}/next_days.j2"
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_next_days: "{{ lookup('ansible.builtin.template', _next_j2) | trim | int }}"
+
+- name: Render the walked patch gate and walk coverage
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+  ansible.builtin.set_fact:
+    _walked_gate: "{{ lookup('ansible.builtin.template', _render_dir ~ '/patch_gate.j2') | trim }}"
+    _walked_coverage: "{{ lookup('ansible.builtin.template', _render_dir ~ '/walk_coverage.j2') | trim }}"
+
+- name: The walked policy lands within one step of the true oldest trace
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - '(_walked_coverage | bool) is true'
+      - >-
+        _walk_afters == ['',
+        'Y29ubmVjdGlvbjoxMDA=',
+        'Y29ubmVjdGlvbjoyMDA=']
+      - phoenix_docker_retention_project_start_times | length == 250
+      - >-
+        phoenix_docker_retention_project_start_times | min
+        == phoenix_docker_retention_contract_walk_stamp_200
+      - phoenix_docker_retention_oldest_days | int == 200
+      - phoenix_docker_retention_next_days | int == 193
+      - '(_walked_gate | bool) is true'
+      - >-
+        (phoenix_docker_retention_oldest_days | int
+        - phoenix_docker_retention_next_days | int)
+        <= (phoenix_docker_retention_step_days | int)
+      - >-
+        (phoenix_docker_retention_oldest_days | int
+        - phoenix_docker_retention_next_days | int)
+        >= 0
+    fail_msg: >-
+      The walk did not lower the policy by no more than one
+      phoenix_docker_retention_step_days below the oldest trace across
+      every page of the 250-project policy — one run deletes more than
+      the step bound, or the cursor carried the walk off the recorded
+      pages.
+
+- name: Point the compute expressions at page one only
+  ansible.builtin.set_fact:
+    # The counterfactual the walk must prevent: only page one's projects.
+    phoenix_docker_retention_project_start_times:
+      - "{{ phoenix_docker_retention_contract_walk_stamp_35 }}"
+    phoenix_docker_retention_starts:
+      - "{{ phoenix_docker_retention_contract_walk_stamp_35 }}"
+
+- name: Render the oldest trace age a single-page read would have computed
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _oldest_j2: "{{ _render_dir }}/oldest_days.j2"
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_oldest_days: "{{ lookup('ansible.builtin.template', _oldest_j2) | trim | int }}"
+
+- name: Render the step a single-page read would have computed
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _next_j2: "{{ _render_dir }}/next_days.j2"
+  ansible.builtin.set_fact:
+    _single_page_next: "{{ lookup('ansible.builtin.template', _next_j2) | trim | int }}"
+
+- name: A single-page read would have blown through the step bound
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - phoenix_docker_retention_oldest_days | int == 35
+      - _single_page_next | int == 30
+      - >-
+        (200 - _single_page_next | int)
+        > (phoenix_docker_retention_step_days | int)
+    fail_msg: >-
+      The recorded page-one oldest (35 whole days) no longer
+      demonstrates the oversized delete the full walk prevents; the
+      fixtures need a deeper oldest trace on a later page.

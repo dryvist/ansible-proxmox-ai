@@ -1,0 +1,108 @@
+---
+# Recorded-reply behavior of the retention contract (included from
+# retention_behavior.yml inside the render directory's lifetime): the read
+# and patch tasks' decision expressions are evaluated against replies shaped
+# like the pinned Phoenix GraphQL API. Success replies must pass the errors
+# guard and every readable-assert condition, and the patch body must resolve
+# the policy id out of the data envelope; errors replies — which GraphQL
+# reports with HTTP 200 — must trip the guard and fail every condition.
+- name: Point the contract at the recorded success reply
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_current: "{{ phoenix_docker_retention_contract_fixtures.read_ok }}"
+    phoenix_docker_retention_days: 30
+    phoenix_docker_retention_mutation: "{{ phoenix_docker_retention_contract_mutation }}"
+    # The patch body renders the stepped maxDays, so the case loop's first
+    # computed step is seeded to the value a live 30 converges to.
+    phoenix_docker_retention_next_days: 30
+
+- name: The read task accepts a recorded success reply
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _guard_ok: "{{ lookup('ansible.builtin.template', _render_dir ~ '/read_guard.j2') | trim }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - '(_guard_ok | bool) is true'
+    fail_msg: The read task's errors guard tripped on a recorded success reply.
+
+- name: The readable-assert conditions hold on a recorded success reply
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _all_hold: "{{ lookup('ansible.builtin.template', _render_dir ~ '/readable_all.j2') | trim }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - '(_all_hold | bool) is true'
+    fail_msg: >-
+      The readable-assert conditions do not all hold on a reply shaped
+      like Phoenix's — the policy is not read out of the data envelope.
+
+- name: The patch body carries the policy id from the data envelope
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _rendered_body: "{{ lookup('ansible.builtin.template', _render_dir ~ '/patch_body.j2') | trim }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'UG9saWN5OmRlZmF1bHQ=' in _rendered_body"
+      - "'None' not in _rendered_body"
+      - "_rendered_body is search('maxDays.: 30')"
+    fail_msg: >-
+      The patch body did not resolve the recorded policy id out of the
+      data envelope alongside the configured days.
+
+- name: Point the contract at the recorded errors reply
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_current: "{{ phoenix_docker_retention_contract_fixtures.read_errors }}"
+
+- name: The read task refuses a recorded errors reply
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _guard_ok: "{{ lookup('ansible.builtin.template', _render_dir ~ '/read_guard.j2') | trim }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - '(_guard_ok | bool) is false'
+    fail_msg: >-
+      The read task's errors guard did not trip on a recorded errors
+      reply, which GraphQL reports with HTTP 200.
+
+- name: Every readable-assert condition fails on a recorded errors reply
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _none_hold: "{{ lookup('ansible.builtin.template', _render_dir ~ '/readable_none.j2') | trim }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - '(_none_hold | bool) is true'
+    fail_msg: >-
+      A readable-assert condition still holds on a recorded errors reply,
+      so a failed read could slip past the assert.
+
+- name: Point the contract at the recorded patch errors reply
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_patch: "{{ phoenix_docker_retention_contract_fixtures.patch_errors }}"
+
+- name: The patch task refuses a recorded errors reply
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _guard_ok: "{{ lookup('ansible.builtin.template', _render_dir ~ '/patch_guard.j2') | trim }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - '(_guard_ok | bool) is false'
+    fail_msg: The patch task's errors guard did not trip on a recorded errors reply.
+
+- name: Point the contract at the recorded patch success reply
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_patch: "{{ phoenix_docker_retention_contract_fixtures.patch_ok }}"
+
+- name: The patch task accepts a recorded success reply
+  vars:
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_retention_contract"
+    _guard_ok: "{{ lookup('ansible.builtin.template', _render_dir ~ '/patch_guard.j2') | trim }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - '(_guard_ok | bool) is true'
+    fail_msg: The patch task's errors guard tripped on a recorded success reply.
