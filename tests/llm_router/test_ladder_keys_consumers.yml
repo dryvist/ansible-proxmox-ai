@@ -20,7 +20,7 @@
 
     - name: Include the new target keys in this contract check
       ansible.builtin.set_fact:
-        _target_aliases: "{{ _target_aliases + ['claude-llm', 'claude-ocg', 'sandbox-agent', 'sandbox-agent-local'] }}"
+        _target_aliases: "{{ _target_aliases + ['claude-llm', 'claude-ocg', 'sandbox-agent'] }}"
         _enabled_target_aliases: "{{ _enabled_target_aliases + ['claude-llm', 'claude-ocg'] }}"
 
     - name: Every consumer is declared once with its table class scope
@@ -34,7 +34,7 @@
           - >-
             llm_router_disabled_virtual_keys | intersect(_target_aliases) | sort
             == ['agy', 'donna', 'hermes-private', 'judge', 'opencode', 'pepper',
-                'qwen-code', 'recorder', 'sandbox-agent', 'sandbox-agent-local', 'zcode']
+                'qwen-code', 'recorder', 'sandbox-agent', 'zcode']
           - _class_scope_mismatches | length == 0
           - _class_model_mismatches | length == 0
           - _target_model_mismatches | length == 0
@@ -65,8 +65,7 @@
           {%- set _want = _standard if _key.alias in ['claude-code', 'codex', 'agy']
                 else _zdr if _key.alias == 'claude-llm'
                 else ['sub'] if _key.alias == 'claude-ocg'
-                else ['local'] if _key.alias in [_recorder, 'opencode', 'qwen-code', 'donna',
-                                                'pepper', 'sandbox-agent-local']
+                else ['local'] if _key.alias in [_recorder, 'opencode', 'qwen-code', 'donna', 'pepper']
                 else _zdr if _key.alias in ['judge', 'hermes-private']
                 else _all -%}
           {%- if _key.allowed_classes | list != _want -%}
@@ -81,8 +80,6 @@
                 | selectattr('alias', 'equalto', 'claude-ocg') | first -%}
           {%- set _sandbox = _llm_router_declared_virtual_keys
                 | selectattr('alias', 'equalto', 'sandbox-agent') | first -%}
-          {%- set _sandbox_local = _llm_router_declared_virtual_keys
-                | selectattr('alias', 'equalto', 'sandbox-agent-local') | first -%}
           {%- set _judge = _llm_router_declared_virtual_keys
                 | selectattr('alias', 'equalto', 'judge') | first -%}
           {%- set ns = namespace(groups=[]) -%}
@@ -110,9 +107,7 @@
                  + llm_router_d1_zdr_key_groups) | unique | sort else [])
              + (['sandbox-agent'] if _sandbox.models | unique | sort != _sandbox_expected | sort
                 or (_sandbox.models | intersect(_llm_router_sandbox_agent_excluded_groups) | length > 0)
-                else [])
-             + (['sandbox-agent-local'] if _sandbox_local.models | unique | sort
-                != [llm_router_primary_model] | sort else []) }}
+                else []) }}
         _target_budget_mismatches: >-
           {%- set ns = namespace(rows=[]) -%}
           {%- for _alias, _budget in {'claude-llm': 10.0, 'sandbox-agent': 1.0}.items() -%}
@@ -203,15 +198,13 @@
           - "'opencode' in llm_router_disabled_virtual_keys"
           - "'qwen-code' in llm_router_disabled_virtual_keys"
           - "'zcode' in llm_router_disabled_virtual_keys"
-          - _source_gate_aliases | sort == ['opencode', 'qwen-code', 'sandbox-agent',
-                                            'sandbox-agent-local', 'zcode']
+          - _source_gate_aliases | sort == ['opencode', 'qwen-code', 'sandbox-agent', 'zcode']
         fail_msg: "A sandbox key must remain disabled until its own delivery field exists."
         success_msg: "Sandbox keys stay disabled while their matching delivery fields are absent."
       vars:
         _source_gate_aliases: >-
           {{ _llm_router_declared_virtual_keys
-             | selectattr('alias', 'in', ['opencode', 'qwen-code', 'sandbox-agent',
-                                         'sandbox-agent-local', 'zcode'])
+             | selectattr('alias', 'in', ['opencode', 'qwen-code', 'sandbox-agent', 'zcode'])
              | rejectattr('enabled', 'truthy') | map(attribute='alias') | list }}
 
     - name: Model the peer-provisioned sandbox fields with the existing consumer values
@@ -222,8 +215,7 @@
             'ZCODE_ROUTER_KEY': 'fixture-zcode',
             'OPENCODE_ROUTER_KEY': 'fixture-opencode',
             'QWEN_CODE_ROUTER_KEY': 'fixture-qwen-code',
-            'sandbox_agent_router_llm_router_key': 'fixture-sandbox-agent',
-            'sandbox_agent_local_router_llm_router_key': 'fixture-sandbox-agent-local'}) }}
+            'sandbox_agent_router_llm_router_key': 'fixture-sandbox-agent'}) }}
       no_log: true
 
     - name: Refresh cached router projections after sandbox delivery
@@ -243,21 +235,18 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _enabled_delivery_aliases | sort == ['opencode', 'qwen-code', 'sandbox-agent',
-                                                 'sandbox-agent-local', 'zcode']
+          - _enabled_delivery_aliases | sort == ['opencode', 'qwen-code', 'sandbox-agent', 'zcode']
           - _delivery_values['opencode'] == bao_apps_secrets['OPENCODE_ROUTER_KEY']
           - _delivery_values['qwen-code'] == bao_apps_secrets['QWEN_CODE_ROUTER_KEY']
           - _delivery_values['zcode'] == bao_apps_secrets['ZCODE_ROUTER_KEY']
           - _delivery_values['sandbox-agent'] == bao_apps_secrets['sandbox_agent_router_llm_router_key']
-          - _delivery_values['sandbox-agent-local'] == bao_apps_secrets['sandbox_agent_local_router_llm_router_key']
           - _delivery_values['opencode'] != _delivery_values['zcode']
           - _delivery_values['opencode'] != _delivery_values['qwen-code']
           - _delivery_values['qwen-code'] != _delivery_values['zcode']
-          - _delivery_values['sandbox-agent-local'] != _delivery_values['sandbox-agent']
         fail_msg: "Sandbox delivery must reuse its matching per-consumer key value."
         success_msg: "Each sandbox delivery field activates only its matching consumer key."
       vars:
-        _delivery_aliases: [opencode, qwen-code, sandbox-agent, sandbox-agent-local, zcode]
+        _delivery_aliases: [opencode, qwen-code, sandbox-agent, zcode]
         _enabled_delivery_aliases: >-
           {{ _active_virtual_keys | selectattr('alias', 'in', _delivery_aliases)
              | map(attribute='alias') | list }}
