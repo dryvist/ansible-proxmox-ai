@@ -25,6 +25,9 @@
       Distro CA bundle present at {{ hermes_agent_ca_bundle_path }} — safe to
       pin as SSL_CERT_FILE.
 
+# The public-gateway config render (public_gateway.yml, hermes_units_gateways)
+# reads hermes_agent_context_limits — both tasks run in that component too,
+# so a units-only converge sets the fact instead of failing on it.
 - name: Stat optional bundle context limits on the controller
   ansible.builtin.stat:
     path: "{{ hermes_agent_bundle_path }}/limits.json"
@@ -34,6 +37,8 @@
     ansible_become: false
   register: hermes_agent_context_limits_file
   check_mode: false
+  tags:
+    - hermes_units_gateways
 
 - name: Load bundle context limits and apply the role override
   ansible.builtin.set_fact:
@@ -41,6 +46,8 @@
       {{ ((lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/limits.json') | from_json)
           if hermes_agent_context_limits_file.stat.exists else {})
          | combine(hermes_agent_context_limits_override, recursive=true) }}
+  tags:
+    - hermes_units_gateways
 
 - name: Assert the resolved Hermes router key is a non-empty string
   ansible.builtin.assert:

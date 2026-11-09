@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.39.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.38.1...v2.39.0) (2026-11-09)
+
+
+### Features
+
+* **agent:** opencode-local run j-3a2fa50eb5494a6a ([5f91d21](https://github.com/dryvist/ansible-proxmox-ai/commit/5f91d219c6916e11e9d684bfdc94fbfed5de69ff))
+* **phoenix_docker:** keep 30 days of traces ([#2292](https://github.com/dryvist/ansible-proxmox-ai/issues/2292)) ([9b647d8](https://github.com/dryvist/ansible-proxmox-ai/commit/9b647d8eade65258517953fa9f3b9a778ace8bbf))
+
+
+### Bug Fixes
+
+* **ci:** give Role Self-Checks fifteen minutes on pull requests ([#2294](https://github.com/dryvist/ansible-proxmox-ai/issues/2294)) ([e860e61](https://github.com/dryvist/ansible-proxmox-ai/commit/e860e616eefc94e11899e7438a85c30a76650882))
+* **hermes_agent:** update Hermes Agent to 0.23.0 ([#2281](https://github.com/dryvist/ansible-proxmox-ai/issues/2281)) ([d50fc8f](https://github.com/dryvist/ansible-proxmox-ai/commit/d50fc8f1c3e69872416629021919fc9ca826f636))
+* **llm_router:** overlap untrusted-content chunks and pin the cancellation cleanup ([#2296](https://github.com/dryvist/ansible-proxmox-ai/issues/2296)) ([5f91d21](https://github.com/dryvist/ansible-proxmox-ai/commit/5f91d219c6916e11e9d684bfdc94fbfed5de69ff))
+
 ## [2.38.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.38.0...v2.38.1) (2026-11-09)
 
 
