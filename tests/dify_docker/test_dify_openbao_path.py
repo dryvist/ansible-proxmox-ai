@@ -73,12 +73,23 @@ def test_agent_runtime_secrets_are_generated_and_seeded():
 
     for field_name, (var_name, env_name) in AGENT_SECRET_FIELDS.items():
         assert f"lookup('env', '{env_name}')" in defaults[var_name]
-        assert fields[field_name] == {
-            "name": field_name,
-            "length": 50,
-            "charset": "alnum",
-            "value": variables[var_name],
-        }
+        if field_name == "DIFY_AGENT_SERVER_SECRET_KEY":
+            # The Agent Stub key is generated in-role in the 43-character
+            # unpadded base64url shape (see
+            # test_agent_server_secret_key.py), and a stored value that fails
+            # the valid_pattern is replaced by the shared seed task.
+            assert fields[field_name] == {
+                "name": field_name,
+                "valid_pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$",
+                "value": variables[var_name],
+            }
+        else:
+            assert fields[field_name] == {
+                "name": field_name,
+                "length": 50,
+                "charset": "alnum",
+                "value": variables[var_name],
+            }
 
     assert seed_vars["openbao_secrets_seed_path"] == "{{ dify_docker_openbao_path }}"
 
