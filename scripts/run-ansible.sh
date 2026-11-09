@@ -12,5 +12,5 @@ export RUN_ANSIBLE_LOG_DIR="${RUN_ANSIBLE_LOG_DIR:-$REPO_ROOT/.ansible-run-logs}
 export RUN_ANSIBLE_RETIRING_IDENTITIES="${RUN_ANSIBLE_RETIRING_IDENTITIES:-ansible}"
 
 # renovate: datasource=github-releases depName=dryvist/homelab-contracts
-HOMELAB_CONTRACTS_REF=v5.58.0
+HOMELAB_CONTRACTS_REF=v5.58.1
 exec nix run "github:dryvist/homelab-contracts/${HOMELAB_CONTRACTS_REF}#run-ansible" -- "$@"
