@@ -1,34 +1,30 @@
 ---
-# Reconcile ONE agentic direct-deliver digest cron (Phase 5). Unlike the
-# --no-agent enqueuers (reconcile_enqueuer_cron.yml), the gateway RUNS the
-# prompt and delivers the model's final response straight to Slack. Mirrors the
-# same create-if-absent + checksum-marker remove/recreate idempotency (the CLI's
+# Reconcile ONE direct-deliver cron (Phase 5). By default, the gateway RUNS the
+# prompt and delivers the model's final response straight to Slack. An item
+# with `no_agent: true` runs its script and delivers stdout verbatim. It uses
+# the same create-if-absent + checksum-marker remove/recreate idempotency (the CLI's
 # `cron edit` is not relied on — recreate re-pins schedule/prompt/skill/model/
 # provider/deliver deterministically).
 #
-# item fields: name, schedule, EITHER prompt_file/prompt_files (loaded from the pinned
-# catalog) OR prompt_var (name of an already-resolved var, inline or
-# catalog-preloaded — same lookup('vars', ...) pattern the retired kanban card
-# table used), skill (may be ""), enabled, an optional deliver override
-# (defaults to the shared digest channel), and optional channel_when_healthy
-# (outcome-based routing: the catalog's quiet-when-healthy footer is appended).
-# A job may also pin `model` and `model_provider` through Hermes's native
-# per-job inference pin; its HERMES_HOME supplies that profile's router key.
-# Also optional: script, a path under ~/.hermes/scripts/ attached WITHOUT
-# --no-agent (monitor mode) — the script decides per tick whether to wake the
-# agent at all (upstream's `wakeAgent` gate). The job stays fully agentic
-# either way, unlike the `--no-agent --script` enqueuers in
-# reconcile_enqueuer_cron.yml.
-# A job runs here only if it is enabled AND belongs to THIS agent identity.
-# Both halves matter and they are not interchangeable: `enabled: false` alone
-# has never removed anything (every task below is gated on it, so a disabled
-# job is merely not re-created), which is why an identity that should not own
-# a job must reach the explicit removal task further down rather than simply
-# being skipped. Skipping would leave a previously-installed job firing on
-# that guest forever.
+# Fields: name, schedule, prompt_file(s) or prompt_var, skill, enabled, optional
+# deliver/channel_when_healthy/model/model_provider/script.
+# Jobs require enabled + identity ownership. Disabled jobs are not recreated;
+# unowned existing jobs are explicitly removed to prevent stale cron execution.
+# `no_agent: true` requires a script and omits the prompt and model.
 - name: "Direct cron | Decide agent ownership for {{ item.name }}"
   ansible.builtin.set_fact:
+    hermes_agent_direct_no_agent: "{{ item.no_agent | default(false) | bool }}"
     hermes_agent_direct_wanted: "{{ hermes_agent_direct_job_wanted }}"
+
+- name: "Direct cron | Validate script-only item {{ item.name }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - item.script | default('') | length > 0
+      - item.enabled_toolsets is not defined
+    fail_msg: >-
+      A no-agent direct cron requires a script and cannot set enabled_toolsets.
+  when: hermes_agent_direct_no_agent | bool
 
 # A named profile's single Slack target moves to that profile's routed report
 # channel when one is configured (152-profile-slack-routes.yml).
@@ -42,8 +38,12 @@
       {{ ('slack:' ~ hermes_agent_slack_profile_channels[_profile])
          if (_profile in hermes_agent_slack_profile_channels and _deliver is match('slack:[^,]+$'))
          else _deliver }}
-    hermes_agent_direct_model: "{{ item.model | default(hermes_agent_cron_model) }}"
-    hermes_agent_direct_model_provider: "{{ item.model_provider | default(hermes_agent_cron_model_provider) }}"
+    hermes_agent_direct_model: >-
+      {{ '' if hermes_agent_direct_no_agent | bool
+         else item.model | default(hermes_agent_cron_model) }}
+    hermes_agent_direct_model_provider: >-
+      {{ '' if hermes_agent_direct_no_agent | bool
+         else item.model_provider | default(hermes_agent_cron_model_provider) }}
     hermes_agent_direct_failure_deliver: "{{ item.failure_deliver | default(hermes_agent_cron_failure_deliver) }}"
 
 - name: "Direct cron | Load prompt + append reporting footer for {{ item.name }}"
@@ -65,33 +65,30 @@
     hermes_agent_direct_prompt_paths: >-
       {{ (item.prompt_files | default([item.prompt_file | default('')]))
          | map('regex_replace', '^', hermes_agent_prompts_path ~ '/') | list }}
-  when: hermes_agent_direct_wanted | bool
+  when:
+    - hermes_agent_direct_wanted | bool
+    - not (hermes_agent_direct_no_agent | bool)
 
-# --workdir is not cosmetic: read from the pinned hermes-agent v2026.8.3
-# source (hermes_cli/subcommands/cron.py) and its own docs (website/docs/
-# user-guide/features/cron.md) — "Cron jobs default to running detached from
-# any repo ... the terminal / file / code-exec tools run from whatever
-# working directory the gateway started in. Pass --workdir ... to change
-# that." Omitting it is what put the `review` cron's filesystem tools at
-# whatever cwd the ticking process happened to start in rather than
-# HERMES_HOME — for the 7 profile-scoped jobs (item.hermes_home set) that
-# ticking process is the `*/5 * * * *` crontab trigger, whose cwd is the
-# hermes user's plain $HOME, one level above the actual profile home. Pinned
-# to the same value already used for the HERMES_HOME env var below, so a
-# profile-scoped job's tools land in its own profile home.
-# Upstream `tools.cronjob_tools.cronjob` accepts per-job `enabled_toolsets`,
-# but the `hermes cron create` CLI omits that field. Use the same native tool
-# handler only for jobs that declare a per-job allowlist, preserving the
-# normal CLI path for every other direct Cron job.
+- name: "Direct cron | Set empty prompt for script-only {{ item.name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_prompt: ""
+  when:
+    - hermes_agent_direct_wanted | bool
+    - hermes_agent_direct_no_agent | bool
+
+# Cron runs detached from the gateway cwd, so --workdir matches HERMES_HOME.
+# The CLI omits enabled_toolsets; jobs declaring it use the native handler.
 - name: "Direct cron | Build create argv for {{ item.name }}"
   vars:
     hermes_agent_cli_home: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_argv: >-
-      {{ [hermes_agent_bin] + hermes_agent_cli_profile_args + ['cron', 'create', item.schedule,
-          hermes_agent_direct_prompt, '--name', item.name]
+      {{ [hermes_agent_bin] + hermes_agent_cli_profile_args + ['cron', 'create', item.schedule]
+         + ([hermes_agent_direct_prompt] if not hermes_agent_direct_no_agent | bool else [])
+         + ['--name', item.name]
          + (['--skill', item.skill] if (item.skill | default('') | length > 0) else [])
          + (['--script', item.script] if (item.script | default('') | length > 0) else [])
+         + (['--no-agent'] if hermes_agent_direct_no_agent | bool else [])
          + (['--model', hermes_agent_direct_model]
             if hermes_agent_direct_model | length > 0 else [])
          + (['--provider', hermes_agent_direct_model_provider]
@@ -203,7 +200,8 @@
          | combine({'model_provider': hermes_agent_direct_model_provider}
                   if hermes_agent_direct_model | length > 0 else {})
          | combine({'enabled_toolsets': item.enabled_toolsets}
-                  if item.enabled_toolsets is defined else {}))
+                  if item.enabled_toolsets is defined else {})
+         | combine({'no_agent': true} if hermes_agent_direct_no_agent | bool else {}))
          | to_json | hash('sha256') }}
   when: hermes_agent_direct_wanted | bool
 
