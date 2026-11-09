@@ -33,6 +33,16 @@ of the newest `last_run_at` it has ever OBSERVED carrying `last_status == "ok"`.
 That memory is the last-success timestamp, and it stops advancing the moment a
 job stops succeeding, however loudly it keeps failing.
 
+Success is one half of what a run leaves behind. The other half — that a run
+HAPPENED at all — gets its own record: `report_run` prints exactly one
+`cron-run` line per (profile, job) whose `last_run_at` is newer than the newest
+run it has already reported, so a log reader can count runs, failed ones
+included, where the success clock never looks. The newest-reported high-water
+mark lives in the same memory file as the success clock, so a restart or a
+missed tick can neither repeat a run nor lose the one the store still holds.
+The store carries WHERE a job delivers (`deliver`) but no delivery outcome, so
+the line says `delivered=unknown` rather than a yes it cannot know.
+
 Runs as a child of fabric-watchdog.sh, inheriting the same ntfy hub config.
 """
 
@@ -254,13 +264,47 @@ def save_state(state: dict) -> None:
         log(f"state write FAILED ({exc}) — this episode may re-announce")
 
 
+def report_run(profile: str, job: dict, record: dict) -> None:
+    """Exactly one countable stdout line per run the store holds, ever.
+
+    `last_run_at` records only the job's NEWEST run, so "newer than the newest
+    run already reported" is the exactly-once rule: the first tick to observe a
+    run prints it, and neither a restart nor a missed tick can print it again
+    or lose it, because the high-water mark (`reported_run`) lives in this
+    script's memory file rather than in the store being read. Unparsable or
+    absent stamps are not runs this script can order, so they print nothing and
+    advance nothing.
+
+    The line carries no `cron-success-watchdog:` prefix on purpose: it is a
+    per-run record shaped for counting (`grep -c '^cron-run '`), not one of the
+    per-tick decision lines `log()` writes. `delivered` is always `unknown`
+    here — the store records no delivery outcome, only the `deliver` target,
+    and reading a yes/no off `last_status` would report delivery success the
+    store never observed.
+    """
+    run_at = parse_iso(job.get("last_run_at"))
+    if run_at is None:
+        return
+    if record.get("reported_run") is not None and run_at <= record["reported_run"]:
+        return
+    record["reported_run"] = run_at
+    print(
+        f"cron-run profile={profile} job={job.get('name') or job.get('id') or ''} "
+        f"status={job.get('last_status') or 'unknown'} "
+        f"run_at={job.get('last_run_at')} "
+        f"delivered=unknown target={job.get('deliver') or 'none'}",
+        flush=True,
+    )
+
+
 def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
     """Decide per job across every store. Returns (newly stale, newly
     recovered, stores newly paused too long) display lines, each an Alert
     carrying the job or store it concerns.
 
-    Mutates `state` in place: advances each job's remembered last-success and
-    flips its alerted latch. Every job gets a log line whatever is decided.
+    Mutates `state` in place: advances each job's remembered last-success,
+    records each newly observed run's timestamp (`reported_run`), and flips its
+    alerted latch. Every job gets a log line whatever is decided.
     Also stashes this tick's newly-triggered pool-wait alerts into
     `state["waited"]` (see the per-job loop below) rather than a fourth
     return value — every existing caller of evaluate()/run() already
@@ -304,6 +348,11 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
         seen.add(key)
         name = f"{profile}/{job.get('name') or job_id}"
         record = memory.setdefault(key, {"last_ok": None, "alerted": False})
+
+        # Counted before it is judged, and before the enabled/paused skips: a
+        # run that already happened is a run to count whatever the alerting
+        # decides about the success clock.
+        report_run(profile, job, record)
 
         if not job.get("enabled", True) or job.get("state") == "paused":
             # Deliberately off is not silence. Reset the latch so a resumed job
