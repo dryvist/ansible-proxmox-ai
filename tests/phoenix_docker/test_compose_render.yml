@@ -1,13 +1,17 @@
 ---
 # Pins the phoenix_docker render contract and pre-change database dump contract.
 #
-# Two things the compose template must hold at render time, offline:
+# Three things the compose template must hold at render time, offline:
 #   1. The Authelia OIDC env block appears iff a client secret is present.
 #      phoenix_docker_oidc_enabled DERIVES from the secret, so an empty secret
 #      (Authelia not converged yet) must produce a stack with local login only,
 #      never a half-configured OIDC provider that fails every SSO attempt.
 #   2. Every published port comes from tofu constants. A literal that slipped
 #      into the template would render fine and diverge from Traefik silently.
+#   3. The trace retention days render as PHOENIX_DEFAULT_RETENTION_POLICY_DAYS
+#      (the variable only seeds the Default policy row on first boot; the
+#      offline retention contract below pins the API sync that covers a
+#      deployment that booted earlier).
 #
 # Run (from the REPO ROOT — roles_path is cwd-relative in ansible.cfg):
 #   ansible-playbook tests/phoenix_docker/test_compose_render.yml -i localhost, -c local
@@ -121,6 +125,16 @@
           healthy-postgres dependency, or it gained a shell healthcheck its
           image cannot run.
 
+    - name: The trace retention days render into the phoenix environment
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: \"30\"' in _with_oidc"
+        fail_msg: >-
+          phoenix_docker_retention_days (default 30) must render as
+          PHOENIX_DEFAULT_RETENTION_POLICY_DAYS in the phoenix service
+          environment.
+
     - name: Remove the render directory
       ansible.builtin.file:
         path: "{{ _render_dir }}"
@@ -128,3 +142,6 @@
 
     - name: Verify the Phoenix pre-change dump contract
       ansible.builtin.include_tasks: tasks/predump_contract.yml
+
+    - name: Verify the Phoenix trace retention policy contract
+      ansible.builtin.include_tasks: tasks/retention_contract.yml

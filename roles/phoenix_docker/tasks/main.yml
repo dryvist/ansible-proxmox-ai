@@ -187,3 +187,81 @@
   when:
     - not ansible_check_mode
     - phoenix_docker_enable_prometheus | bool
+
+# =============================================================================
+# Trace retention policy
+# =============================================================================
+# PHOENIX_DEFAULT_RETENTION_POLICY_DAYS seeds the Default policy row on FIRST
+# boot only — the upstream facilitator makes no changes once the row exists —
+# so a deployment that booted before the variable was set keeps its old rule.
+# Read the live policy through the admin GraphQL API (v21: strawberry schema,
+# bearer-authenticated as the system user, which Phoenix treats as admin) and
+# patch it only when its maxDays differs from phoenix_docker_retention_days.
+
+- name: Read the live Phoenix default trace retention policy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ phoenix_docker_web_port }}/graphql"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ phoenix_docker_admin_secret }}"
+    body_format: json
+    body:
+      query: >-
+        query DefaultTraceRetentionPolicy {
+          defaultProjectTraceRetentionPolicy {
+            id
+            rule {
+              __typename
+              ... on TraceRetentionRuleMaxDays {
+                maxDays
+              }
+            }
+          }
+        }
+    status_code: 200
+  register: phoenix_docker_retention_current
+  changed_when: false
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Require the live Phoenix default trace retention policy to be readable
+  ansible.builtin.assert:
+    that:
+      - phoenix_docker_retention_current.json.errors is not defined
+      - phoenix_docker_retention_current.json.defaultProjectTraceRetentionPolicy.id is defined
+    fail_msg: Phoenix did not return the default trace retention policy.
+    quiet: true
+  when: not ansible_check_mode
+
+- name: Patch the Phoenix default trace retention policy when it differs
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ phoenix_docker_web_port }}/graphql"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ phoenix_docker_admin_secret }}"
+    body_format: json
+    body: >-
+      {{ {'query': phoenix_docker_retention_mutation,
+          'variables': {'input': {'id':
+          phoenix_docker_retention_current.json.defaultProjectTraceRetentionPolicy.id,
+          'rule': {'maxDays': {'maxDays':
+          phoenix_docker_retention_days | int}}}} }}
+    status_code: 200
+  vars:
+    phoenix_docker_retention_mutation: |-
+      mutation PatchDefaultTraceRetentionPolicy(
+        $input: PatchProjectTraceRetentionPolicyInput!
+      ) {
+        patchProjectTraceRetentionPolicy(input: $input) {
+          node { id }
+        }
+      }
+    phoenix_docker_retention_live_days: >-
+      {{ phoenix_docker_retention_current.json.defaultProjectTraceRetentionPolicy.rule.maxDays
+      | default(0) }}
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - >-
+      phoenix_docker_retention_live_days | int
+      != phoenix_docker_retention_days | int
