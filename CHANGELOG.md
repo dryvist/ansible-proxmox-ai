@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.36.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.35.2...v2.36.0) (2026-11-09)
+
+
+### Features
+
+* **dify_docker:** update existing catalog apps in place when asked ([#2259](https://github.com/dryvist/ansible-proxmox-ai/issues/2259)) ([11b91c4](https://github.com/dryvist/ansible-proxmox-ai/commit/11b91c4f877e75955b3b418baef623515696d2b7))
+* **fabric_watchdog:** print one line per Hermes cron run ([#2262](https://github.com/dryvist/ansible-proxmox-ai/issues/2262)) ([5ab0708](https://github.com/dryvist/ansible-proxmox-ai/commit/5ab0708f06a1a132e5d4ac7134c4313e84cc10c6))
+* **llm_router:** serve the Hermes cron fleet on the tier-2 local lane ([#2246](https://github.com/dryvist/ansible-proxmox-ai/issues/2246)) ([4af7850](https://github.com/dryvist/ansible-proxmox-ai/commit/4af78507db5b8c18b35e4c2e881b3badace61684))
+
+
+### Bug Fixes
+
+* **dify_docker:** pin the catalog with LLM node context ([#2260](https://github.com/dryvist/ansible-proxmox-ai/issues/2260)) ([69220d0](https://github.com/dryvist/ansible-proxmox-ai/commit/69220d0180ff53ab01d197f398cbdab7d3b4eb53))
+* **dify_docker:** wait for the Dify API before the setup check ([#2252](https://github.com/dryvist/ansible-proxmox-ai/issues/2252)) ([ff13644](https://github.com/dryvist/ansible-proxmox-ai/commit/ff136447af4c0af27fefdc5cdab1dd495173cff4))
+* **llm_gpu_serving:** require the sum of co-resident reserves to fit outside vLLM ([#2254](https://github.com/dryvist/ansible-proxmox-ai/issues/2254)) ([c4c295b](https://github.com/dryvist/ansible-proxmox-ai/commit/c4c295b9532d1526ca057907cb5d2bb8f1c0b7f3))
+* **llm_router:** check tier-2 Hermes keys against their local scope ([#2256](https://github.com/dryvist/ansible-proxmox-ai/issues/2256)) ([b0bfbc9](https://github.com/dryvist/ansible-proxmox-ai/commit/b0bfbc9c7edfa4a878cb4a9a974aaea620012cf9))
+* **llm_router:** stop background health checks on every paid or subscription deployment ([#2257](https://github.com/dryvist/ansible-proxmox-ai/issues/2257)) ([4819176](https://github.com/dryvist/ansible-proxmox-ai/commit/481917617311b4327ce72c2da1f9b476715f9606))
+* **vllm_serving:** cap the RTX 6000 medium batch at 8,192 tokens ([#2255](https://github.com/dryvist/ansible-proxmox-ai/issues/2255)) ([c5894dc](https://github.com/dryvist/ansible-proxmox-ai/commit/c5894dceb62f5eae681840ced5ced5216e2acbfb))
+
 ## [2.35.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.35.1...v2.35.2) (2026-11-09)
 
 
