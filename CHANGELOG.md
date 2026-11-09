@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.34.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.33.1...v2.34.0) (2026-11-09)
+
+
+### Features
+
+* **dify_docker:** pin the stack to Dify 1.19.0 and assert Compose 2.35.0+ ([#2214](https://github.com/dryvist/ansible-proxmox-ai/issues/2214)) ([8f58f33](https://github.com/dryvist/ansible-proxmox-ai/commit/8f58f3329433ade40d877f3b5909b8c258cbe477))
+* **llm_router:** serve medium at the native 262,144-token context on the Pro6000 leg ([#2220](https://github.com/dryvist/ansible-proxmox-ai/issues/2220)) ([2aad20c](https://github.com/dryvist/ansible-proxmox-ai/commit/2aad20c1d5cec799ce7c64103c2969ef4cb5bbda))
+
+
+### Bug Fixes
+
+* **dify_docker:** give the API the public console URLs so sign-in keeps its session ([#2226](https://github.com/dryvist/ansible-proxmox-ai/issues/2226)) ([0004e69](https://github.com/dryvist/ansible-proxmox-ai/commit/0004e69f16d8cfbe0bd7b798f41f3035c645c66e))
+* **hermes_agent:** run one Slack socket per identity ([#2211](https://github.com/dryvist/ansible-proxmox-ai/issues/2211)) ([5e4e3d6](https://github.com/dryvist/ansible-proxmox-ai/commit/5e4e3d659355831cdeaf694dcf036799f07c834d))
+* **llm_router:** classify long untrusted requests in chunks ([#2219](https://github.com/dryvist/ansible-proxmox-ai/issues/2219)) ([6df2a78](https://github.com/dryvist/ansible-proxmox-ai/commit/6df2a781fef662ce3ebc1c5d781558fee687bee8))
+
 ## [2.33.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.33.0...v2.33.1) (2026-11-08)
 
 
