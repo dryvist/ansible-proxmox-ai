@@ -1,16 +1,20 @@
 """Agent DSL catalog pins and source verification."""
 
 import ast
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 from copy import deepcopy
+from pathlib import Path
 
 from jinja2 import Environment
 
 from _agent_dsl_shared import AGENT_DSLS, IMPORT_LOOP, IMPORT_ONE, ROOT, _expanded_yaml, _task, _yaml
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def test_catalog_manifest_is_pinned_to_the_release_commit_and_checksum():
@@ -21,6 +25,22 @@ def test_catalog_manifest_is_pinned_to_the_release_commit_and_checksum():
     assert re.fullmatch(r"[0-9a-f]{64}", pins["dify_docker_agent_dsl_manifest_sha256"])
     assert "dify_docker_agent_dsls" not in pins
     assert re.search(r"currentValue=v\d+\.\d+\.\d+\b", source)
+
+    fixture = FIXTURES / f"agent-dsl-manifest-{pins['dify_docker_agent_dsl_commit']}.json"
+    assert fixture.exists(), (
+        "no manifest fixture for the pinned commit; run "
+        "python3 scripts/update_dify_manifest_pin.py to fetch the manifest at "
+        "the pinned commit, refresh the fixture, and re-pin the checksum"
+    )
+    recorded = fixture.read_bytes()
+    assert hashlib.sha256(recorded).hexdigest() == pins["dify_docker_agent_dsl_manifest_sha256"], (
+        "the pinned manifest checksum does not match the manifest bytes recorded "
+        "for the pinned commit; run python3 scripts/update_dify_manifest_pin.py "
+        "instead of editing either value by hand"
+    )
+    entries = json.loads(recorded)
+    assert entries
+    assert all({"name", "path", "sha256"} <= set(entry) for entry in entries)
 
 
 def test_manifest_entries_keep_their_url_and_sha256_through_public_import():
