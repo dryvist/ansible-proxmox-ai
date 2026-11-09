@@ -221,6 +221,8 @@
     status_code: 200
   register: phoenix_docker_retention_current
   changed_when: false
+  failed_when: >-
+    (phoenix_docker_retention_current.json.errors | default([])) | length > 0
   no_log: true
   when: not ansible_check_mode
 
@@ -228,7 +230,9 @@
   ansible.builtin.assert:
     that:
       - phoenix_docker_retention_current.json.errors is not defined
-      - phoenix_docker_retention_current.json.defaultProjectTraceRetentionPolicy.id is defined
+      - >-
+        phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.id
+        is defined
     fail_msg: Phoenix did not return the default trace retention policy.
     quiet: true
   when: not ansible_check_mode
@@ -243,10 +247,14 @@
     body: >-
       {{ {'query': phoenix_docker_retention_mutation,
           'variables': {'input': {'id':
-          phoenix_docker_retention_current.json.defaultProjectTraceRetentionPolicy.id,
+          phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.id,
           'rule': {'maxDays': {'maxDays':
           phoenix_docker_retention_days | int}}}} }}
     status_code: 200
+  register: phoenix_docker_retention_patch
+  changed_when: true
+  failed_when: >-
+    (phoenix_docker_retention_patch.json.errors | default([])) | length > 0
   vars:
     phoenix_docker_retention_mutation: |-
       mutation PatchDefaultTraceRetentionPolicy(
@@ -257,7 +265,7 @@
         }
       }
     phoenix_docker_retention_live_days: >-
-      {{ phoenix_docker_retention_current.json.defaultProjectTraceRetentionPolicy.rule.maxDays
+      {{ phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
       | default(0) }}
   no_log: true
   when:
