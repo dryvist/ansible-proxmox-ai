@@ -5,8 +5,9 @@ the tests exercise the real script rather than asserting on its text. Split out
 of the test files it serves because a reader changing one behaviour should not
 have to read every behaviour to find the fixture that builds a job record.
 
-Consumed by test_fabric_watchdog_success_absence.py (the single-store contract)
-and test_fabric_watchdog_success_stores.py (multiple roots and stopped stores).
+Consumed by test_fabric_watchdog_success_absence.py (the single-store contract),
+test_fabric_watchdog_success_stores.py (multiple roots and stopped stores) and
+test_fabric_watchdog_cron_run_log.py (the per-run countable lines).
 """
 
 from __future__ import annotations
@@ -140,6 +141,18 @@ def log_lines(capsys):
         line[len(prefix) :]
         for line in capsys.readouterr().out.splitlines()
         if line.startswith(prefix)
+    ]
+
+
+def cron_run_lines(capsys):
+    """The per-run countable lines, verbatim (they deliberately carry no prefix).
+
+    A `cron-run` line is a per-run record shaped for counting, not one of the
+    per-tick decision lines `log_lines()` reads — so it is matched by its own
+    literal shape, the same shape an operator greps in journald.
+    """
+    return [
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("cron-run ")
     ]
 
 
