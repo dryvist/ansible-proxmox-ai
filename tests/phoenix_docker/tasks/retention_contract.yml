@@ -11,7 +11,9 @@
 # `errors` list carried with HTTP 200 — so reading the wrong envelope or
 # dropping the errors guard fails here instead of on a live converge. The
 # bounded-step cases render the compute expressions against recorded live
-# rules, pinning the one-step-per-converge walk toward the target.
+# rules, pinning the one-step-per-converge walk toward the target, and the
+# page-walk case pins that the oldest trace is read from every page of the
+# unordered projects connection before the first step is computed.
 - name: Read the Phoenix role sources for the retention contract
   ansible.builtin.slurp:
     src: "{{ item.path }}"
@@ -19,6 +21,7 @@
     - path: "{{ playbook_dir }}/../../roles/phoenix_docker/tasks/main.yml"
     - path: "{{ playbook_dir }}/../../roles/phoenix_docker/defaults/main.yml"
     - path: "{{ playbook_dir }}/../../roles/phoenix_docker/templates/docker-compose.yml.j2"
+    - path: "{{ playbook_dir }}/../../roles/phoenix_docker/tasks/retention_project_page.yml"
   loop_control:
     label: "{{ item.path | basename }}"
   register: phoenix_docker_retention_sources
@@ -28,15 +31,22 @@
     phoenix_docker_retention_main_raw: "{{ phoenix_docker_retention_sources.results[0].content | b64decode }}"
     phoenix_docker_retention_defaults_source: "{{ phoenix_docker_retention_sources.results[1].content | b64decode }}"
     phoenix_docker_retention_template_source: "{{ phoenix_docker_retention_sources.results[2].content | b64decode }}"
+    phoenix_docker_retention_page_raw: "{{ phoenix_docker_retention_sources.results[3].content | b64decode }}"
 
 - name: Parse the retention tasks out of the role source
   vars:
     _tasks: "{{ phoenix_docker_retention_main_raw | from_yaml }}"
+    _page_tasks: "{{ phoenix_docker_retention_page_raw | from_yaml }}"
+    _defaults: "{{ phoenix_docker_retention_defaults_source | from_yaml }}"
   ansible.builtin.set_fact:
     phoenix_docker_retention_task_names: "{{ _tasks | selectattr('name', 'defined') | map(attribute='name') | list }}"
     phoenix_docker_retention_by_name: >-
       {{ dict(_tasks | selectattr('name', 'defined') | map(attribute='name')
               | zip(_tasks | selectattr('name', 'defined'))) }}
+    phoenix_docker_retention_page_by_name: >-
+      {{ dict(_page_tasks | selectattr('name', 'defined') | map(attribute='name')
+              | zip(_page_tasks | selectattr('name', 'defined'))) }}
+    phoenix_docker_retention_contract_max_pages: "{{ _defaults.phoenix_docker_retention_max_project_pages }}"
 
 - name: Assert the retention sync runs on a healthy stack and never precedes the patch
   vars:
@@ -52,9 +62,15 @@
         < _names.index('Read the live Phoenix default trace retention policy')
       - >-
         _names.index('Read the live Phoenix default trace retention policy')
+        < _names.index('Seed the project page walk under the default policy when the rule has no day limit')
+      - >-
+        _names.index('Seed the project page walk under the default policy when the rule has no day limit')
         < _names.index('Read the oldest trace times under the default policy when the rule has no day limit')
       - >-
         _names.index('Read the oldest trace times under the default policy when the rule has no day limit')
+        < _names.index('Require the project page walk to have covered every project')
+      - >-
+        _names.index('Require the project page walk to have covered every project')
         < _names.index('Compute the retention step toward the configured days')
       - >-
         _names.index('Compute the retention step toward the configured days')
@@ -64,9 +80,10 @@
         < _names.index('Report the retention step applied to the live policy')
     fail_msg: >-
       The retention sync must follow compose deployment and the port wait, and
-      must read the live policy (and, for a rule with no day limit, the oldest
-      trace), compute the step, patch, then report — so the policy is only
-      ever patched against a serving server and every step is visible.
+      must read the live policy, seed and walk every page of the projects
+      connection, require the walk to have covered every project, compute the
+      step, patch, then report — so the policy is only ever patched against a
+      serving server, from a complete walk, and every step is visible.
 
 - name: Assert the retention read queries the live default policy through the admin API
   vars:
@@ -118,16 +135,26 @@
       stepped maxDays as a JSON number, and be guarded so it is skipped when
       the computed step already equals the live maxDays.
 
-- name: Assert the bounded step reads the oldest trace and reports its size
+- name: Assert the bounded step walks every project page and reports its size
   vars:
-    _oldest_name: Read the oldest trace times under the default policy when the rule has no day limit
+    _seed_name: Seed the project page walk under the default policy when the rule has no day limit
+    _walk_name: Read the oldest trace times under the default policy when the rule has no day limit
+    _coverage_name: Require the project page walk to have covered every project
     _compute_name: Compute the retention step toward the configured days
     _report_name: Report the retention step applied to the live policy
-    _oldest_task: "{{ phoenix_docker_retention_by_name[_oldest_name] }}"
-    _oldest_uri: "{{ _oldest_task['ansible.builtin.uri'] }}"
-    _oldest_when: "{{ _oldest_task.when | join(' ') }}"
+    _fetch_name: Read one page of project start times under the default policy
+    _carry_name: Carry the page start times and walk the cursor forward
+    _seed_task: "{{ phoenix_docker_retention_by_name[_seed_name] }}"
+    _walk_task: "{{ phoenix_docker_retention_by_name[_walk_name] }}"
+    _coverage_task: "{{ phoenix_docker_retention_by_name[_coverage_name] }}"
     _compute_task: "{{ phoenix_docker_retention_by_name[_compute_name] }}"
     _report_task: "{{ phoenix_docker_retention_by_name[_report_name] }}"
+    _fetch_task: "{{ phoenix_docker_retention_page_by_name[_fetch_name] }}"
+    _carry_task: "{{ phoenix_docker_retention_page_by_name[_carry_name] }}"
+    _fetch_uri: "{{ _fetch_task['ansible.builtin.uri'] }}"
+    _carry_facts: "{{ _carry_task['ansible.builtin.set_fact'] }}"
+    _walk_when: "{{ _walk_task.when | join(' ') }}"
+    _coverage_thats: "{{ _coverage_task['ansible.builtin.assert'].that | join(' ') }}"
     _compute_source: >-
       {{ _compute_task.vars.phoenix_docker_retention_next_days
       ~ _compute_task.vars.phoenix_docker_retention_oldest_days
@@ -135,32 +162,74 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - "'/graphql' in _oldest_uri.url"
-      - _oldest_uri.method == 'POST'
-      - _oldest_uri.body.query is search('defaultProjectTraceRetentionPolicy')
-      - _oldest_uri.body.query is search('startTime')
-      - "'Authorization' in _oldest_uri.headers"
-      - _oldest_task.no_log is true
-      - _oldest_task.changed_when is false
-      - "'not ansible_check_mode' in _oldest_when"
-      - "'| default(0) | int <= 0' in _oldest_when"
-      - _oldest_task.failed_when is search('errors')
+      - >-
+        _seed_task['ansible.builtin.set_fact'].phoenix_docker_retention_project_start_times
+        == []
+      - >-
+        _seed_task['ansible.builtin.set_fact'].phoenix_docker_retention_projects_cursor
+        == ''
+      - >-
+        _seed_task['ansible.builtin.set_fact'].phoenix_docker_retention_projects_has_next
+        is true
+      - "'retention_project_page.yml' in _walk_task['ansible.builtin.include_tasks']"
+      - "'phoenix_docker_retention_max_project_pages' in (_walk_task.loop | string)"
+      - "'not ansible_check_mode' in _walk_when"
+      - "'| default(0) | int <= 0' in _walk_when"
+      - "'phoenix_docker_retention_projects_has_next' in _coverage_thats"
+      - "'/graphql' in _fetch_uri.url"
+      - _fetch_uri.method == 'POST'
+      - _fetch_uri.body.query is search('defaultProjectTraceRetentionPolicy')
+      - _fetch_uri.body.query is search('first: 100, after')
+      - _fetch_uri.body.query is search('startTime')
+      - _fetch_uri.body.query is search('pageInfo')
+      - _fetch_uri.body.query is search('hasNextPage')
+      - _fetch_uri.body.query is search('endCursor')
+      - "'Authorization' in _fetch_uri.headers"
+      - _fetch_task.no_log is true
+      - _fetch_task.changed_when is false
+      - _fetch_task.failed_when is search('errors')
+      - >-
+        'phoenix_docker_retention_projects_cursor'
+        in _fetch_uri.body.variables.after
+      - "'none' in _fetch_uri.body.variables.after"
+      - >-
+        'phoenix_docker_retention_project_start_times | default([])'
+        in _carry_facts.phoenix_docker_retention_project_start_times
+      - >-
+        '_page.pageInfo.endCursor' in _carry_facts.phoenix_docker_retention_projects_cursor
+      - >-
+        '_page.pageInfo.hasNextPage' in _carry_facts.phoenix_docker_retention_projects_has_next
       - _compute_task.changed_when is false
       - "'not ansible_check_mode' in _compute_task.when"
       - "'phoenix_docker_retention_step_days' in _compute_source"
       - "'to_datetime' in _compute_source"
       - "'| min' in _compute_source"
       - "'| max' in _compute_source"
-      - "'phoenix_docker_retention_oldest.json is defined' in _compute_source"
+      - "'phoenix_docker_retention_project_start_times' in _compute_source"
       - _report_task.changed_when is false
       - "'phoenix_docker_retention_live_days' in _report_task['ansible.builtin.debug'].msg"
       - "'phoenix_docker_retention_next_days' in _report_task['ansible.builtin.debug'].msg"
       - "'phoenix_docker_retention_step_days' in _report_task['ansible.builtin.debug'].msg"
     fail_msg: >-
-      The oldest-trace read must query the project start times through the
-      admin API only when the live rule has no effective day limit, the compute
-      step must lower the policy one phoenix_docker_retention_step_days at a
-      time toward the target, and the run must report the old and new maxDays.
+      The oldest trace must be read by walking every page of the unordered
+      projects connection through the admin API — seeded, cursor-paginated
+      with pageInfo, accumulating onto the prior pages, and gated on covering
+      every page — only when the live rule has no effective day limit; the
+      compute step must lower the policy one phoenix_docker_retention_step_days
+      at a time toward the target, and the run must report the old and new
+      maxDays.
+
+- name: Assert the project page walk carries a page bound
+  vars:
+    _max_pages: "{{ phoenix_docker_retention_contract_max_pages }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _max_pages is defined
+      - _max_pages | int >= 3
+    fail_msg: >-
+      phoenix_docker_retention_max_project_pages must be defined in the role
+      defaults and leave room for more than one page of projects.
 
 - name: Verify the retention contract's behavior against the recorded replies
   ansible.builtin.include_tasks: retention_behavior.yml

@@ -205,8 +205,15 @@
 # 0 or absent), the first step starts from the age in whole days of the
 # oldest trace under the policy — Project.startTime resolves to
 # min(trace.start_time) in the pinned source (server/api/types/Project.py) —
-# minus the step, never below the target. Raising the limit, or a live value
-# already within one step of the target, sets the target directly.
+# minus the step, never below the target. The policy's projects connection
+# is a relay connection over an unordered project list (pinned source:
+# server/api/types/ProjectTraceRetentionPolicy.py), so the oldest start time
+# is read by walking every page of it — a single first: 100 page can miss
+# the true oldest and drop the step far past one step's worth of traces.
+# The walk is bounded by phoenix_docker_retention_max_project_pages; when
+# pages remain after the bound is spent, the converge fails before the
+# patch instead of stepping from a partial walk. Raising the limit, or a
+# live value already within one step of the target, sets the target directly.
 
 - name: Read the live Phoenix default trace retention policy
   ansible.builtin.uri:
@@ -247,32 +254,38 @@
     quiet: true
   when: not ansible_check_mode
 
-- name: Read the oldest trace times under the default policy when the rule has no day limit
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ phoenix_docker_web_port }}/graphql"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ phoenix_docker_admin_secret }}"
-    body_format: json
-    body:
-      query: >-
-        query DefaultPolicyProjectTraceStartTimes {
-          defaultProjectTraceRetentionPolicy {
-            projects(first: 100) {
-              edges {
-                node {
-                  startTime
-                }
-              }
-            }
-          }
-        }
-    status_code: 200
-  register: phoenix_docker_retention_oldest
+- name: Seed the project page walk under the default policy when the rule has no day limit
+  ansible.builtin.set_fact:
+    phoenix_docker_retention_project_start_times: []
+    phoenix_docker_retention_projects_cursor: ""
+    phoenix_docker_retention_projects_has_next: true
   changed_when: false
-  failed_when: >-
-    (phoenix_docker_retention_oldest.json.errors | default([])) | length > 0
-  no_log: true
+  when:
+    - not ansible_check_mode
+    - >-
+      phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
+      | default(0) | int <= 0
+
+- name: Read the oldest trace times under the default policy when the rule has no day limit
+  ansible.builtin.include_tasks: retention_project_page.yml
+  loop: "{{ range(0, phoenix_docker_retention_max_project_pages | int) | list }}"
+  loop_control:
+    label: "project page {{ item + 1 }}"
+  when:
+    - not ansible_check_mode
+    - >-
+      phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
+      | default(0) | int <= 0
+
+- name: Require the project page walk to have covered every project
+  ansible.builtin.assert:
+    that:
+      - not (phoenix_docker_retention_projects_has_next | default(false) | bool)
+    fail_msg: >-
+      The project start-time walk reached its page bound with pages still
+      unreported, so the first retention step must not be computed from a
+      partial walk.
+    quiet: true
   when:
     - not ansible_check_mode
     - >-
@@ -285,9 +298,7 @@
       {{ phoenix_docker_retention_current.json.data.defaultProjectTraceRetentionPolicy.rule.maxDays
       | default(0) | int }}
     phoenix_docker_retention_starts: >-
-      {{ phoenix_docker_retention_oldest.json.data.defaultProjectTraceRetentionPolicy.projects.edges
-      | map(attribute='node.startTime') | select('string') | list
-      if phoenix_docker_retention_oldest.json is defined else [] }}
+      {{ phoenix_docker_retention_project_start_times | default([]) }}
     phoenix_docker_retention_oldest_days: >-
       {{ ((now(utc=true)
       - ((phoenix_docker_retention_starts | min
