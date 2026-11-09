@@ -1,292 +1,32 @@
----
-- name: Verify profile deployments join the same capability groups by order
-  hosts: localhost
-  gather_facts: false
-  vars_files:
-    - policy_fixture.yml
-  vars:
-    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    tofu_data:
-      constants:
-        service_ports:
-          llm_router_api: 4000
-          llm_fast_api: 10434
-          ollama_api: 11434
-          otel_traces_http: 4318
-          redis_default: 6379
-    bao_apps_secrets: {}
-    bao_local_llm_secrets: {}
-    llm_router_subdomain: "pve.example.test"
-    llm_large_serving_host: llm-large
-    llm_router_master_key: sk-test-master
-    llm_router_llm_large_bearer: test-bearer-token
-    llm_router_llm_gpu_base_url: "http://localhost:10434/v1"
-    llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
-    ai_router_request_timeout_seconds: 2400
-    ai_router_retry_after_seconds: 2
-    hermes_goal_judge_model: judge
-    llm_router_llm_fast_base_url: "http://localhost:10434/v1"
-    llm_router_llm_light_base_url: "http://localhost:10434/v1"
-    hermes_brain_model: "{{ llm_router_primary_model }}"
-    hindsight_retain_model: "{{ llm_router_small_model }}"
-  tasks:
-    - name: Add a synthetic inventory GPU member
-      ansible.builtin.add_host:
-        name: llm-gpu-fixture
-        groups: llm_gpu_group
-        ansible_connection: local
+commit 4548eced2c9b18efeea6202b1aaad5b8c0334112
+Author: nix-agent-sandbox <agent@users.noreply.github.com>
+Date:   Mon Nov 9 01:30:38 2026 +0000
 
-    - name: Load role defaults and registry
-      ansible.builtin.include_vars:
-        dir: "{{ _role_dir }}/defaults/main"
+    test(llm_router): assert the small group's single 4080 rung and slot-sized caps
+    
+    The small-capability render contract now counts exactly one 4080
+    deployment per priority tier (first, at the lane's two-slot cap, equal
+    to the registry's projected limit) and exactly one RTX 6000 small
+    deployment per tier at the second order.
 
-    - name: Add a synthetic small-lane member with its serving slot count
-      ansible.builtin.add_host:
-        name: llm-vllm-fixture
-        groups: llm_vllm_group
-        ansible_connection: local
-        llama_cpp_parallel: 2
-
-    - name: Enable the optional small lane without a passing probe
-      ansible.builtin.set_fact:
-        llm_router_4080_profiles_enabled: true
-        llm_router_llm_vllm_enabled: true
-        llm_router_vllm_precheck_passed: false
-        llm_router_studio_precheck_passed: true
-
-    - name: Load registry projections
-      ansible.builtin.include_role:
-        name: llm_router
-        tasks_from: registry.yml
-
-    - name: Render the opted-in lane before its probe passes
-      ansible.builtin.set_fact:
-        _unprobed_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-
-    - name: The optional small lane remains absent until its probe passes
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list | length == 1
-          - llm_router_probe_prechecks | selectattr('tier', 'equalto', 'vllm') | list | length == 1
-          - >-
-            (llm_router_probe_prechecks | selectattr('tier', 'equalto', 'vllm') | first).endpoint
-            == llm_router_llm_vllm_base_url ~ '/models'
-          - not (llm_router_vllm_precheck_passed | bool)
-          - llm_router_vllm_models | length == 0
-          - >-
-            _unprobed_config.model_list | selectattr('litellm_params.api_base', 'defined')
-            | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url)
-            | list | length == 0
-
-    - name: Enable profile and precheck projections for the render fixture
-      ansible.builtin.set_fact:
-        llm_router_gpu_profiles_enabled: true
-        llm_router_llm_vllm_enabled: true
-        llm_router_vllm_precheck_passed: true
-        llm_active_profile: >-
-          {{ llm_router_gpu_profile_registry | selectattr('max_parallel_requests', 'defined')
-             | selectattr('max_parallel_requests', 'equalto', 11)
-             | selectattr('route_group', 'defined')
-             | selectattr('route_group', 'equalto', llm_router_primary_model)
-             | map(attribute='profile') | first }}
-
-    - name: Refresh cached router projections after fixture input changes [gpu-pro6000-enabled-render-1]
-      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
-
-    - name: Render the medium capability with its active GPU member
-      ansible.builtin.set_fact:
-        _medium_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-
-    - name: Check the enabled small lane against its catalog limits
-      vars:
-        _llm_router_parity_config: "{{ _medium_config }}"
-      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-catalog-render-agreement.yml"
-
-    - name: Local trio deployments carry lane caps and prefer GPU members before Studio
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _gpu | length == 1
-          - _gpu | map(attribute='litellm_params.max_parallel_requests') | unique | list == [11]
-          - _studio | length == 1
-          - _studio[0].litellm_params.max_parallel_requests | int == 1
-          - _gpu | map(attribute='litellm_params.order') | max < _studio[0].litellm_params.order
-          - _small | length == 1
-          - _small | map(attribute='litellm_params.max_parallel_requests') | unique | list == [2]
-          - _small | map(attribute='litellm_params.order') | unique | list == [1]
-      loop: "{{ llm_router_priority_tiers }}"
-      loop_control:
-        label: "{{ item.team_id }}"
-      vars:
-        _tier_entries: >-
-          {{ _medium_config.model_list
-             | selectattr('litellm_params.tags', 'contains', item.team_id) | list }}
-        _gpu: >-
-          {{ _tier_entries | selectattr('model_info.profile', 'defined')
-             | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
-        _studio: >-
-          {{ _tier_entries | selectattr('model_name', 'equalto', llm_router_primary_model)
-             | rejectattr('model_info.profile', 'defined') | list }}
-        _small: >-
-          {{ _tier_entries | selectattr('model_name', 'equalto', llm_router_small_model)
-             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url) | list }}
-
-    - name: The medium capability keeps its GPU member at the first order
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - llm_router_gpu_models | length == 1
-          - llm_router_gpu_models[0].route_group == llm_router_primary_model
-          - llm_router_gpu_models[0].order | int == 1
-          - _medium_gpu_members | length == 1
-          - _medium_gpu_members[0].litellm_params.order | int == 1
-          - _medium_gpu_twins | length == 1
-          - (_medium_gpu_twins[0].litellm_params.extra_body | default({})).get('priority', 0) | int == 1
-          - "'tier-0' in _medium_gpu_twins[0].litellm_params.tags"
-          - llm_router_model_group_aliases.values() | select('equalto', llm_router_primary_model) | list | length > 0
-          - llm_router_gpu_profile_aliases | length == 0
-        fail_msg: "medium capability members={{ _medium_members }}"
-      vars:
-        _medium_members: >-
-          {{ _medium_config.model_list
-             | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
-        _medium_gpu_members: >-
-          {{ _medium_members
-             | selectattr('litellm_params.model', 'equalto', _gpu_model)
-             | selectattr('litellm_params.tags', 'contains', 'default') | list }}
-        _medium_gpu_twins: >-
-          {{ _medium_members
-             | selectattr('litellm_params.model', 'equalto', _gpu_model)
-             | selectattr('litellm_params.tags', 'contains', 'tier-0') | list }}
-        _gpu_model: >-
-          {{ llm_router_gpu_models[0].litellm_model_name
-             | default(llm_router_gpu_models[0].provider ~ '/' ~ llm_router_gpu_models[0].upstream_model_id) }}
-
-    - name: Select the small profile and render its shared capability
-      ansible.builtin.set_fact:
-        llm_active_profile: small
-        llm_router_llm_vllm_enabled: true
-        llm_router_vllm_precheck_passed: true
-
-    - name: Refresh cached router projections after fixture input changes [gpu-pro6000-enabled-render-2]
-      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
-
-    - name: Render the small capability with its active GPU member
-      ansible.builtin.set_fact:
-        _small_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-
-    - name: The active GPU profile joins the small capability
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - llm_router_gpu_models | length == 1
-          - llm_router_gpu_models[0].route_group == llm_router_small_model
-          - llm_router_gpu_models[0].order | int == 2
-          - _small_gpu_members | length == 1
-          - _small_gpu_members[0].litellm_params.order | int == 2
-          - _small_gpu_twins | length == 1
-          - (_small_gpu_twins[0].litellm_params.extra_body | default({})).get('priority', 0) | int == 1
-          - "'tier-0' in _small_gpu_twins[0].litellm_params.tags"
-          - >-
-            _vllm_entry.litellm_params.max_parallel_requests | int
-            == llm_router_gpu_models[0].max_parallel_requests | int
-        fail_msg: "small capability members={{ _small_members }}"
-      vars:
-        _small_members: >-
-          {{ _small_config.model_list
-             | selectattr('model_name', 'equalto', llm_router_small_model) | list }}
-        _small_gpu_members: >-
-          {{ _small_members
-             | selectattr('litellm_params.model', 'equalto', _gpu_model)
-             | selectattr('litellm_params.tags', 'contains', 'default') | list }}
-        _small_gpu_twins: >-
-          {{ _small_members
-             | selectattr('litellm_params.model', 'equalto', _gpu_model)
-             | selectattr('litellm_params.tags', 'contains', 'tier-0') | list }}
-        _gpu_model: >-
-          {{ llm_router_gpu_models[0].litellm_model_name
-             | default(llm_router_gpu_models[0].provider ~ '/' ~ llm_router_gpu_models[0].upstream_model_id) }}
-        _vllm_entry: >-
-          {{ _small_members
-             | selectattr('litellm_params.order', 'equalto', llm_router_gpu_models[0].order)
-             | first }}
-
-    - name: Preserve GPU-first behavior through capability aliases
-      ansible.builtin.import_tasks: tasks/gpu_first_rung_contract.yml
-
-    - name: Render GPU deployments with hosted_vllm and retain the openai passthrough
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _gpu_deployments | length == llm_router_priority_tiers | length * llm_router_gpu_models | length
-          - _gpu_base_deployments | length == llm_router_gpu_models | length
-          - >-
-            _gpu_base_deployments
-            | selectattr('litellm_params.extra_body.priority', 'equalto', 10)
-            | list | length == _gpu_base_deployments | length
-          - _gpu_agent_twins | length == llm_router_gpu_models | length
-          - >-
-            _gpu_agent_twins
-            | selectattr('litellm_params.extra_body.priority', 'equalto', 1)
-            | list | length == _gpu_agent_twins | length
-          - _agent_selected_rows | length >= _gpu_agent_twins | length
-          - >-
-            _agent_selected_rows
-            | selectattr('litellm_params.extra_body.priority', 'equalto', 1)
-            | list | length == _agent_selected_rows | length
-          - _interactive_selected_rows | length > 0
-          - >-
-            _interactive_selected_rows
-            | selectattr('litellm_params.extra_body.priority', 'equalto', 10)
-            | list | length == _interactive_selected_rows | length
-          - _bad_priority_deployments | length == 0
-          - >-
-            _gpu_deployments
-            | selectattr('litellm_params.model', 'match', '^hosted_vllm/')
-            | list | length == _gpu_deployments | length
-          - >-
-            _gpu_deployments
-            | selectattr('litellm_params.model', 'match', '^openai/')
-            | list | length == 0
-          - >-
-            _small_config.model_list
-            | selectattr('model_name', 'equalto', '*')
-            | selectattr('litellm_params.model', 'equalto', 'openai/*')
-            | list | length == llm_router_priority_tiers | length
-        fail_msg: >-
-          GPU deployments must use hosted_vllm while the large-tier openai
-          wildcard passthrough remains present.
-      vars:
-        _gpu_deployments: >-
-          {{ _small_config.model_list
-             | selectattr('model_info.profile', 'defined') | list }}
-        _gpu_base_deployments: >-
-          {{ _gpu_deployments
-             | selectattr('litellm_params.tags', 'contains', 'default') | list }}
-        _gpu_agent_twins: >-
-          {{ _gpu_deployments
-             | selectattr('litellm_params.tags', 'contains', 'tier-0') | list }}
-        _agent_selected_rows: >-
-          {{ _small_config.model_list
-             | selectattr('model_name', 'in', _llm_router_local_agent_groups)
-             | selectattr('litellm_params.tags', 'contains', 'tier-0') | list }}
-        _interactive_selected_rows: >-
-          {{ _small_config.model_list
-             | selectattr('model_name', 'in', _llm_router_local_agent_groups)
-             | selectattr('litellm_params.tags', 'contains', 'default') | list }}
-        _bad_priority_deployments: >-
-          {%- set ns = namespace(rows=[]) -%}
-          {%- for d in _small_config.model_list
-                if d.litellm_params.extra_body.priority is defined -%}
-          {%- set _tier = llm_router_priority_tiers
-                | selectattr('priority', 'equalto', d.litellm_params.extra_body.priority) | first | default({}) -%}
-          {%- if 'local' not in d.litellm_params.tags
-                or _tier.team_id | default('invalid-tier') not in d.litellm_params.tags -%}
-          {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (d.litellm_params.model | string)] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.rows }}
-
-    - name: Check the Studio rung of the small capability
-      ansible.builtin.include_tasks: tasks/pro6000_small_fallback_case.yml
+diff --git a/tests/llm_router/tasks/pro6000_small_fallback_case.yml b/tests/llm_router/tasks/pro6000_small_fallback_case.yml
+index 622b7e6..0c98fff 100644
+--- a/tests/llm_router/tasks/pro6000_small_fallback_case.yml
++++ b/tests/llm_router/tasks/pro6000_small_fallback_case.yml
+@@ -5,9 +5,14 @@
+     quiet: true
+     that:
+       - _small_route_members | map(attribute='litellm_params.order') | map('int') | unique | sort == [1, 2]
+-      - _small_4080 | length > 0
++      - _small_4080 | length == llm_router_priority_tiers | length
+       - _small_4080 | map(attribute='litellm_params.order') | map('int') | unique | list == [1]
+-      - _small_6000 | length > 0
++      - _small_4080 | map(attribute='litellm_params.max_parallel_requests') | unique | list == [2]
++      - >-
++        _small_4080 | map(attribute='litellm_params.max_parallel_requests') | unique | list
++        == [(llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | first)
++            .max_parallel_requests]
++      - _small_6000 | length == llm_router_priority_tiers | length
+       - _small_6000 | map(attribute='litellm_params.order') | map('int') | unique | list == [2]
+       # One endpoint, rendered in its single lower-case form: a case variant
+       # of the same host is a second deployment to the router, not an alias.
