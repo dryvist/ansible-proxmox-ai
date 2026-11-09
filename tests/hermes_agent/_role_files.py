@@ -29,6 +29,16 @@ import yaml
 _CONCAT_RE = re.compile(r"^\{\{\s*([\w\s+]+?)\s*\}\}$")
 
 
+def _task_items(tasks: list[dict]):
+    """Yield tasks nested under block, rescue, or always containers."""
+    for task in tasks:
+        yield task
+        for child_key in ("block", "rescue", "always"):
+            children = task.get(child_key, [])
+            if isinstance(children, list):
+                yield from _task_items(children)
+
+
 def role_defaults(role_root: Path) -> dict:
     """Merge every file in defaults/main/ into one dict, in filename order,
     then resolve any whole-value `{{ a + b + c }}` list concatenation.

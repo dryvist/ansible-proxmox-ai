@@ -13,7 +13,7 @@ import subprocess
 
 import yaml
 
-from _role_files import include_file
+from _role_files import _task_items, include_file
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "playbooks" / "agents.yml"
@@ -36,15 +36,6 @@ EGRESS_FILES = {"egress.yml", "egress_domains.yml", "egress_host.yml"}
 def _tags(task: dict) -> list[str]:
     tags = task.get("tags", [])
     return [tags] if isinstance(tags, str) else list(tags or [])
-
-
-def _task_items(tasks: list[dict]) -> list[dict]:
-    for task in tasks:
-        yield task
-        for child_key in ("block", "rescue", "always"):
-            children = task.get(child_key, [])
-            if isinstance(children, list):
-                yield from _task_items(children)
 
 
 def _import_target(task: dict) -> str | None:
