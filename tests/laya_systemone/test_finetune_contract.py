@@ -75,7 +75,7 @@ def _render_env(*, enabled: bool, model_exists: bool) -> str:
 
 def test_finetune_defaults_are_disabled_and_configuration_is_opt_in() -> None:
     assert DEFAULTS["laya_systemone_finetune_enabled"] is False
-    assert DEFAULTS["laya_systemone_finetune_action"] == "dispatch"
+    assert DEFAULTS["laya_systemone_finetune_action"] == ""
     assert DEFAULTS["laya_systemone_finetune_unit"] == "laya-finetune.service"
     assert DEFAULTS["laya_systemone_finetune_base_download_timeout_seconds"] == 420
     assert DEFAULTS["laya_systemone_finetune_dataset_download_timeout_seconds"] == 30
@@ -328,3 +328,13 @@ def test_downloaded_csv_files_are_sha256_verified_and_training_reuses_only_match
         "{{ laya_systemone_finetune_model_dir }}.prev",
         "{{ laya_systemone_finetune_model_dir }}",
     ]
+
+
+def test_inventory_never_enables_finetune_mode():
+    root = Path(__file__).resolve().parents[2] / "inventory"
+    offenders = [
+        str(path.relative_to(root))
+        for path in sorted(root.rglob("*.yml"))
+        if "laya_systemone_finetune_enabled" in (yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+    ]
+    assert offenders == [], f"fine-tune mode is extra-var only: {offenders}"
