@@ -1,0 +1,21 @@
+---
+- name: Bind the controller's validated plan to the candidate guest
+  ansible.builtin.include_tasks: prepare.yml
+
+- name: Read free bytes under the candidate model cache
+  ansible.builtin.command:
+    argv: [df, --output=avail, -B1, "{{ llm_gpu_serving_model_cache_path }}"]
+  register: llm_model_trial_cache_free
+  changed_when: false
+
+- name: Require free space for the selected files plus 10 percent
+  ansible.builtin.assert:
+    that:
+      - >-
+        (llm_model_trial_cache_free.stdout_lines[-1] | int)
+        >= ((llm_model_trial_plan.files | map(attribute='size') | sum) * 1.1) | int
+    fail_msg: "The candidate model cache lacks free space for the selected files plus 10 percent."
+    quiet: true
+
+- name: Download the selected files before the baseline stops
+  ansible.builtin.include_tasks: download.yml

@@ -26,10 +26,11 @@ def include_of(task: dict[str, Any]) -> str:
     return task["ansible.builtin.include_tasks"]
 
 
-def test_playbook_runs_suspend_serve_and_restore_plays_in_order() -> None:
+def test_playbook_runs_prestage_suspend_serve_and_restore_plays_in_order() -> None:
     plays = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())
     assert [play.get("hosts") for play in plays[1:]] == [
         "localhost",
+        "llm_model_trial_candidate_group",
         "llm_gpu_group",
         "llm_model_trial_candidate_group",
         "llm_gpu_group",
@@ -56,7 +57,7 @@ def test_controller_preflight_and_candidate_placement_run_under_the_trial_tag() 
 
 def test_default_and_container_candidate_flows_are_mutually_exclusive() -> None:
     plays = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())
-    candidate = next(play for play in plays if play.get("hosts") == "llm_model_trial_candidate_group")
+    candidate = plays[4]
     default_task, container_task = candidate["tasks"]
     assert default_task["ansible.builtin.include_role"]["tasks_from"] == "serve.yml"
     assert default_task["when"] == f"not ({MODE})"
@@ -66,10 +67,54 @@ def test_default_and_container_candidate_flows_are_mutually_exclusive() -> None:
 
 def test_live_guest_plays_run_only_in_container_mode() -> None:
     plays = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())
-    for play in (plays[2], plays[4]):
+    for play in (plays[3], plays[5]):
         task = play["tasks"][0]
         assert task["when"] == MODE
         assert play["hosts"] == "llm_gpu_group"
+
+
+def test_container_files_download_on_the_target_before_the_baseline_stops() -> None:
+    plays = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())
+    prestage = plays[2]
+    task = prestage["tasks"][0]
+    assert prestage["hosts"] == "llm_model_trial_candidate_group"
+    assert prestage["any_errors_fatal"] is True
+    assert task["ansible.builtin.include_role"]["tasks_from"] == "prestage-container.yml"
+    assert task["when"] == [
+        MODE,
+        "hostvars['localhost'].llm_model_trial_container_settings.separate_guest | bool",
+    ]
+    flow = load("prestage-container.yml")
+    assert names(flow) == [
+        "Bind the controller's validated plan to the candidate guest",
+        "Read free bytes under the candidate model cache",
+        "Require free space for the selected files plus 10 percent",
+        "Download the selected files before the baseline stops",
+    ]
+    assert include_of(flow[0]) == "prepare.yml"
+    assert include_of(flow[3]) == "download.yml"
+    assert flow[1]["register"] == "llm_model_trial_cache_free"
+    gate = " ".join(flow[2]["ansible.builtin.assert"]["that"][0].split())
+    assert gate == (
+        "(llm_model_trial_cache_free.stdout_lines[-1] | int) >= "
+        "((llm_model_trial_plan.files | map(attribute='size') | sum) * 1.1) | int"
+    )
+
+
+def test_container_prestage_gate_evaluates_free_space() -> None:
+    flow = load("prestage-container.yml")
+    expr = " ".join(flow[2]["ansible.builtin.assert"]["that"][0].split())
+    env = jinja2.Environment()
+    check = env.compile_expression(expr)
+    plan = {"files": [{"size": 100}, {"size": 900}]}
+    assert check(llm_model_trial_cache_free={"stdout_lines": ["Avail", "1100"]}, llm_model_trial_plan=plan)
+    assert not check(llm_model_trial_cache_free={"stdout_lines": ["Avail", "1099"]}, llm_model_trial_plan=plan)
+
+
+def test_separate_guest_runs_download_only_before_the_baseline_stops() -> None:
+    flow = load("acquire-and-serve-container.yml")
+    download = next(t for t in flow if t.get("ansible.builtin.include_tasks") == "download.yml")
+    assert download["when"] == "not (hostvars['localhost'].llm_model_trial_container_settings.separate_guest | bool)"
 
 
 def test_candidate_failure_does_not_fail_the_candidate_play() -> None:
