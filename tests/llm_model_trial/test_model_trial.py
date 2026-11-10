@@ -203,7 +203,12 @@ def test_trial_always_path_restores_and_verifies_baseline() -> None:
     )
     release = yaml.safe_load((ROLE / "tasks" / release_include).read_text())
     restore_include = release[0]["ansible.builtin.include_tasks"]
-    always = yaml.safe_load((ROLE / "tasks" / restore_include).read_text())
+    # restore.yml includes the candidate teardown, then the baseline restore, in order.
+    always = [
+        task
+        for include in yaml.safe_load((ROLE / "tasks" / restore_include).read_text())
+        for task in yaml.safe_load((ROLE / "tasks" / include["ansible.builtin.include_tasks"]).read_text())
+    ]
     always_names = [task["name"] for task in always]
     assert "Always restore the exact recorded baseline serving unit" in always_names
     assert "Verify restored baseline /v1/models after the trial" in always_names
