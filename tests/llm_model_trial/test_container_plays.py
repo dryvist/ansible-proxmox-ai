@@ -45,6 +45,15 @@ def test_candidate_group_is_populated_on_localhost_from_the_preflight_host() -> 
     assert "llm_model_trial_candidate_host" in add_host["ansible.builtin.add_host"]["name"]
 
 
+def test_controller_preflight_and_candidate_placement_run_under_the_trial_tag() -> None:
+    localhost = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())[1]
+    preflight = next(task for task in localhost["tasks"] if "ansible.builtin.include_role" in task)
+    add_host = next(task for task in localhost["tasks"] if "ansible.builtin.add_host" in task)
+    assert preflight["tags"] == ["llm_model_trial"]
+    assert preflight["ansible.builtin.include_role"]["apply"]["tags"] == ["llm_model_trial"]
+    assert add_host["tags"] == ["llm_model_trial"]
+
+
 def test_default_and_container_candidate_flows_are_mutually_exclusive() -> None:
     plays = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())
     candidate = next(play for play in plays if play.get("hosts") == "llm_model_trial_candidate_group")
