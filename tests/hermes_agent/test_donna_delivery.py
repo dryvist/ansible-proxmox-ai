@@ -36,4 +36,5 @@ def test_without_a_channel_output_stays_local():
 
 def test_other_identities_never_take_the_donna_channel():
     for identity in ('hermes', 'pepper', 'hermes-private'):
-        assert _deliver(identity, bao={'SLACK_DELIVER_CHANNEL': 'C0EXAMPLE1'}) == ('local', 'local')
+        bao = {'SLACK_DELIVER_CHANNEL': 'C0EXAMPLE1', 'SLACK_FAILURE_CHANNEL': 'C0EXAMPLE9'}
+        assert _deliver(identity, bao=bao) == ('local', 'local')
