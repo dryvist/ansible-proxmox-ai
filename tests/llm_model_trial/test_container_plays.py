@@ -111,6 +111,12 @@ def test_container_prestage_gate_evaluates_free_space() -> None:
     assert not check(llm_model_trial_cache_free={"stdout_lines": ["Avail", "1099"]}, llm_model_trial_plan=plan)
 
 
+def test_separate_guest_runs_download_only_before_the_baseline_stops() -> None:
+    flow = load("acquire-and-serve-container.yml")
+    download = next(t for t in flow if t.get("ansible.builtin.include_tasks") == "download.yml")
+    assert download["when"] == "not (hostvars['localhost'].llm_model_trial_container_settings.separate_guest | bool)"
+
+
 def test_candidate_failure_does_not_fail_the_candidate_play() -> None:
     serve = load("serve-container.yml")
     block = next(task for task in serve if "block" in task)
