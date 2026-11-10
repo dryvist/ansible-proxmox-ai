@@ -64,13 +64,20 @@ def _settings():
     return settings
 
 
+class _Unsupported(ValueError):
+    """Content the text classifier cannot inspect. The category is logged; the content never is."""
+
+
 def _strings(value):
     if isinstance(value, str):
         yield value
+    elif isinstance(value, (bool, int, float)):
+        # Numbers and booleans (a tool call index, a flag) are classified as their text.
+        yield str(value)
     elif isinstance(value, dict):
         # A text classifier cannot inspect images, audio, files, or unknown content blocks.
         if "type" in value and value["type"] not in _TEXT_TYPES:
-            raise ValueError("unsupported content type")
+            raise _Unsupported("unsupported_block")
         # role and type are labels, not content; leaving them in would spend the character cap on them.
         for key, item in value.items():
             if key not in _LABEL_KEYS:
@@ -79,7 +86,7 @@ def _strings(value):
         for item in value:
             yield from _strings(item)
     elif value is not None:
-        raise ValueError("unsupported content value")
+        raise _Unsupported("unsupported_value")
 
 
 def _message_text(data):
@@ -244,6 +251,8 @@ async def _refusal_reason(data):
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+    except _Unsupported as exc:
+        return str(exc)
     except Exception:
         # Fail closed on any classify failure. The exception is not logged: its text can carry request content.
         return "error"
