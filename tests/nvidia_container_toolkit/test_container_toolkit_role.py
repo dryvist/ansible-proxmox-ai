@@ -41,10 +41,20 @@ def _main_tasks() -> list[dict]:
 def test_package_and_repository_are_pinned_to_nvidia_apt():
     defaults = _load(ROLE / "defaults/main.yml")
     assert re.fullmatch(r"1\.\d+\.\d+-\d+", defaults["nvidia_container_toolkit_package_version"])
-    assert defaults["nvidia_container_toolkit_repo_uri"].startswith(
-        "https://nvidia.github.io/libnvidia-container/stable/deb/"
-    )
-    assert defaults["nvidia_container_toolkit_repo_key_url"] == "https://nvidia.github.io/libnvidia-container/gpgkey"
+    guest = _load(ROOT / "roles/nvidia_gpu_guest/defaults/main/00-core.yml")
+    facts = {"ansible_facts": {"distribution_major_version": "13"}}
+    env = _environment()
+
+    def render(template: str, **extra: str) -> str:
+        return env.from_string(template).render(**facts, **extra).strip()
+
+    uri = render(defaults["nvidia_container_toolkit_repo_uri"])
+    assert uri == "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/"
+    assert uri == render(guest["nvidia_gpu_guest_nvidia_repo_uri"])
+    key = render(defaults["nvidia_container_toolkit_repo_key_url"], nvidia_container_toolkit_repo_uri=uri)
+    guest_key = render(guest["nvidia_gpu_guest_nvidia_repo_key_url"], nvidia_gpu_guest_nvidia_repo_uri=uri)
+    assert key == guest_key == uri + "8793F200.pub"
+    assert defaults["nvidia_container_toolkit_repo_name"] == "nvidia-cuda"
 
 
 def test_install_task_uses_the_pinned_version_variable():

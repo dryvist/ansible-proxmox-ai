@@ -28,7 +28,8 @@ scripts/run-ansible.sh playbooks/llm-gpu-container-trial.yml -i inventory/hosts.
 
 The role does this, in order:
 
-1. Adds NVIDIA's container toolkit apt repository (`nvidia_container_toolkit_repo_uri`)
+1. Adds NVIDIA's CUDA apt repository (`nvidia_container_toolkit_repo_uri`, the same `nvidia-cuda` source that
+   `nvidia_gpu_guest` writes)
    and installs `nvidia-container-toolkit`, `nvidia-container-toolkit-base`,
    `libnvidia-container-tools` and `libnvidia-container1` at the pinned
    `nvidia_container_toolkit_package_version`.
