@@ -4,14 +4,14 @@ from test_gpu_registry import _entries, _serving_profiles
 
 
 def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
-    """Sweeps and medium-a admit 1..64; engine slots control active work."""
+    """Sweeps admit 1..64; every other entry admits its engine slot count."""
     entries = _entries()
     serving_profiles = _serving_profiles()
     admission_profiles = {
         entry["profile"]
         for entry in entries
         if entry["client_model_id"].startswith("gpu-sweep-")
-    } | {"medium-a"}
+    }
 
     caps = {
         entry["profile"]: entry.get(
@@ -27,5 +27,5 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
     }
     assert caps == expected_caps
 
-    assert caps["medium-a"] == 64
+    assert caps["medium-a"] == serving_profiles["medium-a"]["max_num_seqs"] == 8
     assert caps["qwen38-96k-11-fp8-mtp"] == 16
