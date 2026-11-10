@@ -2,7 +2,8 @@
 
 Gives Docker on an NVIDIA guest GPU access. Applied only through
 `playbooks/llm-gpu-container-trial.yml`, to guests in
-`llm_gpu_container_trial_group` (the `llm-container-trial` guest tag).
+`llm_gpu_container_trial_group` (the `llm-container-trial` guest tag) or named in the
+`llm_gpu_container_trial_hosts` extra-var. The playbook refuses the live medium GPU guest either way.
 
 ## Installation
 

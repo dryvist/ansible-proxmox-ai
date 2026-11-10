@@ -110,7 +110,6 @@ def test_cdi_spec_is_staged_then_copied_and_the_stage_is_removed():
     copy = _module(_task(_main_tasks(), "Install the CDI specification"), "ansible.builtin.copy")
     assert copy["remote_src"] is True
     assert copy["src"] == "{{ nvidia_container_toolkit_cdi_stage.path }}"
-    # The stage is created outside check mode, so its removal must run there too.
     assert _task(_main_tasks(), "Remove the CDI staging file")["check_mode"] is False
 
 
