@@ -49,7 +49,12 @@ def test_package_and_repository_are_pinned_to_nvidia_apt():
 
 def test_install_task_uses_the_pinned_version_variable():
     install = _module(_task(_main_tasks(), "Install the pinned NVIDIA container toolkit"), "ansible.builtin.apt")
-    assert install["name"] == "nvidia-container-toolkit={{ nvidia_container_toolkit_package_version }}"
+    pin = "={{ nvidia_container_toolkit_package_version }}"
+    assert install["name"] == [
+        f"{name}{pin}"
+        for name in ("nvidia-container-toolkit", "nvidia-container-toolkit-base",
+                     "libnvidia-container-tools", "libnvidia-container1")
+    ]
 
 
 def test_sample_image_is_the_documented_image_pinned_by_digest():

@@ -38,7 +38,7 @@ def test_playbook_refuses_the_live_medium_guest_first():
     assert f"inventory_hostname != '{LIVE_MEDIUM}'" in first["that"]
 
 
-def test_nothing_else_reaches_the_trial_guests():
+def test_no_other_playbook_imports_the_container_trial():
     playbook_name = PLAYBOOK.name
     for path in sorted((ROOT / "playbooks").rglob("*.yml")):
         if path == PLAYBOOK:

@@ -28,12 +28,12 @@ scripts/run-ansible.sh playbooks/llm-gpu-container-trial.yml -i inventory/hosts.
 The role does this, in order:
 
 1. Adds NVIDIA's container toolkit apt repository (`nvidia_container_toolkit_repo_uri`)
-   and installs `nvidia-container-toolkit` at the pinned
+   and installs `nvidia-container-toolkit`, `nvidia-container-toolkit-base`,
+   `libnvidia-container-tools` and `libnvidia-container1` at the pinned
    `nvidia_container_toolkit_package_version`.
 2. Registers the `nvidia` runtime in `/etc/docker/daemon.json` with
    `nvidia-ctk runtime configure`, only when it is missing. A change restarts Docker.
-3. Sets `no-cgroups = true` in the runtime config (`nvidia_container_toolkit_no_cgroups`),
-   because the guest is an LXC container.
+3. Sets `no-cgroups = true` in the runtime config (`nvidia_container_toolkit_no_cgroups`).
 4. Generates the CDI specification into `nvidia_container_toolkit_cdi_spec_path`.
    The spec is regenerated on every converge and replaced only when it changed.
 5. Runs `nvidia-smi -L` in a throwaway `--rm` container from
