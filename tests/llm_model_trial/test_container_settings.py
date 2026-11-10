@@ -11,7 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 ROLE = ROOT / "roles/llm_model_trial"
 SPEC = importlib.util.spec_from_file_location(
-    "model_trial", ROLE / "filter_plugins/model_trial.py"
+    "model_trial_container", ROLE / "filter_plugins/model_trial_container.py"
 )
 assert SPEC and SPEC.loader
 PLUGIN = importlib.util.module_from_spec(SPEC)
