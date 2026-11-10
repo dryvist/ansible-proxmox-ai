@@ -26,10 +26,11 @@ def include_of(task: dict[str, Any]) -> str:
     return task["ansible.builtin.include_tasks"]
 
 
-def test_playbook_runs_suspend_serve_and_restore_plays_in_order() -> None:
+def test_playbook_runs_prestage_suspend_serve_and_restore_plays_in_order() -> None:
     plays = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())
     assert [play.get("hosts") for play in plays[1:]] == [
         "localhost",
+        "llm_model_trial_candidate_group",
         "llm_gpu_group",
         "llm_model_trial_candidate_group",
         "llm_gpu_group",
@@ -56,7 +57,7 @@ def test_controller_preflight_and_candidate_placement_run_under_the_trial_tag() 
 
 def test_default_and_container_candidate_flows_are_mutually_exclusive() -> None:
     plays = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())
-    candidate = next(play for play in plays if play.get("hosts") == "llm_model_trial_candidate_group")
+    candidate = plays[4]
     default_task, container_task = candidate["tasks"]
     assert default_task["ansible.builtin.include_role"]["tasks_from"] == "serve.yml"
     assert default_task["when"] == f"not ({MODE})"
@@ -66,10 +67,25 @@ def test_default_and_container_candidate_flows_are_mutually_exclusive() -> None:
 
 def test_live_guest_plays_run_only_in_container_mode() -> None:
     plays = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())
-    for play in (plays[2], plays[4]):
+    for play in (plays[3], plays[5]):
         task = play["tasks"][0]
         assert task["when"] == MODE
         assert play["hosts"] == "llm_gpu_group"
+
+
+def test_container_files_download_on_the_target_before_the_baseline_stops() -> None:
+    plays = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())
+    prestage = plays[2]
+    task = prestage["tasks"][0]
+    assert prestage["hosts"] == "llm_model_trial_candidate_group"
+    assert prestage["any_errors_fatal"] is True
+    assert task["ansible.builtin.include_role"]["tasks_from"] == "prestage-container.yml"
+    assert task["when"] == MODE
+    flow = load("prestage-container.yml")
+    assert [include_of(t) for t in flow if "ansible.builtin.include_tasks" in t] == ["prepare.yml", "download.yml"]
+    space = next(t for t in flow if "ansible.builtin.assert" in t)
+    assert "* 1.1" in space["ansible.builtin.assert"]["that"][0]
+    assert names(flow).index("Require free space for the selected files plus 10 percent") < len(flow) - 1
 
 
 def test_candidate_failure_does_not_fail_the_candidate_play() -> None:
