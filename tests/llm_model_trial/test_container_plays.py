@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ROLE = ROOT / "roles/llm_model_trial"
 TASKS = ROLE / "tasks"
 MODE = "hostvars['localhost'].llm_model_trial_container_settings.container_mode | bool"
+BASELINE_HOSTS = "{{ llm_model_trial_inventory_group | default('llm_gpu_group') }}"
 
 
 def load(name: str) -> list[dict[str, Any]]:
@@ -31,9 +32,9 @@ def test_playbook_runs_prestage_suspend_serve_and_restore_plays_in_order() -> No
     assert [play.get("hosts") for play in plays[1:]] == [
         "localhost",
         "llm_model_trial_candidate_group",
-        "llm_gpu_group",
+        BASELINE_HOSTS,
         "llm_model_trial_candidate_group",
-        "llm_gpu_group",
+        BASELINE_HOSTS,
     ]
     for play in plays[2:]:
         assert play["any_errors_fatal"] is True
@@ -70,7 +71,7 @@ def test_live_guest_plays_run_only_in_container_mode() -> None:
     for play in (plays[3], plays[5]):
         task = play["tasks"][0]
         assert task["when"] == MODE
-        assert play["hosts"] == "llm_gpu_group"
+        assert play["hosts"] == BASELINE_HOSTS
 
 
 def test_container_files_download_on_the_target_before_the_baseline_stops() -> None:
@@ -190,3 +191,21 @@ def test_timer_template_arms_the_baseline_restore_for_the_window() -> None:
     assert "OnActiveSec=45min" in timer
     assert "Unit=llm-model-trial-restore-trial123.service" in timer
     assert "ExecStart=/usr/bin/systemctl start llm-gpu-serving-medium.service" in service
+
+
+def _baseline_assert(groups: dict, baseline: str | None) -> bool:
+    localhost = yaml.safe_load((ROOT / "playbooks/llm-model-trial.yml").read_text())[1]
+    check = next(t for t in localhost["tasks"] if t.get("name") == "Require exactly one baseline GPU host in the inventory")
+    expression = " ".join(check["ansible.builtin.assert"]["that"][0].split())
+    context = {"groups": groups}
+    if baseline is not None:
+        context["llm_model_trial_inventory_group"] = baseline
+    return jinja2.Environment().compile_expression(expression)(**context)
+
+
+def test_baseline_assert_accepts_one_host_and_rejects_a_shared_group() -> None:
+    groups = {"all": ["gpu-live", "gpu-other", "gpu-trial"], "llm_gpu_group": ["gpu-live", "gpu-other"]}
+    assert _baseline_assert(groups, None) is False
+    assert _baseline_assert(groups, "gpu-live") is True
+    assert _baseline_assert(groups, "no-such-host") is False
+    assert _baseline_assert({"all": ["gpu-live"], "llm_gpu_group": ["gpu-live"]}, None) is True
