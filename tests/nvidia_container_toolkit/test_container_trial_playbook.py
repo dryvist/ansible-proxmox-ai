@@ -13,8 +13,8 @@ LIVE_MEDIUM = "llm-blackwell-7-96GB-medium"
 
 def _play() -> dict:
     plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
-    assert len(plays) == 1
-    return plays[0]
+    assert len(plays) == 2
+    return plays[1]
 
 
 def test_play_targets_only_the_opt_in_group_one_guest_at_a_time():
@@ -31,6 +31,11 @@ def test_play_applies_docker_then_the_toolkit_role():
         if "ansible.builtin.include_role" in task
     ]
     assert roles == ["docker_engine", "nvidia_container_toolkit"]
+
+
+def test_playbook_loads_the_inventory_first():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    assert plays[0]["ansible.builtin.import_playbook"] == "../inventory/load_tofu.yml"
 
 
 def test_playbook_refuses_the_live_medium_guest_first():
