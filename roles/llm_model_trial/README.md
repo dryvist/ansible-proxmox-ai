@@ -14,7 +14,7 @@ unchanged.
 | `llm_model_trial_container_image` | `""` | `name@sha256:<64 hex>`, optional tag before the digest. Enables container mode. |
 | `llm_model_trial_container_env` | `{}` | Environment for the container. Values must not look like secrets (checked with `llm_model_trial_redact_regex`). |
 | `llm_model_trial_container_args` | `[]` | Extra `vllm serve` arguments, one list item per argument. |
-| `llm_model_trial_target_group` | `llm_model_trial_inventory_group` | Inventory group of the guest that runs the candidate. |
+| `llm_model_trial_target_group` | `llm_model_trial_inventory_group` | Inventory group, or one inventory host name, of the guest that runs the candidate. |
 | `llm_model_trial_window_minutes` | `60` | Safety-net window, 3 to 60 minutes. |
 | `llm_model_trial_fallback_probe_url` | `""` | Base URL probed for HTTP 200 on `/v1/models` before the baseline stops. Empty skips the probe. |
 
