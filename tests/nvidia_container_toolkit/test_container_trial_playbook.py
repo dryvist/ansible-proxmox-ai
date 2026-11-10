@@ -30,7 +30,14 @@ def test_play_applies_docker_then_the_toolkit_role():
         for task in _play()["tasks"]
         if "ansible.builtin.include_role" in task
     ]
-    assert roles == ["docker_engine", "nvidia_container_toolkit"]
+    assert roles == ["llamacpp_release", "docker_engine", "nvidia_container_toolkit"]
+
+
+def test_docker_install_runs_through_the_artifact_cache_proxy():
+    tasks = [task for task in _play()["tasks"] if "ansible.builtin.include_role" in task]
+    proxy, docker = tasks[0]["ansible.builtin.include_role"], tasks[1]["ansible.builtin.include_role"]
+    assert proxy == {"name": "llamacpp_release", "tasks_from": "prepare.yml"}
+    assert docker["apply"]["environment"] == "{{ llamacpp_release_proxy_environment }}"
 
 
 def test_playbook_loads_the_inventory_first():
