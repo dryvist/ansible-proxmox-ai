@@ -80,12 +80,35 @@ def test_container_files_download_on_the_target_before_the_baseline_stops() -> N
     assert prestage["hosts"] == "llm_model_trial_candidate_group"
     assert prestage["any_errors_fatal"] is True
     assert task["ansible.builtin.include_role"]["tasks_from"] == "prestage-container.yml"
-    assert task["when"] == MODE
+    assert task["when"] == [
+        MODE,
+        "hostvars['localhost'].llm_model_trial_container_settings.separate_guest | bool",
+    ]
     flow = load("prestage-container.yml")
-    assert [include_of(t) for t in flow if "ansible.builtin.include_tasks" in t] == ["prepare.yml", "download.yml"]
-    space = next(t for t in flow if "ansible.builtin.assert" in t)
-    assert "* 1.1" in space["ansible.builtin.assert"]["that"][0]
-    assert names(flow).index("Require free space for the selected files plus 10 percent") < len(flow) - 1
+    assert names(flow) == [
+        "Bind the controller's validated plan to the candidate guest",
+        "Read free bytes under the candidate model cache",
+        "Require free space for the selected files plus 10 percent",
+        "Download the selected files before the baseline stops",
+    ]
+    assert include_of(flow[0]) == "prepare.yml"
+    assert include_of(flow[3]) == "download.yml"
+    assert flow[1]["register"] == "llm_model_trial_cache_free"
+    gate = " ".join(flow[2]["ansible.builtin.assert"]["that"][0].split())
+    assert gate == (
+        "(llm_model_trial_cache_free.stdout_lines[-1] | int) >= "
+        "((llm_model_trial_plan.files | map(attribute='size') | sum) * 1.1) | int"
+    )
+
+
+def test_container_prestage_gate_evaluates_free_space() -> None:
+    flow = load("prestage-container.yml")
+    expr = " ".join(flow[2]["ansible.builtin.assert"]["that"][0].split())
+    env = jinja2.Environment()
+    check = env.compile_expression(expr)
+    plan = {"files": [{"size": 100}, {"size": 900}]}
+    assert check(llm_model_trial_cache_free={"stdout_lines": ["Avail", "1100"]}, llm_model_trial_plan=plan)
+    assert not check(llm_model_trial_cache_free={"stdout_lines": ["Avail", "1099"]}, llm_model_trial_plan=plan)
 
 
 def test_candidate_failure_does_not_fail_the_candidate_play() -> None:

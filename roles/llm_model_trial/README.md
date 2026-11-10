@@ -27,7 +27,7 @@ Validation runs on the controller in `preflight.yml` through `llm_model_trial_va
 ### Play order
 
 1. `localhost`: preflight, then add the candidate guest to `llm_model_trial_candidate_group`.
-2. `llm_model_trial_candidate_group` (container mode only): require free cache space for the selected files plus
+2. `llm_model_trial_candidate_group` (container mode on a separate guest only): require free cache space for the selected files plus
    10 percent, then download them.
 3. `llm_gpu_group` (container mode only): fallback probe, take the host lock, arm the restore timer, stop the baseline.
 4. `llm_model_trial_candidate_group`: serve the candidate container, hold it, then stop and unlink it.
