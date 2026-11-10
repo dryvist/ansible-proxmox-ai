@@ -1,0 +1,61 @@
+---
+- name: Name the candidate guest whose results this play imports
+  ansible.builtin.set_fact:
+    llm_model_trial_candidate_name: "{{ hostvars['localhost'].llm_model_trial_candidate_host }}"
+
+- name: Import the candidate results recorded on the target guest
+  ansible.builtin.set_fact:
+    llm_model_trial_stop_result: >-
+      {{ hostvars[llm_model_trial_candidate_name].llm_model_trial_stop_result | default({}) }}
+    llm_model_trial_candidate_state: >-
+      {{ hostvars[llm_model_trial_candidate_name].llm_model_trial_candidate_state | default({}) }}
+    llm_model_trial_unit_remove: >-
+      {{ hostvars[llm_model_trial_candidate_name].llm_model_trial_unit_remove | default({}) }}
+    llm_model_trial_daemon_reload: >-
+      {{ hostvars[llm_model_trial_candidate_name].llm_model_trial_daemon_reload | default({}) }}
+    llm_model_trial_candidate_failed: >-
+      {{ hostvars[llm_model_trial_candidate_name].llm_model_trial_candidate_failed | default(false) }}
+
+- name: Import the candidate trial facts and failure evidence
+  ansible.builtin.set_fact:
+    llm_model_trial_facts: >-
+      {{ hostvars[llm_model_trial_candidate_name].llm_model_trial_facts }}
+  when: hostvars[llm_model_trial_candidate_name].llm_model_trial_facts is defined
+
+- name: Import the candidate failure evidence
+  ansible.builtin.set_fact:
+    llm_model_trial_failure_evidence: >-
+      {{ hostvars[llm_model_trial_candidate_name].llm_model_trial_failure_evidence }}
+  when: hostvars[llm_model_trial_candidate_name].llm_model_trial_failure_evidence is defined
+
+- name: Restore the baseline and always tear down the restore timer
+  block:
+    - name: Restore and verify the baseline on the live guest
+      ansible.builtin.include_tasks: restore-baseline.yml
+  always:
+    - name: Stop the baseline restore timer
+      ansible.builtin.systemd:
+        name: "{{ llm_model_trial_restore_name }}.timer"
+        state: stopped
+      failed_when: false
+
+    - name: Remove the baseline restore timer units
+      ansible.builtin.file:
+        path: "{{ llm_gpu_serving_systemd_dir }}/{{ llm_model_trial_restore_name }}.{{ item }}"
+        state: absent
+      loop:
+        - timer
+        - service
+
+    - name: Reload systemd after removing the baseline restore timer
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+- name: Require the candidate trial to have succeeded
+  ansible.builtin.assert:
+    that:
+      - not (llm_model_trial_candidate_failed | bool)
+    fail_msg: >-
+      The candidate container trial failed after the baseline was restored; its
+      evidence is in the protected controller artifact.
+    quiet: true

@@ -25,8 +25,28 @@
         name: llm_model_trial
         tasks_from: preflight.yml
 
-- name: Serve one run-scoped candidate on the fixed 6000 GPU host
+    - name: Place the candidate guest in its own group for the candidate play
+      ansible.builtin.add_host:
+        name: "{{ hostvars['localhost'].llm_model_trial_candidate_host }}"
+        groups: llm_model_trial_candidate_group
+        changed_when: false
+
+- name: Stop the baseline behind a restore timer on the live guest (container mode only)
   hosts: llm_gpu_group
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Run the live-guest container trial suspension
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: container-suspend.yml
+      when: hostvars['localhost'].llm_model_trial_container_settings.container_mode | bool
+      tags:
+        - llm_model_trial
+
+- name: Serve one run-scoped candidate on the target guest
+  hosts: llm_model_trial_candidate_group
   become: true
   gather_facts: true
   any_errors_fatal: true
@@ -35,5 +55,28 @@
       ansible.builtin.include_role:
         name: llm_model_trial
         tasks_from: serve.yml
+      when: not (hostvars['localhost'].llm_model_trial_container_settings.container_mode | bool)
+      tags:
+        - llm_model_trial
+
+    - name: Run the target-side container trial
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: serve-container.yml
+      when: hostvars['localhost'].llm_model_trial_container_settings.container_mode | bool
+      tags:
+        - llm_model_trial
+
+- name: Restore the baseline and finish the trial on the live guest (container mode only)
+  hosts: llm_gpu_group
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Run the live-guest container trial restoration
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: restore-container.yml
+      when: hostvars['localhost'].llm_model_trial_container_settings.container_mode | bool
       tags:
         - llm_model_trial
