@@ -24,8 +24,8 @@ def validate_container_settings(settings: dict[str, Any]) -> dict[str, Any]:
     baseline_hosts = settings["baseline_hosts"]
     redact = re.compile(settings["redact_regex"])
 
-    if isinstance(window, bool) or not isinstance(window, int) or not 1 <= window <= 60:
-        raise ValueError("llm_model_trial_window_minutes must be an integer from 1 to 60")
+    if isinstance(window, bool) or not isinstance(window, int) or not 3 <= window <= 60:
+        raise ValueError("llm_model_trial_window_minutes must be an integer from 3 to 60")
     if not isinstance(env, dict) or not isinstance(args, list):
         raise ValueError("llm_model_trial_container_env must be a dict and llm_model_trial_container_args a list")
     if not image:

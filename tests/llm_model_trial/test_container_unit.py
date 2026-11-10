@@ -54,6 +54,7 @@ def test_container_unit_mounts_only_the_model_directory_read_only() -> None:
 def test_container_unit_stops_before_the_baseline_restore_timer() -> None:
     assert "RuntimeMaxSec=3480" in render()
     assert "RuntimeMaxSec=1680" in render(llm_model_trial_window_minutes=30)
+    assert "RuntimeMaxSec=60" in render(llm_model_trial_window_minutes=3)
 
 
 def test_container_unit_uses_gpu_access_host_network_and_pinned_image() -> None:

@@ -105,13 +105,13 @@ def test_container_args_must_be_single_line_strings(args: list[Any]) -> None:
         PLUGIN.validate_container_settings(settings(image=DIGEST, args=args))
 
 
-@pytest.mark.parametrize("window", [0, 61, True, "60", 1.5])
-def test_window_is_bounded_to_one_through_sixty_minutes(window: Any) -> None:
+@pytest.mark.parametrize("window", [0, 1, 2, 61, True, "60", 1.5])
+def test_window_is_bounded_to_three_through_sixty_minutes(window: Any) -> None:
     with pytest.raises(ValueError, match="window_minutes must be"):
         PLUGIN.validate_container_settings(settings(window_minutes=window))
 
 
-@pytest.mark.parametrize("window", [1, 60])
+@pytest.mark.parametrize("window", [3, 60])
 def test_window_bounds_are_inclusive(window: int) -> None:
     assert PLUGIN.validate_container_settings(settings(window_minutes=window))["container_mode"] is False
 
