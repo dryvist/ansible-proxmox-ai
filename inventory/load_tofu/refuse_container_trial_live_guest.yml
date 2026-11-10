@@ -1,0 +1,23 @@
+---
+# Stops the inventory load, before any host is added, when the live medium GPU guest
+# carries the llm-container-trial tag.
+- name: Refuse the live medium GPU guest in the container-trial opt-in
+  ansible.builtin.assert:
+    that:
+      - >-
+        ([item.key, item.value.hostname | default('')]
+         | intersect(_container_trial_refused_guests) | length == 0)
+        or 'llm-container-trial' not in (item.value.tags | default([]))
+    fail_msg: >-
+      {{ item.key }} carries the llm-container-trial tag, but the container-trial
+      opt-in must never select the live medium GPU guest. Remove the tag from the
+      published inventory.
+  loop: "{{ tofu_data.containers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    _container_trial_refused_guests:
+      - llm-blackwell-7-96GB-medium
+  when:
+    - tofu_data.containers is defined
+    - tofu_data.containers | length > 0
