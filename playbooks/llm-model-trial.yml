@@ -11,13 +11,17 @@
   vars:
     ansible_become: false
   tasks:
-    - name: Require exactly one GPU trial host in the inventory
+    - name: Require exactly one baseline GPU host in the inventory
       ansible.builtin.assert:
         that:
-          - groups['llm_gpu_group'] | default([]) | length == 1
+          - >-
+            (groups[llm_model_trial_inventory_group | default('llm_gpu_group')]
+             | default([llm_model_trial_inventory_group | default('llm_gpu_group')]
+                       if (llm_model_trial_inventory_group | default('llm_gpu_group')) in groups['all']
+                       else [])) | length == 1
         fail_msg: >-
-          The trial is fixed to host 6000 and requires llm_gpu_group to resolve
-          to exactly one inventory host.
+          The baseline (llm_model_trial_inventory_group: a group, or one inventory host name)
+          must resolve to exactly one inventory host.
         quiet: true
 
     - name: Run the controller-side Hugging Face preflight
@@ -55,7 +59,7 @@
         - llm_model_trial
 
 - name: Stop the baseline behind a restore timer on the live guest (container mode only)
-  hosts: llm_gpu_group
+  hosts: "{{ llm_model_trial_inventory_group | default('llm_gpu_group') }}"
   become: true
   gather_facts: true
   any_errors_fatal: true
@@ -91,7 +95,7 @@
         - llm_model_trial
 
 - name: Restore the baseline and finish the trial on the live guest (container mode only)
-  hosts: llm_gpu_group
+  hosts: "{{ llm_model_trial_inventory_group | default('llm_gpu_group') }}"
   become: true
   gather_facts: false
   any_errors_fatal: true

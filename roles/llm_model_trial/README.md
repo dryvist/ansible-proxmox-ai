@@ -14,6 +14,7 @@ unchanged.
 | `llm_model_trial_container_image` | `""` | `name@sha256:<64 hex>`, optional tag before the digest. Enables container mode. |
 | `llm_model_trial_container_env` | `{}` | Environment for the container. Values must not look like secrets (checked with `llm_model_trial_redact_regex`). |
 | `llm_model_trial_container_args` | `[]` | Extra `vllm serve` arguments, one list item per argument. |
+| `llm_model_trial_inventory_group` | `llm_gpu_group` | Inventory group, or one inventory host name, of the baseline GPU guest; must resolve to one host. |
 | `llm_model_trial_target_group` | `llm_model_trial_inventory_group` | Inventory group, or one inventory host name, of the guest that runs the candidate. |
 | `llm_model_trial_window_minutes` | `60` | Safety-net window, 3 to 60 minutes. |
 | `llm_model_trial_fallback_probe_url` | `""` | Base URL probed for HTTP 200 on `/v1/models` before the baseline stops. Empty skips the probe. |
@@ -29,10 +30,10 @@ Validation runs on the controller in `preflight.yml` through `llm_model_trial_va
 1. `localhost`: preflight, then add the candidate guest to `llm_model_trial_candidate_group`.
 2. `llm_model_trial_candidate_group` (container mode on a separate guest only): require free cache space for the selected files plus
    10 percent, then download them.
-3. `llm_gpu_group` (container mode only): fallback probe, take the host lock, arm the restore timer, stop the baseline.
+3. The baseline (`llm_model_trial_inventory_group`, container mode only): fallback probe, take the host lock, arm the restore timer, stop the baseline.
 4. `llm_model_trial_candidate_group`: serve the candidate container, hold it, then stop and unlink it.
    Failures are recorded as facts and do not stop the run.
-5. `llm_gpu_group` (container mode only): restore and verify the baseline, release the lock, stop and remove the
+5. The baseline (container mode only): restore and verify the baseline, release the lock, stop and remove the
    restore timer, then fail the run if the candidate failed.
 
 The restore timer starts the baseline `window_minutes` after the baseline stops. It is the safety net if the
