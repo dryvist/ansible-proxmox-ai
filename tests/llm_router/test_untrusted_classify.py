@@ -421,3 +421,5 @@ def test_numbers_and_booleans_in_messages_are_classified_as_text(ns, monkeypatch
     ], "cached": True})
     assert _run(ns, _key("untrusted"), data) is data
     assert len(classifier.calls) == 1
+    text = classifier.calls[0]["body"]["messages"][1]["content"]
+    assert "\n0\n" in text and "\nTrue" in text
