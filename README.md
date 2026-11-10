@@ -52,6 +52,8 @@ allows both to be skipped only on pushes and on pull requests into `develop`.
 - `ollama` — Ollama model server
 - `llama_cpp` — llama-server, direct (GPU-tier serving)
 - `llm_gpu_serving` — profile-based vLLM and llama.cpp GPU serving on `llm_gpu_group`, including the pinned guest NVIDIA userspace
+- `nvidia_container_toolkit` — opt-in Docker GPU access (NVIDIA container toolkit, pinned) on guests
+  tagged `llm-container-trial`, converged only by `playbooks/llm-gpu-container-trial.yml`
 - `llm_router` — LiteLLM proxy, the single OpenAI-compatible front door for
   the large/light serving tiers
 - `open_webui` — Open WebUI chat frontend

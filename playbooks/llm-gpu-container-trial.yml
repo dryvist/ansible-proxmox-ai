@@ -1,0 +1,41 @@
+---
+# Opt-in container runtime for GPU guests tagged llm-container-trial. Nothing imports
+# this playbook: site.yml and llm-serving.yml never reach these guests. The inventory
+# loader refuses the live medium GPU guest before this group is built.
+- name: Configure the GPU container runtime on opted-in guests
+  # An explicit host (extra-var) covers a guest tagged live but not yet in the published inventory.
+  hosts: "{{ llm_gpu_container_trial_hosts | default('llm_gpu_container_trial_group') }}"
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tags:
+    - llm_gpu_container_trial
+  pre_tasks:
+    - name: Refuse the live medium GPU guest
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname != 'llm-blackwell-7-96GB-medium'
+        fail_msg: The container-trial converge must never reach the live medium GPU guest.
+        quiet: true
+
+    - name: Require the trial guest to be in nvidia_gpu_group
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname in groups.get('nvidia_gpu_group', [])
+        fail_msg: >-
+          {{ inventory_hostname }} is in the container-trial group but not in
+          nvidia_gpu_group. Tag the guest nvidia-gpu or remove the
+          llm-container-trial tag.
+        quiet: true
+  tasks:
+    - name: Gather facts
+      ansible.builtin.include_tasks: tasks/gather_facts.yml
+
+    - name: Install Docker on the trial guest
+      ansible.builtin.include_role:
+        name: docker_engine
+
+    - name: Install the NVIDIA container toolkit and verify GPU access
+      ansible.builtin.include_role:
+        name: nvidia_container_toolkit
