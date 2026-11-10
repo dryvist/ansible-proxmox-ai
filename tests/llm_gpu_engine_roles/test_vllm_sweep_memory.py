@@ -114,7 +114,7 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         assert entry["servable"] is False
         assert entry["max_parallel_requests"] == (
             64
-            if entry["client_model_id"].startswith("gpu-sweep-") or name == "medium-a"
+            if entry["client_model_id"].startswith("gpu-sweep-")
             else profile["max_num_seqs"]
         )
         assert entry["context_window"] + entry["max_output_tokens"] == profile["max_model_len"]
