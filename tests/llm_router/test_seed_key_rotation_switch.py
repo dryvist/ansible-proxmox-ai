@@ -15,6 +15,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+from jinja2 import Environment
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "llm_router"
 
@@ -68,3 +71,28 @@ def test_keys_are_re_read_after_a_rotation_delete() -> None:
         "Create the caller keys that have a seeded value"
     )
     assert delete_idx < reread_idx < create_idx
+
+
+def test_rotation_refuses_an_alias_it_cannot_re_mint_before_the_delete() -> None:
+    tasks = yaml.safe_load(SEED_KEYS_SOURCE)
+    names = [task.get("name") for task in tasks]
+    guard_name = "Assert every alias flagged for rotation has a valid replacement value"
+    assert names.index(guard_name) < names.index("Delete the live key for every alias flagged for rotation")
+    guard = tasks[names.index(guard_name)]
+    expression = guard["vars"]["_llm_router_unrecreatable_rotate_aliases"].strip()[2:-2]
+    environment = Environment()
+    environment.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
+    refused = environment.compile_expression(expression)
+    keys = [
+        {"alias": "good", "value": "sk-" + "a" * 13},
+        {"alias": "short", "value": "sk-short"},
+        {"alias": "unprefixed", "value": "a" * 20},
+        {"alias": "empty", "value": ""},
+    ]
+
+    assert refused(llm_router_rotate_key_aliases=["good"], llm_router_virtual_keys=keys) == []
+    assert refused(
+        llm_router_rotate_key_aliases=["good", "short", "unprefixed", "empty", "undeclared"],
+        llm_router_virtual_keys=keys,
+    ) == ["short", "unprefixed", "empty", "undeclared"]
+    assert guard["when"] == "(llm_router_rotate_key_aliases | default([]) | length) > 0"
