@@ -27,8 +27,11 @@ def test_only_enabled_script_jobs_outside_the_default_home_are_selected():
         {"name": "default-home", "script": "d.py", "hermes_home": HOME, "enabled": True},
         {"name": "no-home", "script": "n.py", "enabled": True},
         {"name": "agentic", "hermes_home": f"{HOME}/profiles/homelab-admin", "enabled": True},
+        {"name": "string-off", "script": "s.py", "hermes_home": f"{HOME}/profiles/homelab-admin", "enabled": "false"},
+        {"name": "string-on", "script": "t.py", "hermes_home": f"{HOME}/profiles/homelab-admin", "enabled": "true"},
+        {"name": "empty-script", "script": "", "hermes_home": f"{HOME}/profiles/homelab-admin", "enabled": True},
     ]
-    assert [job["name"] for job in _profile_script_jobs(jobs)] == ["canary"]
+    assert [job["name"] for job in _profile_script_jobs(jobs)] == ["canary", "string-on"]
 
 
 def test_cron_reconcile_copies_scripts_into_profile_homes_before_creating_jobs():
@@ -38,7 +41,10 @@ def test_cron_reconcile_copies_scripts_into_profile_homes_before_creating_jobs()
     copy = tasks[place]["ansible.builtin.copy"]
     assert copy["remote_src"] is True
     assert copy["dest"] == "{{ item.hermes_home }}/scripts/{{ item.script }}"
-    assert names.index("Create the scripts directory of each profile home that runs a script job") < place
+    assert names.index("Read which profile homes that run a script job exist") < names.index(
+        "Create the scripts directory of each profile home that runs a script job"
+    ) < place
+    assert "not ansible_check_mode" in tasks[place]["when"]
     assert place < names.index("Warn when Slack is not configured (direct-deliver crons skipped)")
 
 
