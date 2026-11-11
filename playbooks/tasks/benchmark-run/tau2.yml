@@ -34,6 +34,7 @@
       path named by benchmark_run_request.api_key_kv_path in the field named
       by benchmark_run_request.api_key_kv_field.
     quiet: true
+  no_log: true
 
 - name: Run the pinned tau2 banking-knowledge suite in the client
   ansible.builtin.command:
@@ -43,25 +44,45 @@
       - "{{ benchmark_run_request.client_vmid }}"
       - --
       - /usr/bin/env
+      - -u
+      - OPENAI_API_KEY
+      - -u
+      - OPENAI_BASE_URL
+      - -u
+      - OPENAI_API_BASE
+      - -u
+      - ANTHROPIC_API_KEY
       - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       - /bin/bash
       - -c
       - >-
         cd {{ (_benchmark_run_client_root ~ '/tau2-bench') | quote }} || exit 1;
-        IFS= read -r OPENAI_API_KEY; export OPENAI_API_KEY;
+        IFS= read -r BENCH_ROUTER_KEY; export BENCH_ROUTER_KEY;
         exec uv run tau2 run
         --domain {{ benchmark_run_request.tau2_domain | quote }}
         {% if benchmark_run_request.tau2_domain == 'banking_knowledge' %}--retrieval-config bm25{% endif %}
         --num-trials {{ benchmark_run_request.tau2_num_trials | int }}
-        --agent-llm {{ ('openai/' ~ benchmark_run_request.model) | quote }}
-        --user-llm {{ ('openai/' ~ benchmark_run_request.model) | quote }}
-        --agent-llm-args
-        {{ ({'api_base': benchmark_run_request.engine_url, 'temperature': 0.0} | to_json) | quote }}
-        --user-llm-args
-        {{ ({'api_base': benchmark_run_request.engine_url, 'temperature': 0.0} | to_json) | quote }}
+        --agent-llm {{ _benchmark_run_tau2_model | quote }}
+        --agent-llm-args {{ _benchmark_run_tau2_role_args | quote }}
+        --user-llm {{ _benchmark_run_tau2_model | quote }}
+        --user-llm-args {{ _benchmark_run_tau2_role_args | quote }}
+        --nl-assertions-llm {{ _benchmark_run_tau2_model | quote }}
+        --nl-assertions-llm-args {{ _benchmark_run_tau2_role_args | quote }}
+        --env-interface-llm {{ _benchmark_run_tau2_model | quote }}
+        --env-interface-llm-args {{ _benchmark_run_tau2_role_args | quote }}
         --max-concurrency {{ benchmark_run_request.tau2_max_concurrency | quote }}
         --save-to {{ (benchmark_run_request.run_id ~ '-' ~ benchmark_run_request.tau2_domain) | quote }}
     stdin: "{{ _benchmark_run_tau2_key_read.data.data[benchmark_run_request.api_key_kv_field] }}"
+  vars:
+    _benchmark_run_tau2_model: "{{ 'openai/' ~ benchmark_run_request.model }}"
+    _benchmark_run_tau2_role_args: >-
+      {{
+        {
+          'api_base': benchmark_run_request.engine_url,
+          'api_key': 'os.environ/BENCH_ROUTER_KEY',
+          'temperature': 0.0
+        } | to_json
+      }}
   register: _benchmark_run_suite
   no_log: true
   changed_when: true

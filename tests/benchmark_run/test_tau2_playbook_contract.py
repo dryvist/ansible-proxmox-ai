@@ -12,6 +12,10 @@ def load_tasks(name: str) -> list[dict[str, object]]:
 
 
 def test_tau2_suite_prepares_clone_and_keeps_key_off_argv() -> None:
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    assert plays[1]["vars"]["_benchmark_run_tau2_bench_url"] == (
+        "https://github.com/JacobPEvans-ai/tau2-bench.git"
+    )
     preflight = load_tasks("preflight.yml")
     suites = preflight[0]["ansible.builtin.assert"]["that"]
     assert any("tau2-banking-knowledge" in assertion for assertion in suites)
@@ -45,7 +49,8 @@ def test_tau2_suite_prepares_clone_and_keeps_key_off_argv() -> None:
     assert prepare_include["when"] == "benchmark_run_request.suite == 'tau2-banking-knowledge'"
     prepare_tau2 = load_tasks("prepare-tau2.yml")
     clone_tasks = [task for task in prepare_tau2 if "tau2-bench" in str(task)]
-    assert any("sierra-research/tau2-bench.git" in str(task) for task in clone_tasks)
+    clone = next(task for task in clone_tasks if "clone" in task.get("ansible.builtin.command", {}).get("argv", []))
+    assert "{{ _benchmark_run_tau2_bench_url }}" in clone["ansible.builtin.command"]["argv"]
     checkout = next(task for task in clone_tasks if "checkout" in task.get("ansible.builtin.command", {}).get("argv", []))
     assert "{{ benchmark_run_request.tau2_bench_commit }}" in checkout["ansible.builtin.command"]["argv"]
     head = next(task for task in clone_tasks if task.get("register") == "_benchmark_run_tau2_head")
@@ -88,27 +93,40 @@ def test_tau2_suite_prepares_clone_and_keeps_key_off_argv() -> None:
     key_assert = next(task for task in tau2 if task.get("ansible.builtin.assert"))
     assert "benchmark_run_request.api_key_kv_path" in key_assert["ansible.builtin.assert"]["fail_msg"]
     assert "benchmark_run_request.api_key_kv_field" in key_assert["ansible.builtin.assert"]["fail_msg"]
+    assert key_assert["no_log"] is True
 
     run_task = next(task for task in tau2 if task.get("register") == "_benchmark_run_suite")
     run_argv = run_task["ansible.builtin.command"]["argv"]
     assert run_argv[:4] == ["pct", "exec", "{{ benchmark_run_request.client_vmid }}", "--"]
+    env_index = run_argv.index("/usr/bin/env")
+    for provider_default in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE", "ANTHROPIC_API_KEY"):
+        assert run_argv[env_index : env_index + 10].count(provider_default) == 1
+        assert run_argv[run_argv.index(provider_default) - 1] == "-u"
     assert "/bin/bash" in run_argv and "-c" in run_argv
     run_script = run_argv[run_argv.index("-c") + 1]
     for expected in (
-        "IFS= read -r OPENAI_API_KEY",
-        "export OPENAI_API_KEY",
+        "IFS= read -r BENCH_ROUTER_KEY",
+        "export BENCH_ROUTER_KEY",
         "exec uv run tau2 run",
         "--domain {{ benchmark_run_request.tau2_domain | quote }}",
         "{% if benchmark_run_request.tau2_domain == 'banking_knowledge' %}--retrieval-config bm25{% endif %}",
         "--num-trials {{ benchmark_run_request.tau2_num_trials | int }}",
-        "--agent-llm-args",
-        "--user-llm-args",
         "--max-concurrency {{ benchmark_run_request.tau2_max_concurrency | quote }}",
         "--save-to {{ (benchmark_run_request.run_id ~ '-' ~ benchmark_run_request.tau2_domain) | quote }}",
-        "api_base",
-        "temperature",
     ):
         assert expected in run_script, expected
+    assert "OPENAI_API_KEY" not in run_script
+    assert run_task["vars"]["_benchmark_run_tau2_model"] == "{{ 'openai/' ~ benchmark_run_request.model }}"
+    role_args = run_task["vars"]["_benchmark_run_tau2_role_args"]
+    for expected in (
+        "'api_base': benchmark_run_request.engine_url",
+        "'api_key': 'os.environ/BENCH_ROUTER_KEY'",
+        "'temperature': 0.0",
+    ):
+        assert expected in role_args
+    for role in ("agent", "user", "nl-assertions", "env-interface"):
+        assert f"--{role}-llm {{{{ _benchmark_run_tau2_model | quote }}}}" in run_script
+        assert f"--{role}-llm-args {{{{ _benchmark_run_tau2_role_args | quote }}}}" in run_script
     assert run_task["ansible.builtin.command"]["stdin"] == (
         "{{ _benchmark_run_tau2_key_read.data.data[benchmark_run_request.api_key_kv_field] }}"
     )
