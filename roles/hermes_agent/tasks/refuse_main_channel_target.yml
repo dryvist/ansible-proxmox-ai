@@ -4,7 +4,9 @@
 # healthy footer there. The direct and enqueuer reconcile files include this per job, after
 # resolving its targets. Each comma-separated entry must be empty, a non-posting literal
 # (local, log), or slack:<ID> with an upper-case ID other than the home channel. Anything
-# else fails closed.
+# else fails closed. An installed job on a refused target is edited to local delivery by id,
+# then read back from the job store. Its marker is cleared only when that read-back proves
+# the job no longer names the home channel.
 - name: "Require a Slack home channel for {{ refuse_target_name }}"
   ansible.builtin.assert:
     quiet: true
@@ -23,6 +25,11 @@
          | map('trim') | reject('eq', '') | reject('in', ['local', 'log']) | list) -%}
       {{ (entries | reject('match', '^slack:[A-Z0-9]+$') | list)
          + (entries | select('eq', 'slack:' ~ (hermes_agent_slack_home_channel | upper)) | list) }}
+    # A healthy footer is prompt text, so `cron edit` cannot stop it. It is tracked apart.
+    hermes_agent_refuse_footer_home: >-
+      {{ ((refuse_footer.split(',') | map('trim') | list)
+         | select('match', '(?i)^slack:' ~ (hermes_agent_slack_home_channel | regex_escape) ~ '(:|$)')
+         | list | length > 0) }}
   when: hermes_agent_refuse_main_channel_targets | bool
 
 - name: "Find the installed job for {{ refuse_target_name }}"
@@ -39,48 +46,98 @@
         {%- endif -%}
       {%- endfor -%}
       {{ ns.found | string }}
-    hermes_agent_refuse_job_state: >-
-      {%- set ns = namespace(found='') -%}
-      {%- set lines = (hermes_agent_direct_cron_lists | default({})).get(refuse_home, '').splitlines() -%}
-      {%- for line in lines -%}
-        {%- if line.strip().startswith('Name:') and line.split(':', 1)[1].strip() == refuse_target_name
-               and loop.index0 > 0 -%}
-          {%- set ns.found = (lines[loop.index0 - 1].split() + ['', ''])[1]
-                | replace('[', '') | replace(']', '') -%}
-        {%- endif -%}
-      {%- endfor -%}
-      {{ ns.found | string }}
   when: hermes_agent_refuse_main_channel_targets | bool
 
-# Stop the installed job from posting before the check fails. It is paused by id, not
-# removed. Its desired-state marker is cleared below, so a corrected target recreates
-# the job through the existing drift path, and the new job runs.
-- name: "Pause the installed job while its target is refused: {{ refuse_target_name }}"
+# Point the installed job's delivery and failure targets at local, by id. The state is left as
+# it is: a paused job would be resumed by the brain watchdog, while an edit is not undone by it.
+# A non-zero exit is ignored here, because the read-back below decides the outcome.
+- name: "Edit the installed job to local delivery: {{ refuse_target_name }}"
   ansible.builtin.command: >-
     {{ hermes_agent_bin }} {{ hermes_agent_cli_profile_args | join(' ') }}
-    cron pause {{ hermes_agent_refuse_job_id }}
+    cron edit {{ hermes_agent_refuse_job_id }} --deliver local --failure-deliver local
   environment:
     HERMES_HOME: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
   vars:
     hermes_agent_cli_home: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
   become: true
   become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_refuse_pause
+  register: hermes_agent_refuse_edit
   changed_when: true
+  failed_when: false
   when:
     - hermes_agent_refuse_main_channel_targets | bool
     - hermes_agent_refuse_bad | length > 0
     - hermes_agent_refuse_job_id | length > 0
-    - hermes_agent_refuse_job_state == 'active'
     - not ansible_check_mode
 
-- name: "Clear the desired-state marker of paused {{ refuse_target_name }}"
+# The edit is confirmed from the same job store the drift check reads, not from the edit's exit
+# code. The store can carry credentials, so nothing here is logged.
+- name: "Read the installed job back from the job store: {{ refuse_target_name }}"
+  ansible.builtin.slurp:
+    src: "{{ refuse_home }}/cron/jobs.json"
+  register: hermes_agent_refuse_store
+  failed_when: false
+  no_log: true
+  when:
+    - hermes_agent_refuse_main_channel_targets | bool
+    - hermes_agent_refuse_bad | length > 0
+    - hermes_agent_refuse_job_id | length > 0
+    - not ansible_check_mode
+
+- name: "Select the installed job from the read-back for {{ refuse_target_name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_refuse_readback: >-
+      {{ (hermes_agent_refuse_store.content | default('e30=', true) | b64decode | from_json).jobs
+         | default([]) | selectattr('id', 'equalto', hermes_agent_refuse_job_id) | list }}
+  no_log: true
+  failed_when: false
+  when:
+    - hermes_agent_refuse_main_channel_targets | bool
+    - hermes_agent_refuse_bad | length > 0
+    - hermes_agent_refuse_job_id | length > 0
+    - not ansible_check_mode
+
+# A job is found when the store lists its id. Its failure target is absent when it follows
+# deliver, so an absent failure key counts as following deliver.
+- name: "Compare the read-back with the refused targets for {{ refuse_target_name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_refuse_found: "{{ hermes_agent_refuse_readback | default([]) | length > 0 }}"
+    hermes_agent_refuse_home_left: >-
+      {{ hermes_agent_refuse_readback | default([]) | length > 0
+         and ((((hermes_agent_refuse_readback[0].deliver | default('')) ~ ','
+                ~ (hermes_agent_refuse_readback[0].failure_deliver | default(''))).split(',')
+               | map('trim') | list)
+              | select('match', '(?i)^slack:' ~ (hermes_agent_slack_home_channel | regex_escape) ~ '(:|$)')
+              | list | length > 0) }}
+  no_log: true
+  failed_when: false
+  when:
+    - hermes_agent_refuse_main_channel_targets | bool
+    - hermes_agent_refuse_bad | length > 0
+    - hermes_agent_refuse_job_id | length > 0
+    - not ansible_check_mode
+
+# `unchecked`: nothing was edited, so no claim is made about posting. `cleared`: the read-back
+# proves the job no longer names the home channel and the healthy footer does not name it.
+# `still`: the job is found and still names the home channel, or it is missing from the store,
+# or its healthy footer names the home channel.
+- name: "Decide the outcome for {{ refuse_target_name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_refuse_outcome: >-
+      {{ 'unchecked' if (ansible_check_mode or hermes_agent_refuse_job_id | length == 0)
+         else ('cleared' if (hermes_agent_refuse_found | default(false) | bool
+                  and not (hermes_agent_refuse_home_left | default(true) | bool)
+                  and not (hermes_agent_refuse_footer_home | bool))
+               else 'still') }}
+  when:
+    - hermes_agent_refuse_main_channel_targets | bool
+    - hermes_agent_refuse_bad | length > 0
+
+- name: "Clear the desired-state marker of edited {{ refuse_target_name }}"
   ansible.builtin.file:
     path: "{{ hermes_agent_managed_cron_state_dir }}/{{ refuse_target_name }}.sha256"
     state: absent
-  when:
-    - hermes_agent_refuse_pause.changed | default(false) | bool
-    - not ansible_check_mode
+  when: hermes_agent_refuse_outcome | default('') == 'cleared'
 
 - name: "Refuse the main channel as a target for {{ refuse_target_name }}"
   ansible.builtin.assert:
@@ -91,8 +148,16 @@
       {{ refuse_target_name }} has a target the main-channel rule does not allow:
       {{ hermes_agent_refuse_bad | join(', ') }}. Each comma-separated entry must be empty,
       local, log, or slack:<ID> with an upper-case ID other than the home channel.
-      {{ 'The installed job was paused and no longer posts. '
-         if hermes_agent_refuse_pause.changed | default(false) | bool else '' }}
-      Correct the declared target and re-run the reconcile; the job is then recreated
-      with the corrected target and runs again.
+      {% if hermes_agent_refuse_outcome == 'still' %}
+      The installed job {{ hermes_agent_refuse_job_id }} for {{ refuse_target_name }} is STILL
+      posting to the main channel: its read-back still names the home channel, the job is not
+      in the store, or its healthy footer names it. It was not recorded as fixed.
+      {% elif hermes_agent_refuse_outcome == 'cleared' %}
+      The installed job was edited to local delivery, and its read-back confirms it no longer
+      names the main channel. Correct the declared target and re-run the reconcile; the job is
+      then recreated with the corrected target and runs again.
+      {% else %}
+      Correct the declared target and re-run the reconcile; the job is then recreated with the
+      corrected target and runs again.
+      {% endif %}
   when: hermes_agent_refuse_main_channel_targets | bool

@@ -153,6 +153,16 @@ def test_drifted_job_is_removed_recreated_and_recorded():
     }
 
 
+def test_a_cleared_marker_on_an_installed_job_is_removed_and_recreated_with_the_corrected_target():
+    # The refused job's marker is cleared only after the read-back proves it is no longer
+    # posting. With the corrected declared target the next converge takes this same path.
+    assert _ran(wanted=True, listed=True, marker=None, changed=True) == {
+        "Direct cron | Remove drifted",
+        "Direct cron | Create",
+        "Direct cron | Record desired state for",
+    }
+
+
 def test_absent_job_is_created_and_recorded_without_a_remove():
     assert _ran(wanted=True, listed=False, marker=None, changed=True) == {
         "Direct cron | Create",

@@ -12,8 +12,13 @@ from _cron_targets_shared import (
     _value,
 )
 
-ACTIVE = "  3f2a9c1d7e40 [active]\n    Name:      pulse\n"
-PAUSED = "  3f2a9c1d7e40 [paused]\n    Name:      pulse\n"
+JOB_ID = "3f2a9c1d7e40"
+ACTIVE = f"  {JOB_ID} [active]\n    Name:      pulse\n"
+PAUSED = f"  {JOB_ID} [paused]\n    Name:      pulse\n"
+STORE_CLEAN = [{"id": JOB_ID, "name": "pulse", "deliver": "local", "failure_deliver": "local"}]
+STORE_HOME = [{"id": JOB_ID, "name": "pulse", "deliver": f"slack:{MAIN}", "failure_deliver": "local"}]
+STORE_OTHER = [{"id": "f00ba4f00ba4", "name": "pulse", "deliver": "local"}]
+REFUSED = "has a target the main-channel rule does not allow"
 
 
 def test_jobs_aimed_at_their_own_channels_pass():
@@ -122,38 +127,89 @@ def test_the_failure_names_the_job_and_the_rejected_entry():
     assert "pulse" in message and "slack:C0EXAMPLEALL:1700.1" in message
 
 
-def test_an_installed_active_job_is_paused_when_its_target_is_refused():
-    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"), listing=ACTIVE)
-    assert context["hermes_agent_refuse_job_id"] == "3f2a9c1d7e40"
-    assert context["hermes_agent_refuse_job_state"] == "active"
-    assert "was paused" in message
+def test_an_installed_job_is_edited_to_local_by_id():
+    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"),
+                               listing=ACTIVE, store=STORE_CLEAN)
+    command = _task(GUARD_FILE, "Edit the installed job")["ansible.builtin.command"]
+    rendered = " ".join(_value(command, context).split())
+    assert rendered.endswith(f"cron edit {JOB_ID} --deliver local --failure-deliver local")
+    assert REFUSED in message
+
+
+def test_a_paused_installed_job_is_edited_too():
+    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"),
+                               listing=PAUSED, store=STORE_CLEAN)
+    assert context["hermes_agent_refuse_job_id"] == JOB_ID
+    assert context["marker_cleared"] is True
+    assert REFUSED in message
+
+
+def test_a_job_that_is_not_installed_is_not_edited():
+    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"), listing="")
+    assert context["hermes_agent_refuse_job_id"] == ""
+    assert "STILL" not in message and "no longer names" not in message
+    assert "marker_cleared" not in context
+
+
+def test_check_mode_does_not_edit_the_installed_job():
+    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"), listing=ACTIVE,
+                               check_mode=True, store=STORE_CLEAN)
+    assert context["hermes_agent_refuse_outcome"] == "unchecked"
+    assert "STILL" not in message and "no longer names" not in message
+    assert "marker_cleared" not in context
+
+
+def test_a_clean_read_back_clears_the_marker_and_fails_with_the_refusal():
+    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"),
+                               listing=ACTIVE, store=STORE_CLEAN)
+    assert context["marker_cleared"] is True
+    assert "no longer names the main channel" in message
     assert "re-run the reconcile" in message
 
 
-def test_a_job_that_is_not_installed_is_not_paused():
-    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"), listing="")
-    assert context["hermes_agent_refuse_job_id"] == ""
-    assert "was paused" not in message
+def test_a_read_back_that_still_names_the_home_channel_fails_as_still_posting():
+    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"),
+                               listing=ACTIVE, store=STORE_HOME)
+    assert f"{JOB_ID} for pulse is STILL" in message
+    assert "marker_cleared" not in context
 
 
-def test_an_already_paused_job_is_not_paused_again():
-    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"), listing=PAUSED)
-    assert context["hermes_agent_refuse_job_state"] == "paused"
-    assert "was paused" not in message
+def test_a_missing_job_id_after_the_edit_fails_as_still_posting():
+    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"),
+                               listing=ACTIVE, store=STORE_OTHER)
+    assert f"{JOB_ID} for pulse is STILL" in message
+    assert "marker_cleared" not in context
 
 
-def test_check_mode_does_not_pause_the_installed_job():
-    message, _ = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"), listing=ACTIVE,
-                         check_mode=True)
-    assert "was paused" not in message
+def test_a_failed_edit_still_ends_in_the_refusal():
+    message, _ = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"),
+                         listing=ACTIVE, store=STORE_CLEAN, edit_rc=1)
+    assert REFUSED in message
+    assert "STILL" not in message
 
 
-def test_the_installed_job_is_paused_before_the_check_fails():
+def test_a_failed_edit_with_the_job_still_naming_home_fails_as_still_posting():
+    message, context = _direct(_job(deliver=f"slack:{MAIN}", failure_deliver="local"),
+                               listing=ACTIVE, store=STORE_HOME, edit_rc=1)
+    assert "STILL" in message
+    assert "marker_cleared" not in context
+
+
+def test_a_healthy_footer_naming_home_is_never_reported_as_fixed():
+    message, context = _direct(_job(deliver="local", failure_deliver="local",
+                                    channel_when_healthy=f"slack:{MAIN}"),
+                               listing=ACTIVE, store=STORE_CLEAN)
+    assert "STILL" in message
+    assert "marker_cleared" not in context
+
+
+def test_the_installed_job_is_edited_before_the_check_fails():
     names = [str(t.get("name", "")) for t in _tasks(GUARD_FILE)]
-    pause = next(i for i, n in enumerate(names) if n.startswith("Pause "))
-    marker = next(i for i, n in enumerate(names) if n.startswith("Clear the desired-state marker"))
-    check = next(i for i, n in enumerate(names) if n.startswith("Refuse the main channel as a target"))
-    assert pause < marker < check
+    order = ("Edit the installed job", "Read the installed job back", "Select the installed job",
+             "Compare the read-back", "Decide the outcome", "Clear the desired-state marker",
+             "Refuse the main channel as a target")
+    positions = [next(i for i, n in enumerate(names) if n.startswith(prefix)) for prefix in order]
+    assert positions == sorted(positions)
 
 
 def test_the_switch_turned_on_for_hermes_refuses_daily_summary():

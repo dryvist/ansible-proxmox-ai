@@ -5,6 +5,8 @@ targets with the real set_fact tasks of the two reconcile files, then run the
 guard's own tasks in order with Jinja, so the tests exercise the written
 expressions rather than a copy of them.
 """
+import base64
+import json
 import re
 from pathlib import Path
 
@@ -35,6 +37,8 @@ ENV.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
 ENV.filters["bool"] = lambda value: value if isinstance(value, bool) else str(value).lower() in ("true", "yes", "1")
 ENV.filters["regex_search"] = _search
 ENV.filters["regex_escape"] = lambda value: re.escape(str(value))
+ENV.filters["b64decode"] = lambda value: base64.b64decode(value).decode()
+ENV.filters["from_json"] = json.loads
 
 
 def _tasks(file):
@@ -97,10 +101,12 @@ def _resolve(task, context):
     return context
 
 
-def _guard_run(caller_file, include_prefix, context):
+def _guard_run(caller_file, include_prefix, context, store=None, edit_rc=0):
     """Run the caller's include gate, then the guard's tasks in order.
 
-    Returns (failure message or None, final context). A skipped check returns None.
+    `store` is the job list the read-back finds in jobs.json (None: no file). `edit_rc` is the
+    exit code of `cron edit`. Returns (failure message or None, final context). A skipped
+    check returns None. The context records `marker_cleared` when the marker is removed.
     """
     include = _task(caller_file, include_prefix)
     if not all(_value(c, context) for c in _conditions(include)):
@@ -116,7 +122,12 @@ def _guard_run(caller_file, include_prefix, context):
             for k, v in task["ansible.builtin.set_fact"].items():
                 context[k] = _value(v, scope)
         elif "ansible.builtin.command" in task:
-            context[task["register"]] = {"changed": True}
+            context[task["register"]] = {"changed": True, "rc": edit_rc}
+        elif "ansible.builtin.slurp" in task:
+            content = None if store is None else base64.b64encode(json.dumps({"jobs": store}).encode())
+            context[task["register"]] = {} if content is None else {"content": content.decode()}
+        elif "ansible.builtin.file" in task:
+            context["marker_cleared"] = True
         elif "ansible.builtin.assert" in task:
             if not all(_value(c, scope) for c in task["ansible.builtin.assert"]["that"]):
                 return _value(task["ansible.builtin.assert"]["fail_msg"], scope), context
@@ -138,11 +149,12 @@ def _shipped_job(name, identity=FIXTURE, home=MAIN):
 
 
 def _direct(job, identity=FIXTURE, home=MAIN, failure=f"slack:{ISSUES}", profiles=None, listing="",
-            check_mode=False, refuse=None):
+            check_mode=False, refuse=None, store=None, edit_rc=0):
     context = _base(job, identity, home, failure, {}, profiles or {}, listing, check_mode, refuse)
     context = _resolve(_task("reconcile_direct_cron.yml", "Direct cron | Decide agent ownership"), context)
     context = _resolve(_task("reconcile_direct_cron.yml", "Direct cron | Resolve deliver target"), context)
-    return _guard_run("reconcile_direct_cron.yml", "Direct cron | Refuse the main channel", context)
+    return _guard_run("reconcile_direct_cron.yml", "Direct cron | Refuse the main channel", context,
+                      store, edit_rc)
 
 
 def _enqueuer(job, identity=FIXTURE, home=MAIN, failure=f"slack:{ISSUES}", owners=None, refuse=None):
