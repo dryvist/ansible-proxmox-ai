@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLES = REPO_ROOT / "roles"
 SHARED_ROOT = ROLES / "llm_serving_declared_metrics"
 VLLM_ROOT = ROLES / "vllm_serving"
+SGLANG_ROOT = ROLES / "sglang_serving"
 LEGACY_ROOT = ROLES / "llm_gpu_serving"
 LLAMACPP_ROOT = ROLES / "llamacpp_serving"
 PUBLISH_CALL = "Publish the active profile's declared serving metrics"
@@ -239,6 +240,26 @@ def test_llamacpp_serving_profile_publishes_through_the_shared_task():
     )
 
 
+def test_sglang_serving_profile_publishes_through_the_shared_task():
+    profiles_file = _load(SGLANG_ROOT / "defaults/main/10-profiles.yml")
+    profiles = profiles_file["sglang_serving_profiles"]
+    for profile_name, profile in profiles.items():
+        context = {
+            "sglang_serving_profiles": profiles,
+            "sglang_serving_active_profile": profile_name,
+            "sglang_serving_engine": profiles_file["sglang_serving_engine"],
+        } | _guest_vars(legacy=False)
+        dest, content = _render_publish(SGLANG_ROOT, "tasks/activate.yml", context)
+        assert dest == f"{COLLECTOR_DIR}/{METRIC_FILE}"
+        assert content == _expected(
+            group_var("llm_gpu_accelerator"),
+            profile_name,
+            context["sglang_serving_engine"],
+            profile["max_num_seqs"],
+            profile["max_model_len"],
+        )
+
+
 def test_declared_metrics_match_rendered_start_flag_values():
     vllm_context = _vllm_context(legacy=False)
     vllm_profile = vllm_context["vllm_serving_profiles"]["medium-a"]
@@ -335,6 +356,7 @@ def test_publish_skips_without_the_collector_and_never_fails():
     )
     for root, activation, render_only in (
         (VLLM_ROOT, "tasks/activate.yml", "vllm_serving_render_only"),
+        (SGLANG_ROOT, "tasks/activate.yml", "sglang_serving_render_only"),
         (LEGACY_ROOT, "tasks/main.yml", "llm_gpu_serving_render_only"),
         (LLAMACPP_ROOT, "tasks/activate.yml", "llamacpp_serving_render_only"),
     ):
@@ -354,6 +376,6 @@ def test_publish_skips_without_the_collector_and_never_fails():
         assert set(call["vars"]) == expected_parameters
         assert render_only in call["when"]
     # The directory is declared once, in the shared role's defaults.
-    for root in (VLLM_ROOT, LEGACY_ROOT, LLAMACPP_ROOT):
+    for root in (VLLM_ROOT, SGLANG_ROOT, LEGACY_ROOT, LLAMACPP_ROOT):
         for defaults_file in (root / "defaults/main").glob("*.yml"):
             assert TEXTFILE_DIR_KEY not in defaults_file.read_text(encoding="utf-8")

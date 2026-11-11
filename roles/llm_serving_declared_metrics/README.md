@@ -8,8 +8,9 @@ the engine.
 
 ## Installation
 
-Nothing to install. The serving roles `llm_gpu_serving`, `vllm_serving` and
-`llamacpp_serving` include this role's tasks from their activation step.
+Nothing to install. The serving roles `llm_gpu_serving`, `vllm_serving`,
+`llamacpp_serving`, and `sglang_serving` include this role's tasks from their
+activation step.
 
 ## Usage
 
