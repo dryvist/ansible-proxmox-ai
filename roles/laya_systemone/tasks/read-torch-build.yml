@@ -1,0 +1,26 @@
+---
+# Reads the venv torch build as the Laya user. torch.version.cuda is None for a CPU build; a missing
+# or broken torch is reported as None rather than failing the read.
+- name: Read the venv torch build
+  ansible.builtin.command:
+    argv:
+      - "{{ laya_systemone_venv }}/bin/python"
+      - -c
+      - |
+        import json
+        try:
+            import torch
+            report = {"torch": torch.__version__, "cuda": torch.version.cuda, "available": torch.cuda.is_available()}
+        except Exception as error:
+            report = {"torch": None, "cuda": None, "available": False, "error": type(error).__name__}
+        print(json.dumps(report))
+  become: true
+  become_user: "{{ laya_systemone_user }}"
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+  register: laya_systemone_torch_read
+  changed_when: false
+
+- name: Parse the venv torch build
+  ansible.builtin.set_fact:
+    laya_systemone_torch_build: "{{ laya_systemone_torch_read.stdout_lines | last | from_json }}"
