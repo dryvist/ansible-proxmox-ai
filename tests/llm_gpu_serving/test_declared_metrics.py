@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import jinja2
@@ -17,6 +18,7 @@ VLLM_ROOT = ROLES / "vllm_serving"
 LEGACY_ROOT = ROLES / "llm_gpu_serving"
 LLAMACPP_ROOT = ROLES / "llamacpp_serving"
 PUBLISH_CALL = "Publish the active profile's declared serving metrics"
+LEGACY_PUBLISH_CALL = "Publish every selected GPU profile's declared serving metrics"
 LEGACY_GROUP = "llm_gpu_legacy_group"
 TEXTFILE_DIR_KEY = "llm_serving_declared_metrics_textfile_collector_dir"
 CALL_PARAMETERS = {
@@ -34,16 +36,6 @@ DEFAULTS = _load(SHARED_ROOT / "defaults/main/00-textfile.yml")
 COLLECTOR_DIR = DEFAULTS[TEXTFILE_DIR_KEY]
 METRIC_FILE = DEFAULTS["llm_serving_declared_metrics_metric_file"]
 
-# Start-command lines the shared task's comment cites: template, then line -> flag.
-CITED_TEMPLATE_LINES = (
-    ("llm_gpu_serving/templates/llama-cpp-serve-args.j2", {14: "--ctx-size", 15: "--parallel"}),
-    ("llamacpp_serving/templates/llama-cpp-serve-args.j2", {7: "--ctx-size", 8: "--parallel"}),
-    ("vllm_serving/templates/vllm-serving.service.j2", {30: "--max-model-len", 31: "--max-num-seqs"}),
-    ("llm_gpu_serving/templates/llm-gpu-serving.service.j2", {32: "--max-model-len", 33: "--max-num-seqs"}),
-    ("llm_gpu_serving/templates/llm-gpu-serving-host.service.j2", {25: "--max-model-len", 26: "--max-num-seqs"}),
-)
-
-
 def _guest_vars(legacy: bool) -> dict:
     """The guest's label as its inventory declares it: group_vars/all, or the legacy group."""
     return {"llm_gpu_accelerator": group_var("llm_gpu_accelerator", LEGACY_GROUP if legacy else None)}
@@ -55,7 +47,12 @@ def _native(expression, context: dict):
 
 
 def _text(template: str, context: dict) -> str:
-    env = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True)
+    env = jinja2.Environment(
+        undefined=jinja2.StrictUndefined,
+        keep_trailing_newline=True,
+        lstrip_blocks=True,
+        trim_blocks=True,
+    )
     return env.from_string(template).render(**context)
 
 
@@ -69,13 +66,12 @@ def _module_task(path: Path, module: str) -> dict:
 
 def _render_publish(role_root: Path, activation: str, context: dict) -> tuple[str, str]:
     """Render the caller's include vars, then the shared copy task's dest and content."""
-    call = _task(role_root / activation, PUBLISH_CALL)
+    call_name = LEGACY_PUBLISH_CALL if role_root == LEGACY_ROOT else PUBLISH_CALL
+    call = _task(role_root / activation, call_name)
     rendered = {**DEFAULTS, **context}
     for name, expression in call["vars"].items():
         rendered[name] = _native(expression, rendered)
     copy = _module_task(SHARED_ROOT / "tasks/publish.yml", "ansible.builtin.copy")
-    for name, expression in copy.get("vars", {}).items():
-        rendered[name] = _native(expression, rendered)
     return (
         _text(copy["ansible.builtin.copy"]["dest"], rendered),
         _text(copy["ansible.builtin.copy"]["content"], rendered),
@@ -104,12 +100,17 @@ def _vllm_context(legacy: bool) -> dict:
     } | _guest_vars(legacy)
 
 
-def _legacy_context(profile: str, legacy: bool) -> dict:
+def _legacy_context(
+    profile: str,
+    legacy: bool,
+    co_resident_profiles: list[str] | None = None,
+) -> dict:
     return {
         "llm_gpu_serving_profiles": _load(LEGACY_ROOT / "defaults/main/10-profiles.yml")[
             "llm_profiles"
         ],
         "llm_active_profile": profile,
+        "llm_gpu_serving_co_resident_profiles": co_resident_profiles or [],
     } | _guest_vars(legacy)
 
 
@@ -120,6 +121,31 @@ def _llamacpp_context(profile: str, legacy: bool) -> dict:
         "llamacpp_serving_active_profile": profile,
         "llamacpp_serving_engine": profiles_file["llamacpp_serving_engine"],
     } | _guest_vars(legacy)
+
+
+def _rendered_flag(template: Path, context: dict, flag: str) -> int:
+    lines = [
+        line
+        for line in template.read_text(encoding="utf-8").splitlines()
+        if line.lstrip().startswith(flag)
+    ]
+    assert len(lines) == 1, (template, flag, lines)
+    rendered = _text(lines[0], context)
+    match = re.search(rf"{re.escape(flag)}\s+(\d+)", rendered)
+    assert match, (template, flag, rendered)
+    return int(match.group(1))
+
+
+def _capacity_from_flags(template: Path, context: dict, engine: str) -> tuple[int, int]:
+    if engine == "llama_cpp":
+        slots = _rendered_flag(template, context, "--parallel")
+        shared_context = _rendered_flag(template, context, "--ctx-size")
+        assert shared_context % slots == 0
+        return slots, shared_context // slots
+
+    slots = _rendered_flag(template, context, "--max-num-seqs")
+    per_slot_context = _rendered_flag(template, context, "--max-model-len")
+    return slots, per_slot_context
 
 
 def test_vllm_medium_profile_declares_its_slots_and_context():
@@ -163,6 +189,29 @@ def test_legacy_llama_cpp_profile_declares_its_slots_and_per_slot_context():
     )
 
 
+def test_active_and_co_resident_profiles_are_published_together():
+    selected_profiles = ["small", "small-c4-64k"]
+    context = _legacy_context(
+        "small",
+        legacy=True,
+        co_resident_profiles=selected_profiles[1:],
+    )
+    dest, content = _render_publish(LEGACY_ROOT, "tasks/main.yml", context)
+    accelerator = group_var("llm_gpu_accelerator", LEGACY_GROUP)
+    expected = "".join(
+        _expected(
+            accelerator,
+            profile_name,
+            context["llm_gpu_serving_profiles"][profile_name]["engine"],
+            context["llm_gpu_serving_profiles"][profile_name]["max_num_seqs"],
+            context["llm_gpu_serving_profiles"][profile_name]["max_model_len"],
+        )
+        for profile_name in selected_profiles
+    )
+    assert dest == f"{COLLECTOR_DIR}/{METRIC_FILE}"
+    assert content == expected
+
+
 def test_non_legacy_llama_cpp_profile_labels_gpu_primary():
     context = _legacy_context("small", legacy=False)
     profile = context["llm_gpu_serving_profiles"]["small"]
@@ -190,13 +239,86 @@ def test_llamacpp_serving_profile_publishes_through_the_shared_task():
     )
 
 
-def test_cited_start_template_lines_carry_the_declared_flags():
-    publish = (SHARED_ROOT / "tasks/publish.yml").read_text(encoding="utf-8")
-    for template, lines in CITED_TEMPLATE_LINES:
-        template_lines = (ROLES / template).read_text(encoding="utf-8").splitlines()
-        for number, flag in lines.items():
-            assert flag in template_lines[number - 1], (template, number)
-        assert f"roles/{template}" in publish, template
+def test_declared_metrics_match_rendered_start_flag_values():
+    vllm_context = _vllm_context(legacy=False)
+    vllm_profile = vllm_context["vllm_serving_profiles"]["medium-a"]
+    _, vllm_content = _render_publish(VLLM_ROOT, "tasks/activate.yml", vllm_context)
+    assert vllm_content == _expected(
+        group_var("llm_gpu_accelerator"),
+        "medium-a",
+        vllm_context["vllm_serving_engine"],
+        *_capacity_from_flags(
+            VLLM_ROOT / "templates/vllm-serving.service.j2",
+            {"vllm_serving_profile": vllm_profile},
+            "vllm",
+        ),
+    )
+
+    llamacpp_context = _llamacpp_context("small", legacy=False)
+    llamacpp_profile = llamacpp_context["llamacpp_serving_profiles"]["small"]
+    _, llamacpp_content = _render_publish(
+        LLAMACPP_ROOT,
+        "tasks/activate.yml",
+        llamacpp_context,
+    )
+    assert llamacpp_content == _expected(
+        group_var("llm_gpu_accelerator"),
+        "small",
+        llamacpp_context["llamacpp_serving_engine"],
+        *_capacity_from_flags(
+            LLAMACPP_ROOT / "templates/llama-cpp-serve-args.j2",
+            {"lc_profile": llamacpp_profile},
+            "llama_cpp",
+        ),
+    )
+
+    legacy_context = _legacy_context(
+        "small",
+        legacy=True,
+        co_resident_profiles=["small-c4-64k"],
+    )
+    selected_profiles = ["small", "small-c4-64k"]
+    _, legacy_content = _render_publish(LEGACY_ROOT, "tasks/main.yml", legacy_context)
+    legacy_accelerator = group_var("llm_gpu_accelerator", LEGACY_GROUP)
+    legacy_expected = "".join(
+        _expected(
+            legacy_accelerator,
+            profile_name,
+            legacy_context["llm_gpu_serving_profiles"][profile_name]["engine"],
+            *_capacity_from_flags(
+                LEGACY_ROOT / "templates/llama-cpp-serve-args.j2",
+                {"lc_profile": legacy_context["llm_gpu_serving_profiles"][profile_name]},
+                "llama_cpp",
+            ),
+        )
+        for profile_name in selected_profiles
+    )
+    assert legacy_content == legacy_expected
+
+    gpu_vllm_context = _legacy_context("medium-a", legacy=True)
+    gpu_vllm_profile = gpu_vllm_context["llm_gpu_serving_profiles"]["medium-a"]
+    _, gpu_vllm_content = _render_publish(LEGACY_ROOT, "tasks/main.yml", gpu_vllm_context)
+    gpu_vllm_expected = _expected(
+        legacy_accelerator,
+        "medium-a",
+        gpu_vllm_profile["engine"],
+        *_capacity_from_flags(
+            LEGACY_ROOT / "templates/llm-gpu-serving.service.j2",
+            {"llm_gpu_serving_profile": gpu_vllm_profile},
+            "vllm",
+        ),
+    )
+    assert gpu_vllm_content == gpu_vllm_expected
+    assert gpu_vllm_content == _expected(
+        legacy_accelerator,
+        "medium-a",
+        gpu_vllm_profile["engine"],
+        *_capacity_from_flags(
+            LEGACY_ROOT / "templates/llm-gpu-serving-host.service.j2",
+            {"llm_gpu_serving_host_profile": gpu_vllm_profile},
+            "vllm",
+        ),
+    )
 
 
 def test_publish_skips_without_the_collector_and_never_fails():
@@ -216,13 +338,20 @@ def test_publish_skips_without_the_collector_and_never_fails():
         (LEGACY_ROOT, "tasks/main.yml", "llm_gpu_serving_render_only"),
         (LLAMACPP_ROOT, "tasks/activate.yml", "llamacpp_serving_render_only"),
     ):
-        call = _task(root / activation, PUBLISH_CALL)
+        call_name = LEGACY_PUBLISH_CALL if root == LEGACY_ROOT else PUBLISH_CALL
+        call = _task(root / activation, call_name)
         assert call["ansible.builtin.include_role"] == {
             "name": "llm_serving_declared_metrics",
             "tasks_from": "publish.yml",
         }
-        # Each caller passes the profile, its profile map and the engine; the shared task derives the rest.
-        assert set(call["vars"]) == CALL_PARAMETERS
+        # Each caller passes the profile selection, profile map and engine; the shared task derives the rest.
+        expected_parameters = (
+            (CALL_PARAMETERS - {"llm_serving_declared_metrics_profile"})
+            | {"llm_serving_declared_metrics_profile_names"}
+            if root == LEGACY_ROOT
+            else CALL_PARAMETERS
+        )
+        assert set(call["vars"]) == expected_parameters
         assert render_only in call["when"]
     # The directory is declared once, in the shared role's defaults.
     for root in (VLLM_ROOT, LEGACY_ROOT, LLAMACPP_ROOT):

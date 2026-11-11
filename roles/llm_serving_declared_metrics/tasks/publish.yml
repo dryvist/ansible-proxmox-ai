@@ -1,17 +1,10 @@
 ---
-# Publish the active profile's DECLARED serving capacity for node_exporter's
-# textfile collector. Callers pass the profile name, the profile map it is read
-# from, and the engine label. Slots and per-slot context both come from the
-# profile's own fields, which the start command passes to the engine:
-#   llama.cpp: roles/llm_gpu_serving/templates/llama-cpp-serve-args.j2 line 14 sets
-#     --ctx-size to max_model_len x max_num_seqs and line 15 sets --parallel to
-#     max_num_seqs, so each slot gets max_model_len. The llamacpp_serving role
-#     passes the same pair at roles/llamacpp_serving/templates/llama-cpp-serve-args.j2
-#     lines 7-8.
-#   vLLM: roles/vllm_serving/templates/vllm-serving.service.j2 lines 30-31
-#     (--max-model-len, --max-num-seqs); roles/llm_gpu_serving/templates/llm-gpu-serving.service.j2
-#     lines 32-33; host variant roles/llm_gpu_serving/templates/llm-gpu-serving-host.service.j2
-#     lines 25-26.
+# Publish declared serving capacity for node_exporter's textfile collector.
+# Callers pass one profile name or an ordered profile-name list, the profile
+# map, and an engine fallback. Each profile's max_num_seqs and max_model_len
+# fields drive the serving arguments: llama.cpp uses the per-slot context times
+# the slot count for --ctx-size and the slot count for --parallel, while vLLM
+# uses those fields for --max-model-len and --max-num-seqs.
 # The accelerator label is this guest's llm_gpu_accelerator, the variable the
 # router's llm_router_gpu_profile_accelerators reads for this guest.
 - name: Check for the node_exporter textfile collector directory
@@ -27,16 +20,16 @@
   ansible.builtin.copy:
     dest: "{{ llm_serving_declared_metrics_textfile_collector_dir }}/{{ llm_serving_declared_metrics_metric_file }}"
     content: |
-      llm_serving_declared_slots{{ _llm_serving_declared_metrics_labels }} {{
-        _llm_serving_declared_metrics_record.max_num_seqs | int }}
-      llm_serving_declared_context_tokens_per_slot{{ _llm_serving_declared_metrics_labels }} {{
-        _llm_serving_declared_metrics_record.max_model_len | int }}
+      {% for profile_name in llm_serving_declared_metrics_profile_names
+           | default([llm_serving_declared_metrics_profile]) %}
+      {% set profile = llm_serving_declared_metrics_profiles[profile_name] %}
+      {% set engine = profile.engine | default(llm_serving_declared_metrics_engine) %}
+      {% set labels = '{accelerator="%s",profile="%s",engine="%s"}' | format(
+           llm_gpu_accelerator, profile_name, engine) %}
+      {% set slots = profile.max_num_seqs | int %}
+      {% set context_tokens = profile.max_model_len | int %}
+      llm_serving_declared_slots{{ labels }} {{ slots }}
+      llm_serving_declared_context_tokens_per_slot{{ labels }} {{ context_tokens }}
+      {% endfor %}
     mode: "0644"
   when: _llm_serving_declared_metrics_collector.stat.exists
-  vars:
-    _llm_serving_declared_metrics_record: >-
-      {{ llm_serving_declared_metrics_profiles[llm_serving_declared_metrics_profile] }}
-    _llm_serving_declared_metrics_labels: >-
-      {{ '{accelerator="%s",profile="%s",engine="%s"}' | format(
-           llm_gpu_accelerator, llm_serving_declared_metrics_profile,
-           llm_serving_declared_metrics_engine) }}
