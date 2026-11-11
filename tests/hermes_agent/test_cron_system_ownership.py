@@ -127,6 +127,7 @@ def test_zammad_review_is_wanted_by_no_identity() -> None:
     assert control.strip() == "True"
 
     job = next(j for j in DEFAULTS["hermes_agent_direct_cron_jobs"] if _job_name(j) == "zammad-review")
+    assert job["enabled"] is False
     for owners in ({}, {"splunk": "splunk-heimdall"}):
         for identity in ("hermes", "hermes-private", "donna", "splunk-heimdall", "pepper"):
             rendered = wanted.render(
