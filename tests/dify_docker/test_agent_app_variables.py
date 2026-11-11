@@ -241,6 +241,22 @@ def test_every_task_that_holds_a_resolved_value_is_no_log():
                 assert task.get("no_log") is True, f"{path.name}: {task.get('name')}"
 
 
+def test_null_missing_or_empty_kv_field_is_unresolved_and_never_the_string_none():
+    keep = _fact(_yaml(ONE), "Keep the declared KV field value", "dify_docker_dsl_variable_values")
+    unresolved = _fact(_yaml(PRE), "List the declared variables that have no value yet",
+                       "dify_docker_dsl_unresolved_names")
+    entry = {"name": "NULLED", "secret": True, "kv": {"path": "example/app", "field": "token"}}
+    for secret in ({"token": None}, {}, {"token": ""}):
+        values = _render(keep, dify_docker_dsl_variable_values=[], dify_docker_dsl_kv_read={"secret": secret},
+                         dify_docker_dsl_variable_entry=entry)
+        assert values == [{"name": "NULLED", "secret": True, "value": ""}], secret
+        assert _render(unresolved, dify_docker_dsl_resolve_names=["NULLED"],
+                       dify_docker_dsl_variable_values=values) == ["NULLED"], secret
+    present = _render(keep, dify_docker_dsl_variable_values=[], dify_docker_dsl_kv_read={"secret": {"token": "v"}},
+                      dify_docker_dsl_variable_entry=entry)
+    assert present == [{"name": "NULLED", "secret": True, "value": "v"}]
+
+
 def test_apps_without_declared_variables_keep_the_same_task_sequence():
     names = [task.get("name") for task in _expanded_yaml(IMPORT_ONE)]
     assert [name for name in names if name not in NEW_TOP_LEVEL] == BASELINE
