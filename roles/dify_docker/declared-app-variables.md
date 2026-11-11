@@ -35,9 +35,8 @@ and the items only, never a value.
 - Every tool provider key must occur in the definition, and none may remain after the replacement.
 - An MCP tool node (`provider_type: mcp`) whose `provider_id`, after the replacements, is not one of
   the workspace's tool provider ids fails the app. Built-in providers are not checked, because the
-  definition references them by name. The failure names the node's tool name. A value that is not
-  id-shaped (`dify_docker_agent_provider_id_pattern`) is shown, since no mapping resolved it. A
-  workspace id is never shown.
+  definition references them by name. The failure names the node's tool name only. No provider id is
+  shown.
 - Every environment variable of the definition with an empty value needs a declared entry. The
   failure lists the undeclared names. A non-empty variable may stay undeclared.
 - A declared variable whose name ends with `_MODE` must resolve to `shadow`, after trimming and

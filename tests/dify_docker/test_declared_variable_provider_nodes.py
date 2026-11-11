@@ -13,7 +13,6 @@ from _declared_variables_shared import (
 )
 from _defaults import load_defaults
 
-PATTERN = load_defaults()["dify_docker_agent_provider_id_pattern"]
 KNOWN_ID = "3f6c2a1e-0b7d-4c8e-9a51-2d4f6e8b0c11"
 UNKNOWN_ID = "7d9e0f1a-2b3c-4d5e-8f6a-9b0c1d2e3f40"
 COLLECT = "Collect the MCP tool nodes whose provider id is not a workspace provider id"
@@ -24,7 +23,7 @@ def _collect(pairs, workspace_ids):
     bad = []
     for pair in pairs:
         bad = _render(expression, dify_docker_dsl_bad_provider_nodes=bad, dify_docker_dsl_mcp_node=pair,
-                      dify_docker_dsl_workspace_ids=workspace_ids, dify_docker_agent_provider_id_pattern=PATTERN)
+                      dify_docker_dsl_workspace_ids=workspace_ids)
     return bad
 
 
@@ -66,10 +65,10 @@ def test_workspace_ids_are_the_ids_the_workspace_lists():
         KNOWN_ID, "x-1"]
 
 
-def test_a_node_outside_the_workspace_list_is_named_and_an_id_is_never_printed():
+def test_a_node_outside_the_workspace_list_is_named_and_no_provider_id_is_ever_printed():
     bad = _collect([["tool-a", KNOWN_ID], ["tool-b", UNKNOWN_ID], ["tool-c", "EXAMPLE_TOOL"]], [KNOWN_ID])
-    assert bad == ["tool-b", "tool-c (provider id EXAMPLE_TOOL)"]
-    assert UNKNOWN_ID not in str(bad)
+    assert bad == ["tool-b", "tool-c"]
+    assert UNKNOWN_ID not in str(bad) and "EXAMPLE_TOOL" not in str(bad)
 
 
 def test_the_workspace_check_passes_when_every_node_is_listed():
@@ -93,9 +92,10 @@ def test_the_provider_check_is_gated_on_mcp_tool_names_and_runs_after_the_replac
 
 def test_the_placeholder_pattern_is_gone_and_no_task_scans_code_node_bodies():
     assert "dify_docker_agent_tool_placeholder_pattern" not in load_defaults()
+    assert "dify_docker_agent_provider_id_pattern" not in load_defaults()
     for path in TASKS.glob("*.yml"):
         text = path.read_text(encoding="utf-8")
-        assert "placeholder_pattern" not in text, path.name
+        assert "placeholder_pattern" not in text and "provider_id_pattern" not in text, path.name
         assert "regex_findall" not in text, path.name
 
 
