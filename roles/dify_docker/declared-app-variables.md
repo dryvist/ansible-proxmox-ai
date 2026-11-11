@@ -16,8 +16,8 @@ two, fails the app before its import. The failure names the app and the variable
 AppRole role ids and secret ids are read and minted with an issuer AppRole, not the converge writer
 token. The issuer's role id and secret id come from the environment variables named in
 `dify_docker_agent_issuer_env_names`, and it logs in through the `dify_docker_agent_issuer_auth_mount`
-auth mount. An app with an AppRole-sourced entry logs in before its first AppRole read, in check mode
-too. The login token is a batch token. It is not revoked, and it is cleared when the app's iteration
+auth mount, which the AppRole API calls use too. An app with an AppRole-sourced entry logs in
+before its first AppRole read, in check mode too. The login token is a batch token. It is not revoked, and it is cleared when the app's iteration
 ends. A missing credential or a refused login fails the app before its import. The failure names the
 app and the environment variables, never a response or a value.
 

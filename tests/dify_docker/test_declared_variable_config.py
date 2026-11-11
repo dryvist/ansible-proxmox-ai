@@ -232,15 +232,16 @@ def test_the_issuer_names_are_declared_defaults_and_appear_in_no_task():
         assert "OPENBAO_APPROLE" not in text and "dify-agent-secret-id-issuer" not in text, path.name
 
 
-def test_the_five_approle_calls_use_the_issuer_token_and_none_uses_the_writer_token():
+def test_the_five_approle_calls_use_the_issuer_token_and_the_mount_variable():
     calls = [task for path in (ONE, APPLY, PRUNE) for task in _yaml(path)
-             if "/v1/auth/approle/" in task.get("ansible.builtin.uri", {}).get("url", "")]
+             if "dify_docker_agent_issuer_auth_mount" in task.get("ansible.builtin.uri", {}).get("url", "")]
     assert len(calls) == 5
     for task in calls:
         assert task["ansible.builtin.uri"]["headers"]["X-Vault-Token"] == (
             "{{ dify_docker_dsl_issuer_token }}"), task["name"]
     for path in EDITED:
-        assert "converge_writer_token" not in path.read_text(encoding="utf-8"), path.name
+        text = path.read_text(encoding="utf-8")
+        assert "converge_writer_token" not in text and "/v1/auth/approle" not in text, path.name
 
 
 def test_the_login_and_the_role_id_read_are_not_skipped_in_check_mode():
