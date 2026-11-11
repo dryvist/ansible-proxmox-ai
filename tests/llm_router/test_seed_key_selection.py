@@ -183,3 +183,15 @@ def test_selected_seed_run_skips_the_app_agent_probe() -> None:
     consumers = yaml.safe_load((TASK_ROOT / "seed-consumers.yml").read_text(encoding="utf-8"))
     probe = _named_task(consumers, "Probe app-agent tool and server boundaries after converge")
     assert probe["when"] == "not (_llm_router_seed_selected | bool)"
+
+
+def test_selected_seed_run_skips_global_model_and_schedule_writes() -> None:
+    consumers = yaml.safe_load((TASK_ROOT / "seed-consumers.yml").read_text(encoding="utf-8"))
+    for name in (
+        "Seed the caller-facing roles the first time this proxy carries them",
+        "Retire any live model deployment shadowed by a declared alias",
+        "Schedule the LiteLLM model cost map reload",
+    ):
+        when = _named_task(consumers, name)["when"]
+        conditions = when if isinstance(when, list) else [when]
+        assert "not (_llm_router_seed_selected | bool)" in conditions, name
