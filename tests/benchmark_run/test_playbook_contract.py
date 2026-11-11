@@ -18,6 +18,7 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     assert vars_["_benchmark_run_evalscope_version"] == "1.13.0"
     assert vars_["_benchmark_run_promptfoo_version"] == "0.124.1"
     assert vars_["_benchmark_run_lmcache_version"] == "0.5.6"
+    assert vars_["_benchmark_run_tau2_bench_commit"] == "989d3285ae669e49503324bdb9981bf14fccedeb"
     assert vars_["_benchmark_run_vllm_client_version"] == "{{ vllm_serving_version }}"
     assert vars_["_benchmark_run_vllm_client_image"] == (
         "vllm/vllm-openai-cpu:v{{ vllm_serving_version }}-x86_64"
@@ -149,11 +150,13 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
         "stdout_line_count",
         "stderr_line_count",
         "promptfoo_pass_summary",
+        "tau2_summary",
         "workload_id",
         "kv_arm",
         "cache_workload",
     }
     assert "_benchmark_run_promptfoo_summary.stdout" in safe_summary["promptfoo_pass_summary"]
+    assert "_benchmark_run_tau2_summary.stdout" in safe_summary["tau2_summary"]
 
 
 def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
@@ -214,3 +217,110 @@ def test_vllm_cell_uses_fixed_length_client_and_records_percentiles() -> None:
     prepare = load_tasks("prepare.yml")
     assert any("engine uptime" in task.get("name", "").lower() for task in prepare)
     assert any("host and engine uptime" in task.get("name", "").lower() for task in prepare)
+
+
+def test_tau2_suite_prepares_clone_and_keeps_key_off_argv() -> None:
+    preflight = load_tasks("preflight.yml")
+    suites = preflight[0]["ansible.builtin.assert"]["that"]
+    assert any("tau2-banking-knowledge" in assertion for assertion in suites)
+    request = next(task for task in preflight if task.get("ansible.builtin.add_host"))
+    tau2_request = request["ansible.builtin.add_host"]["benchmark_run_request"]
+    assert tau2_request["api_key_kv_path"] == "{{ api_key_kv_path | default('') }}"
+    assert tau2_request["api_key_kv_field"] == "{{ api_key_kv_field | default('') }}"
+    assert tau2_request["tau2_bench_commit"] == "{{ _benchmark_run_tau2_bench_commit }}"
+    key_assert = next(
+        task
+        for task in preflight
+        if task.get("when") == "suite == 'tau2-banking-knowledge'"
+        and "api_key_kv_path" in str(task.get("ansible.builtin.assert", {}).get("that", []))
+    )
+    assert "api_key_kv_field" in str(key_assert["ansible.builtin.assert"]["that"])
+
+    prepare = load_tasks("prepare.yml")
+    clone_tasks = [task for task in prepare if "tau2-bench" in str(task)]
+    assert any("sierra-research/tau2-bench.git" in str(task) for task in clone_tasks)
+    checkout = next(task for task in clone_tasks if "checkout" in task.get("ansible.builtin.command", {}).get("argv", []))
+    assert "{{ benchmark_run_request.tau2_bench_commit }}" in checkout["ansible.builtin.command"]["argv"]
+    head = next(task for task in clone_tasks if task.get("register") == "_benchmark_run_tau2_head")
+    assert "rev-parse" in head["ansible.builtin.command"]["argv"]
+    head_assert = next(
+        task
+        for task in prepare
+        if task.get("name") == "Require the pinned tau2-bench commit at the clone head"
+    )
+    assert "_benchmark_run_tau2_head.stdout | trim ==" in str(head_assert["ansible.builtin.assert"]["that"])
+    sync = next(task for task in clone_tasks if "sync" in task.get("ansible.builtin.command", {}).get("argv", []))
+    assert sync["ansible.builtin.command"]["argv"][4] == "/usr/local/bin/uv"
+    for task in clone_tasks:
+        assert task.get("when") == "benchmark_run_request.suite == 'tau2-banking-knowledge'" or (
+            task.get("when")
+            and "tau2-banking-knowledge" in str(task.get("when"))
+        )
+    run_metadata = next(task for task in prepare if task.get("name") == "Write client run metadata")
+    assert run_metadata["ansible.builtin.copy"]["content"] is not None
+    assert "tau2_bench_commit" in str(run_metadata)
+
+    execute = load_tasks("execute.yml")
+    dispatch = execute[0]["block"]
+    tau2_dispatch = next(task for task in dispatch if task.get("ansible.builtin.import_tasks") == "tau2.yml")
+    assert tau2_dispatch["when"] == "benchmark_run_request.suite == 'tau2-banking-knowledge'"
+
+    tau2 = load_tasks("tau2.yml")
+    vault_read = next(task for task in tau2 if task.get("community.hashi_vault.vault_kv2_get"))
+    vault_read_task = vault_read["community.hashi_vault.vault_kv2_get"]
+    assert vault_read_task["auth_method"] == "token"
+    assert vault_read_task["token"] == "{{ openbao_secrets_converge_writer_token }}"
+    assert vault_read_task["engine_mount_point"] == "{{ openbao_secrets_kv_mount }}"
+    assert vault_read_task["path"] == "{{ benchmark_run_request.api_key_kv_path }}"
+    assert vault_read["delegate_to"] == "localhost"
+    assert vault_read["connection"] == "local"
+    assert vault_read["become"] is False
+    assert vault_read["check_mode"] is False
+    assert vault_read["no_log"] is True
+    key_assert = next(task for task in tau2 if task.get("ansible.builtin.assert"))
+    assert "benchmark_run_request.api_key_kv_path" in key_assert["ansible.builtin.assert"]["fail_msg"]
+    assert "benchmark_run_request.api_key_kv_field" in key_assert["ansible.builtin.assert"]["fail_msg"]
+
+    run_task = next(task for task in tau2 if task.get("register") == "_benchmark_run_suite")
+    run_argv = run_task["ansible.builtin.command"]["argv"]
+    assert run_argv[:4] == ["pct", "exec", "{{ benchmark_run_request.client_vmid }}", "--"]
+    assert "/bin/bash" in run_argv and "-c" in run_argv
+    run_script = run_argv[run_argv.index("-c") + 1]
+    for expected in (
+        "IFS= read -r OPENAI_API_KEY",
+        "export OPENAI_API_KEY",
+        "exec uv run tau2 run",
+        "--domain banking_knowledge",
+        "--retrieval-config bm25",
+        "--num-trials 1",
+        "--agent-llm-args",
+        "--user-llm-args",
+        "--max-concurrency",
+        "--save-to",
+        "api_base",
+        "temperature",
+    ):
+        assert expected in run_script, expected
+    assert run_task["ansible.builtin.command"]["stdin"] == (
+        "{{ _benchmark_run_tau2_key_read.data.data[benchmark_run_request.api_key_kv_field] }}"
+    )
+    assert run_task["no_log"] is True
+    for task in tau2:
+        if task.get("register") == "_benchmark_run_suite":
+            continue
+        assert "OPENAI_API_KEY" not in str(task.get("ansible.builtin.command", {}).get("argv", []))
+    copy_task = next(task for task in tau2 if task.get("name") == "Copy the tau2 results file into the run result directory")
+    assert "{{ benchmark_run_request.suite }}.json" in copy_task["ansible.builtin.command"]["argv"][-1]
+
+    always = load_tasks("execute.yml")[0]["always"]
+    tau2_collect = next(task for task in always if task.get("name") == "Collect the tau2 results file from the client")
+    assert tau2_collect["ansible.builtin.command"]["argv"][:2] == ["pct", "pull"]
+    assert tau2_collect["when"] == [
+        "benchmark_run_request.suite == 'tau2-banking-knowledge'",
+        "_benchmark_run_suite.rc | default(1) == 0",
+    ]
+    tau2_summary = next(task for task in always if task.get("name") == "Read a safe tau2 summary from its results JSON")
+    tau2_summary_argv = tau2_summary["ansible.builtin.command"]["argv"]
+    assert tau2_summary_argv[0] == "jq"
+    assert "average_reward" in tau2_summary_argv[-2]
+    assert "simulations" in tau2_summary_argv[-2]

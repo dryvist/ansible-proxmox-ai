@@ -33,7 +33,7 @@
     argv: [pct, exec, "{{ benchmark_run_request.client_vmid }}", --, /usr/local/bin/uv, --version]
   register: _benchmark_run_uv_version
   changed_when: false
-  when: benchmark_run_request.suite == 'bigcodebench-hard'
+  when: benchmark_run_request.suite in ['bigcodebench-hard', 'tau2-banking-knowledge']
 
 - name: Require pinned uv
   ansible.builtin.assert:
@@ -41,7 +41,7 @@
       - _benchmark_run_uv_version.stdout | trim == 'uv ' ~ benchmark_run_request.uv_version
     fail_msg: "Client uv version differs from the benchmark-run pin."
     quiet: true
-  when: benchmark_run_request.suite == 'bigcodebench-hard'
+  when: benchmark_run_request.suite in ['bigcodebench-hard', 'tau2-banking-knowledge']
 
 - name: Verify pinned Node in selected client
   ansible.builtin.command:
@@ -144,6 +144,90 @@
       - "{{ _benchmark_run_client_root }}/inputs"
       - "{{ _benchmark_run_client_root }}/artifacts"
   changed_when: true
+
+- name: Check for a tau2-bench clone in the client run root
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - test
+      - -d
+      - "{{ _benchmark_run_client_root }}/tau2-bench/.git"
+  register: _benchmark_run_tau2_clone_probe
+  changed_when: false
+  failed_when: false
+  when: benchmark_run_request.suite == 'tau2-banking-knowledge'
+
+- name: Clone tau2-bench into the client run root
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - git
+      - clone
+      - https://github.com/sierra-research/tau2-bench.git
+      - "{{ _benchmark_run_client_root }}/tau2-bench"
+  changed_when: true
+  when:
+    - benchmark_run_request.suite == 'tau2-banking-knowledge'
+    - _benchmark_run_tau2_clone_probe.rc | default(1) != 0
+
+- name: Check out the pinned tau2-bench commit
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - git
+      - -C
+      - "{{ _benchmark_run_client_root }}/tau2-bench"
+      - checkout
+      - "{{ benchmark_run_request.tau2_bench_commit }}"
+  changed_when: true
+  when: benchmark_run_request.suite == 'tau2-banking-knowledge'
+
+- name: Read the tau2-bench clone head
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - git
+      - -C
+      - "{{ _benchmark_run_client_root }}/tau2-bench"
+      - rev-parse
+      - HEAD
+  register: _benchmark_run_tau2_head
+  changed_when: false
+  when: benchmark_run_request.suite == 'tau2-banking-knowledge'
+
+- name: Require the pinned tau2-bench commit at the clone head
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_tau2_head.stdout | trim == benchmark_run_request.tau2_bench_commit
+    fail_msg: "The tau2-bench clone head differs from the benchmark-run pin."
+    quiet: true
+  when: benchmark_run_request.suite == 'tau2-banking-knowledge'
+
+- name: Sync the pinned tau2-bench environment
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - /usr/local/bin/uv
+      - sync
+      - --directory
+      - "{{ _benchmark_run_client_root }}/tau2-bench"
+  changed_when: true
+  when: benchmark_run_request.suite == 'tau2-banking-knowledge'
 
 - name: Stage pinned cache tools
   ansible.builtin.import_tasks: cache-tools.yml
@@ -351,6 +435,7 @@
         'vllm_client_version': benchmark_run_request.vllm_client_version,
         'vllm_serving_version': benchmark_run_request.vllm_serving_version,
         'lmcache_version': benchmark_run_request.lmcache_version,
+        'tau2_bench_commit': benchmark_run_request.tau2_bench_commit,
         'workload_id': benchmark_run_request.workload_id,
         'kv_arm': benchmark_run_request.kv_arm,
         'host_ram_limit_gib': benchmark_run_request.host_ram_limit_gib,

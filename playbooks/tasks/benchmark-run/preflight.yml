@@ -20,19 +20,19 @@
       - suite is defined
       - >-
         suite == 'bigcodebench-hard' or suite == 'vllm-sweep' or
-        suite in ['lmcache-multi-round-qa', 'vllm-multi-turn'] or
+        suite in ['lmcache-multi-round-qa', 'vllm-multi-turn', 'tau2-banking-knowledge'] or
         suite | string is match('^promptfoo-[a-z0-9][a-z0-9-]*$')
       - >-
-        suite in ['lmcache-multi-round-qa', 'vllm-multi-turn'] or
+        suite in ['lmcache-multi-round-qa', 'vllm-multi-turn', 'tau2-banking-knowledge'] or
         (reasoning_arm is defined and reasoning_arm in ['off', 'low', 'high', 'xhigh'])
       - >-
         suite in ['lmcache-multi-round-qa', 'vllm-multi-turn'] or
         (concurrency is defined and concurrency | int > 0)
       - >-
-        suite in ['lmcache-multi-round-qa', 'vllm-multi-turn'] or
+        suite in ['lmcache-multi-round-qa', 'vllm-multi-turn', 'tau2-banking-knowledge'] or
         (max_tokens is defined and max_tokens | int > 0)
       - >-
-        suite in ['lmcache-multi-round-qa', 'vllm-multi-turn'] or
+        suite in ['lmcache-multi-round-qa', 'vllm-multi-turn', 'tau2-banking-knowledge'] or
         (sandbox_pool is defined and sandbox_pool | int > 0)
       - run_id is defined and run_id | string is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
       - (moe_cpu_offload | default('none')) in ['none', 'ncmoe', 'cpumoe']
@@ -186,6 +186,20 @@
     quiet: true
   when: suite in ['lmcache-multi-round-qa', 'vllm-multi-turn']
 
+- name: Require the OpenBao key location for the tau2 suite
+  ansible.builtin.assert:
+    that:
+      - api_key_kv_path is defined
+      - api_key_kv_path | string is match('^[A-Za-z0-9][A-Za-z0-9._/-]*$')
+      - api_key_kv_field is defined
+      - api_key_kv_field | string is match('^[A-Za-z0-9_.-]+$')
+    fail_msg: >-
+      The tau2 suite reads its bearer key from the secret store and requires
+      api_key_kv_path (the KV v2 path of the key) and api_key_kv_field (the
+      field name holding the key).
+    quiet: true
+  when: suite == 'tau2-banking-knowledge'
+
 - name: Add the selected Proxmox node to this run's inventory
   ansible.builtin.add_host:
     name: "{{ node }}"
@@ -229,6 +243,9 @@
       gutenberg_sha256: "{{ _benchmark_run_gutenberg_sha256 }}"
       bcb_dataset_revision: "{{ _benchmark_run_bcb_dataset_revision }}"
       bcb_sandbox_image: "{{ _benchmark_run_bcb_sandbox_image }}"
+      tau2_bench_commit: "{{ _benchmark_run_tau2_bench_commit }}"
+      api_key_kv_path: "{{ api_key_kv_path | default('') }}"
+      api_key_kv_field: "{{ api_key_kv_field | default('') }}"
       workload_id: "{{ workload_id | default('') }}"
       kv_arm: "{{ kv_arm | default('') }}"
       host_ram_limit_gib: "{{ host_ram_limit_gib | default(0) | int }}"

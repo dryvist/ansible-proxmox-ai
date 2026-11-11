@@ -1,0 +1,108 @@
+---
+# tau2-banking-knowledge: runs tau2-bench in the benchmark client against an
+# OpenAI-compatible engine that needs a bearer key. The key is read from a KV
+# v2 leaf on the controller and reaches the tau2 process ONLY on standard
+# input — never argv, never a file, never a printed variable.
+- name: Read the tau2 bearer key from the secret store
+  community.hashi_vault.vault_kv2_get:
+    url: "{{ lookup('ansible.builtin.env', 'BAO_ADDR') | default('', true) }}"
+    auth_method: token
+    token: "{{ openbao_secrets_converge_writer_token }}"
+    engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+    path: "{{ benchmark_run_request.api_key_kv_path }}"
+    validate_certs: true
+  register: _benchmark_run_tau2_key_read
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  no_log: true
+
+- name: Require the tau2 bearer key field to be readable and non-empty
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_tau2_key_read is not failed
+      - >-
+        _benchmark_run_tau2_key_read.data.data[benchmark_run_request.api_key_kv_field]
+        | default('') | string | length > 0
+    fail_msg: >-
+      The tau2 suite requires a readable, non-empty bearer key at the KV v2
+      path named by benchmark_run_request.api_key_kv_path in the field named
+      by benchmark_run_request.api_key_kv_field.
+    quiet: true
+
+- name: Run the pinned tau2 banking-knowledge suite in the client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - /usr/bin/env
+      - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - /bin/bash
+      - -c
+      - >-
+        cd {{ (_benchmark_run_client_root ~ '/tau2-bench') | quote }} || exit 1;
+        IFS= read -r OPENAI_API_KEY; export OPENAI_API_KEY;
+        exec uv run tau2 run
+        --domain banking_knowledge
+        --retrieval-config bm25
+        --num-trials 1
+        --agent-llm {{ ('openai/' ~ benchmark_run_request.model) | quote }}
+        --user-llm {{ ('openai/' ~ benchmark_run_request.model) | quote }}
+        --agent-llm-args
+        {{ ({'api_base': benchmark_run_request.engine_url, 'temperature': 0.0} | to_json) | quote }}
+        --user-llm-args
+        {{ ({'api_base': benchmark_run_request.engine_url, 'temperature': 0.0} | to_json) | quote }}
+        --max-concurrency {{ benchmark_run_request.concurrency | quote }}
+        --save-to {{ benchmark_run_request.run_id | quote }}
+    stdin: "{{ _benchmark_run_tau2_key_read.data.data[benchmark_run_request.api_key_kv_field] }}"
+  register: _benchmark_run_suite
+  no_log: true
+  changed_when: true
+
+- name: Find the tau2 results file in the clone
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - /usr/bin/find
+      - "{{ _benchmark_run_client_root }}/tau2-bench/data/simulations"
+      - -mindepth
+      - "2"
+      - -maxdepth
+      - "2"
+      - -type
+      - f
+      - -path
+      - "*/{{ benchmark_run_request.run_id }}/results.json"
+  register: _benchmark_run_tau2_results
+  changed_when: false
+
+- name: Require exactly one tau2 results file for this run id
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_tau2_results.stdout_lines | length == 1
+    fail_msg: >-
+      The tau2 run did not produce exactly one results.json under the clone's
+      data/simulations directory for this run id.
+    quiet: true
+
+- name: Copy the tau2 results file into the run result directory
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - cp
+      - "{{ _benchmark_run_tau2_results.stdout_lines | first }}"
+      - "{{ _benchmark_run_client_result }}/{{ benchmark_run_request.suite }}.json"
+  changed_when: true
