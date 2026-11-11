@@ -114,9 +114,11 @@ Catalog entries are imported as listed, including driver entries. The role
 lists every Dify app page before matching catalog names. Each app description
 records its catalog SHA-256 only after its workflow is published. A missing app
 is created; by default, an existing app is overwritten in place only when its
-recorded SHA-256 differs or is missing. An unchanged SHA-256 makes no import
-write. Dify keeps the existing app ID and mode during an overwrite. By default,
-console edits are overwritten only when the catalog file changes. Successful
+recorded SHA-256 differs or is missing. An unchanged SHA-256 sends no import.
+Dify keeps the existing app ID and mode during an overwrite. By default, console
+edits to the app graph are overwritten only when the catalog file changes. Apps with
+declared entries still write them on every converge; see
+[Declared catalog app variables](#declared-catalog-app-variables). Successful
 workflow imports are published so API callers receive the catalog version. API-key provisioning
 also runs for unchanged apps, which lets a later converge repair an app whose
 key was not stored. Import, confirmation, publication and catalog-hash update
@@ -160,24 +162,42 @@ by catalog app name, and each entry names one variable and exactly one source:
 `secret: true` stores the variable with the secret value type. An entry with no source, or with
 two, fails the app before its import. The failure names the app and the variable, never a value.
 
-`dify_docker_agent_tool_providers` maps a placeholder in the catalog DSL to a workspace tool
-provider name. Each placeholder is replaced by that provider's id before the import, read from
-`GET /workspaces/current/tool-providers`. A name that does not match exactly one provider fails
-the app before its import.
+`dify_docker_agent_tool_providers` maps a placeholder token in the catalog DSL to a workspace tool
+provider name. The import replaces each token with that provider's id, read from
+`GET /workspaces/current/tool-providers`, so a provider id reaches the app graph only through an
+import. A name must match exactly one provider, or the app fails before its import.
 
-A placeholder token matching `dify_docker_agent_tool_placeholder_pattern` (default: a whole token
-such as `__EXAMPLE_TOOL__`) that is still in the app definition after the replacement fails the app
-before its import. So does a secret environment variable of the app definition with an empty value
-and no declared entry. The failure names the placeholders and variables only, never a value. Both
-checks run in check mode.
+An app with declared entries, a placeholder token, or an environment variable with an empty value in
+its definition runs these checks before its import. They run in check mode too. A failure names the
+app and the items only, never a value.
 
-Each app with declared variables runs in this order: resolve every source, import when the
-catalog hash changed, write the draft variables, publish, then prune. The apply runs on every
-converge, because minted secret ids expire. After each publish, the secret ids minted in the
-run are kept. Of the older secret ids of each AppRole, only the newest is kept, and the others
-are destroyed. Check mode resolves the reads and reports
-variable names only. It never mints a secret id or writes to the app. Apps without declared
-variables run the same tasks as before.
+- A declared source must resolve. A value that is still a template token (`^<[A-Z_]+>$`) counts as
+  unresolved.
+- Every tool provider key must occur in the definition, and none may remain after the replacement.
+- A placeholder token matching `dify_docker_agent_tool_placeholder_pattern` (default: a whole token
+  such as `__EXAMPLE_TOOL__`) that is still in the definition after the replacement fails the app.
+- Every environment variable of the definition with an empty value needs a declared entry. The
+  failure lists the undeclared names. A non-empty variable may stay undeclared.
+- A declared variable whose name ends with `_MODE` must resolve to `shadow`, after trimming and
+  lowercasing, unless the app is listed in `dify_docker_agent_live_apps`. Any other value fails the
+  app.
+
+An app with declared entries runs these steps on every converge:
+
+1. Resolve every source. This only reads. Check mode stops here.
+2. Import the catalog DSL when its hash changed, with the tokens replaced.
+3. Write the declared variables to the draft. The write runs on every converge because minted
+   secret ids expire, so a console edit to a declared variable is overwritten on the next converge.
+4. Publish. A changed app is published after its write, so the published workflow carries the
+   variables. An unchanged app gets a publish of its declared variables.
+5. Prune. Each AppRole keeps the secret ids minted in this run. Of its other ids, only the newest
+   is kept and the rest are destroyed. An id minted in the run is never destroyed, including when
+   two apps share an AppRole.
+
+An app whose only declaration is a tool provider map has no entries, so an unchanged converge runs
+no write, publish or prune for it. Its provider ids reach the graph only through an import. Check
+mode never mints, writes, publishes or prunes. It reports variable names only. Apps without
+declared variables run the same tasks as before.
 
 With `dify_docker_agent_app_config_from_leaf: true`, the declarations come from each selected app's
 OpenBao leaf instead of the inventory, and the checks and the apply run unchanged. The leaf at
