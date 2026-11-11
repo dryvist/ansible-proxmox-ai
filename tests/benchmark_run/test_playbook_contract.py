@@ -227,6 +227,11 @@ def test_tau2_suite_prepares_clone_and_keeps_key_off_argv() -> None:
     tau2_request = request["ansible.builtin.add_host"]["benchmark_run_request"]
     assert tau2_request["api_key_kv_path"] == "{{ api_key_kv_path | default('') }}"
     assert tau2_request["api_key_kv_field"] == "{{ api_key_kv_field | default('') }}"
+    assert tau2_request["tau2_domain"] == "{{ tau2_domain | default('banking_knowledge') }}"
+    assert tau2_request["tau2_num_trials"] == "{{ tau2_num_trials | default(1) | int }}"
+    assert tau2_request["tau2_max_concurrency"] == (
+        "{{ tau2_max_concurrency | default(concurrency | default(1)) | int }}"
+    )
     assert tau2_request["tau2_bench_commit"] == "{{ _benchmark_run_tau2_bench_commit }}"
     key_assert = next(
         task
@@ -290,13 +295,13 @@ def test_tau2_suite_prepares_clone_and_keeps_key_off_argv() -> None:
         "IFS= read -r OPENAI_API_KEY",
         "export OPENAI_API_KEY",
         "exec uv run tau2 run",
-        "--domain banking_knowledge",
-        "--retrieval-config bm25",
-        "--num-trials 1",
+        "--domain {{ benchmark_run_request.tau2_domain | quote }}",
+        "{% if benchmark_run_request.tau2_domain == 'banking_knowledge' %}--retrieval-config bm25{% endif %}",
+        "--num-trials {{ benchmark_run_request.tau2_num_trials | int }}",
         "--agent-llm-args",
         "--user-llm-args",
-        "--max-concurrency",
-        "--save-to",
+        "--max-concurrency {{ benchmark_run_request.tau2_max_concurrency | quote }}",
+        "--save-to {{ (benchmark_run_request.run_id ~ '-' ~ benchmark_run_request.tau2_domain) | quote }}",
         "api_base",
         "temperature",
     ):
@@ -305,16 +310,20 @@ def test_tau2_suite_prepares_clone_and_keeps_key_off_argv() -> None:
         "{{ _benchmark_run_tau2_key_read.data.data[benchmark_run_request.api_key_kv_field] }}"
     )
     assert run_task["no_log"] is True
+    find_task = next(task for task in tau2 if task.get("register") == "_benchmark_run_tau2_results")
+    assert "{{ benchmark_run_request.run_id }}-{{ benchmark_run_request.tau2_domain }}/results.json" in str(find_task)
     for task in tau2:
         if task.get("register") == "_benchmark_run_suite":
             continue
         assert "OPENAI_API_KEY" not in str(task.get("ansible.builtin.command", {}).get("argv", []))
     copy_task = next(task for task in tau2 if task.get("name") == "Copy the tau2 results file into the run result directory")
-    assert "{{ benchmark_run_request.suite }}.json" in copy_task["ansible.builtin.command"]["argv"][-1]
+    result_name = "{{ benchmark_run_request.suite }}-{{ benchmark_run_request.tau2_domain }}.json"
+    assert result_name in copy_task["ansible.builtin.command"]["argv"][-1]
 
     always = load_tasks("execute.yml")[0]["always"]
     tau2_collect = next(task for task in always if task.get("name") == "Collect the tau2 results file from the client")
     assert tau2_collect["ansible.builtin.command"]["argv"][:2] == ["pct", "pull"]
+    assert tau2_collect["ansible.builtin.command"]["argv"][-2].endswith(result_name)
     assert tau2_collect["when"] == [
         "benchmark_run_request.suite == 'tau2-banking-knowledge'",
         "_benchmark_run_suite.rc | default(1) == 0",
@@ -324,3 +333,5 @@ def test_tau2_suite_prepares_clone_and_keeps_key_off_argv() -> None:
     assert tau2_summary_argv[0] == "jq"
     assert "average_reward" in tau2_summary_argv[-2]
     assert "simulations" in tau2_summary_argv[-2]
+    assert "domain=" in tau2_summary_argv[-2]
+    assert tau2_summary_argv[-3] == "{{ benchmark_run_request.tau2_domain }}"

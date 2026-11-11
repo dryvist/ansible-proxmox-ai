@@ -50,17 +50,17 @@
         cd {{ (_benchmark_run_client_root ~ '/tau2-bench') | quote }} || exit 1;
         IFS= read -r OPENAI_API_KEY; export OPENAI_API_KEY;
         exec uv run tau2 run
-        --domain banking_knowledge
-        --retrieval-config bm25
-        --num-trials 1
+        --domain {{ benchmark_run_request.tau2_domain | quote }}
+        {% if benchmark_run_request.tau2_domain == 'banking_knowledge' %}--retrieval-config bm25{% endif %}
+        --num-trials {{ benchmark_run_request.tau2_num_trials | int }}
         --agent-llm {{ ('openai/' ~ benchmark_run_request.model) | quote }}
         --user-llm {{ ('openai/' ~ benchmark_run_request.model) | quote }}
         --agent-llm-args
         {{ ({'api_base': benchmark_run_request.engine_url, 'temperature': 0.0} | to_json) | quote }}
         --user-llm-args
         {{ ({'api_base': benchmark_run_request.engine_url, 'temperature': 0.0} | to_json) | quote }}
-        --max-concurrency {{ benchmark_run_request.concurrency | quote }}
-        --save-to {{ benchmark_run_request.run_id | quote }}
+        --max-concurrency {{ benchmark_run_request.tau2_max_concurrency | quote }}
+        --save-to {{ (benchmark_run_request.run_id ~ '-' ~ benchmark_run_request.tau2_domain) | quote }}
     stdin: "{{ _benchmark_run_tau2_key_read.data.data[benchmark_run_request.api_key_kv_field] }}"
   register: _benchmark_run_suite
   no_log: true
@@ -82,7 +82,7 @@
       - -type
       - f
       - -path
-      - "*/{{ benchmark_run_request.run_id }}/results.json"
+      - "*/{{ benchmark_run_request.run_id }}-{{ benchmark_run_request.tau2_domain }}/results.json"
   register: _benchmark_run_tau2_results
   changed_when: false
 
@@ -104,5 +104,7 @@
       - --
       - cp
       - "{{ _benchmark_run_tau2_results.stdout_lines | first }}"
-      - "{{ _benchmark_run_client_result }}/{{ benchmark_run_request.suite }}.json"
+      - >-
+        {{ _benchmark_run_client_result }}/{{ benchmark_run_request.suite }}-{{
+        benchmark_run_request.tau2_domain }}.json
   changed_when: true

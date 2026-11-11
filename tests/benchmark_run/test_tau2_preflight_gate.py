@@ -86,3 +86,31 @@ def test_complete_tau2_survey_passes_preflight(tmp_path: Path) -> None:
         {"api_key_kv_path": "ai/tau2", "api_key_kv_field": "OPENAI_API_KEY"},
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_tau2_survey_with_unknown_domain_fails_preflight(tmp_path: Path) -> None:
+    result = _run_preflight(
+        tmp_path,
+        {"api_key_kv_path": "ai/tau2", "api_key_kv_field": "OPENAI_API_KEY", "tau2_domain": "finance"},
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert "tau2_domain" in combined
+
+
+def test_tau2_survey_with_zero_trials_fails_preflight(tmp_path: Path) -> None:
+    result = _run_preflight(
+        tmp_path,
+        {"api_key_kv_path": "ai/tau2", "api_key_kv_field": "OPENAI_API_KEY", "tau2_num_trials": 0},
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert "tau2_num_trials" in combined
+
+
+def test_tau2_survey_with_airline_domain_passes_preflight(tmp_path: Path) -> None:
+    result = _run_preflight(
+        tmp_path,
+        {"api_key_kv_path": "ai/tau2", "api_key_kv_field": "OPENAI_API_KEY", "tau2_domain": "airline"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
