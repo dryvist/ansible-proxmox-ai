@@ -11,16 +11,21 @@
   when: dify_docker_dsl_variable_entry.kv is defined
   no_log: true
 
-# A missing, null or empty field becomes an empty value, which the non-empty check rejects.
+# A missing or null field becomes an empty value, which the non-empty check rejects. Any other value
+# keeps its DSL string form: a number or a boolean is written as its JSON text, so 0 and false stay.
 - name: Keep the declared KV field value
   ansible.builtin.set_fact:
     dify_docker_dsl_variable_values: >-
       {{ dify_docker_dsl_variable_values
          + [{'name': dify_docker_dsl_variable_entry.name,
              'secret': dify_docker_dsl_variable_entry.secret | default(false) | bool,
-             'value': ((dify_docker_dsl_kv_read.secret | default({}, true)).get(
-                         dify_docker_dsl_variable_entry.kv.field | default(''))
-                       or '') | string}] }}
+             'value': '' if dify_docker_dsl_kv_item is none
+                      else (dify_docker_dsl_kv_item if dify_docker_dsl_kv_item is string
+                            else dify_docker_dsl_kv_item | to_json)}] }}
+  vars:
+    dify_docker_dsl_kv_item: >-
+      {{ (dify_docker_dsl_kv_read.secret | default({}, true)).get(
+           dify_docker_dsl_variable_entry.kv.field | default('')) }}
   when: dify_docker_dsl_variable_entry.kv is defined
   no_log: true
 

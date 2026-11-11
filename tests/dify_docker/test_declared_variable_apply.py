@@ -119,15 +119,24 @@ def test_null_missing_or_empty_kv_field_is_unresolved_and_never_the_string_none(
     unresolved = _fact(_yaml(PRE), "List the declared variables that have no value yet",
                        "dify_docker_dsl_unresolved_names")
     entry = {"name": "NULLED", "secret": True, "kv": {"path": "example/app", "field": "token"}}
-    for secret in ({"token": None}, {}, {"token": ""}):
-        values = _render(keep, dify_docker_dsl_variable_values=[], dify_docker_dsl_kv_read={"secret": secret},
+    for item in (None, ""):
+        values = _render(keep, dify_docker_dsl_variable_values=[], dify_docker_dsl_kv_item=item,
                          dify_docker_dsl_variable_entry=entry)
-        assert values == [{"name": "NULLED", "secret": True, "value": ""}], secret
+        assert values == [{"name": "NULLED", "secret": True, "value": ""}], item
         assert _render(unresolved, dify_docker_dsl_resolve_names=["NULLED"],
-                       dify_docker_dsl_variable_values=values) == ["NULLED"], secret
-    present = _render(keep, dify_docker_dsl_variable_values=[], dify_docker_dsl_kv_read={"secret": {"token": "v"}},
+                       dify_docker_dsl_variable_values=values) == ["NULLED"], item
+    present = _render(keep, dify_docker_dsl_variable_values=[], dify_docker_dsl_kv_item="v",
                       dify_docker_dsl_variable_entry=entry)
     assert present == [{"name": "NULLED", "secret": True, "value": "v"}]
+
+
+def test_kv_values_of_zero_and_false_pass_through_as_their_strings():
+    keep = _fact(_yaml(ONE), "Keep the declared KV field value", "dify_docker_dsl_variable_values")
+    entry = {"name": "LIMIT", "secret": False, "kv": {"path": "example/app", "field": "limit"}}
+    for item, text in ((0, "0"), (False, "false"), (1.5, "1.5"), ("0", "0"), ("false", "false")):
+        values = _render(keep, dify_docker_dsl_variable_values=[], dify_docker_dsl_kv_item=item,
+                         dify_docker_dsl_variable_entry=entry)
+        assert values == [{"name": "LIMIT", "secret": False, "value": text}], item
 
 
 def test_prune_destroys_only_older_accessors_and_never_one_minted_in_the_run():
