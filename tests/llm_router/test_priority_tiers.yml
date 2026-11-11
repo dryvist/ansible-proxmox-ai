@@ -147,10 +147,10 @@
           {%- for d in _members -%}
           {%- set p = d.litellm_params -%}
           {%- if p.extra_body.priority != item.priority or p.extra_body.priority == 0
-                or (item.tier == 2 and (p.timeout != llm_router_tier_2_timeout_seconds
+                or (item.tier in [2, 3] and (p.timeout != llm_router_tier_2_timeout_seconds
                     or p.stream_timeout != llm_router_tier_2_timeout_seconds
                     or p.keepalive_seconds != llm_router_tier_2_keepalive_seconds))
-                or (item.tier != 2 and (p.timeout > llm_router_local_request_timeout_seconds
+                or (item.tier not in [2, 3] and (p.timeout > llm_router_local_request_timeout_seconds
                     or p.stream_timeout > llm_router_local_stream_timeout_seconds
                     or p.keepalive_seconds is defined)) -%}
           {%- set _ = out.append(d.model_name) -%}
@@ -164,6 +164,7 @@
         that:
           - _cloud | length > 0
           - _cloud | selectattr('litellm_params.tags', 'contains', 'tier-2') | list | length == 0
+          - _cloud | selectattr('litellm_params.tags', 'contains', 'tier-3') | list | length == 0
           - >-
             _cloud | selectattr('litellm_params.tags', 'contains', 'tier-0')
             | list | length == _cloud | length
@@ -178,7 +179,7 @@
           {%- set out = [] -%}
           {%- for alias, tier in llm_router_priority_key_tiers.items() -%}
           {%- set _ = out.append({'alias': alias, 'value': 'sk-fixture-priority-key',
-                'tags': ['&zdr', '!retains'] + (['&local'] if tier == 2 else []),
+                'tags': ['&zdr', '!retains'] + (['&local'] if tier in [2, 3] else []),
                 'metadata': {'trace_defaults': {'tier': 'stale'}},
                 'models': llm_router_d1_all_key_groups,
                 'allowed_classes': ['local', 'sub', 'paid-zdr', 'free', 'retains']}) -%}
@@ -200,11 +201,11 @@
           - item.metadata.trace_defaults.tier == llm_router_priority_key_tiers[item.alias]
           - "'&zdr' in item.tags"
           - "'!retains' in item.tags"
-          - item.priority_tier != 2 or item.allowed_classes == ['local']
-          - item.priority_tier != 2 or '&local' in item.tags
-          - item.priority_tier != 2 or item.router_settings.fallbacks == []
-          - item.priority_tier != 2 or item.router_settings.context_window_fallbacks == []
-          - item.priority_tier != 2 or item.models | intersect(_cloud_groups) | length == 0
+          - item.priority_tier not in [2, 3] or item.allowed_classes == ['local']
+          - item.priority_tier not in [2, 3] or '&local' in item.tags
+          - item.priority_tier not in [2, 3] or item.router_settings.fallbacks == []
+          - item.priority_tier not in [2, 3] or item.router_settings.context_window_fallbacks == []
+          - item.priority_tier not in [2, 3] or item.models | intersect(_cloud_groups) | length == 0
       loop: "{{ _tier_keys }}"
       loop_control:
         label: "{{ item.alias }}"
@@ -229,7 +230,7 @@
           - _team.models | intersect(llm_router_zdr_unasserted_terminal_rungs) | length > 0
           - _team.priority == llm_router_priority_policy_by_tier[item.priority_tier | string].priority
           - item.tags is contains('&tier-' ~ item.priority_tier)
-          - item.priority_tier != 2 or item.allowed_classes == ['local']
+          - item.priority_tier not in [2, 3] or item.allowed_classes == ['local']
       loop: "{{ _llm_router_virtual_keys_source }}"
       loop_control:
         label: "{{ item.alias }}"

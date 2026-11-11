@@ -2,13 +2,14 @@
 type: reference
 description: Priority teams, deployment tags, and timeout precedence for router consumers.
 tags: [llm-router, routing]
-timestamp: 2026-11-07T00:58:14Z
+timestamp: 2026-11-11T03:18:23Z
 ---
 
 # Priority tiers
 
-Local model groups render 3 deployment entries per backend, tagged `tier-0`,
-`tier-1`, and `tier-2`. Their `extra_body.priority` values are 1, 10, and 20.
+Local model groups render 4 deployment entries per backend, tagged `tier-0`,
+`tier-1`, `tier-2`, and `tier-3`. Their `extra_body.priority` values are 1, 10, 20,
+and 100.
 Each entry retains the backend's configured admission cap and order. The catalog
 projects `execution_width` from the serving profile and `admitted_waiters` from
 the difference between admission and execution width. `max_parallel_requests`
@@ -16,10 +17,10 @@ is a per-deployment, per-worker limit; tier copies do not establish a shared
 physical-lane limit or reserve capacity for a tier. Tier 1
 also carries `default` for requests without a tier tag.
 
-Consumer keys belong to the `tier-0`, `tier-1`, or `tier-2` team. The input map
+Consumer keys belong to the `tier-0`, `tier-1`, `tier-2`, or `tier-3` team. The input map
 `llm_router_priority_key_tiers` assigns consumer aliases; an entry's
 `priority_tier` overrides that map. Unmapped keys use `llm_router_priority_default_tier`.
-Key and team metadata carry required tier tags. Tier 2 also requires `local`,
+Key and team metadata carry required tier tags. Tiers 2 and 3 also require `local`,
 disables key fallback maps, and receives deployment `timeout` and `stream_timeout`
 of 45600 seconds with `keepalive_seconds: 15`. This combines 43200 seconds of
 waiting and the existing 2400-second attempt budget. Tier-2 key and team settings
@@ -32,7 +33,9 @@ budget for read, stream-stale, and non-streaming stale guards; other stores
 retain their configured client defaults. Named profiles resolve independently
 of their gateway's tier.
 Cloud deployments carry only
-tiers 0 and 1 and retain their privacy tags.
+tiers 0 and 1 and retain their privacy tags. Tier 3 is the lowest-priority fill
+lane, carried by the `fill` key (`api_key_alias` `fill`); that key is enabled only
+once its generated value is seeded.
 Hermes agent endpoints carry all priority tier tags and retain `sensitivity:public`.
 Keys moving from tier 2 to tier 0 or 1 receive the new tier tag and fallback
 policy. The `priority_policy` metadata records injected settings and their prior

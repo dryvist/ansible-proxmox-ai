@@ -1,0 +1,218 @@
+---
+# The fill lane: tier 3 (priority 100) renders beside tiers 0-2 on every local
+# backend, and the `fill` key carries it. No other key changes tier.
+- name: Render the fill priority tier and its key
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - policy_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
+    bao_local_llm_secrets:
+      OPENAI_API_KEY: fixture-openai
+      GEMINI_API_KEY: fixture-gemini
+      DASHSCOPE_API_KEY: fixture-dashscope
+      OPENROUTER_API_KEY: fixture-openrouter
+      CHATGPT_LOGIN_FILE: /dev/null
+    bao_apps_secrets:
+      fill_llm_router_key: sk-fixture-fill
+      evals_llm_router_key: sk-fixture-evals
+      homeassistant_llm_router_key: sk-fixture-homeassistant
+      grafana_llm_router_key: sk-fixture-grafana
+      zammad_llm_router_key: sk-fixture-zammad
+      langfuse_llm_router_key: sk-fixture-langfuse
+      langflow_llm_router_key: sk-fixture-langflow
+      llamaindex_llm_router_key: sk-fixture-llamaindex
+      hindsight_llm_router_key: sk-fixture-hindsight
+      open_webui_llm_router_key: sk-fixture-open-webui
+      n8n_llm_router_key: sk-fixture-n8n
+      langgraph_llm_router_key: sk-fixture-langgraph
+      github_actions_ci_fix_llm_router_key: sk-fixture-ci-fix
+      github_actions_pr_review_llm_router_key: sk-fixture-pr-review
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: localhost
+    llm_router_subdomain: example.test
+    llm_router_master_key: sk-fixture-master
+    llm_router_llm_large_bearer: fixture-bearer
+    llm_router_llm_fast_base_url: http://localhost:10434/v1
+    llm_router_llm_large_base_url: http://localhost:11434/v1
+    llm_router_llm_light_base_url: http://localhost:10434/v1
+    llm_router_llm_vllm_base_url: http://localhost:10434/v1
+    llm_router_large_passthrough_enabled: true
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: medium
+    hermes_goal_judge_model: judge
+    hindsight_retain_model: qwen3-4b
+    # Every other key's tier as it was before the fill lane existed.
+    _pinned_tiers:
+      homeassistant: 0
+      open-webui: 0
+      grafana: 0
+      evals: 2
+      langfuse: 2
+      langflow: 2
+      llamaindex: 2
+      hindsight: 2
+      zammad: 1
+      github-actions-ci-fix: 1
+      github-actions-pr-review: 1
+      n8n: 1
+      langgraph: 1
+  tasks:
+    - name: Add an inventory-backed profile backend
+      ansible.builtin.add_host:
+        name: llm-gpu-fixture
+        groups: llm_gpu_group
+        ansible_connection: local
+
+    - name: Load role defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load registry projections through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Enable each local deployment path in the fixture
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_router_llm_fast_enabled: true
+        llm_router_llm_large_standby_base_url: http://localhost:12434/v1
+        llm_active_profile: medium-a
+
+    - name: Refresh projections for the complete fixture
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render the complete router configuration
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Collect local and cloud deployments
+      ansible.builtin.set_fact:
+        _local: "{{ _config.model_list | selectattr('litellm_params.tags', 'contains', 'local') | list }}"
+        _cloud: "{{ _config.model_list | rejectattr('litellm_params.tags', 'contains', 'local') | list }}"
+
+    - name: The priority list adds tier 3 at priority 100 with the batch-lane policy
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (llm_router_priority_tiers | selectattr('tier', 'equalto', 3) | list | length) == 1
+          - (llm_router_priority_tiers | selectattr('tier', 'equalto', 3) | first).team_id == 'tier-3'
+          - (llm_router_priority_tiers | selectattr('tier', 'equalto', 3) | first).priority == 100
+          - llm_router_priority_policy_by_tier['3'].priority == 100
+          - llm_router_priority_policy_by_tier['3'].tags == ['&tier-3', '&local']
+          - llm_router_priority_policy_by_tier['3'].router_settings.fallbacks == []
+          - llm_router_priority_policy_by_tier['3'].router_settings.context_window_fallbacks == []
+          - llm_router_priority_policy_by_tier['3'].router_settings.timeout == llm_router_tier_2_timeout_seconds
+
+    - name: Every local backend renders one tier-3 copy at priority 100 with the batch timeouts
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _tier3 | length > 0
+          - _tier3 | length * llm_router_priority_tiers | length == _local | length
+          - _tier3 | map(attribute='litellm_params.extra_body.priority') | unique | list == [100]
+          - _tier3 | map(attribute='litellm_params.timeout') | unique | list == [llm_router_tier_2_timeout_seconds]
+          - >-
+            _tier3 | map(attribute='litellm_params.stream_timeout') | unique | list
+            == [llm_router_tier_2_timeout_seconds]
+          - >-
+            _tier3 | map(attribute='litellm_params.keepalive_seconds') | unique | list
+            == [llm_router_tier_2_keepalive_seconds]
+          - _cloud | selectattr('litellm_params.tags', 'contains', 'tier-3') | list | length == 0
+      vars:
+        _tier3: "{{ _local | selectattr('litellm_params.tags', 'contains', 'tier-3') | list }}"
+
+    - name: Supply the key declarations the real projection reads
+      ansible.builtin.set_fact:
+        _keys: "{{ _llm_router_virtual_keys_source }}"
+
+    - name: The fill key renders at tier 3, local only, with purpose fill
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _fill.priority_tier == 3
+          - _fill.team_id == 'tier-3'
+          - "'&tier-3' in _fill.tags"
+          - "'&local' in _fill.tags"
+          - "'&zdr' in _fill.tags"
+          - "'!free' in _fill.tags"
+          - "'!retains' in _fill.tags"
+          - _fill.allowed_classes == ['local']
+          - _fill.metadata.purpose == 'fill'
+          - _fill.metadata.trace_defaults.purpose == 'fill'
+          - _fill.metadata.trace_defaults.tier == 3
+          - _fill.router_settings.enable_tag_filtering | bool
+          - _fill.router_settings.fallbacks == []
+          - llm_router_small_model in _fill.models
+          - llm_router_primary_model in _fill.models
+          - llm_router_large_model in _fill.models
+          - _fill.models | intersect(_cloud_groups) | length == 0
+      vars:
+        _fill: "{{ _keys | selectattr('alias', 'equalto', 'fill') | first }}"
+        _cloud_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
+
+    - name: No other key moves to tier 3 or joins its team
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _others | selectattr('priority_tier', 'equalto', 3) | list | length == 0
+          - _others | selectattr('team_id', 'equalto', 'tier-3') | list | length == 0
+          - _others | selectattr('tags', 'contains', '&tier-3') | list | length == 0
+      vars:
+        _others: "{{ _keys | rejectattr('alias', 'equalto', 'fill') | list }}"
+
+    - name: Every pinned key keeps the tier it had before the fill lane
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _found | length == 1
+          - (_found | first).priority_tier == item.value
+        fail_msg: >-
+          {{ item.key }} must stay on tier {{ item.value }};
+          found {{ _found | map(attribute='priority_tier') | list }}.
+      loop: "{{ _pinned_tiers | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      vars:
+        _found: "{{ _keys | selectattr('alias', 'equalto', item.key) | list }}"
+
+    - name: The fill key is absent until its generated value is seeded
+      block:
+        - name: Blank the fill value to model an unseeded apps path
+          ansible.builtin.set_fact:
+            bao_apps_secrets: "{{ bao_apps_secrets | combine({'fill_llm_router_key': ''}) }}"
+
+        - name: Re-project the keys with the fill value blank
+          ansible.builtin.set_fact:
+            _unseeded_keys: "{{ _llm_router_virtual_keys_source }}"
+
+        - name: No fill key renders while its value is blank
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - _unseeded_keys | selectattr('alias', 'equalto', 'fill') | list | length == 0
+              - _unseeded_keys | selectattr('alias', 'equalto', 'evals') | list | length == 1

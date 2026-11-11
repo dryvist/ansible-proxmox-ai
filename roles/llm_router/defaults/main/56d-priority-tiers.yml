@@ -3,6 +3,9 @@ llm_router_priority_tiers:
   - {tier: 0, team_id: tier-0, priority: 1}
   - {tier: 1, team_id: tier-1, priority: 10}
   - {tier: 2, team_id: tier-2, priority: 20}
+  # Lowest-priority fill lane. Shares tier 2's batch-lane policy (local only,
+  # emptied fallbacks, long wait budget) and yields to every other tier.
+  - {tier: 3, team_id: tier-3, priority: 100}
 
 # MCP access groups each priority team allows: the union of what its keys declare.
 # LiteLLM refuses a key update that requests a group its team does not allow.
@@ -84,7 +87,7 @@ llm_router_priority_policy_by_tier: >-
         + (ai_stream_read_timeout_seconds | default(1800) | int)) -%}
   {%- for tier in llm_router_priority_tiers -%}
   {%- set settings = {'enable_tag_filtering': true} -%}
-  {%- if tier.tier == 2 -%}
+  {%- if tier.tier in [2, 3] -%}
   {%- set settings = settings | combine({'fallbacks': [],
         'context_window_fallbacks': [], 'content_policy_fallbacks': [],
         'timeout': llm_router_tier_2_timeout_seconds}) -%}
@@ -92,8 +95,8 @@ llm_router_priority_policy_by_tier: >-
   {%- set _ = out.update({tier.tier | string: {
         'tier': tier.tier, 'priority': tier.priority,
         'client_timeouts': (dict.fromkeys(['read', 'stale', 'api_stale'], client_timeout)
-                            if tier.tier == 2 else {}),
-        'tags': ['&' ~ tier.team_id] + (['&local'] if tier.tier == 2 else []),
+                            if tier.tier in [2, 3] else {}),
+        'tags': ['&' ~ tier.team_id] + (['&local'] if tier.tier in [2, 3] else []),
         'router_settings': settings}}) -%}
   {%- endfor -%}
   {{ out }}
