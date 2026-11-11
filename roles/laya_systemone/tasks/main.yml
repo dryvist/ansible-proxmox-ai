@@ -43,6 +43,29 @@
         'Uninstalled' in laya_systemone_install.stderr
       notify: Restart Laya systemd service
 
+    # Gate the start: a CPU-only torch build would serve silently on the CPU.
+    - name: Probe CUDA from the installed Laya torch build
+      ansible.builtin.command:
+        argv:
+          - "{{ laya_systemone_venv }}/bin/python"
+          - -c
+          - "import torch; print(torch.cuda.is_available())"
+      become: true
+      become_user: "{{ laya_systemone_user }}"
+      environment: "{{ nvidia_gpu_guest_uv_environment }}"
+      register: laya_systemone_torch_cuda
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Assert the installed Laya torch build can use CUDA before the service starts
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - laya_systemone_torch_cuda.stdout | trim == 'True'
+        fail_msg: >-
+          The installed torch build does not see a CUDA device. Laya is not started.
+      when: not ansible_check_mode
+
     - name: Render the Laya service environment and systemd unit
       ansible.builtin.include_tasks: render-unit.yml
 

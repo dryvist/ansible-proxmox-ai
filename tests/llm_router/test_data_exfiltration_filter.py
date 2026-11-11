@@ -1,4 +1,5 @@
 import re
+import time
 from pathlib import Path
 
 import yaml
@@ -9,7 +10,6 @@ POLICY = (
     / "roles/llm_router/files/guardrails/prompt_injection_data_exfiltration.yaml"
 )
 DATA_DIR = Path(__file__).resolve().parent / "data"
-
 # The category file on origin/develop, embedded so the develop baseline is computed from the pattern itself.
 DEVELOP_CATEGORY = r"""---
 category_name: prompt_injection_data_exfiltration
@@ -73,7 +73,7 @@ def test_must_pass_samples_do_not_match():
     matches = _matcher(_phrase_patterns())
     passes = _samples("exfiltration_must_pass.txt")
 
-    assert len(passes) >= 15
+    assert len(passes) == 28
     assert not [text for text in passes if matches(text)]
 
 
@@ -81,7 +81,7 @@ def test_must_block_samples_all_match():
     matches = _matcher(_phrase_patterns())
     blocks = _samples("exfiltration_must_block.txt")
 
-    assert len(blocks) >= 20
+    assert len(blocks) == 33
     assert all(matches(text) for text in blocks)
 
 
@@ -89,7 +89,7 @@ def test_known_ambiguous_samples_still_match():
     matches = _matcher(_phrase_patterns())
     known = _samples("exfiltration_known_ambiguous.txt")
 
-    assert known
+    assert len(known) == 1
     assert all(matches(text) for text in known)
 
 
@@ -121,6 +121,15 @@ def test_known_regressions_match_develop_and_miss_now():
     assert len(regressions) == 4
     assert all(develop_matches(text) for text in regressions)
     assert not [text for text in regressions if matches(text)]
+
+
+def test_long_adversarial_input_finishes_in_under_one_second():
+    pattern = re.compile(_phrase_patterns()[0], re.IGNORECASE)
+    text = "send " + ".\"'" * 6_667
+    start = time.perf_counter()
+
+    assert pattern.search(text) is None
+    assert time.perf_counter() - start < 1.0
 
 
 def test_gap_does_not_cross_line_breaks_python_re_treats_as_such():

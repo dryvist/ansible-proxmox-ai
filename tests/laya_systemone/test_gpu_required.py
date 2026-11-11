@@ -42,6 +42,17 @@ def test_cpu_device_restarts_once_then_fails_closed() -> None:
     assert verdict["that"] == ["laya_systemone_device_read.json.device | default('') is match('cuda')"]
 
 
+def test_installed_torch_cuda_gate_runs_before_render_and_service_start() -> None:
+    main = (ROLE / "tasks/main.yml").read_text()
+    install = main.index("Install the pinned Laya HTTP server")
+    probe = main.index("Probe CUDA from the installed Laya torch build")
+    gate = main.index("Assert the installed Laya torch build can use CUDA before the service starts")
+    render = main.index("Render the Laya service environment and systemd unit")
+    start = main.index("Ensure the Laya service is enabled and running")
+    assert install < probe < gate < render < start
+    assert "torch.cuda.is_available()" in main[probe:gate]
+
+
 def test_serving_converge_includes_the_device_check_after_health() -> None:
     main = (ROLE / "tasks/main.yml").read_text()
     assert main.index("file: health.yml") < main.index("file: assert-gpu.yml")
