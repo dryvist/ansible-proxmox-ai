@@ -127,8 +127,15 @@ def test_api_key_leaf_is_derived_from_the_dify_openbao_base_path():
     defaults = load_defaults()
 
     assert defaults["dify_docker_agent_app_api_key_path"] == (
-        "{{ dify_docker_openbao_path }}/agent-apps/{{ dify_docker_dsl_name }}"
+        "{{ dify_docker_openbao_path }}/{{ dify_docker_agent_app_leaf_segment }}/{{ dify_docker_dsl_name }}"
     )
+
+
+def test_the_agent_apps_path_segment_is_defined_once_and_used_through_its_variable():
+    hits = [line.strip() for path in sorted((ROOT / "roles/dify_docker").rglob("*.yml"))
+            for line in path.read_text(encoding="utf-8").splitlines() if "agent-apps" in line]
+    assert hits == ["dify_docker_agent_app_leaf_segment: agent-apps"]
+    assert load_defaults()["dify_docker_agent_app_leaf_segment"] == "agent-apps"
 
 
 def test_openbao_reads_take_validate_certs_from_a_role_default():
