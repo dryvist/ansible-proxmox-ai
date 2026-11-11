@@ -1,0 +1,31 @@
+---
+# Publish the active profile's DECLARED serving capacity for node_exporter's
+# textfile collector. Callers pass llm_serving_declared_metrics_profile,
+# llm_serving_declared_metrics_engine, llm_serving_declared_metrics_slots and
+# llm_serving_declared_metrics_context_tokens_per_slot, each cited to its
+# start-command template at the call site. The accelerator label is this
+# guest's llm_gpu_accelerator, the same variable the router's
+# llm_router_gpu_profile_accelerators reads for this guest.
+- name: Check for the node_exporter textfile collector directory
+  ansible.builtin.stat:
+    path: "{{ llm_serving_declared_metrics_textfile_collector_dir }}"
+  register: _llm_serving_declared_metrics_collector
+
+- name: Write the declared serving slots and context per slot
+  # No node_exporter on this guest: skip, never fail the converge. copy stages
+  # the content in a temporary file beside the destination and renames it into
+  # place, so a scrape never reads a half-written metric file.
+  ansible.builtin.copy:
+    dest: "{{ llm_serving_declared_metrics_textfile_collector_dir }}/{{ llm_serving_declared_metrics_metric_file }}"
+    content: |
+      llm_serving_declared_slots{{ _llm_serving_declared_metrics_labels }} {{
+        llm_serving_declared_metrics_slots | int }}
+      llm_serving_declared_context_tokens_per_slot{{ _llm_serving_declared_metrics_labels }} {{
+        llm_serving_declared_metrics_context_tokens_per_slot | int }}
+    mode: "0644"
+  when: _llm_serving_declared_metrics_collector.stat.exists
+  vars:
+    _llm_serving_declared_metrics_labels: >-
+      {{ '{accelerator="%s",profile="%s",engine="%s"}' | format(
+           llm_gpu_accelerator, llm_serving_declared_metrics_profile,
+           llm_serving_declared_metrics_engine) }}

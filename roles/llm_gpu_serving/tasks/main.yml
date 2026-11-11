@@ -341,7 +341,22 @@
   ansible.builtin.meta: flush_handlers
 
 - name: Publish the active profile's declared serving metrics
-  ansible.builtin.include_tasks: publish-declared-metrics.yml
+  ansible.builtin.include_role:
+    name: llm_serving_declared_metrics
+    tasks_from: publish.yml
+  vars:
+    llm_serving_declared_metrics_profile: "{{ llm_active_profile }}"
+    llm_serving_declared_metrics_engine: "{{ llm_gpu_serving_profiles[llm_active_profile].engine }}"
+    # Both engines take the same two profile fields. llama.cpp:
+    # templates/llama-cpp-serve-args.j2 line 14 sets --ctx-size to max_model_len
+    # x max_num_seqs and line 15 sets --parallel to max_num_seqs, so each slot
+    # gets max_model_len. vLLM: templates/llm-gpu-serving.service.j2 line 32 is
+    # --max-model-len and line 33 is --max-num-seqs (host variant:
+    # templates/llm-gpu-serving-host.service.j2 lines 25-26).
+    llm_serving_declared_metrics_slots: >-
+      {{ llm_gpu_serving_profiles[llm_active_profile].max_num_seqs | int }}
+    llm_serving_declared_metrics_context_tokens_per_slot: >-
+      {{ llm_gpu_serving_profiles[llm_active_profile].max_model_len | int }}
   when: not (llm_gpu_serving_render_only | default(false))
 
 - name: Wait for the active GPU serving profile to answer

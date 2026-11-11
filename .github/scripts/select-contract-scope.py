@@ -89,6 +89,7 @@ ROLE_TESTS = {
     "strata_serving": GPU_PYTEST,
     "nvidia_gpu_guest": GPU_PYTEST,
     "llm_gpu_serving": GPU_PYTEST,
+    "llm_serving_declared_metrics": GPU_PYTEST,
     "llm_model_trial": {"tests/llm_model_trial/"},
     "phoenix_docker": set(),
     "llamaindex": set(),
