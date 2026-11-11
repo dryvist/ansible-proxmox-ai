@@ -16,14 +16,16 @@
 - name: Mint an AppRole secret id for each declared secret id variable
   ansible.builtin.uri:
     url: >-
-      {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/approle/role/{{
+      {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/{{
+      dify_docker_agent_issuer_auth_mount }}/role/{{
       item.approle_secret_id.approle }}/secret-id
     method: POST
     headers:
-      X-Vault-Token: "{{ openbao_secrets_converge_writer_token }}"
+      X-Vault-Token: "{{ dify_docker_dsl_issuer_token }}"
     body_format: json
     body:
       ttl: "{{ dify_docker_agent_secret_id_ttl }}"
+      metadata: "{{ {dify_docker_agent_secret_id_app_metadata_key: dify_docker_dsl_name} | to_json }}"
     status_code: 200
     return_content: true
     validate_certs: "{{ dify_docker_bao_validate_certs }}"
@@ -41,6 +43,15 @@
          + [{'name': item.item.name,
              'secret': item.item.secret | default(false) | bool,
              'value': (item.json.data.secret_id | default('', true)) | string}] }}
+  loop: "{{ dify_docker_dsl_secret_id_mints.results | default([]) }}"
+  no_log: true
+
+# Accessors only (never the secret ids): the prune keeps every accessor recorded here.
+- name: Record each minted secret id accessor for this run's prune protection
+  ansible.builtin.set_fact:
+    dify_docker_dsl_minted_accessors: >-
+      {{ (dify_docker_dsl_minted_accessors | default([], true))
+         + [item.json.data.secret_id_accessor | default('', true)] }}
   loop: "{{ dify_docker_dsl_secret_id_mints.results | default([]) }}"
   no_log: true
 

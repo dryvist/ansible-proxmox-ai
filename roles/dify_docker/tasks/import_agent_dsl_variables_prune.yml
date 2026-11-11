@@ -1,9 +1,12 @@
 ---
 # =============================================================================
-# Keep the two newest secret ids of one AppRole and destroy the rest. Runs after the
-# publish, so the older id stays valid until the new one is live. Every task is
-# no_log: accessors identify live credentials. Included once per AppRole, with the
-# role name in dify_docker_dsl_secret_id_role.
+# Destroy older secret id accessors of one AppRole that were minted for the app being reconciled.
+# An accessor counts only when its metadata names that app under dify_docker_agent_secret_id_app_metadata_key.
+# Accessors minted in this run (listed in dify_docker_dsl_minted_accessors) are never destroyed. Of the
+# other accessors of the app, the newest is kept and the rest are destroyed. Accessors without the
+# metadata key are never destroyed; their count is reported. Runs after the publish, so the kept older
+# id stays valid until the next converge. Every task but the count report is no_log: accessors identify
+# live credentials. Included once per AppRole, with the role name in dify_docker_dsl_secret_id_role.
 # =============================================================================
 
 - name: Reset the secret id accessor ages for this role
@@ -15,11 +18,12 @@
 - name: List the secret id accessors for this AppRole
   ansible.builtin.uri:
     url: >-
-      {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/approle/role/{{
+      {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/{{
+      dify_docker_agent_issuer_auth_mount }}/role/{{
       dify_docker_dsl_secret_id_role }}/secret-id?list=true
     method: GET
     headers:
-      X-Vault-Token: "{{ openbao_secrets_converge_writer_token }}"
+      X-Vault-Token: "{{ dify_docker_dsl_issuer_token }}"
     # An AppRole with no accessors answers 404 to a list request.
     status_code: [200, 404]
     return_content: true
@@ -34,11 +38,12 @@
 - name: Look up the creation time of each secret id accessor
   ansible.builtin.uri:
     url: >-
-      {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/approle/role/{{
+      {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/{{
+      dify_docker_agent_issuer_auth_mount }}/role/{{
       dify_docker_dsl_secret_id_role }}/secret-id-accessor/lookup
     method: POST
     headers:
-      X-Vault-Token: "{{ openbao_secrets_converge_writer_token }}"
+      X-Vault-Token: "{{ dify_docker_dsl_issuer_token }}"
     body_format: json
     body:
       secret_id_accessor: "{{ item }}"
@@ -54,30 +59,51 @@
   become: false
   no_log: true
 
-- name: Collect each accessor with its creation time to the second
+- name: Collect each accessor with its creation time to the second and the app its metadata names
   ansible.builtin.set_fact:
     dify_docker_dsl_secret_id_ages: >-
       {{ dify_docker_dsl_secret_id_ages
          + [{'accessor': item.item,
-             'created': item.json.data.creation_time | regex_replace('\\.[0-9]+', '')}] }}
+             'created': item.json.data.creation_time | regex_replace('\\.[0-9]+', ''),
+             'app': ((item.json.data.metadata | default({}, true))
+                     .get(dify_docker_agent_secret_id_app_metadata_key, '') | string)}] }}
   loop: "{{ dify_docker_dsl_secret_id_lookups.results | default([]) }}"
   no_log: true
 
-- name: Select the accessors older than the two newest
+- name: Select the older accessors of this app to destroy, keeping the newest one not minted in this run
   ansible.builtin.set_fact:
     dify_docker_dsl_secret_id_stale: >-
-      {{ (dify_docker_dsl_secret_id_ages | sort(attribute='created', reverse=true))[2:]
+      {{ (dify_docker_dsl_secret_id_ages
+          | selectattr('app', 'equalto', dify_docker_dsl_name)
+          | rejectattr('accessor', 'in', dify_docker_dsl_minted_accessors | default([], true))
+          | sort(attribute='created', reverse=true))[1:]
          | map(attribute='accessor') | list }}
   no_log: true
 
-- name: Destroy each secret id accessor older than the two newest
+- name: Count the accessors of this AppRole that carry no app metadata
+  ansible.builtin.set_fact:
+    dify_docker_dsl_untagged_accessor_count: >-
+      {{ dify_docker_dsl_secret_id_ages | selectattr('app', 'equalto', '') | list | length }}
+  no_log: true
+
+# The count is the only detail reported: the AppRole name and how many accessors were left in place.
+- name: Report the accessors left in place because they carry no app metadata
+  ansible.builtin.debug:
+    msg: >-
+      AppRole {{ dify_docker_dsl_secret_id_role }}: {{ dify_docker_dsl_untagged_accessor_count }} secret id
+      accessor(s) carry no {{ dify_docker_agent_secret_id_app_metadata_key }} metadata and are left in place.
+  when: dify_docker_dsl_untagged_accessor_count | int > 0
+  changed_when: false
+
+- name: Destroy each older secret id accessor
   ansible.builtin.uri:
     url: >-
-      {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/approle/role/{{
+      {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/{{
+      dify_docker_agent_issuer_auth_mount }}/role/{{
       dify_docker_dsl_secret_id_role }}/secret-id-accessor/destroy
     method: POST
     headers:
-      X-Vault-Token: "{{ openbao_secrets_converge_writer_token }}"
+      X-Vault-Token: "{{ dify_docker_dsl_issuer_token }}"
     body_format: json
     body:
       secret_id_accessor: "{{ item }}"

@@ -43,6 +43,11 @@ def router_paths(shards: list[dict[str, str]]) -> list[str]:
     ("roles/langflow_docker/tasks/main.yml", "tests/langflow_docker/"),
     ("roles/langfuse_docker/tasks/reconcile-stage0-evaluation.yml", "tests/langfuse_docker/"),
     ("roles/clickhouse_docker/tasks/otelcol.yml", "tests/clickhouse_docker/"),
+    ("roles/dify_docker/tasks/import_agent_dsl_variables.yml", "tests/dify_docker/test_declared_variable_checks.py"),
+    ("roles/dify_docker/tasks/import_agent_dsl_variables_prune.yml", "tests/dify_docker/test_declared_variable_apply.py"),
+    ("roles/dify_docker/tasks/import_agent_dsl_issuer_login.yml", "tests/dify_docker/test_declared_variable_config.py"),
+    ("roles/dify_docker/tasks/import_agent_dsl_provider_nodes.yml",
+     "tests/dify_docker/test_declared_variable_provider_nodes.py"),
 ])
 def test_production_role_selects_its_existing_contract_family(path: str, target: str) -> None:
     result = run_selector(path)

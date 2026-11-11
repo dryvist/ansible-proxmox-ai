@@ -15,6 +15,7 @@ Deploys the Dify LLMOps platform as a Docker Compose stack in an LXC.
 | `dify_docker_trigger_url` | `dify_docker_public_url` | `TRIGGER_URL`, the public webhook base URL |
 | `dify_docker_internal_trigger_url` | `http://nginx:80` | per-agent `<AGENT>_TRIGGER_URL` variables, the compose-internal webhook base |
 | `dify_docker_otel_endpoint` | `ai_orchestration_otel_endpoint` | `OTLP_BASE_ENDPOINT`, the Cribl OpenTelemetry collector base URL |
+| `dify_docker_agent_app_leaf_segment` | `agent-apps` | the OpenBao path segment of each catalog agent app's leaves, under `dify_docker_openbao_path` |
 
 Celery concurrency applies per worker container across its subscribed queues.
 Additional worker replicas multiply the active task capacity. `GRAPH_ENGINE_MAX_WORKERS`
@@ -114,9 +115,11 @@ Catalog entries are imported as listed, including driver entries. The role
 lists every Dify app page before matching catalog names. Each app description
 records its catalog SHA-256 only after its workflow is published. A missing app
 is created; by default, an existing app is overwritten in place only when its
-recorded SHA-256 differs or is missing. An unchanged SHA-256 makes no import
-write. Dify keeps the existing app ID and mode during an overwrite. By default,
-console edits are overwritten only when the catalog file changes. Successful
+recorded SHA-256 differs or is missing. An unchanged SHA-256 sends no import.
+Dify keeps the existing app ID and mode during an overwrite. By default, console
+edits to the app graph are overwritten only when the catalog file changes. Apps with
+declared entries still write them on every converge; see
+[declared catalog app variables](declared-app-variables.md). Successful
 workflow imports are published so API callers receive the catalog version. API-key provisioning
 also runs for unchanged apps, which lets a later converge repair an app whose
 key was not stored. Import, confirmation, publication and catalog-hash update
@@ -147,45 +150,11 @@ Private entries are skipped while the token is empty.
 
 ## Declared catalog app variables
 
-`dify_docker_agent_app_variables` sets draft environment variables on a catalog app. It is keyed
-by catalog app name, and each entry names one variable and exactly one source:
-
-| Source | Value written |
-| --- | --- |
-| `value` | Plain text from the caller. |
-| `kv: {path, field}` | A field of a KV leaf on the converge KV mount. The value is never copied anywhere else. |
-| `approle_role_id: {approle}` | The role id of the AppRole. |
-| `approle_secret_id: {approle}` | A new secret id, minted with `dify_docker_agent_secret_id_ttl` (default `720h`). |
-
-`secret: true` stores the variable with the secret value type. An entry with no source, or with
-two, fails the app before its import. The failure names the app and the variable, never a value.
-
-`dify_docker_agent_tool_providers` maps a placeholder in the catalog DSL to a workspace tool
-provider name. Each placeholder is replaced by that provider's id before the import, read from
-`GET /workspaces/current/tool-providers`. A name that does not match exactly one provider fails
-the app before its import.
-
-Each app with declared variables runs in this order: resolve every source, import when the
-catalog hash changed, write the draft variables, publish, then prune. The apply runs on every
-converge, because minted secret ids expire. After each publish the two newest secret ids per
-AppRole are kept, and older ones are destroyed. Check mode resolves the reads and reports
-variable names only. It never mints a secret id or writes to the app. Apps without declared
-variables run the same tasks as before.
-
-Placeholders only:
-
-```yaml
-dify_docker_agent_app_variables:
-  example-app:
-    - name: EXAMPLE_TOKEN
-      secret: true
-      kv: {path: example/app, field: token}
-    - name: EXAMPLE_ROLE_ID
-      approle_role_id: {approle: agent-example}
-dify_docker_agent_tool_providers:
-  example-app:
-    __EXAMPLE_TOOL__: example-tool
-```
+Draft environment variables for catalog apps (`dify_docker_agent_app_variables`), their tool
+provider placeholders (`dify_docker_agent_tool_providers`) are documented in
+[declared-app-variables.md](declared-app-variables.md). AppRole secret ids are minted
+and read with the issuer AppRole named by `dify_docker_agent_issuer_env_names` and logged in through
+`dify_docker_agent_issuer_auth_mount`, never with the converge writer token.
 
 ## Tier2 rotation webhook wiring
 

@@ -3,11 +3,16 @@
 - name: Fetch and verify the agent DSL source
   ansible.builtin.include_tasks: import_agent_dsl_fetch.yml
 
-# Declared variables and tool provider ids resolve before the import can change anything.
+# Derived once per app from the parsed definition and the declared entries; the checks read these.
+- name: Derive the declared-variable facts for this app
+  ansible.builtin.include_tasks: import_agent_dsl_derive.yml
+
+# Declared variables, tool provider ids and the definition's provider and empty-value checks
+# resolve before the import can change anything.
 - name: Resolve declared app variables and tool provider ids before any import
   ansible.builtin.include_tasks: import_agent_dsl_variables.yml
   when:
-    - dify_docker_dsl_has_variables | bool
+    - dify_docker_dsl_declared_check_needed | bool
     - dify_docker_dsl_content | length > 0
   no_log: true
 
@@ -39,8 +44,8 @@
   no_log: true
 
 # Facts persist across loop iterations: drop the declared values, minted secret ids and
-# the registered reads of this app before the next app. Apps without declared variables
-# never set these facts, so this task is skipped for them.
+# the registered reads of this app before the next app. Every app runs this, because the
+# derived facts are set for every app.
 - name: Clear the declared app variable values from facts
   ansible.builtin.set_fact:
     dify_docker_dsl_variable_values: []
@@ -57,5 +62,13 @@
     dify_docker_dsl_secret_id_ages: []
     dify_docker_dsl_secret_id_stale: []
     dify_docker_agent_leaf_read_result: {}
-  when: dify_docker_dsl_has_variables | bool
+    dify_docker_dsl_mcp_nodes: []
+    dify_docker_dsl_mcp_tool_names: []
+    dify_docker_dsl_mcp_provider_ids: []
+    dify_docker_dsl_workspace_ids: []
+    dify_docker_dsl_bad_provider_nodes: []
+    dify_docker_dsl_issuer_token: ""
+    dify_docker_dsl_issuer_logged: false
+    dify_docker_dsl_issuer_ready: false
+    dify_docker_dsl_issuer_login: {}
   no_log: true
