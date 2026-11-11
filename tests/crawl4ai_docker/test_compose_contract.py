@@ -35,7 +35,7 @@ def test_api_token_uses_the_environment_secret_pattern_without_rendering_a_value
 
 
 def test_inventory_tag_targets_the_privileged_role_play() -> None:
-    inventory_source = (REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml").read_text()
+    inventory_source = (REPO_ROOT / "inventory/load_tofu/add_lxc_host_groups.yml.j2").read_text()
     orchestration = (REPO_ROOT / "playbooks/ai-orchestration.yml").read_text()
 
     assert "['crawl4ai_group']" in inventory_source
