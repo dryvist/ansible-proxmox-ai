@@ -83,3 +83,15 @@ dify_docker_dsl_tool_provider_map: "{{ dify_docker_agent_tool_providers.get(dify
 dify_docker_dsl_has_variables: >-
   {{ (dify_docker_dsl_variable_entries | length > 0)
      or (dify_docker_dsl_tool_provider_map | length > 0) }}
+# A placeholder token in a catalog app's DSL, matched as a whole token. A token that is not
+# mapped in dify_docker_agent_tool_providers fails the app before its import.
+dify_docker_agent_tool_placeholder_pattern: '(?<![A-Za-z0-9_])__[A-Z][A-Z0-9_]*__(?![A-Za-z0-9_])'
+# The declared-variable checks run for an app that has declared entries, a placeholder token, or
+# a secret environment variable with an empty value in its definition. Other apps skip them.
+dify_docker_dsl_declared_check_needed: >-
+  {{ dify_docker_dsl_has_variables | bool
+     or (dify_docker_dsl_content is search(dify_docker_agent_tool_placeholder_pattern))
+     or ((((dify_docker_dsl_document | default({}, true)).workflow | default({}, true))
+          .environment_variables | default([], true))
+         | selectattr('value_type', 'equalto', 'secret')
+         | selectattr('value', 'equalto', '') | list | length > 0) }}

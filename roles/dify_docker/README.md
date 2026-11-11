@@ -165,6 +165,12 @@ provider name. Each placeholder is replaced by that provider's id before the imp
 `GET /workspaces/current/tool-providers`. A name that does not match exactly one provider fails
 the app before its import.
 
+A placeholder token matching `dify_docker_agent_tool_placeholder_pattern` (default: a whole token
+such as `__EXAMPLE_TOOL__`) that is still in the app definition after the replacement fails the app
+before its import. So does a secret environment variable of the app definition with an empty value
+and no declared entry. The failure names the placeholders and variables only, never a value. Both
+checks run in check mode.
+
 Each app with declared variables runs in this order: resolve every source, import when the
 catalog hash changed, write the draft variables, publish, then prune. The apply runs on every
 converge, because minted secret ids expire. After each publish, the secret ids minted in the

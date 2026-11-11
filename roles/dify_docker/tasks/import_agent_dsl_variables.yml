@@ -125,10 +125,40 @@
     label: "{{ dify_docker_dsl_tool_entry.key }}"
   no_log: true
 
+# Runs after the declared replacement, so a token still present is one no entry maps. The
+# definition's secret variables with an empty value must each have an entry too. Names only.
+- name: List the placeholder tokens still present after the declared replacements
+  ansible.builtin.set_fact:
+    dify_docker_dsl_unmapped_placeholders: >-
+      {{ dify_docker_dsl_content | regex_findall(dify_docker_agent_tool_placeholder_pattern) | unique | list }}
+  no_log: true
+
+- name: List the secret environment variables of the app definition with no declared entry
+  ansible.builtin.set_fact:
+    dify_docker_dsl_unmapped_secrets: >-
+      {{ ((((dify_docker_dsl_document | default({}, true)).workflow | default({}, true))
+           .environment_variables | default([], true))
+          | selectattr('value_type', 'equalto', 'secret')
+          | selectattr('value', 'equalto', '')
+          | map(attribute='name') | reject('in', dify_docker_dsl_declared_names) | list) }}
+  no_log: true
+
+- name: Assert the app definition has no unmapped placeholder and no secret without an entry
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_unmapped_placeholders | length == 0
+      - dify_docker_dsl_unmapped_secrets | length == 0
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: unmapped placeholders: {{ dify_docker_dsl_unmapped_placeholders | join(', ')
+      or 'none' }}. Secret environment variables with no entry: {{ dify_docker_dsl_unmapped_secrets | join(', ')
+      or 'none' }}.
+
 - name: Report the declared variables a live run would set, by name only
   ansible.builtin.debug:
     msg: >-
       {{ dify_docker_dsl_name }}: would set {{ dify_docker_dsl_declared_names | join(', ') }} on the draft.
       AppRole secret ids are minted only on a live run.
-  when: ansible_check_mode
+  when:
+    - ansible_check_mode
+    - dify_docker_dsl_has_variables | bool
   changed_when: false
