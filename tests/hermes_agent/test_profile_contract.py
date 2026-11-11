@@ -103,9 +103,7 @@ def _effective(key: str) -> int:
     """Resolve a defaults value that may derive from a group_vars constant.
 
     The caps below are Jinja expressions over ai_agent_default_concurrency
-    (roles/hermes_agent/defaults/main/60-kanban-dispatcher.yml:5-6 and
-    50-webhook-persona-api.yml:83), not ai_llm_concurrency, rather than bare
-    ints, so comparing the raw YAML would assert the TEMPLATE TEXT and
+    (not ai_llm_concurrency) rather than bare ints, so comparing the raw YAML would assert the TEMPLATE TEXT and
     pass or fail for the wrong reason. Render it the way Ansible would and
     assert the value that actually reaches the config.
     """
