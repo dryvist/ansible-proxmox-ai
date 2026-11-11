@@ -64,10 +64,13 @@ def test_undeclared_alias_assertion_precedes_the_first_import_with_a_write() -> 
     condition = task["that"][0]
     declared = ["first", "second"]
 
+    projection = [{"alias": alias} for alias in declared]
+    assert _evaluate(
+        condition, llm_router_seed_key_aliases=["first"], _llm_router_virtual_keys_without_values=projection
+    )
+    assert _evaluate(condition, llm_router_seed_key_aliases=[], _llm_router_virtual_keys_without_values=projection)
     assert not _evaluate(
-        condition,
-        llm_router_seed_key_aliases=["missing"],
-        llm_router_virtual_keys=[{"alias": alias} for alias in declared],
+        condition, llm_router_seed_key_aliases=["missing"], _llm_router_virtual_keys_without_values=projection
     )
     assert "undeclared alias(es)" in task["fail_msg"]
 
