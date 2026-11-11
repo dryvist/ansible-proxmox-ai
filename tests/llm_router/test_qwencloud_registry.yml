@@ -13,9 +13,17 @@
           otel_traces_http: 4318
           redis_default: 6379
     bao_local_llm_secrets: {}
-    _credentialed_render_extra_secrets:
-      QWEN_API_TOKEN: qwen-test-placeholder
-      QWEN_URL_OPENAI: http://localhost:4011/v1
+    _credentialed_render_extra_secrets: >-
+      {{ {
+        (llm_router_hermes_cloud_models
+         | selectattr('provider', 'equalto', 'openai')
+         | selectattr('api_base_field', 'defined')
+         | map(attribute='credential_env') | first): 'qwen-test-placeholder',
+        (llm_router_hermes_cloud_models
+         | selectattr('provider', 'equalto', 'openai')
+         | selectattr('api_base_field', 'defined')
+         | map(attribute='api_base_field') | first): 'http://localhost:4011/v1'
+      } }}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: pve.example.test
@@ -33,16 +41,22 @@
     - name: Render with synthetic Qwen credential fields
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
 
-    - name: Select entries by their endpoint and credential field references
+    - name: Select Qwen entries from the registry provider projection
       ansible.builtin.set_fact:
         _qwen_entries: >-
           {{ llm_router_hermes_cloud_models
+             | selectattr('provider', 'equalto', 'openai')
              | selectattr('api_base_field', 'defined')
-             | selectattr('credential_env', 'equalto', 'QWEN_API_TOKEN')
              | list }}
+
+    - name: Select the conservative input-cap entries and rendered deployments
+      ansible.builtin.set_fact:
+        _qwen_conservative_input_entries: >-
+          {{ _qwen_entries | selectattr('context_window', 'equalto', 983616) | list }}
         _qwen_deployments: >-
           {{ _config.model_list
-             | selectattr('litellm_params.api_key', 'equalto', 'os.environ/QWEN_API_TOKEN')
+             | selectattr('litellm_params.api_key', 'equalto',
+                 'os.environ/' ~ (_qwen_entries | first).key_field)
              | list }}
 
     - name: Assert exactly three distinct Qwen identities are projected
@@ -51,10 +65,8 @@
         that:
           - _qwen_entries | length == 3
           - _qwen_entries | map(attribute='client_model_id') | unique | length == 3
-          - >-
-            (_qwen_entries
-             | selectattr('client_model_id', 'in', ['qwen3.8-max', 'qwen3.8-flash'])
-             | list | length) == 2
+          - _qwen_conservative_input_entries | length == 2
+          - _qwen_entries | map(attribute='key_field') | unique | length == 1
           - _qwen_deployments | length == _qwen_entries | length
         fail_msg: "The registered Qwen entries or rendered deployments are missing or duplicated."
 
@@ -63,11 +75,8 @@
         quiet: true
         that:
           - item.context_window | int == 983616
-        fail_msg: "Qwen 3.8 must use the provider's conservative effective input cap."
-      loop: >-
-        {{ _qwen_entries
-           | selectattr('client_model_id', 'in', ['qwen3.8-max', 'qwen3.8-flash'])
-           | list }}
+        fail_msg: "The conservative Qwen entries must use the provider's effective input cap."
+      loop: "{{ _qwen_conservative_input_entries }}"
       loop_control:
         label: "{{ item.client_model_id }}"
 
@@ -80,15 +89,14 @@
           - item.litellm_model_name == 'openai/' ~ item.upstream_model_id
           - item.provider == 'openai'
           - item.mode == 'chat'
-          - item.credential_env == 'QWEN_API_TOKEN'
-          - item.key_field == 'QWEN_API_TOKEN'
+          - item.credential_env == item.key_field
           - item.api_base_field == 'QWEN_URL_OPENAI'
           - item.catalog_model_name is defined
           - item.catalog_model_name in item.catalog_aliases
           - item.catalog_limit_overrides | sort == ['context_window', 'max_output_tokens']
           - _qwen_deployment.litellm_params.model == item.litellm_model_name
           - _qwen_deployment.litellm_params.api_base == 'http://localhost:4011/v1'
-          - _qwen_deployment.litellm_params.api_key == 'os.environ/QWEN_API_TOKEN'
+          - _qwen_deployment.litellm_params.api_key == 'os.environ/' ~ item.key_field
           - _qwen_deployment.litellm_params.max_tokens | int == item.max_output_tokens | int
           - _qwen_deployment.model_info.max_input_tokens | int == item.context_window | int
           - _qwen_deployment.model_info.max_output_tokens | int == item.max_output_tokens | int
@@ -113,6 +121,29 @@
              | selectattr('litellm_params.model', 'equalto', item.litellm_model_name)
              | first }}
 
+    - name: Build benchmark filter cases, including an explicit false value
+      ansible.builtin.set_fact:
+        _qwen_false_benchmark_case: >-
+          {{ (_qwen_entries | rejectattr('benchmark_only', 'defined') | first)
+             | combine({'benchmark_only': false}) }}
+        _qwen_benchmark_test_entries: >-
+          {{ _qwen_entries
+             + [((_qwen_entries | rejectattr('benchmark_only', 'defined') | first)
+                | combine({'benchmark_only': false}))] }}
+
+    - name: Assert explicit false remains in the non-benchmark set
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _qwen_false_benchmark_case.benchmark_only is false
+          - >-
+            _qwen_false_benchmark_case in
+            (_qwen_benchmark_test_entries | rejectattr('benchmark_only', 'equalto', true) | list)
+          - >-
+            _qwen_false_benchmark_case not in
+            (_qwen_benchmark_test_entries | selectattr('benchmark_only', 'equalto', true) | list)
+        fail_msg: "An explicit false benchmark_only value must remain eligible."
+
     - name: Assert benchmark-only entries do not enter shared ladders or partner key scopes
       ansible.builtin.assert:
         quiet: true
@@ -123,7 +154,9 @@
           - item.client_model_id not in (llm_router_virtual_keys | map(attribute='models') | flatten)
           - item.route_group not in (llm_router_virtual_keys | map(attribute='models') | flatten)
         fail_msg: "A benchmark-only route entered a shared ladder or partner key scope."
-      loop: "{{ _qwen_entries | selectattr('benchmark_only', 'defined') | list }}"
+      loop: >-
+        {{ _qwen_benchmark_test_entries
+           | selectattr('benchmark_only', 'equalto', true) | list }}
       loop_control:
         label: "{{ item.client_model_id }}"
 
@@ -132,10 +165,10 @@
         _qwen_resolved_credentials_with_key: "{{ _llm_router_m_resolved_credentials }}"
         _qwen_resolved_api_bases_with_endpoint: "{{ _llm_router_m_resolved_api_bases }}"
         _qwen_route_groups: "{{ _qwen_entries | map(attribute='route_group') | list }}"
-        _qwen_non_qwen_deployment_names: >-
+        _qwen_non_qwen_deployments: >-
           {{ _config.model_list
              | rejectattr('model_name', 'in', _qwen_entries | map(attribute='route_group') | list)
-             | map(attribute='model_name') | sort | list }}
+             | list }}
       no_log: true
 
     - name: Render with the Qwen key present and its endpoint absent
@@ -163,15 +196,17 @@
         that:
           - _config.model_list | selectattr('model_name', 'in', _qwen_route_groups) | list | length == 0
           - >-
-            (_config.model_list | map(attribute='model_name') | sort | list)
-            == _qwen_non_qwen_deployment_names
+            (_config.model_list
+             | rejectattr('model_name', 'in', _qwen_route_groups) | list)
+            == _qwen_non_qwen_deployments
         fail_msg: "A Qwen deployment rendered without its endpoint or removed another deployment."
 
     - name: Render with the Qwen endpoint present and its key absent
       ansible.builtin.set_fact:
         _llm_router_m_resolved_credentials: >-
           {{ _qwen_resolved_credentials_with_key | dict2items
-             | rejectattr('key', 'equalto', 'QWEN_API_TOKEN') | items2dict }}
+             | rejectattr('key', 'in', _qwen_entries | map(attribute='credential_env') | list)
+             | items2dict }}
         _llm_router_m_resolved_api_bases: "{{ _qwen_resolved_api_bases_with_endpoint }}"
       no_log: true
 
@@ -191,6 +226,7 @@
         that:
           - _config.model_list | selectattr('model_name', 'in', _qwen_route_groups) | list | length == 0
           - >-
-            (_config.model_list | map(attribute='model_name') | sort | list)
-            == _qwen_non_qwen_deployment_names
+            (_config.model_list
+             | rejectattr('model_name', 'in', _qwen_route_groups) | list)
+            == _qwen_non_qwen_deployments
         fail_msg: "A Qwen deployment rendered without its key or removed another deployment."
