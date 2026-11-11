@@ -197,3 +197,17 @@ def test_selected_seed_run_skips_global_model_and_schedule_writes() -> None:
         when = _named_task(consumers, name)["when"]
         conditions = when if isinstance(when, list) else [when]
         assert "not (_llm_router_seed_selected | bool)" in conditions, name
+
+
+def test_selection_refuses_app_agent_aliases_before_any_write() -> None:
+    task = _assertion(SEED_KEYS, "Refuse app-agent aliases in a key selection")
+    condition = task["that"][0]
+    agents = [{"alias": "agent-one", "value": "sk-test-agent"}]
+    assert _evaluate(condition, llm_router_seed_key_aliases=["evals"], _llm_router_agent_keys=agents)
+    assert _evaluate(condition, llm_router_seed_key_aliases=[], _llm_router_agent_keys=agents)
+    assert not _evaluate(condition, llm_router_seed_key_aliases=["agent-one"], _llm_router_agent_keys=agents)
+    index = next(i for i, t in enumerate(SEED_KEYS) if t.get("name") == "Refuse app-agent aliases in a key selection")
+    first_write = next(
+        i for i, t in enumerate(SEED_KEYS) if t.get("ansible.builtin.import_tasks") == "seed-priority-teams.yml"
+    )
+    assert index < first_write
