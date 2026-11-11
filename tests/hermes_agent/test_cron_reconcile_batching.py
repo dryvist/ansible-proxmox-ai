@@ -32,6 +32,17 @@ def _load(name: str) -> list[dict]:
     return yaml.safe_load((TASKS / name).read_text())
 
 
+def _direct_tasks() -> list[dict]:
+    """reconcile_direct_cron.yml in run order, with the withdraw include spliced in."""
+    tasks: list[dict] = []
+    for task in _load("reconcile_direct_cron.yml"):
+        if include_file(task) == "reconcile_direct_cron_withdraw.yml":
+            tasks += _load("reconcile_direct_cron_withdraw.yml")
+        else:
+            tasks.append(task)
+    return tasks
+
+
 def _batch() -> list[dict]:
     return _load("cron_reconcile_direct_batch.yml")[0]["block"]
 
@@ -120,7 +131,7 @@ def _ran(*, wanted: bool, listed: bool | str, marker: str | None, changed: bool)
         "ansible_check_mode": False,
     }
     ran = set()
-    for task in _load("reconcile_direct_cron.yml"):
+    for task in _direct_tasks():
         if not any(m in task for m in REMOTE_MODULES):
             continue
         conds = task.get("when", [])
@@ -136,6 +147,16 @@ def test_matching_marker_makes_no_cli_or_remote_call():
 
 def test_drifted_job_is_removed_recreated_and_recorded():
     assert _ran(wanted=True, listed=True, marker="old", changed=True) == {
+        "Direct cron | Remove drifted",
+        "Direct cron | Create",
+        "Direct cron | Record desired state for",
+    }
+
+
+def test_a_cleared_marker_on_an_installed_job_is_removed_and_recreated_with_the_corrected_target():
+    # The refused job's marker is cleared only after the read-back proves it is no longer
+    # posting. With the corrected declared target the next converge takes this same path.
+    assert _ran(wanted=True, listed=True, marker=None, changed=True) == {
         "Direct cron | Remove drifted",
         "Direct cron | Create",
         "Direct cron | Record desired state for",

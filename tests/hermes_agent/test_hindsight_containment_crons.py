@@ -56,6 +56,8 @@ def test_only_hindsight_dependent_crons_follow_hindsight_containment() -> None:
 
 
 def test_direct_cron_disabled_state_withdraws_installed_job() -> None:
-    reconcile = (REPO_ROOT / "roles/hermes_agent/tasks/reconcile_direct_cron.yml").read_text()
+    tasks = REPO_ROOT / "roles/hermes_agent/tasks"
+    reconcile = (tasks / "reconcile_direct_cron.yml").read_text()
+    reconcile += (tasks / "reconcile_direct_cron_withdraw.yml").read_text()
     assert "Remove job not owned by this agent: {{ item.name }}" in reconcile
     assert "not (hermes_agent_direct_wanted | bool)" in reconcile
