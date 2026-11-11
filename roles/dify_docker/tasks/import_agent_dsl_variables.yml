@@ -66,7 +66,7 @@
     status_code: 200
     return_content: true
   register: dify_docker_dsl_tool_providers
-  when: dify_docker_dsl_tool_provider_map | length > 0
+  when: dify_docker_dsl_tool_provider_map | length > 0 or dify_docker_dsl_mcp_tool_names | length > 0
   check_mode: false
   changed_when: false
   no_log: true
@@ -185,14 +185,13 @@
       {{ dify_docker_dsl_name }}: declared tool provider placeholders still in the definition:
       {{ dify_docker_dsl_remaining_tool_keys | join(', ') }}
 
-# Runs after the declared replacements, so a token still present is one no entry maps. Every
-# environment variable of the definition with an empty value needs a declared entry. Names only.
-- name: List the placeholder tokens still present after the declared replacements
-  ansible.builtin.set_fact:
-    dify_docker_dsl_unmapped_placeholders: >-
-      {{ dify_docker_dsl_content | regex_findall(dify_docker_agent_tool_placeholder_pattern) | unique | list }}
-  no_log: true
+# MCP tool nodes name a provider id that must be a workspace id once the replacements are done.
+- name: Check each MCP tool node names a workspace provider id after the replacements
+  ansible.builtin.include_tasks: import_agent_dsl_provider_nodes.yml
+  when: dify_docker_dsl_mcp_tool_names | length > 0
 
+# Every environment variable of the definition with an empty value needs a declared entry.
+# Names only.
 - name: List the environment variables of the app definition with an empty value and no entry
   ansible.builtin.set_fact:
     dify_docker_dsl_undeclared_empty: >-
@@ -202,14 +201,12 @@
          | map(attribute='name') | reject('in', dify_docker_dsl_declared_names) | list }}
   no_log: true
 
-- name: Assert the app definition has no unmapped placeholder and no empty variable without an entry
+- name: Assert every environment variable of the app definition with an empty value has an entry
   ansible.builtin.assert:
     that:
-      - dify_docker_dsl_unmapped_placeholders | length == 0
       - dify_docker_dsl_undeclared_empty | length == 0
     fail_msg: >-
-      {{ dify_docker_dsl_name }}: unmapped placeholders: {{ dify_docker_dsl_unmapped_placeholders | join(', ')
-      or 'none' }}. Environment variables with an empty value and no entry:
+      {{ dify_docker_dsl_name }}: environment variables with an empty value and no entry:
       {{ dify_docker_dsl_undeclared_empty | join(', ') or 'none' }}.
 
 - name: Report the declared variables a live run would set, by name only

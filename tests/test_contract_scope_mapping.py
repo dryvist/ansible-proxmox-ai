@@ -46,6 +46,8 @@ def router_paths(shards: list[dict[str, str]]) -> list[str]:
     ("roles/dify_docker/tasks/import_agent_dsl_variables.yml", "tests/dify_docker/test_declared_variable_checks.py"),
     ("roles/dify_docker/tasks/import_agent_dsl_variables_prune.yml", "tests/dify_docker/test_declared_variable_apply.py"),
     ("roles/dify_docker/tasks/import_agent_dsl_config_leaf.yml", "tests/dify_docker/test_declared_variable_leaf.py"),
+    ("roles/dify_docker/tasks/import_agent_dsl_provider_nodes.yml",
+     "tests/dify_docker/test_declared_variable_provider_nodes.py"),
 ])
 def test_production_role_selects_its_existing_contract_family(path: str, target: str) -> None:
     result = run_selector(path)

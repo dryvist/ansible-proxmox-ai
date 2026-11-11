@@ -18,15 +18,18 @@ provider name. The import replaces each token with that provider's id, read from
 `GET /workspaces/current/tool-providers`, so a provider id reaches the app graph only through an
 import. A name must match exactly one provider, or the app fails before its import.
 
-An app with declared entries, a placeholder token, or an environment variable with an empty value in
-its definition runs these checks before its import. They run in check mode too. A failure names the
-app and the items only, never a value.
+An app with declared entries, an MCP tool node, or an environment variable with an empty value in its
+definition runs these checks before its import. They run in check mode too. A failure names the app
+and the items only, never a value.
 
 - A declared source must resolve. A value that is still a template token (`^<[A-Z_]+>$`) counts as
   unresolved.
 - Every tool provider key must occur in the definition, and none may remain after the replacement.
-- A placeholder token matching `dify_docker_agent_tool_placeholder_pattern` (default: a whole token
-  such as `__EXAMPLE_TOOL__`) that is still in the definition after the replacement fails the app.
+- An MCP tool node (`provider_type: mcp`) whose `provider_id`, after the replacements, is not one of
+  the workspace's tool provider ids fails the app. Built-in providers are not checked, because the
+  definition references them by name. The failure names the node's tool name. A value that is not
+  id-shaped (`dify_docker_agent_provider_id_pattern`) is shown, since no mapping resolved it. A
+  workspace id is never shown.
 - Every environment variable of the definition with an empty value needs a declared entry. The
   failure lists the undeclared names. A non-empty variable may stay undeclared.
 - A declared variable whose name ends with `_MODE` must resolve to `shadow`, after trimming and

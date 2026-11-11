@@ -1,10 +1,7 @@
 """Declared catalog app variables: resolution, placeholder, tool provider, template token and _MODE checks."""
 
-import re
-
 from _agent_dsl_shared import IMPORT_ONE, _expanded_yaml
 from _declared_variables_shared import (
-    PATTERN,
     PRE,
     RESOLVE,
     _env,
@@ -68,12 +65,12 @@ def test_tool_provider_placeholder_is_replaced_by_its_single_workspace_match():
     ).strip() == "name: id-1"
 
 
-def test_unmapped_placeholder_or_empty_variable_fails_before_the_import_and_names_only():
+def test_undeclared_empty_variable_fails_before_the_import_and_names_only():
     names = [task.get("name") for task in _expanded_yaml(IMPORT_ONE)]
     assert names.index(RESOLVE) < names.index("Import the catalog DSL when reconciliation requires it")
     pre = _yaml(PRE)
     pre_names = [task.get("name") for task in pre]
-    check_name = "Assert the app definition has no unmapped placeholder and no empty variable without an entry"
+    check_name = "Assert every environment variable of the app definition with an empty value has an entry"
     assert pre_names.index("Replace each declared placeholder in the DSL with its tool provider id") < (
         pre_names.index(check_name))
     check = _task(pre, check_name)
@@ -81,13 +78,6 @@ def test_unmapped_placeholder_or_empty_variable_fails_before_the_import_and_name
     assert "ansible_check_mode" not in str(check.get("when", ""))
     assert "dify_docker_dsl_document" not in check["ansible.builtin.assert"]["fail_msg"]
     assert "dify_docker_dsl_content" not in check["ansible.builtin.assert"]["fail_msg"]
-
-    placeholders = _fact(pre, "List the placeholder tokens still present after the declared replacements",
-                         "dify_docker_dsl_unmapped_placeholders")
-    assert _render(placeholders, dify_docker_dsl_content="a __EXAMPLE_TOKEN__ b __OTHER__ c __EXAMPLE_TOKEN__",
-                   dify_docker_agent_tool_placeholder_pattern=PATTERN) == ["__EXAMPLE_TOKEN__", "__OTHER__"]
-    assert _render(placeholders, dify_docker_dsl_content="name: id-1",
-                   dify_docker_agent_tool_placeholder_pattern=PATTERN) == []
 
     undeclared = _fact(pre, "List the environment variables of the app definition with an empty value and no entry",
                        "dify_docker_dsl_undeclared_empty")
@@ -103,15 +93,11 @@ def test_unmapped_placeholder_or_empty_variable_fails_before_the_import_and_name
                    dify_docker_dsl_declared_names=["MAPPED", "API_KEY", "PLAIN"]) == []
 
     conditions = check["ansible.builtin.assert"]["that"]
-    unmapped = {"dify_docker_dsl_unmapped_placeholders": ["__EXAMPLE_TOKEN__"], "dify_docker_dsl_undeclared_empty": []}
-    assert not _passes(conditions, **unmapped)
-    assert not _passes(conditions, dify_docker_dsl_unmapped_placeholders=[],
-                       dify_docker_dsl_undeclared_empty=["PLAIN"])
-    assert _passes(conditions, dify_docker_dsl_unmapped_placeholders=[], dify_docker_dsl_undeclared_empty=[])
+    assert not _passes(conditions, dify_docker_dsl_undeclared_empty=["PLAIN"])
+    assert _passes(conditions, dify_docker_dsl_undeclared_empty=[])
     message = _env().from_string(check["ansible.builtin.assert"]["fail_msg"]).render(
-        dify_docker_dsl_name="example-app", dify_docker_dsl_unmapped_placeholders=["__EXAMPLE_TOKEN__"],
-        dify_docker_dsl_undeclared_empty=["PLAIN"])
-    assert "__EXAMPLE_TOKEN__" in message and "PLAIN" in message
+        dify_docker_dsl_name="example-app", dify_docker_dsl_undeclared_empty=["PLAIN"])
+    assert "PLAIN" in message
     assert "not-a-real-value" not in message
 
 
@@ -157,15 +143,13 @@ def test_template_token_literal_values_stay_unresolved():
                    dify_docker_dsl_variable_values=[{"name": "TEMPLATE", "value": "APPROVED_VALUE"}]) == []
 
 
-def test_declared_checks_run_for_entries_placeholders_or_empty_variables_and_skip_clean_apps():
-    defaults = load_defaults()
-    gate = defaults["dify_docker_dsl_declared_check_needed"]
+def test_declared_checks_run_for_entries_mcp_nodes_or_empty_variables_and_skip_clean_apps():
+    gate = load_defaults()["dify_docker_dsl_declared_check_needed"]
     clean = {"workflow": {"environment_variables": [{"name": "PLAIN", "value_type": "string", "value": "x"}]}}
     common = {
         "dify_docker_dsl_variable_entries": [],
         "dify_docker_dsl_tool_provider_map": {},
-        "dify_docker_agent_tool_placeholder_pattern": defaults["dify_docker_agent_tool_placeholder_pattern"],
-        "dify_docker_dsl_content": "name: example",
+        "dify_docker_dsl_mcp_tool_names": [],
         "dify_docker_dsl_document": clean,
     }
 
@@ -176,16 +160,13 @@ def test_declared_checks_run_for_entries_placeholders_or_empty_variables_and_ski
         return _env().from_string(gate).render(**context).strip()
 
     assert render() == "False"
-    assert render(dify_docker_dsl_content="a __EXAMPLE_TOKEN__") == "True"
+    assert render(dify_docker_dsl_mcp_tool_names=["example-tool"]) == "True"
     assert render(dify_docker_dsl_document={"workflow": {"environment_variables": [
         {"name": "API_KEY", "value_type": "secret", "value": ""}]}}) == "True"
     assert render(dify_docker_dsl_document={"workflow": {"environment_variables": [
         {"name": "PLAIN", "value_type": "string", "value": ""}]}}) == "True"
     assert render(dify_docker_dsl_document={}) == "False"
     assert render(dify_docker_dsl_variable_entries=[{"name": "X"}]) == "True"
-    assert render(dify_docker_dsl_content="a __lower__ and x__EXAMPLE__y") == "False"
-    pattern = re.compile(defaults["dify_docker_agent_tool_placeholder_pattern"])
-    assert pattern.search("a __EXAMPLE_TOOL__ b") and not pattern.search("x__EXAMPLE__y")
     include = next(task for task in _yaml(IMPORT_ONE)
                    if task.get("name") == "Resolve declared app variables and tool provider ids before any import")
     assert include["when"][0] == "dify_docker_dsl_declared_check_needed | bool"

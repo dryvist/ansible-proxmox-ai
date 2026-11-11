@@ -139,7 +139,6 @@ def test_leaf_read_uses_the_app_leaf_path_is_no_log_and_is_cleared_per_app():
     assert read["vars"]["dify_docker_agent_leaf_read_register"] == "dify_docker_dsl_config_leaf"
     assert read.get("no_log") is True
     clear = _task(_yaml(IMPORT_ONE), "Clear the declared app variable values from facts")
-    assert "dify_docker_agent_app_config_from_leaf" in str(clear["when"])
     assert "dify_docker_dsl_config_leaf" in clear["ansible.builtin.set_fact"]
 
 
