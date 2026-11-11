@@ -18,6 +18,8 @@ from _role_files import role_defaults
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 DEFAULTS = role_defaults(ROLE)
 GUARD_FILE = "refuse_main_channel_target.yml"
+READBACK_FILE = "refuse_main_channel_readback.yml"
+WITHDRAW_FILE = "reconcile_direct_cron_withdraw.yml"
 MAIN = "C0EXAMPLEMAIN"
 ISSUES = "C0EXAMPLEISS"
 HOME_PATH = "/var/lib/hermes"
@@ -101,20 +103,31 @@ def _resolve(task, context):
     return context
 
 
-def _guard_run(caller_file, include_prefix, context, store=None, edit_rc=0):
+def _guard_run(caller_file, include_prefix, context, store=None, edit_rc=0, reads=None):
     """Run the caller's include gate, then the guard's tasks in order.
 
-    `store` is the job list the read-back finds in jobs.json (None: no file). `edit_rc` is the
-    exit code of `cron edit`. Returns (failure message or None, final context). A skipped
-    check returns None. The context records `marker_cleared` when the marker is removed,
-    `withdraw_called` when the withdraw include runs, and the registers of tasks that ran.
+    `reads` is the sequence of job-store states the read-backs see, one per slurp: a job list, a
+    raw text (unparseable store), or None (no file). When omitted, `store` is the single state.
+    `edit_rc` is the exit code of every `cron edit`. Returns (failure message or None, context).
+    The context records what ran: `commands` (task names of the cron commands), `withdraw_called`,
+    `readback_count`, `marker_cleared`, and the registers of tasks that ran.
     """
     include = _task(caller_file, include_prefix)
     if not all(_value(c, context) for c in _conditions(include)):
         return None, context
     context = {**context, **{k: _value(v, context) for k, v in include["vars"].items()}}
-    message = _run_tasks(_tasks(GUARD_FILE), context, {"store": store, "edit_rc": edit_rc})
+    state = {"reads": list(reads) if reads is not None else [store], "edit_rc": edit_rc}
+    message = _run_tasks(_tasks(GUARD_FILE), context, state)
     return message, context
+
+
+def _store_text(entry):
+    if entry is None:
+        return {}
+    if isinstance(entry, str):
+        return {"content": base64.b64encode(entry.encode()).decode()}
+    raw = json.dumps({"jobs": entry}).encode()
+    return {"content": base64.b64encode(raw).decode()}
 
 
 def _run_tasks(tasks, context, state):
@@ -126,22 +139,36 @@ def _run_tasks(tasks, context, state):
         if not all(_value(c, scope) for c in _conditions(task)):
             continue
         if "block" in task:
-            _run_tasks(task["block"], context, state)
+            try:
+                message = _run_tasks(task["block"], context, state)
+            except Exception:
+                return _run_tasks(task.get("rescue", []), context, state)
+            if message:
+                return message
         elif "ansible.builtin.include_tasks" in task:
-            context["withdraw_called"] = True
+            spec = task["ansible.builtin.include_tasks"]
+            file = spec["file"] if isinstance(spec, dict) else spec
+            if file == WITHDRAW_FILE:
+                context["withdraw_called"] = True
+            elif file == READBACK_FILE:
+                context["readback_count"] = context.get("readback_count", 0) + 1
+                message = _run_tasks(_tasks(file), context, state)
+                if message:
+                    return message
         elif "ansible.builtin.set_fact" in task:
             for k, v in task["ansible.builtin.set_fact"].items():
                 context[k] = _value(v, scope)
         elif "ansible.builtin.command" in task:
-            context[task["register"]] = {"changed": True, "rc": state["edit_rc"]}
+            context.setdefault("commands", []).append(task["name"])
+            rc = state["edit_rc"] if "Edit the installed job" in task["name"] else 0
+            context[task["register"]] = {"changed": True, "rc": rc}
         elif "ansible.builtin.slurp" in task:
-            if state["store"] is None:
-                context[task["register"]] = {}
-            else:
-                raw = json.dumps({"jobs": state["store"]}).encode()
-                context[task["register"]] = {"content": base64.b64encode(raw).decode()}
+            entry = state["reads"].pop(0) if len(state["reads"]) > 1 else state["reads"][0]
+            context[task["register"]] = _store_text(entry)
         elif "ansible.builtin.file" in task:
             context["marker_cleared"] = True
+        elif "ansible.builtin.fail" in task:
+            return _value(task["ansible.builtin.fail"]["msg"], scope)
         elif "ansible.builtin.assert" in task:
             if not all(_value(c, scope) for c in task["ansible.builtin.assert"]["that"]):
                 return _value(task["ansible.builtin.assert"]["fail_msg"], scope)
@@ -163,12 +190,12 @@ def _shipped_job(name, identity=FIXTURE, home=MAIN):
 
 
 def _direct(job, identity=FIXTURE, home=MAIN, failure=f"slack:{ISSUES}", profiles=None, listing="",
-            check_mode=False, refuse=None, store=None, edit_rc=0):
+            check_mode=False, refuse=None, store=None, edit_rc=0, reads=None):
     context = _base(job, identity, home, failure, {}, profiles or {}, listing, check_mode, refuse)
     context = _resolve(_task("reconcile_direct_cron.yml", "Direct cron | Decide agent ownership"), context)
     context = _resolve(_task("reconcile_direct_cron.yml", "Direct cron | Resolve deliver target"), context)
     return _guard_run("reconcile_direct_cron.yml", "Direct cron | Refuse the main channel", context,
-                      store, edit_rc)
+                      store=store, edit_rc=edit_rc, reads=reads)
 
 
 def _enqueuer(job, identity=FIXTURE, home=MAIN, failure=f"slack:{ISSUES}", owners=None, refuse=None):

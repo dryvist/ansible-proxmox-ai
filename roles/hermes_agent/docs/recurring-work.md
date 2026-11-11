@@ -60,11 +60,15 @@ itself — not assumed):
   `hermes_agent_refuse_main_channel_targets` is on (the default for every identity
   except `hermes`), every entry of its jobs' deliver, failure and healthy-footer
   values must be empty, `local`, `log`, or `slack:<ID>` with an upper-case ID other
-  than its home channel. A job installed on a refused delivery or failure target is
-  edited to local delivery by id. A job installed with a refused healthy footer is
-  withdrawn, because the footer is prompt text that an edit does not change. Either
-  way the job store is read back, and the converge fails until the declared target
-  is corrected.
+  than its home channel. An installed job with a refused delivery or failure target
+  is edited by id to local delivery and failure, then read back. If the read-back is
+  not exactly `local` on both, each target is edited separately and read back again.
+  If that still does not prove it, the job is withdrawn and read back. An installed
+  job with a refused healthy footer is withdrawn and read back, because the footer is
+  prompt text that an edit does not change. A job is never paused: the brain watchdog
+  resumes paused seeded jobs. The converge fails and names the job when no read-back
+  proves it stopped posting, and an unreadable job store fails it too. Every refused
+  target fails the converge until it is corrected.
 
 None of these were silently dropped.
 

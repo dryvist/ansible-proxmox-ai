@@ -1,137 +1,196 @@
-"""A refused main-channel target on an installed direct cron job is edited or withdrawn, then read back.
+"""An installed direct cron job with a refused main-channel target is changed by a reversible means
+where one exists, then read back from the job store; nothing is judged from an exit code or a
+store that cannot be parsed.
 
-Delivery and failure targets are edited to local by id. A healthy footer, which is prompt text,
-is withdrawn with the direct-cron withdraw tasks. Either way the job store decides the outcome:
-the marker is cleared only when the read-back proves the job no longer names the main channel,
-and the failure message says "STILL posting" whenever it cannot prove that.
+Delivery and failure targets are edited to local by id, then each target separately, and only
+then is the job withdrawn. A refused healthy footer is prompt text no cron edit reaches, so that
+job is withdrawn. The job is never paused: the brain watchdog resumes paused jobs.
 """
-from _cron_targets_shared import GUARD_FILE, MAIN, _direct, _job, _task, _tasks, _value
+from _cron_targets_shared import GUARD_FILE, MAIN, READBACK_FILE, ROLE, _direct, _job, _task, _tasks, _value
 
 JOB_ID = "3f2a9c1d7e40"
 ACTIVE = f"  {JOB_ID} [active]\n    Name:      pulse\n"
 PAUSED = f"  {JOB_ID} [paused]\n    Name:      pulse\n"
-STORE_CLEAN = [{"id": JOB_ID, "name": "pulse", "deliver": "local", "failure_deliver": "local"}]
-STORE_HOME = [{"id": JOB_ID, "name": "pulse", "deliver": f"slack:{MAIN}", "failure_deliver": "local"}]
-STORE_OTHER = [{"id": "f00ba4f00ba4", "name": "pulse", "deliver": "local", "failure_deliver": "local"}]
+CLEAN = [{"id": JOB_ID, "name": "pulse", "deliver": "local", "failure_deliver": "local"}]
+HOME = [{"id": JOB_ID, "name": "pulse", "deliver": f"slack:{MAIN}", "failure_deliver": "local"}]
+LOG = [{"id": JOB_ID, "name": "pulse", "deliver": "log", "failure_deliver": "local"}]
+PARTLY = [{"id": JOB_ID, "name": "pulse", "deliver": "local", "failure_deliver": "slack:C0EXAMPLEALL"}]
+MISSING_FAILURE_KEY = [{"id": JOB_ID, "name": "pulse", "deliver": "local"}]
+GONE = []
 REFUSED = "has a target the main-channel rule does not allow"
 DELIVERY = dict(deliver=f"slack:{MAIN}", failure_deliver="local")
 FOOTER = dict(deliver="local", failure_deliver="local", channel_when_healthy=f"slack:{MAIN}")
+EDIT_BOTH = "Edit the installed job to local delivery and failure"
+EDIT_DELIVERY = "Edit the installed job's delivery target to local"
+EDIT_FAILURE = "Edit the installed job's failure target to local"
 
 
-def test_an_installed_job_is_edited_to_local_by_id():
-    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, store=STORE_CLEAN)
-    command = _task(GUARD_FILE, "Edit the installed job")["ansible.builtin.command"]
+def _cron_commands(context):
+    return context.get("commands", [])
+
+
+def test_an_installed_job_is_edited_to_local_by_id_and_read_back_clean():
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[CLEAN])
+    command = _task(GUARD_FILE, EDIT_BOTH)["ansible.builtin.command"]
     rendered = " ".join(_value(command, context).split())
     assert rendered.endswith(f"cron edit {JOB_ID} --deliver local --failure-deliver local")
-    assert REFUSED in message
+    assert REFUSED in message and "no longer names the main channel" in message
+    assert context["marker_cleared"] is True
     assert "withdraw_called" not in context
 
 
 def test_a_paused_installed_job_is_edited_too():
-    message, context = _direct(_job(**DELIVERY), listing=PAUSED, store=STORE_CLEAN)
+    message, context = _direct(_job(**DELIVERY), listing=PAUSED, reads=[CLEAN])
     assert context["hermes_agent_refuse_job_id"] == JOB_ID
     assert context["marker_cleared"] is True
     assert REFUSED in message
 
 
-def test_a_job_that_is_not_installed_is_not_edited():
+def test_a_job_that_is_not_installed_runs_no_cron_command():
     message, context = _direct(_job(**DELIVERY), listing="")
     assert context["hermes_agent_refuse_job_id"] == ""
-    assert "STILL" not in message and "no longer names" not in message
-    assert "marker_cleared" not in context
+    assert _cron_commands(context) == []
+    assert "marker_cleared" not in context and "no longer names" not in message
 
 
-def test_check_mode_does_not_edit_the_installed_job():
-    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, check_mode=True, store=STORE_CLEAN)
+def test_check_mode_runs_no_cron_command():
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, check_mode=True, reads=[CLEAN])
     assert context["hermes_agent_refuse_outcome"] == "unchecked"
-    assert "STILL" not in message and "no longer names" not in message
+    assert _cron_commands(context) == []
     assert "marker_cleared" not in context
 
 
-def test_a_clean_read_back_clears_the_marker_and_fails_with_the_refusal():
-    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, store=STORE_CLEAN)
-    assert context["marker_cleared"] is True
+# Finding 1: the healthy-footer path withdraws; no edit runs, and nothing is paused.
+def test_a_refused_footer_is_withdrawn_and_no_edit_or_pause_runs():
+    message, context = _direct(_job(**FOOTER), listing=ACTIVE, reads=[GONE])
+    assert context["withdraw_called"] is True
+    assert context["readback_count"] == 1
+    assert not any(EDIT_BOTH in name or EDIT_DELIVERY in name for name in _cron_commands(context))
+    assert not any("pause" in name.lower() for name in _cron_commands(context))
+    assert "not listed in the job store" in message
+    assert "STILL" not in message
+
+
+def test_the_guard_task_file_never_pauses_a_job():
+    text = (ROLE / "tasks" / GUARD_FILE).read_text()
+    assert "cron pause" not in text
+    assert "cron resume" not in text
+
+
+def test_the_brain_watchdog_resumes_paused_jobs_which_is_why_the_guard_does_not_pause():
+    template = (ROLE / "templates" / "hermes-brain-watchdog.sh.j2").read_text()
+    assert "cron_do resume" in template
+    assert "\\[paused\\]" in template
+
+
+def test_a_refused_footer_still_listed_after_the_withdraw_fails_closed_without_claiming_removal():
+    message, context = _direct(_job(**FOOTER), listing=ACTIVE, reads=[HOME])
+    assert context["withdraw_called"] is True
+    assert "may still post to the main channel" in message
+    assert "not recorded as fixed" in message
+    assert "not listed in the job store" not in message
+    assert "marker_cleared" not in context
+
+
+# Finding 2: a read-back that does not prove the change falls back, then withdraws, then fails closed.
+def test_an_edit_that_does_not_read_back_falls_back_to_separate_edits():
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[PARTLY, CLEAN])
+    names = _cron_commands(context)
+    assert any(EDIT_DELIVERY in name for name in names)
+    assert any(EDIT_FAILURE in name for name in names)
+    assert "withdraw_called" not in context
     assert "no longer names the main channel" in message
-    assert "re-run the reconcile" in message
+    assert context["marker_cleared"] is True
 
 
-def test_a_read_back_that_still_names_the_home_channel_fails_as_still_posting():
-    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, store=STORE_HOME)
-    assert f"{JOB_ID} for pulse is STILL" in message
-    assert "marker_cleared" not in context
-
-
-def test_a_missing_job_id_after_the_edit_fails_as_still_posting():
-    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, store=STORE_OTHER)
-    assert f"{JOB_ID} for pulse is STILL" in message
-    assert "marker_cleared" not in context
-
-
-def test_a_failed_edit_still_ends_in_the_refusal():
-    message, _ = _direct(_job(**DELIVERY), listing=ACTIVE, store=STORE_CLEAN, edit_rc=1)
-    assert REFUSED in message
-    assert "STILL" not in message
-
-
-def test_a_failed_edit_with_the_job_still_naming_home_fails_as_still_posting():
-    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, store=STORE_HOME, edit_rc=1)
-    assert "STILL" in message
-    assert "marker_cleared" not in context
-
-
-def test_a_store_entry_missing_its_failure_key_is_still_posting():
-    store = [{"id": JOB_ID, "name": "pulse", "deliver": "local"}]
-    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, store=store)
-    assert f"{JOB_ID} for pulse is STILL" in message
-    assert "marker_cleared" not in context
-
-
-def test_a_store_entry_missing_both_target_keys_is_still_posting():
-    store = [{"id": JOB_ID, "name": "pulse"}]
-    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, store=store)
-    assert f"{JOB_ID} for pulse is STILL" in message
-    assert "marker_cleared" not in context
-
-
-def test_a_missing_store_file_is_still_posting():
-    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, store=None)
-    assert f"{JOB_ID} for pulse is STILL" in message
-    assert "marker_cleared" not in context
-
-
-def test_a_refused_footer_withdraws_the_installed_job_and_the_removal_is_read_back():
-    message, context = _direct(_job(**FOOTER), listing=ACTIVE, store=[])
+def test_when_the_separate_edits_do_not_read_back_the_job_is_withdrawn_and_read_back():
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[LOG, LOG, GONE])
     assert context["withdraw_called"] is True
-    assert context["hermes_agent_refuse_edit"] == {}
-    assert "was removed" in message
-    assert "returns when the declared target is corrected and the reconcile is re-run" in message
-    assert "STILL" not in message
-
-
-def test_a_refused_footer_still_present_after_the_withdraw_fails_as_still_posting():
-    message, context = _direct(_job(**FOOTER), listing=ACTIVE, store=STORE_CLEAN)
-    assert context["withdraw_called"] is True
-    assert f"{JOB_ID} for pulse is STILL" in message
-    assert "removed" not in message
+    assert context["readback_count"] == 3
+    assert "not listed in the job store" in message
     assert "marker_cleared" not in context
 
 
-def test_a_refused_footer_on_an_uninstalled_job_does_not_withdraw():
-    message, context = _direct(_job(**FOOTER), listing="", store=[])
+def test_when_nothing_reads_back_the_play_fails_closed_naming_the_job():
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[LOG, LOG, LOG])
+    assert context["withdraw_called"] is True
+    assert message is not None and "pulse" in message
+    assert f"installed job {JOB_ID} may still post to the main channel" in message
+    assert "not recorded as fixed" in message
+    assert "operator" not in message.lower()
+    assert "marker_cleared" not in context
+
+
+def test_the_failed_path_asks_no_one_to_act_and_names_what_was_last_read_back():
+    message, _ = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[LOG, LOG, LOG])
+    assert "Last read back: deliver=log, failure_deliver=local" in message
+
+
+# Finding 3: only exactly local on both fields is a read-back that clears the job.
+def test_a_read_back_with_a_non_local_delivery_is_not_cleared():
+    other = [{"id": JOB_ID, "name": "pulse", "deliver": "slack:C0EXAMPLEALL", "failure_deliver": "local"}]
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[other, other, GONE])
+    assert len(_cron_commands(context)) == 3
+    assert "marker_cleared" not in context
+
+
+def test_a_read_back_with_a_non_local_failure_target_is_not_cleared():
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[PARTLY, PARTLY, GONE])
+    assert len(_cron_commands(context)) == 3
+    assert "marker_cleared" not in context
+
+
+def test_a_read_back_with_a_log_failure_target_is_not_cleared():
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[LOG, LOG, LOG])
+    assert "marker_cleared" not in context
+    assert "may still post" in message
+
+
+def test_a_cleared_read_back_message_says_what_was_read_back():
+    message, _ = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[CLEAN])
+    assert "its read-back shows deliver=local, failure_deliver=local" in message
+
+
+# Finding 4: an unreadable or unparseable store fails the play; it is never read as absent.
+def test_an_unparseable_store_fails_closed_and_is_not_read_as_absent():
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, reads=["not json"])
+    assert message is not None and "pulse" in message
+    assert "cannot be read or parsed" in message and "was not judged" in message
     assert "withdraw_called" not in context
-    assert "STILL" not in message and "was removed" not in message
+    assert "not listed in the job store" not in message
+    assert "marker_cleared" not in context
 
 
-def test_check_mode_does_not_withdraw_for_a_refused_footer():
-    message, context = _direct(_job(**FOOTER), listing=ACTIVE, check_mode=True, store=[])
-    assert "withdraw_called" not in context
-    assert "was removed" not in message
+def test_a_footer_job_with_an_unparseable_store_fails_closed_and_does_not_report_removed():
+    message, context = _direct(_job(**FOOTER), listing=ACTIVE, reads=['{"jobs": '])
+    assert "cannot be read or parsed" in message
+    assert "not listed in the job store" not in message
 
 
-def test_the_installed_job_is_edited_or_withdrawn_before_the_check_fails():
+def test_a_missing_store_file_fails_closed_and_is_not_read_as_absent():
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[None])
+    assert "cannot be read or parsed" in message
+    assert "not listed in the job store" not in message
+    assert "marker_cleared" not in context
+
+
+def test_a_store_entry_missing_its_failure_key_is_not_cleared():
+    message, context = _direct(_job(**DELIVERY), listing=ACTIVE, reads=[MISSING_FAILURE_KEY] * 3)
+    assert "marker_cleared" not in context
+    assert "may still post" in message
+
+
+def test_the_edits_run_before_the_withdraw_and_the_outcome_is_decided_last():
     names = [str(t.get("name", "")) for t in _tasks(GUARD_FILE)]
-    order = ("Edit the installed job", "Withdraw the installed job for a refused healthy footer",
-             "Read the installed job back", "Select the installed job", "Compare the read-back",
-             "Decide the outcome", "Clear the desired-state marker", "Refuse the main channel as a target")
+    order = (EDIT_BOTH, EDIT_DELIVERY, EDIT_FAILURE,
+             "Withdraw the installed job when no edit reads back", "Decide the outcome for")
     positions = [next(i for i, n in enumerate(names) if n.startswith(prefix)) for prefix in order]
     assert positions == sorted(positions)
+
+
+def test_the_readback_file_reads_both_fields_and_fails_closed_on_parse_errors():
+    tasks = _tasks(READBACK_FILE)
+    assert any("block" in task for task in tasks)
+    assert any("rescue" in task for task in tasks)
+    text = (ROLE / "tasks" / READBACK_FILE).read_text()
+    assert "failure_deliver | default('') == 'local'" in text
