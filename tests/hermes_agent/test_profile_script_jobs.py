@@ -20,7 +20,7 @@ def _profile_script_jobs(jobs):
     return yaml.safe_load(rendered)
 
 
-def test_only_enabled_script_jobs_outside_the_default_home_are_selected():
+def test_only_script_jobs_outside_the_default_home_are_selected():
     jobs = [
         {"name": "canary", "script": "c.py", "hermes_home": f"{HOME}/profiles/homelab-admin", "enabled": True},
         {"name": "off", "script": "o.py", "hermes_home": f"{HOME}/profiles/splunk-admin", "enabled": False},
@@ -31,7 +31,7 @@ def test_only_enabled_script_jobs_outside_the_default_home_are_selected():
         {"name": "string-on", "script": "t.py", "hermes_home": f"{HOME}/profiles/homelab-admin", "enabled": "true"},
         {"name": "empty-script", "script": "", "hermes_home": f"{HOME}/profiles/homelab-admin", "enabled": True},
     ]
-    assert [job["name"] for job in _profile_script_jobs(jobs)] == ["canary", "string-on"]
+    assert [job["name"] for job in _profile_script_jobs(jobs)] == ["canary", "off", "string-off", "string-on"]
 
 
 def test_cron_reconcile_copies_scripts_into_profile_homes_before_creating_jobs():
@@ -45,6 +45,7 @@ def test_cron_reconcile_copies_scripts_into_profile_homes_before_creating_jobs()
         "Create the scripts directory of each profile home that runs a script job"
     ) < place
     assert "not ansible_check_mode" in tasks[place]["when"]
+    assert "item.enabled | default(false) | bool" in tasks[place]["when"]
     assert place < names.index("Warn when Slack is not configured (direct-deliver crons skipped)")
 
 
