@@ -60,8 +60,8 @@ def test_check_mode_runs_no_cron_command():
     assert "marker_cleared" not in context
 
 
-# Finding 1: the healthy-footer path withdraws; no edit runs, and nothing is paused.
-def test_a_refused_footer_is_withdrawn_and_no_edit_or_pause_runs():
+# Finding 1: a refused footer withdraws the whole job; no edit runs, and nothing is paused.
+def test_a_refused_footer_withdraws_the_whole_job_and_runs_no_edit_or_pause():
     message, context = _direct(_job(**FOOTER), listing=ACTIVE, reads=[GONE])
     assert context["withdraw_called"] is True
     assert context["readback_count"] == 1
@@ -83,7 +83,7 @@ def test_the_brain_watchdog_resumes_paused_jobs_which_is_why_the_guard_does_not_
     assert "\\[paused\\]" in template
 
 
-def test_a_refused_footer_still_listed_after_the_withdraw_fails_closed_without_claiming_removal():
+def test_a_refused_footer_job_still_listed_after_the_withdraw_fails_the_play():
     message, context = _direct(_job(**FOOTER), listing=ACTIVE, reads=[HOME])
     assert context["withdraw_called"] is True
     assert "may still post to the main channel" in message
@@ -161,7 +161,7 @@ def test_an_unparseable_store_fails_closed_and_is_not_read_as_absent():
     assert "marker_cleared" not in context
 
 
-def test_a_footer_job_with_an_unparseable_store_fails_closed_and_does_not_report_removed():
+def test_a_footer_job_with_an_unparseable_store_fails_the_play_without_reporting_gone():
     message, context = _direct(_job(**FOOTER), listing=ACTIVE, reads=['{"jobs": '])
     assert "cannot be read or parsed" in message
     assert "not listed in the job store" not in message
