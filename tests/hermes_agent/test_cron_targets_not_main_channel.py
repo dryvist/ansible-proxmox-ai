@@ -107,6 +107,13 @@ def test_failure_to_the_main_channel_fails():
     assert not _direct_passes(_donna_job(deliver="slack:C0EXAMPLEALL", failure_deliver=f"slack:{MAIN}"))
 
 
+def test_a_failure_list_naming_the_main_channel_fails():
+    assert not _direct_passes(_donna_job(deliver="slack:C0EXAMPLEALL",
+                                         failure_deliver=f"slack:{ISSUES},slack:{MAIN}"))
+    job = {"name": "splunk-status-digest", "system": "splunk", "enabled": True, "deliver": "local"}
+    assert not _enqueuer_passes(job, owners={"splunk": "donna"}, failure=f"slack:{ISSUES}, slack:{MAIN}")
+
+
 def test_a_job_with_no_deliver_falls_back_to_the_home_channel_and_fails():
     assert not _direct_passes(_donna_job(failure_deliver="local"))
 
