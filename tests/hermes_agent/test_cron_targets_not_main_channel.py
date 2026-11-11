@@ -1,8 +1,9 @@
 """A Donna cron job may never deliver, or fail, to her main channel.
 
-The guards sit in the two reconcile files that compute each job's final targets.
-These tests render the real set_fact and assert expressions from those files, so
-defaults, profile remaps and channel_when_healthy are checked as they resolve.
+The rule is one assert in refuse_main_channel_target.yml, included by the two
+reconcile files that compute each job's final targets. These tests resolve the
+targets with the real set_fact tasks in those files, then run the included assert,
+so defaults, profile remaps and channel_when_healthy are checked as they resolve.
 """
 import re
 from pathlib import Path
@@ -28,7 +29,7 @@ def _task(file, prefix):
 
 def _value(value, context):
     """Evaluate one task value: a `{{ }}` template, or a bare `when:`/`that:` expression."""
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not value.strip():
         return value
     if "{{" in value:
         return ENV.from_string(value).render(**context)
@@ -64,12 +65,30 @@ def _resolve(task, context):
     return context
 
 
-def _guard_passes(file, prefix, context):
-    task = _task(file, prefix)
-    if not all(_value(cond, context) for cond in task["when"]):
+GUARD_FILE = "refuse_main_channel_target.yml"
+
+
+def _include_target(task):
+    target = task.get("ansible.builtin.include_tasks")
+    return target.get("file") if isinstance(target, dict) else target
+
+
+def _conditions(task):
+    when = task.get("when", [])
+    return [when] if isinstance(when, str) else when
+
+
+def _guard_passes(caller_file, include_prefix, context):
+    """Run a caller's include gate and vars, then the shared assert with them."""
+    include = _task(caller_file, include_prefix)
+    if not all(_value(cond, context) for cond in _conditions(include)):
         return True
-    context = {**context, **{k: _value(v, context) for k, v in task.get("vars", {}).items()}}
-    return all(_value(cond, context) for cond in task["ansible.builtin.assert"]["that"])
+    context = {**context, **{k: _value(v, context) for k, v in include["vars"].items()}}
+    guard = _task(GUARD_FILE, "Refuse Donna's main channel")
+    if not all(_value(cond, context) for cond in _conditions(guard)):
+        return True
+    context = {**context, **{k: _value(v, context) for k, v in guard.get("vars", {}).items()}}
+    return all(_value(cond, context) for cond in guard["ansible.builtin.assert"]["that"])
 
 
 def _direct_passes(job, identity="donna", home=MAIN, failure=f"slack:{ISSUES}", profiles=None):
@@ -185,9 +204,12 @@ def test_each_guard_runs_before_any_job_is_created_or_removed():
         ("reconcile_enqueuer_cron.yml", "Enqueuer cron | Refuse Donna",
          ("Enqueuer cron | Remove", "Enqueuer cron | Create")),
     ):
-        names = [str(t.get("name", "")) for t in yaml.safe_load((ROLE / "tasks" / file).read_text())]
+        tasks = yaml.safe_load((ROLE / "tasks" / file).read_text())
+        names = [str(t.get("name", "")) for t in tasks]
         first_mutation = min(i for i, n in enumerate(names) if n.startswith(mutations))
-        assert names.index(next(n for n in names if n.startswith(guard))) < first_mutation
+        include = next(t for t in tasks if str(t.get("name", "")).startswith(guard))
+        assert _include_target(include) == GUARD_FILE
+        assert names.index(include["name"]) < first_mutation
 
 
 def test_the_old_top_level_guard_is_gone():
