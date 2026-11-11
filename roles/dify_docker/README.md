@@ -145,6 +145,48 @@ from a private source and are never committed. Each private entry is fetched wit
 like the public DSLs when its source is valid.
 Private entries are skipped while the token is empty.
 
+## Declared catalog app variables
+
+`dify_docker_agent_app_variables` sets draft environment variables on a catalog app. It is keyed
+by catalog app name, and each entry names one variable and exactly one source:
+
+| Source | Value written |
+| --- | --- |
+| `value` | Plain text from the caller. |
+| `kv: {path, field}` | A field of a KV leaf on the converge KV mount. The value is never copied anywhere else. |
+| `approle_role_id: {approle}` | The role id of the AppRole. |
+| `approle_secret_id: {approle}` | A new secret id, minted with `dify_docker_agent_secret_id_ttl` (default `720h`). |
+
+`secret: true` stores the variable with the secret value type. An entry with no source, or with
+two, fails the app before its import. The failure names the app and the variable, never a value.
+
+`dify_docker_agent_tool_providers` maps a placeholder in the catalog DSL to a workspace tool
+provider name. Each placeholder is replaced by that provider's id before the import, read from
+`GET /workspaces/current/tool-providers`. A name that does not match exactly one provider fails
+the app before its import.
+
+Each app with declared variables runs in this order: resolve every source, import when the
+catalog hash changed, write the draft variables, publish, then prune. The apply runs on every
+converge, because minted secret ids expire. After each publish the two newest secret ids per
+AppRole are kept, and older ones are destroyed. Check mode resolves the reads and reports
+variable names only. It never mints a secret id or writes to the app. Apps without declared
+variables run the same tasks as before.
+
+Placeholders only:
+
+```yaml
+dify_docker_agent_app_variables:
+  example-app:
+    - name: EXAMPLE_TOKEN
+      secret: true
+      kv: {path: example/app, field: token}
+    - name: EXAMPLE_ROLE_ID
+      approle_role_id: {approle: agent-example}
+dify_docker_agent_tool_providers:
+  example-app:
+    __EXAMPLE_TOOL__: example-tool
+```
+
 ## Tier2 rotation webhook wiring
 
 After the agent DSL import, the role wires the `tier2-rotation` catalog

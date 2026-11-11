@@ -3,6 +3,14 @@
 - name: Fetch and verify the agent DSL source
   ansible.builtin.include_tasks: import_agent_dsl_fetch.yml
 
+# Declared variables and tool provider ids resolve before the import can change anything.
+- name: Resolve declared app variables and tool provider ids before any import
+  ansible.builtin.include_tasks: import_agent_dsl_variables.yml
+  when:
+    - dify_docker_dsl_has_variables | bool
+    - dify_docker_dsl_content | length > 0
+  no_log: true
+
 - name: Reconcile the catalog app and publish its workflow
   ansible.builtin.include_tasks: import_agent_dsl_reconcile.yml
 
@@ -28,4 +36,26 @@
       not (dify_docker_dsl_import_needed | bool)
       or (dify_docker_dsl_confirm.json | default(dify_docker_dsl_import.json | default({})))
          .status | default('') in ['completed', 'completed-with-warnings']
+  no_log: true
+
+# Facts persist across loop iterations: drop the declared values, minted secret ids and
+# the registered reads of this app before the next app. Apps without declared variables
+# never set these facts, so this task is skipped for them.
+- name: Clear the declared app variable values from facts
+  ansible.builtin.set_fact:
+    dify_docker_dsl_variable_values: []
+    dify_docker_dsl_tool_ids: {}
+    dify_docker_dsl_tool_providers: {}
+    dify_docker_dsl_env_patch: []
+    dify_docker_dsl_draft: {}
+    dify_docker_dsl_draft_sync: {}
+    dify_docker_dsl_kv_read: {}
+    dify_docker_dsl_role_id_read: {}
+    dify_docker_dsl_secret_id_mints: {}
+    dify_docker_dsl_secret_id_list: {}
+    dify_docker_dsl_secret_id_lookups: {}
+    dify_docker_dsl_secret_id_ages: []
+    dify_docker_dsl_secret_id_stale: []
+    dify_docker_agent_leaf_read_result: {}
+  when: dify_docker_dsl_has_variables | bool
   no_log: true

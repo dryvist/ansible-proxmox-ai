@@ -1,0 +1,134 @@
+---
+# =============================================================================
+# Resolve the declared variables and tool provider ids for one catalog app before
+# any import. Every read here is non-mutating, so check mode runs this stage too.
+# AppRole secret ids are minted later, by import_agent_dsl_variables_apply.yml.
+# Resolved values stay in this loop iteration's facts; import_agent_dsl.yml clears
+# them. Failures name the app and the variable, never a value.
+# =============================================================================
+
+- name: Reset the resolved variable values for this app
+  ansible.builtin.set_fact:
+    dify_docker_dsl_variable_values: []
+    dify_docker_dsl_tool_ids: {}
+    dify_docker_dsl_bad_names: []
+    dify_docker_dsl_unresolved_names: []
+    dify_docker_dsl_unresolved_tools: []
+  no_log: true
+
+- name: Collect declared variables that do not name exactly one source
+  ansible.builtin.set_fact:
+    dify_docker_dsl_bad_names: >-
+      {{ dify_docker_dsl_bad_names
+         + ([dify_docker_dsl_variable_entry.name | default('unnamed')]
+            if ((['value', 'kv', 'approle_role_id', 'approle_secret_id']
+                 | select('in', dify_docker_dsl_variable_entry) | list | length) != 1
+                or (dify_docker_dsl_variable_entry.name | default('') | length == 0))
+            else []) }}
+  loop: "{{ dify_docker_dsl_variable_entries }}"
+  loop_control:
+    loop_var: dify_docker_dsl_variable_entry
+    label: "{{ dify_docker_dsl_variable_entry.name | default('unnamed') }}"
+  no_log: true
+
+- name: Assert each declared variable names exactly one source
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_bad_names | length == 0
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: each declared variable needs a name and exactly one source
+      (value, kv, approle_role_id or approle_secret_id). Variables: {{ dify_docker_dsl_bad_names | join(', ') }}
+
+- name: Record the declared variable names for this app
+  ansible.builtin.set_fact:
+    dify_docker_dsl_declared_names: "{{ dify_docker_dsl_variable_entries | map(attribute='name') | list }}"
+    dify_docker_dsl_resolve_names: >-
+      {{ dify_docker_dsl_variable_entries | rejectattr('approle_secret_id', 'defined')
+         | map(attribute='name') | list }}
+  no_log: true
+
+- name: Resolve each declared variable from its single source
+  ansible.builtin.include_tasks: import_agent_dsl_variable_one.yml
+  loop: "{{ dify_docker_dsl_variable_entries }}"
+  loop_control:
+    loop_var: dify_docker_dsl_variable_entry
+    label: "{{ dify_docker_dsl_variable_entry.name | default('unnamed') }}"
+  no_log: true
+
+- name: List the workspace tool providers for the declared placeholders
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/workspaces/current/tool-providers"
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_dsl_tool_providers
+  when: dify_docker_dsl_tool_provider_map | length > 0
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+- name: Find the workspace tool provider id for each placeholder
+  ansible.builtin.set_fact:
+    dify_docker_dsl_tool_ids: >-
+      {{ dify_docker_dsl_tool_ids
+         | combine({dify_docker_dsl_tool_entry.key: dify_docker_dsl_tool_providers.json
+                     | selectattr('name', 'equalto', dify_docker_dsl_tool_entry.value)
+                     | map(attribute='id') | list}) }}
+  loop: "{{ dify_docker_dsl_tool_provider_map | dict2items }}"
+  loop_control:
+    loop_var: dify_docker_dsl_tool_entry
+    label: "{{ dify_docker_dsl_tool_entry.key }}"
+  no_log: true
+
+# A name that matches two workspace providers is ambiguous, so it counts as unresolved.
+- name: List the tool provider names with no single workspace match
+  ansible.builtin.set_fact:
+    dify_docker_dsl_unresolved_tools: >-
+      {{ dify_docker_dsl_unresolved_tools
+         + ([dify_docker_dsl_tool_entry.value]
+            if (dify_docker_dsl_tool_ids[dify_docker_dsl_tool_entry.key] | length) != 1 else []) }}
+  loop: "{{ dify_docker_dsl_tool_provider_map | dict2items }}"
+  loop_control:
+    loop_var: dify_docker_dsl_tool_entry
+    label: "{{ dify_docker_dsl_tool_entry.key }}"
+  no_log: true
+
+- name: List the declared variables that have no value yet
+  ansible.builtin.set_fact:
+    dify_docker_dsl_unresolved_names: >-
+      {{ dify_docker_dsl_resolve_names | difference(
+           dify_docker_dsl_variable_values | rejectattr('value', 'equalto', '')
+           | map(attribute='name') | list) }}
+  no_log: true
+
+- name: Assert every declared variable and tool provider resolved before any import
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_unresolved_names | length == 0
+      - dify_docker_dsl_unresolved_tools | length == 0
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: unresolved before import. Variables without a value:
+      {{ dify_docker_dsl_unresolved_names | join(', ') or 'none' }}. Tool providers without
+      a single workspace match: {{ dify_docker_dsl_unresolved_tools | join(', ') or 'none' }}.
+
+- name: Replace each declared placeholder in the DSL with its tool provider id
+  ansible.builtin.set_fact:
+    dify_docker_dsl_content: >-
+      {{ dify_docker_dsl_content
+         | replace(dify_docker_dsl_tool_entry.key, dify_docker_dsl_tool_ids[dify_docker_dsl_tool_entry.key] | first) }}
+  loop: "{{ dify_docker_dsl_tool_provider_map | dict2items }}"
+  loop_control:
+    loop_var: dify_docker_dsl_tool_entry
+    label: "{{ dify_docker_dsl_tool_entry.key }}"
+  no_log: true
+
+- name: Report the declared variables a live run would set, by name only
+  ansible.builtin.debug:
+    msg: >-
+      {{ dify_docker_dsl_name }}: would set {{ dify_docker_dsl_declared_names | join(', ') }} on the draft.
+      AppRole secret ids are minted only on a live run.
+  when: ansible_check_mode
+  changed_when: false
