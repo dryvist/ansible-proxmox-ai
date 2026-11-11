@@ -52,6 +52,6 @@ def test_cron_reconcile_copies_scripts_into_profile_homes_before_creating_jobs()
 def test_gateway_restart_digest_includes_the_pinned_hermes_version():
     tasks = yaml.safe_load((ROLE / "tasks" / "finalize.yml").read_text())
     digest = next(t for t in tasks if t["name"] == "Set the desired gateway input digest")
-    assert "'hermes_agent_version=' ~ hermes_agent_version" in digest["ansible.builtin.set_fact"][
+    assert "'hermes_agent_version=' ~ (hermes_agent_version | default(''))" in digest["ansible.builtin.set_fact"][
         "hermes_agent_gateway_desired_digest"
     ]
