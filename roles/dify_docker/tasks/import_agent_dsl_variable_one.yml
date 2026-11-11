@@ -1,0 +1,62 @@
+---
+# One declared variable, resolved from its single source. Each source has its own
+# tasks, so a value never reaches a task that handles another source. The
+# approle_secret_id source is minted later, by import_agent_dsl_variables_apply.yml.
+- name: Read the declared variable from its KV field
+  ansible.builtin.include_tasks: read_agent_leaf.yml
+  vars:
+    dify_docker_agent_leaf_read_path: >-
+      {{ (dify_docker_dsl_variable_entry.kv | default({})).path | default('', true) }}
+    dify_docker_agent_leaf_read_register: dify_docker_dsl_kv_read
+  when: dify_docker_dsl_variable_entry.kv is defined
+  no_log: true
+
+- name: Keep the declared KV field value
+  ansible.builtin.set_fact:
+    dify_docker_dsl_variable_values: >-
+      {{ dify_docker_dsl_variable_values
+         + [{'name': dify_docker_dsl_variable_entry.name,
+             'secret': dify_docker_dsl_variable_entry.secret | default(false) | bool,
+             'value': ((dify_docker_dsl_kv_read.secret | default({}, true)).get(
+                         dify_docker_dsl_variable_entry.kv.field | default(''), '')) | string}] }}
+  when: dify_docker_dsl_variable_entry.kv is defined
+  no_log: true
+
+- name: Read the declared AppRole role id
+  ansible.builtin.uri:
+    url: >-
+      {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/approle/role/{{
+      (dify_docker_dsl_variable_entry.approle_role_id | default({})).approle | default('', true) }}/role-id
+    method: GET
+    headers:
+      X-Vault-Token: "{{ openbao_secrets_converge_writer_token }}"
+    status_code: 200
+    return_content: true
+    validate_certs: "{{ dify_docker_bao_validate_certs }}"
+  register: dify_docker_dsl_role_id_read
+  when: dify_docker_dsl_variable_entry.approle_role_id is defined
+  changed_when: false
+  check_mode: false
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Keep the declared AppRole role id
+  ansible.builtin.set_fact:
+    dify_docker_dsl_variable_values: >-
+      {{ dify_docker_dsl_variable_values
+         + [{'name': dify_docker_dsl_variable_entry.name,
+             'secret': dify_docker_dsl_variable_entry.secret | default(false) | bool,
+             'value': (dify_docker_dsl_role_id_read.json.data.role_id | default('', true)) | string}] }}
+  when: dify_docker_dsl_variable_entry.approle_role_id is defined
+  no_log: true
+
+- name: Keep the declared literal value
+  ansible.builtin.set_fact:
+    dify_docker_dsl_variable_values: >-
+      {{ dify_docker_dsl_variable_values
+         + [{'name': dify_docker_dsl_variable_entry.name,
+             'secret': dify_docker_dsl_variable_entry.secret | default(false) | bool,
+             'value': (dify_docker_dsl_variable_entry.value | default('', true)) | string}] }}
+  when: dify_docker_dsl_variable_entry.value is defined
+  no_log: true
