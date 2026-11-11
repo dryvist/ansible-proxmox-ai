@@ -1,9 +1,10 @@
 ---
 # =============================================================================
-# Keep the two newest secret ids of one AppRole and destroy the rest. Runs after the
-# publish, so the older id stays valid until the new one is live. Every task is
-# no_log: accessors identify live credentials. Included once per AppRole, with the
-# role name in dify_docker_dsl_secret_id_role.
+# Destroy older secret id accessors of one AppRole. Accessors minted in this run (listed in
+# dify_docker_dsl_minted_accessors) are never destroyed. Of the others, the newest is kept
+# and the rest are destroyed. Runs after the publish, so the kept older id stays valid until
+# the next converge. Every task is no_log: accessors identify live credentials. Included once
+# per AppRole, with the role name in dify_docker_dsl_secret_id_role.
 # =============================================================================
 
 - name: Reset the secret id accessor ages for this role
@@ -63,14 +64,16 @@
   loop: "{{ dify_docker_dsl_secret_id_lookups.results | default([]) }}"
   no_log: true
 
-- name: Select the accessors older than the two newest
+- name: Select the older accessors to destroy, keeping the newest one not minted in this run
   ansible.builtin.set_fact:
     dify_docker_dsl_secret_id_stale: >-
-      {{ (dify_docker_dsl_secret_id_ages | sort(attribute='created', reverse=true))[2:]
+      {{ (dify_docker_dsl_secret_id_ages
+          | rejectattr('accessor', 'in', dify_docker_dsl_minted_accessors | default([], true))
+          | sort(attribute='created', reverse=true))[1:]
          | map(attribute='accessor') | list }}
   no_log: true
 
-- name: Destroy each secret id accessor older than the two newest
+- name: Destroy each older secret id accessor
   ansible.builtin.uri:
     url: >-
       {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/approle/role/{{

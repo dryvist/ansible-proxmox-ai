@@ -167,8 +167,9 @@ the app before its import.
 
 Each app with declared variables runs in this order: resolve every source, import when the
 catalog hash changed, write the draft variables, publish, then prune. The apply runs on every
-converge, because minted secret ids expire. After each publish the two newest secret ids per
-AppRole are kept, and older ones are destroyed. Check mode resolves the reads and reports
+converge, because minted secret ids expire. After each publish, the secret ids minted in the
+run are kept. Of the older secret ids of each AppRole, only the newest is kept, and the others
+are destroyed. Check mode resolves the reads and reports
 variable names only. It never mints a secret id or writes to the app. Apps without declared
 variables run the same tasks as before.
 

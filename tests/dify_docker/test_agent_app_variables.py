@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment
 
-from _agent_dsl_shared import IMPORT_ONE, _expanded_yaml
+from _agent_dsl_shared import IMPORT_LOOP, IMPORT_ONE, _expanded_yaml
 from _defaults import load_defaults
 
 
@@ -18,7 +18,8 @@ PRE = TASKS / "import_agent_dsl_variables.yml"
 ONE = TASKS / "import_agent_dsl_variable_one.yml"
 APPLY = TASKS / "import_agent_dsl_variables_apply.yml"
 PRUNE = TASKS / "import_agent_dsl_variables_prune.yml"
-EDITED = (IMPORT_ONE, RECONCILE, PRE, ONE, APPLY, PRUNE)
+EDITED = (IMPORT_ONE, IMPORT_LOOP, RECONCILE, PRE, ONE, APPLY, PRUNE)
+SELECT_STALE = "Select the older accessors to destroy, keeping the newest one not minted in this run"
 
 RESOLVE = "Resolve declared app variables and tool provider ids before any import"
 WRITE = "Write the declared app variables to the draft before publishing"
@@ -76,6 +77,7 @@ SENSITIVE = (
     "dify_docker_dsl_draft",
     "dify_docker_dsl_tool_providers",
     "dify_docker_dsl_tool_ids",
+    "dify_docker_dsl_minted_accessors",
     "dify_docker_agent_leaf_read_result",
     "openbao_secrets_converge_writer_token",
 )
@@ -182,7 +184,7 @@ def test_declared_variables_are_written_to_the_draft_with_secret_types_and_named
     }
 
 
-def test_secret_ids_mint_with_the_ttl_and_only_the_two_newest_survive_the_prune():
+def test_secret_ids_mint_with_the_ttl_and_keep_only_the_newest_older_id():
     assert load_defaults()["dify_docker_agent_secret_id_ttl"] == "720h"
     apply_tasks = _yaml(APPLY)
     mint = _task(apply_tasks, "Mint an AppRole secret id for each declared secret id variable")
@@ -197,10 +199,9 @@ def test_secret_ids_mint_with_the_ttl_and_only_the_two_newest_survive_the_prune(
         {"accessor": "a3", "created": "2026-11-03T00:00:00Z"},
         {"accessor": "a4", "created": "2026-11-04T00:00:00Z"},
     ]
-    stale = _render(_fact(prune, "Select the accessors older than the two newest",
-                          "dify_docker_dsl_secret_id_stale"),
+    stale = _render(_fact(prune, SELECT_STALE, "dify_docker_dsl_secret_id_stale"),
                     dify_docker_dsl_secret_id_ages=ages)
-    assert sorted(stale) == ["a1", "a2"]
+    assert sorted(stale) == ["a1", "a2", "a3"]
     collect = _fact(prune, "Collect each accessor with its creation time to the second",
                     "dify_docker_dsl_secret_id_ages")
     assert _render(collect, dify_docker_dsl_secret_id_ages=[],
@@ -255,6 +256,44 @@ def test_null_missing_or_empty_kv_field_is_unresolved_and_never_the_string_none(
     present = _render(keep, dify_docker_dsl_variable_values=[], dify_docker_dsl_kv_read={"secret": {"token": "v"}},
                       dify_docker_dsl_variable_entry=entry)
     assert present == [{"name": "NULLED", "secret": True, "value": "v"}]
+
+
+def test_prune_destroys_only_older_accessors_and_never_one_minted_in_the_run():
+    select = _fact(_yaml(PRUNE), SELECT_STALE, "dify_docker_dsl_secret_id_stale")
+    older = [
+        {"accessor": "old-1", "created": "2026-11-01T00:00:00Z"},
+        {"accessor": "old-2", "created": "2026-11-02T00:00:00Z"},
+    ]
+    for minted_count in (1, 2, 3):
+        minted = [
+            {"accessor": f"new-{number}", "created": f"2026-11-10T00:00:0{number}Z"}
+            for number in range(1, minted_count + 1)
+        ]
+        stale = _render(select, dify_docker_dsl_secret_id_ages=older + minted,
+                        dify_docker_dsl_minted_accessors=[entry["accessor"] for entry in minted])
+        assert stale == ["old-1"], minted_count
+    assert _render(select, dify_docker_dsl_secret_id_ages=older) == ["old-1"]
+    assert _render(select, dify_docker_dsl_secret_id_ages=older[:1]) == []
+
+
+def test_minted_accessors_accumulate_across_apps_without_secret_ids():
+    record = _fact(_yaml(APPLY), "Record each minted secret id accessor for this run's prune protection",
+                   "dify_docker_dsl_minted_accessors")
+    result = _render(record, dify_docker_dsl_minted_accessors=["new-1"],
+                     item={"json": {"data": {"secret_id_accessor": "new-2", "secret_id": "SECRET-VALUE"}}})
+    assert result == ["new-1", "new-2"]
+    assert "SECRET-VALUE" not in str(result)
+    assert _render(record, item={"json": {"data": {"secret_id_accessor": "new-1"}}}) == ["new-1"]
+
+
+def test_minted_accessor_list_is_reset_once_per_run_and_kept_across_app_iterations():
+    loop = _yaml(IMPORT_LOOP)
+    names = [task.get("name") for task in loop]
+    reset = names.index("Reset the secret id accessors minted in this run")
+    assert reset < names.index("Reconcile each catalog agent DSL")
+    assert loop[reset]["no_log"] is True
+    clear = _task(_yaml(IMPORT_ONE), "Clear the declared app variable values from facts")
+    assert "dify_docker_dsl_minted_accessors" not in clear["ansible.builtin.set_fact"]
 
 
 def test_apps_without_declared_variables_keep_the_same_task_sequence():
