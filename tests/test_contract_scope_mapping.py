@@ -33,6 +33,7 @@ def router_paths(shards: list[dict[str, str]]) -> list[str]:
 @pytest.mark.parametrize(("path", "target"), [
     ("roles/nvidia_gpu_guest/tasks/cache-sync.yml", "tests/nvidia_gpu_guest/"),
     ("roles/llm_gpu_serving/tasks/main.yml", "tests/llm_gpu_engine_roles/"),
+    ("roles/llm_serving_declared_metrics/tasks/publish.yml", "tests/llm_gpu_engine_roles/"),
     ("roles/llamacpp_serving/tasks/install.yml", "tests/llamacpp_serving/"),
     ("roles/vllm_serving/tasks/install.yml", "tests/vllm_serving/"),
     ("roles/strata_serving/tasks/main.yml", "tests/llm_gpu_engine_roles/"),
