@@ -8,7 +8,7 @@ by catalog app name, and each entry names one variable and exactly one source:
 | `value` | Plain text from the caller. |
 | `kv: {path, field}` | A field of a KV leaf on the converge KV mount. The value is never copied anywhere else. |
 | `approle_role_id: {approle}` | The role id of the AppRole. |
-| `approle_secret_id: {approle}` | A new secret id, minted with `dify_docker_agent_secret_id_ttl` (default `720h`). |
+| `approle_secret_id: {approle}` | A new secret id, minted with `dify_docker_agent_secret_id_ttl` (default `720h`) and tagged with the app name. |
 
 `secret: true` stores the variable with the secret value type. An entry with no source, or with
 two, fails the app before its import. The failure names the app and the variable, never a value.
@@ -44,9 +44,11 @@ An app with declared entries runs these steps on every converge:
    secret ids expire, so a console edit to a declared variable is overwritten on the next converge.
 4. Publish. A changed app is published after its write, so the published workflow carries the
    variables. An unchanged app gets a publish of its declared variables.
-5. Prune. Each AppRole keeps the secret ids minted in this run. Of its other ids, only the newest
-   is kept and the rest are destroyed. An id minted in the run is never destroyed, including when
-   two apps share an AppRole.
+5. Prune. Each secret id is minted with the app's name in its metadata, under
+   `dify_docker_agent_secret_id_app_metadata_key`. The prune considers only the ids that name the app
+   being reconciled. It keeps the ids minted in this run, and of the app's other ids on that AppRole
+   only the newest, and destroys the rest. Ids of other apps are never destroyed. Ids without the
+   metadata key are never destroyed either, and the run reports how many there are.
 
 An app whose only declaration is a tool provider map has no entries, so an unchanged converge runs
 no write, publish or prune for it. Its provider ids reach the graph only through an import. Check

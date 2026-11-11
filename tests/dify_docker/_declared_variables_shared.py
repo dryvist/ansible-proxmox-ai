@@ -26,7 +26,7 @@ EDITED = (IMPORT_ONE, IMPORT_LOOP, RECONCILE, PRE, ONE, APPLY, PRUNE, CONFIG, DE
 LEAF_INCLUDE = "Read the per-app declared config from its leaf when the flag is set"
 LEAF_RESET = "Reset the per-app leaf declarations before this app"
 DERIVE_TASK = "Derive the declared-variable facts for this app"
-SELECT_STALE = "Select the older accessors to destroy, keeping the newest one not minted in this run"
+SELECT_STALE = "Select the older accessors of this app to destroy, keeping the newest one not minted in this run"
 RECORD = "Record each minted secret id accessor for this run's prune protection"
 
 RESOLVE = "Resolve declared app variables and tool provider ids before any import"
@@ -44,7 +44,11 @@ SENSITIVE = (
     "dify_docker_dsl_env_patch",
     "dify_docker_dsl_kv_read",
     "dify_docker_dsl_role_id_read",
-    "dify_docker_dsl_secret_id_",
+    "dify_docker_dsl_secret_id_ages",
+    "dify_docker_dsl_secret_id_stale",
+    "dify_docker_dsl_secret_id_list",
+    "dify_docker_dsl_secret_id_lookups",
+    "dify_docker_dsl_secret_id_mints",
     "dify_docker_dsl_draft",
     "dify_docker_dsl_tool_providers",
     "dify_docker_dsl_tool_ids",
@@ -79,6 +83,7 @@ def _env():
     environment.filters["regex_replace"] = lambda text, pattern, repl: re.sub(pattern, repl, text)
     environment.filters["regex_findall"] = lambda text, pattern: re.findall(pattern, text)
     environment.filters["from_json"] = json.loads
+    environment.filters["to_json"] = json.dumps
     environment.filters["dict2items"] = lambda mapping: [{"key": key, "value": value}
                                                          for key, value in mapping.items()]
     environment.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
