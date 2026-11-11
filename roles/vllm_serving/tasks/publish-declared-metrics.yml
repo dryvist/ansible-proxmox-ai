@@ -1,0 +1,61 @@
+---
+# Publish the active profile's DECLARED serving capacity for node_exporter's
+# textfile collector: the slot count and per-slot context the rendered unit
+# asks the engine for at start, before any engine-side clamping. Both values
+# are the profile fields the start command passes — --max-num-seqs and
+# --max-model-len (templates/vllm-serving.service.j2) — read from the profile
+# map here, never restated as literals.
+#
+# The accelerator label is the router's lane taxonomy, not a serving-side
+# invention: the two label variables below are the ones
+# llm_router_gpu_profile_accelerators renders from, selected by the same
+# llm_gpu_legacy_group membership rule
+# (roles/llm_router/defaults/main/21-gpu-profiles.yml). The router's defaults
+# are not in this role's scope, so the two files declaring them load here the
+# same way tasks/load-registry.yml loads vllm_serving's profile definitions
+# cross-role.
+- name: Load the router defaults declaring the fast lane's accelerator label
+  ansible.builtin.include_vars:
+    file: "{{ role_path | dirname }}/llm_router/defaults/main/10-network.yml"
+    name: _vllm_serving_router_fast_lane_defaults
+
+- name: Load the router defaults declaring the GPU tier's accelerator label
+  ansible.builtin.include_vars:
+    file: "{{ role_path | dirname }}/llm_router/defaults/main/21-gpu-profiles.yml"
+    name: _vllm_serving_router_gpu_defaults
+
+- name: Check for the node_exporter textfile collector directory
+  ansible.builtin.stat:
+    path: "{{ vllm_serving_textfile_collector_dir }}"
+  register: _vllm_serving_textfile_collector_dir
+
+- name: Write the declared serving slots and context per slot
+  # No node_exporter on this guest: skip, never fail the converge. copy stages
+  # the content in a temporary file beside the destination and renames it into
+  # place, so a scrape never reads a half-written metric file.
+  ansible.builtin.copy:
+    dest: "{{ vllm_serving_textfile_collector_dir }}/llm_serving_declared.prom"
+    content: |
+      llm_serving_declared_slots{{ _vllm_serving_metric_labels }} {{ _vllm_serving_slots }}
+      llm_serving_declared_context_tokens_per_slot{{ _vllm_serving_metric_labels }} {{ _vllm_serving_context }}
+    mode: "0644"
+  when: _vllm_serving_textfile_collector_dir.stat.exists
+  vars:
+    # gpu-secondary on a legacy-group member, gpu-primary otherwise — the rule
+    # llm_router_gpu_profile_accelerators applies per profile.
+    _vllm_serving_accelerator: >-
+      {{ _vllm_serving_router_fast_lane_defaults.llm_router_llm_fast_accelerator
+         if inventory_hostname in groups.get('llm_gpu_legacy_group', [])
+         else _vllm_serving_router_gpu_defaults.llm_router_gpu_accelerator }}
+    _vllm_serving_metric_labels: >-
+      {{ '{accelerator="%s",profile="%s",engine="%s"}' | format(
+           _vllm_serving_accelerator,
+           vllm_serving_active_profile,
+           vllm_serving_engine) }}
+    # --max-num-seqs in templates/vllm-serving.service.j2.
+    _vllm_serving_slots: >-
+      {{ vllm_serving_profiles[vllm_serving_active_profile].max_num_seqs | int }}
+    # --max-model-len in templates/vllm-serving.service.j2: vLLM's max_model_len
+    # bounds each sequence, so one value is the context per slot.
+    _vllm_serving_context: >-
+      {{ vllm_serving_profiles[vllm_serving_active_profile].max_model_len | int }}
