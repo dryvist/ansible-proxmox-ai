@@ -80,7 +80,7 @@ ROLE_TESTS = {
     "dify_docker": {
         "tests/dify_docker/test_declared_variable_apply.py",
         "tests/dify_docker/test_declared_variable_checks.py",
-        "tests/dify_docker/test_declared_variable_leaf.py",
+        "tests/dify_docker/test_declared_variable_config.py",
         "tests/dify_docker/test_declared_variable_provider_nodes.py",
     },
     "langflow_docker": {"tests/agent_concurrency/", "tests/langflow_docker/"},

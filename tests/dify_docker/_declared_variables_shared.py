@@ -22,7 +22,8 @@ PRUNE = TASKS / "import_agent_dsl_variables_prune.yml"
 CONFIG = TASKS / "import_agent_dsl_config_leaf.yml"
 DERIVE = TASKS / "import_agent_dsl_derive.yml"
 PROVIDER = TASKS / "import_agent_dsl_provider_nodes.yml"
-EDITED = (IMPORT_ONE, IMPORT_LOOP, RECONCILE, PRE, ONE, APPLY, PRUNE, CONFIG, DERIVE, PROVIDER)
+ISSUER = TASKS / "import_agent_dsl_issuer_login.yml"
+EDITED = (IMPORT_ONE, IMPORT_LOOP, RECONCILE, PRE, ONE, APPLY, PRUNE, CONFIG, DERIVE, PROVIDER, ISSUER)
 LEAF_INCLUDE = "Read the per-app declared config from its leaf when the flag is set"
 LEAF_RESET = "Reset the per-app leaf declarations before this app"
 DERIVE_TASK = "Derive the declared-variable facts for this app"
@@ -59,6 +60,10 @@ SENSITIVE = (
     "dify_docker_dsl_mcp_nodes",
     "dify_docker_dsl_mcp_provider_ids",
     "dify_docker_dsl_workspace_ids",
+    "dify_docker_dsl_issuer_token",
+    "dify_docker_dsl_issuer_login",
+    "dify_docker_agent_issuer_role_id",
+    "dify_docker_agent_issuer_secret_id",
     "dify_docker_agent_leaf_read_result",
     "openbao_secrets_converge_writer_token",
 )
