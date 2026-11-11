@@ -12,8 +12,7 @@ observability roles that stay in `ansible-proxmox-apps`. This repo starts from
 a single squashed genesis commit; granular pre-split history for every role
 remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 
-> **Placement exception:** Crawl4AI's vendor ships only a Docker image, so its
-> dedicated LXC runs Docker with nesting enabled.
+> **Crawl4AI role:** `crawl4ai_docker`.
 
 ## This Repo Owns
 

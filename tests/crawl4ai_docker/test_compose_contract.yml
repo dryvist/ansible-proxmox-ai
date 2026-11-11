@@ -6,10 +6,6 @@
     ansible_become: false
     ansible_managed: Ansible managed
     _template: "{{ playbook_dir }}/../../roles/crawl4ai_docker/templates/docker-compose.yml.j2"
-    crawl4ai_docker_image: "unclecode/crawl4ai:0.9.5"
-    crawl4ai_docker_container_name: crawl4ai
-    crawl4ai_docker_restart_policy: unless-stopped
-    crawl4ai_docker_port: 11235
     _expected_tmpfs:
       - /tmp
       - /var/lib/redis
@@ -20,6 +16,10 @@
     _expected_api_token_expression: >-
       ${CRAWL4AI_API_TOKEN:?CRAWL4AI_API_TOKEN must be set}
   tasks:
+    - name: Load Crawl4AI role defaults
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/crawl4ai_docker/defaults/main.yml"
+
     - name: Render the Compose document
       ansible.builtin.set_fact:
         _rendered: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
@@ -31,6 +31,11 @@
           - _rendered.services.crawl4ai.image == 'unclecode/crawl4ai:0.9.5'
           - _rendered.services.crawl4ai.container_name == 'crawl4ai'
           - _rendered.services.crawl4ai.ports == ['11235:11235']
+          - _rendered.services.crawl4ai.cap_drop == ['ALL']
+          - _rendered.services.crawl4ai.security_opt == ['no-new-privileges:true']
+          - _rendered.services.crawl4ai.read_only | bool
+          - _rendered.services.crawl4ai.mem_limit == crawl4ai_docker_memory_limit
+          - _rendered.services.crawl4ai.pids_limit == crawl4ai_docker_pids_limit
           - _rendered.services.crawl4ai.shm_size == '1gb'
           - _rendered.services.crawl4ai.tmpfs == _expected_tmpfs
           - >-
