@@ -17,10 +17,13 @@ def _tasks(path: Path) -> list[dict]:
     return yaml.safe_load(path.read_text())
 
 
-def _digest(paths: list[Path]) -> str:
+VERSION = "0.0.0-test"
+
+
+def _digest(paths: list[Path], version: str = VERSION) -> str:
     inputs = [
         f"{path}={hashlib.sha256(path.read_bytes()).hexdigest()}" for path in paths
-    ]
+    ] + [f"hermes_agent_version={version}"]
     return hashlib.sha256("\n".join(inputs).encode()).hexdigest()
 
 
@@ -98,6 +101,7 @@ def test_real_ansible_restart_decision_tracks_config_digest(tmp_path: Path):
                     "vars": {
                         "hermes_agent_hermes_home": str(tmp_path),
                         "hermes_agent_gateway_restart_marker": str(marker),
+                        "hermes_agent_version": VERSION,
                     },
                     "tasks": tasks,
                     "handlers": handlers,
