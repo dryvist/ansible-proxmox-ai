@@ -4,6 +4,27 @@
 # the whole fleet with a loud warning when NEITHER the shared digest channel
 # NOR the general Slack capability gate is satisfied (most entries carry their
 # own `deliver:` and do not depend on the shared digest channel).
+# Donna's main channel carries only conversation the operator starts and her
+# answers; scheduled output goes to her -all channel and failures to her issues
+# channel, so a job aimed at the main channel stops the converge.
+- name: Refuse a Donna cron job whose delivery or failure target is her main channel
+  ansible.builtin.assert:
+    that:
+      - (item.deliver | default('') | string | trim) != _main_channel_target
+      - (item.failure_deliver | default('') | string | trim) != _main_channel_target
+    fail_msg: >-
+      {{ item.name }} targets Donna's main channel; scheduled output belongs in
+      her -all channel and failures in her issues channel.
+    quiet: true
+  loop: "{{ hermes_agent_direct_cron_jobs_owned }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    _main_channel_target: "slack:{{ hermes_agent_slack_home_channel }}"
+  when:
+    - (hermes_agent_identity | default('hermes', true)) == 'donna'
+    - hermes_agent_slack_home_channel | length > 0
+
 # `hermes cron create --script` resolves the script inside the job's own Hermes
 # home, so a script job homed in a named profile needs its copy there too.
 - name: Read which profile homes that run a script job exist
