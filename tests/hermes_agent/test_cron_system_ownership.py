@@ -111,3 +111,27 @@ def test_splunk_owner_takes_only_splunk_jobs() -> None:
     assert "hermes_agent_job_identities" in DEFAULTS["hermes_agent_direct_job_wanted"]
     enqueuer = (ROLE / "tasks" / "reconcile_enqueuer_cron.yml").read_text()
     assert "hermes_agent_job_identities" in enqueuer
+
+
+def test_zammad_review_is_wanted_by_no_identity() -> None:
+    # The wanted definition (enabled and identity), not the ownership list,
+    # which ignores enabled. The positive control proves a True renders too.
+    env = Environment(autoescape=False)
+    env.filters["bool"] = lambda value: (
+        value if isinstance(value, bool) else str(value).lower() in ("true", "yes", "1")
+    )
+    wanted = env.from_string(DEFAULTS["hermes_agent_direct_job_wanted"])
+    control = wanted.render(
+        item={"enabled": True}, hermes_agent_id="hermes", hermes_agent_job_identities=["hermes"]
+    )
+    assert control.strip() == "True"
+
+    job = next(j for j in DEFAULTS["hermes_agent_direct_cron_jobs"] if _job_name(j) == "zammad-review")
+    for owners in ({}, {"splunk": "splunk-heimdall"}):
+        for identity in ("hermes", "hermes-private", "donna", "splunk-heimdall", "pepper"):
+            rendered = wanted.render(
+                item=job,
+                hermes_agent_id=identity,
+                hermes_agent_job_identities=_identities(job, identity, owners),
+            )
+            assert rendered.strip() == "False", (identity, owners)

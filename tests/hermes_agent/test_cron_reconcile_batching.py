@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from _role_files import include_file
+from _role_files import include_file, role_defaults
 from jinja2 import Environment
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
@@ -106,16 +106,18 @@ def _take_list_fails(job: dict, *, host: str, lists: dict[str, str]) -> bool:
     ))
 
 
-def _ran(*, wanted: bool, listed: bool | str, marker: str | None, changed: bool) -> set[str]:
+def _ran(
+    *, wanted: bool, listed: bool | str, marker: str | None, changed: bool, name: str = "job-a"
+) -> set[str]:
     """Names of the remote/CLI tasks whose `when` passes for one job."""
     ctx = {
-        "item": {"name": "job-a"},
+        "item": {"name": name},
         "hermes_agent_direct_wanted": wanted,
         "hermes_agent_direct_cron_list": {
             "stdout": f"Name: {listed}" if isinstance(listed, str)
-            else "Name: job-a" if listed else ""
+            else f"Name: {name}" if listed else ""
         },
-        "hermes_agent_direct_markers": {"job-a": marker} if marker else {},
+        "hermes_agent_direct_markers": {name: marker} if marker else {},
         "hermes_agent_direct_marker_probe": {"changed": changed},
         "ansible_check_mode": False,
     }
@@ -226,3 +228,33 @@ def test_enabled_job_on_a_missing_profile_home_fails_naming_the_profile_and_path
     assert failing == ["github-review"]
     assert "'github-maint'" in messages["github-review"]
     assert f"'{GITHUB_MAINT}'" in messages["github-review"]
+
+
+ZAMMAD_REVIEW_HOME = f"{HOME}/profiles/homelab-admin"
+
+
+def _zammad_review_job() -> dict:
+    """The declared zammad-review entry, with its name and home rendered as Ansible renders them."""
+    raw = next(
+        job for job in role_defaults(ROLE)["hermes_agent_direct_cron_jobs"]
+        if job["name"] == "{{ hermes_agent_zammad_review_cron_name }}"
+    )
+    context = {"hermes_agent_zammad_review_cron_name": "zammad-review", "hermes_agent_hermes_home": HOME}
+    return {
+        **raw,
+        "name": ENV.from_string(raw["name"]).render(**context),
+        "hermes_home": ENV.from_string(raw["hermes_home"]).render(**context),
+    }
+
+
+def test_installed_zammad_review_is_withdrawn_from_its_profile_home():
+    job = _zammad_review_job()
+    assert job["hermes_home"] == ZAMMAD_REVIEW_HOME
+    assert _wanted(job, host="hermes") is False
+    listed, failing, _ = _batch_facts([job], host="hermes", existing={HOME, ZAMMAD_REVIEW_HOME})
+    assert ZAMMAD_REVIEW_HOME in listed
+    assert failing == []
+    assert _ran(name="zammad-review", wanted=False, listed=True, marker="sum", changed=True) == {
+        "Direct cron | Remove job not owned by this agent:",
+        "Direct cron | Clear desired-state marker for withdrawn",
+    }
