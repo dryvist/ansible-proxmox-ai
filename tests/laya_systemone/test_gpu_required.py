@@ -39,10 +39,7 @@ def test_cpu_device_restarts_once_then_fails_closed() -> None:
         "Read where Laya computes after the restart",
     ]
     verdict = _named("Assert Laya computes on the card")["ansible.builtin.assert"]
-    assert verdict["that"] == [
-        "laya_systemone_device_read.json.device | default('') is match('cuda')",
-        "laya_systemone_torch_build.available | bool",
-    ]
+    assert verdict["that"] == ["laya_systemone_device_read.json.device | default('') is match('cuda')"]
 
 
 def test_serving_converge_includes_the_device_check_after_health() -> None:

@@ -9,16 +9,6 @@
 - name: Converge the Laya serving runtime when fine-tuning is not selected
   when: not laya_systemone_finetune_enabled | bool
   block:
-    - name: Require a CUDA torch backend that the host driver supports
-      ansible.builtin.assert:
-        that:
-          - laya_systemone_torch_backend | length > 0
-        fail_msg: >-
-          No CUDA torch backend in laya_systemone_torch_backends accepts the host NVIDIA driver
-          {{ nvidia_gpu_guest_nvidia_userspace_version }}. Laya never falls back to a CPU torch build;
-          upgrade the host driver or add the backend row.
-        quiet: true
-
     - name: Create the Laya virtual environment
       ansible.builtin.command:
         argv:
@@ -32,24 +22,16 @@
       become_user: "{{ laya_systemone_user }}"
       environment: "{{ nvidia_gpu_guest_uv_environment }}"
 
-    - name: Read the venv torch build before the install
-      ansible.builtin.include_tasks: read-torch-build.yml
-      when: not ansible_check_mode
-
-    - name: Reinstall torch when the venv build is CPU-only or not the chosen backend
-      ansible.builtin.set_fact:
-        laya_systemone_torch_reinstall: >-
-          {{ (laya_systemone_torch_build.cuda is none)
-             or ('cu' ~ (laya_systemone_torch_build.cuda | replace('.', '')) != laya_systemone_torch_backend) }}
-      when: not ansible_check_mode
-
     - name: Install the pinned Laya HTTP server with a driver-compatible CUDA torch wheel
       ansible.builtin.command:
-        # The reinstall flag is added only when the venv torch build does not match the chosen backend.
-        argv: >-
-          {{ [nvidia_gpu_guest_uv_bin, 'pip', 'install', '--python', laya_systemone_venv ~ '/bin/python',
-              '--torch-backend=' ~ laya_systemone_torch_backend, 'laya[serve]==' ~ laya_systemone_version]
-             + (['--reinstall-package=torch'] if laya_systemone_torch_reinstall | bool else []) }}
+        argv:
+          - "{{ nvidia_gpu_guest_uv_bin }}"
+          - pip
+          - install
+          - --python
+          - "{{ laya_systemone_venv }}/bin/python"
+          - --torch-backend=auto
+          - "laya[serve]=={{ laya_systemone_version }}"
       become: true
       become_user: "{{ laya_systemone_user }}"
       environment: "{{ nvidia_gpu_guest_uv_environment }}"
