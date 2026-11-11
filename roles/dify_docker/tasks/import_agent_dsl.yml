@@ -3,6 +3,23 @@
 - name: Fetch and verify the agent DSL source
   ansible.builtin.include_tasks: import_agent_dsl_fetch.yml
 
+# Leaf entries are facts, which persist across apps: each app starts with none, so an app whose
+# leaf is not read (no content) never inherits the previous app's declarations.
+- name: Reset the per-app leaf declarations before this app
+  ansible.builtin.set_fact:
+    dify_docker_dsl_variable_entries: []
+    dify_docker_dsl_tool_provider_map: {}
+  when: dify_docker_agent_app_config_from_leaf | bool
+  no_log: true
+
+# With the flag set, the per-app leaf supplies the declared entries before any check reads them.
+- name: Read the per-app declared config from its leaf when the flag is set
+  ansible.builtin.include_tasks: import_agent_dsl_config_leaf.yml
+  when:
+    - dify_docker_agent_app_config_from_leaf | bool
+    - dify_docker_dsl_content | length > 0
+  no_log: true
+
 # Declared variables, tool provider ids and the definition's placeholder and secret checks
 # resolve before the import can change anything.
 - name: Resolve declared app variables and tool provider ids before any import
@@ -58,5 +75,11 @@
     dify_docker_dsl_secret_id_ages: []
     dify_docker_dsl_secret_id_stale: []
     dify_docker_agent_leaf_read_result: {}
-  when: dify_docker_dsl_has_variables | bool
+    dify_docker_dsl_config_leaf: {}
+    dify_docker_dsl_config_variables: []
+    dify_docker_dsl_config_tool_providers: {}
+  when:
+    - >-
+      (dify_docker_dsl_has_variables | bool)
+      or (dify_docker_agent_app_config_from_leaf | bool)
   no_log: true

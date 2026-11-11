@@ -179,6 +179,15 @@ are destroyed. Check mode resolves the reads and reports
 variable names only. It never mints a secret id or writes to the app. Apps without declared
 variables run the same tasks as before.
 
+With `dify_docker_agent_app_config_from_leaf: true`, the declarations come from each selected app's
+OpenBao leaf instead of the inventory, and the checks and the apply run unchanged. The leaf at
+`<dify_docker_openbao_path>/agent-apps/<app>` holds two fields: `variables_json`, a JSON list in the
+`dify_docker_agent_app_variables` shape, and `tool_providers_json`, a JSON object in the
+`dify_docker_agent_tool_providers` shape. Both are required. An absent, empty, invalid or mistyped
+field fails the app before its import. The failure names the app and both fields, never a value. An
+app whose inventory also declares entries fails. The leaf is read in check mode too. It also holds the
+app's API key, so every task that reads it is `no_log`.
+
 Placeholders only:
 
 ```yaml

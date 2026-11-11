@@ -1,0 +1,64 @@
+---
+# =============================================================================
+# Per-app declarations from the app's OpenBao leaf, used only when
+# dify_docker_agent_app_config_from_leaf is true. The leaf's variables_json and
+# tool_providers_json fields become this app's entries, and every check that runs on
+# inventory entries runs on them. The read happens in check mode too. Every task here is
+# no_log: the leaf also holds the app API key. Failures name the app and the field only.
+# =============================================================================
+
+- name: Read the per-app leaf that holds the declared config
+  ansible.builtin.include_tasks: read_agent_leaf.yml
+  vars:
+    dify_docker_agent_leaf_read_path: "{{ dify_docker_openbao_path }}/agent-apps/{{ dify_docker_dsl_name }}"
+    dify_docker_agent_leaf_read_register: dify_docker_dsl_config_leaf
+  no_log: true
+
+# One source only: the leaf and the inventory may not both declare entries for this app.
+- name: Assert the inventory declares no entries for this app when the leaf supplies them
+  ansible.builtin.assert:
+    that:
+      - dify_docker_agent_app_variables.get(dify_docker_dsl_name, []) | length == 0
+      - dify_docker_agent_tool_providers.get(dify_docker_dsl_name, {}) | length == 0
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: declared entries come from the per-app leaf or from the inventory,
+      not from both.
+
+- name: Parse the declared fields of the per-app leaf
+  no_log: true
+  block:
+    - name: Parse the variables field of the per-app leaf
+      ansible.builtin.set_fact:
+        dify_docker_dsl_config_variables: >-
+          {{ ((dify_docker_dsl_config_leaf.secret | default({}, true)).variables_json
+              | default('', true)) | from_json }}
+      no_log: true
+
+    - name: Parse the tool providers field of the per-app leaf
+      ansible.builtin.set_fact:
+        dify_docker_dsl_config_tool_providers: >-
+          {{ ((dify_docker_dsl_config_leaf.secret | default({}, true)).tool_providers_json
+              | default('', true)) | from_json }}
+      no_log: true
+
+    - name: Check the per-app leaf fields have the list and object shapes
+      ansible.builtin.assert:
+        that:
+          - dify_docker_dsl_config_variables is sequence
+          - dify_docker_dsl_config_variables is not string
+          - dify_docker_dsl_config_variables is not mapping
+          - dify_docker_dsl_config_tool_providers is mapping
+      no_log: true
+  rescue:
+    - name: Fail when a per-app leaf field is absent, empty, not valid JSON or of the wrong type
+      ansible.builtin.fail:
+        msg: >-
+          {{ dify_docker_dsl_name }}: the per-app leaf must hold variables_json (a JSON list) and
+          tool_providers_json (a JSON object). One of them is absent, empty, not valid JSON or of
+          the wrong type.
+
+- name: Use the per-app leaf declarations as this app's entries
+  ansible.builtin.set_fact:
+    dify_docker_dsl_variable_entries: "{{ dify_docker_dsl_config_variables }}"
+    dify_docker_dsl_tool_provider_map: "{{ dify_docker_dsl_config_tool_providers }}"
+  no_log: true

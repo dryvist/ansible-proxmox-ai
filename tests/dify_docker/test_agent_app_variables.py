@@ -1,9 +1,11 @@
 """Declared catalog app variables and tool provider ids: order, secrets, pruning, check mode."""
 
 import ast
+import json
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 from jinja2 import Environment
 
@@ -18,7 +20,10 @@ PRE = TASKS / "import_agent_dsl_variables.yml"
 ONE = TASKS / "import_agent_dsl_variable_one.yml"
 APPLY = TASKS / "import_agent_dsl_variables_apply.yml"
 PRUNE = TASKS / "import_agent_dsl_variables_prune.yml"
-EDITED = (IMPORT_ONE, IMPORT_LOOP, RECONCILE, PRE, ONE, APPLY, PRUNE)
+CONFIG = TASKS / "import_agent_dsl_config_leaf.yml"
+LEAF_INCLUDE = "Read the per-app declared config from its leaf when the flag is set"
+LEAF_RESET = "Reset the per-app leaf declarations before this app"
+EDITED = (IMPORT_ONE, IMPORT_LOOP, RECONCILE, PRE, ONE, APPLY, PRUNE, CONFIG)
 SELECT_STALE = "Select the older accessors to destroy, keeping the newest one not minted in this run"
 RECORD = "Record each minted secret id accessor for this run's prune protection"
 PATTERN = load_defaults()["dify_docker_agent_tool_placeholder_pattern"]
@@ -28,7 +33,18 @@ WRITE = "Write the declared app variables to the draft before publishing"
 CLEAR = "Clear the declared app variable values from facts"
 PRUNE_INCLUDE = "Prune older AppRole secret ids once the declared variables are published"
 DECLARED_PUBLISH = "Publish the declared app variables for an unchanged catalog app"
-NEW_TOP_LEVEL = {RESOLVE, WRITE, CLEAR, PRUNE_INCLUDE, DECLARED_PUBLISH}
+NEW_TOP_LEVEL = {RESOLVE, WRITE, CLEAR, PRUNE_INCLUDE, DECLARED_PUBLISH, LEAF_RESET, LEAF_INCLUDE}
+
+def test_leaf_declarations_reset_before_each_app_so_none_carry_over():
+    tasks = _expanded_yaml(IMPORT_ONE)
+    names = [task.get("name") for task in tasks]
+    assert names.index(LEAF_RESET) < names.index(LEAF_INCLUDE)
+    reset = _task(tasks, LEAF_RESET)
+    assert reset["when"] == "dify_docker_agent_app_config_from_leaf | bool"
+    assert reset["ansible.builtin.set_fact"] == {
+        "dify_docker_dsl_variable_entries": [], "dify_docker_dsl_tool_provider_map": {}}
+    assert reset.get("no_log") is True
+
 
 # The import sequence before this change. Apps without declared variables must still run it.
 BASELINE = [
@@ -80,6 +96,9 @@ SENSITIVE = (
     "dify_docker_dsl_tool_providers",
     "dify_docker_dsl_tool_ids",
     "dify_docker_dsl_minted_accessors",
+    "dify_docker_dsl_config_leaf",
+    "dify_docker_dsl_config_variables",
+    "dify_docker_dsl_config_tool_providers",
     "dify_docker_agent_leaf_read_result",
     "openbao_secrets_converge_writer_token",
 )
@@ -103,6 +122,7 @@ def _env():
     environment.filters["to_uuid"] = lambda text: f"uuid:{text}"
     environment.filters["regex_replace"] = lambda text, pattern, repl: re.sub(pattern, repl, text)
     environment.filters["regex_findall"] = lambda text, pattern: re.findall(pattern, text)
+    environment.filters["from_json"] = json.loads
     environment.filters["dict2items"] = lambda mapping: [{"key": key, "value": value}
                                                          for key, value in mapping.items()]
     environment.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
@@ -499,6 +519,81 @@ def test_one_app_with_three_secret_id_variables_on_one_approle_keeps_every_minte
     assert destroyed == ["old-1"]
     assert server == {"old-2", "new-1", "new-2", "new-3"}
     assert minted == ["new-1", "new-2", "new-3"]
+
+
+def _leaf_parse_expressions():
+    block = _task(_yaml(CONFIG), "Parse the declared fields of the per-app leaf")
+    variables = _task(block["block"], "Parse the variables field of the per-app leaf")
+    providers = _task(block["block"], "Parse the tool providers field of the per-app leaf")
+    return block, variables["ansible.builtin.set_fact"]["dify_docker_dsl_config_variables"], (
+        providers["ansible.builtin.set_fact"]["dify_docker_dsl_config_tool_providers"])
+
+
+def test_leaf_config_is_off_by_default_and_gated_on_the_flag():
+    assert load_defaults()["dify_docker_agent_app_config_from_leaf"] is False
+    include = next(task for task in _yaml(IMPORT_ONE) if task.get("name") == LEAF_INCLUDE)
+    assert include["when"][0] == "dify_docker_agent_app_config_from_leaf | bool"
+    assert include["ansible.builtin.include_tasks"] == "import_agent_dsl_config_leaf.yml"
+    assert include.get("no_log") is True
+
+
+def test_leaf_fields_parse_to_the_same_entries_as_the_same_data_in_inventory():
+    _, variables, providers = _leaf_parse_expressions()
+    inventory_entries = [
+        {"name": "EXAMPLE_TOKEN", "secret": True, "kv": {"path": "example/app", "field": "token"}},
+        {"name": "EXAMPLE_ROLE_ID", "approle_role_id": {"approle": "agent-example"}},
+    ]
+    inventory_tools = {"__EXAMPLE_TOOL__": "example-tool"}
+    leaf = {"secret": {"variables_json": json.dumps(inventory_entries),
+                       "tool_providers_json": json.dumps(inventory_tools)}}
+    assert _render(variables, dify_docker_dsl_config_leaf=leaf) == inventory_entries
+    assert _render(providers, dify_docker_dsl_config_leaf=leaf) == inventory_tools
+
+
+def test_absent_empty_invalid_or_mistyped_leaf_fields_fail_closed():
+    block, variables, providers = _leaf_parse_expressions()
+    for leaf in ({}, {"secret": {}}, {"secret": {"variables_json": ""}}, {"secret": {"variables_json": "[not json"}}):
+        with pytest.raises(Exception):
+            _env().from_string(variables).render(dify_docker_dsl_config_leaf=leaf)
+    for leaf in ({"secret": {"tool_providers_json": ""}}, {"secret": {"tool_providers_json": "{bad"}}):
+        with pytest.raises(Exception):
+            _env().from_string(providers).render(dify_docker_dsl_config_leaf=leaf)
+    shapes = _task(block["block"], "Check the per-app leaf fields have the list and object shapes")
+    conditions = shapes["ansible.builtin.assert"]["that"]
+    assert _passes(conditions, dify_docker_dsl_config_variables=[{"name": "X"}],
+                   dify_docker_dsl_config_tool_providers={})
+    for mistyped_variables, mistyped_tools in (({"name": "X"}, {}), ("text", {}), ([], []), ([], "text")):
+        assert not _passes(conditions, dify_docker_dsl_config_variables=mistyped_variables,
+                           dify_docker_dsl_config_tool_providers=mistyped_tools)
+    message = block["rescue"][0]["ansible.builtin.fail"]["msg"]
+    assert "dify_docker_dsl_config" not in message and "dify_docker_dsl_name" in message
+    assert block["rescue"][0].get("no_log") is not True
+
+
+def test_leaf_and_inventory_may_not_both_declare_entries_for_one_app():
+    conflict = _task(_yaml(CONFIG), "Assert the inventory declares no entries for this app when the leaf supplies them")
+    conditions = conflict["ansible.builtin.assert"]["that"]
+
+    def clear(variables, tools):
+        return all(_env().from_string("{{ " + condition + " }}").render(
+            dify_docker_agent_app_variables=variables, dify_docker_agent_tool_providers=tools,
+            dify_docker_dsl_name="example-app").strip() == "True" for condition in conditions)
+
+    assert clear({}, {})
+    assert clear({"other-app": [{"name": "X"}]}, {"other-app": {"__T__": "t"}})
+    assert not clear({"example-app": [{"name": "X"}]}, {})
+    assert not clear({}, {"example-app": {"__TOOL_A__": "tool-a"}})
+
+
+def test_leaf_read_uses_the_app_leaf_path_is_no_log_and_is_cleared_per_app():
+    read = _task(_yaml(CONFIG), "Read the per-app leaf that holds the declared config")
+    assert read["vars"]["dify_docker_agent_leaf_read_path"] == (
+        "{{ dify_docker_openbao_path }}/agent-apps/{{ dify_docker_dsl_name }}")
+    assert read["vars"]["dify_docker_agent_leaf_read_register"] == "dify_docker_dsl_config_leaf"
+    assert read.get("no_log") is True
+    clear = _task(_yaml(IMPORT_ONE), "Clear the declared app variable values from facts")
+    assert "dify_docker_agent_app_config_from_leaf" in str(clear["when"])
+    assert "dify_docker_dsl_config_leaf" in clear["ansible.builtin.set_fact"]
 
 
 def test_apps_without_declared_variables_keep_the_same_task_sequence():
