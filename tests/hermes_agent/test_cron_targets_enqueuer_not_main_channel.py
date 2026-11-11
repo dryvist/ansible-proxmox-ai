@@ -1,27 +1,27 @@
-"""Donna's script-fed enqueuer crons never deliver, or fail, to her main channel.
+"""Script-fed enqueuer crons of a guarded identity never deliver, or fail, to its main channel.
 
 reconcile_enqueuer_cron.yml includes the same guard as the direct path, with the
 enqueuer's resolved deliver and the shared failure channel. Ownership comes from the
-roster's system mapping, so these fixtures map the splunk system to donna.
+roster's system mapping, so these fixtures map the splunk system to the fixture identity.
 """
-from _cron_targets_shared import MAIN, _enqueuer, _enqueuer_passes
+from _cron_targets_shared import FIXTURE, MAIN, _enqueuer, _enqueuer_passes
 
-OWNED = {"splunk": "donna"}
+OWNED = {"splunk": FIXTURE}
 
 
 def _enqueuer_job(**fields):
     return {"name": "splunk-status-digest", "system": "splunk", "enabled": True, **fields}
 
 
-def test_a_donna_enqueuer_delivering_to_the_main_channel_fails():
+def test_an_enqueuer_delivering_to_the_main_channel_fails():
     assert not _enqueuer_passes(_enqueuer_job(deliver=f"slack:{MAIN}", script="status.py"), owners=OWNED)
 
 
-def test_a_donna_enqueuer_failing_into_the_main_channel_fails():
+def test_an_enqueuer_failing_into_the_main_channel_fails():
     assert not _enqueuer_passes(_enqueuer_job(deliver="local"), owners=OWNED, failure=f"slack:{MAIN}")
 
 
-def test_a_donna_enqueuer_without_deliver_stays_local():
+def test_an_enqueuer_without_deliver_stays_local():
     assert _enqueuer_passes(_enqueuer_job(), owners=OWNED)
 
 
@@ -33,7 +33,7 @@ def test_an_enqueuer_owned_by_another_identity_is_not_checked():
     assert _enqueuer_passes(_enqueuer_job(deliver=f"slack:{MAIN}"), owners={})
 
 
-def test_an_unset_home_channel_fails_for_a_donna_enqueuer():
+def test_an_unset_home_channel_fails_for_an_owned_enqueuer():
     assert not _enqueuer_passes(_enqueuer_job(deliver="local"), owners=OWNED, home="")
 
 

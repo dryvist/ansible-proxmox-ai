@@ -56,12 +56,13 @@ itself — not assumed):
   job) — `--deliver` takes exactly one fixed target. The quiet
   footer ends with bare `[SILENT]` when the healthy destination equals the
   delivery destination; no separate healthy post or heartbeat is sent.
-- **Donna's main channel is refused as a target.** Every entry of a Donna job's
-  deliver, failure and healthy-footer values must be empty, `local`, `log`, or
-  `slack:<ID>` with an upper-case ID other than her home channel. A job already
-  installed on a refused target is paused by id, so it stops posting. The converge
-  then fails; correcting the declared target and re-running the reconcile recreates
-  the job with it.
+- **An identity's main channel is refused as a target.** While an identity's
+  `hermes_agent_refuse_main_channel_targets` is on (the default for every identity
+  except `hermes`), every entry of its jobs' deliver, failure and healthy-footer
+  values must be empty, `local`, `log`, or `slack:<ID>` with an upper-case ID other
+  than its home channel. A job already installed on a refused target is paused by
+  id, so it stops posting. The converge then fails; correcting the declared target
+  and re-running the reconcile recreates the job with it.
 
 None of these were silently dropped.
 

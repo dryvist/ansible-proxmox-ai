@@ -1,4 +1,4 @@
-"""Shared helpers for the Donna main-channel guard tests.
+"""Shared helpers for the main-channel guard tests.
 
 The guard is refuse_main_channel_target.yml. These helpers resolve each job's
 targets with the real set_fact tasks of the two reconcile files, then run the
@@ -19,6 +19,8 @@ GUARD_FILE = "refuse_main_channel_target.yml"
 MAIN = "C0EXAMPLEMAIN"
 ISSUES = "C0EXAMPLEISS"
 HOME_PATH = "/var/lib/hermes"
+# A fixture identity that is neither a shipped identity nor the opt-out.
+FIXTURE = "alpha"
 
 
 def _search(value, pattern, group):
@@ -57,7 +59,7 @@ def _conditions(task):
     return [when] if isinstance(when, str) else when
 
 
-def _base(job, identity, home, failure, owners, profiles, listing="", check_mode=False):
+def _base(job, identity, home, failure, owners, profiles, listing="", check_mode=False, refuse=None):
     context = {
         "item": job,
         "hermes_agent_id": identity,
@@ -79,8 +81,11 @@ def _base(job, identity, home, failure, owners, profiles, listing="", check_mode
         "ai_agent_owner": owners,
     }
     for name in ("hermes_agent_digest_slack_channel", "hermes_agent_job_identities",
-                 "hermes_agent_direct_job_wanted"):
+                 "hermes_agent_direct_job_wanted", "hermes_agent_slack_hermes_all_channel",
+                 "hermes_agent_refuse_main_channel_targets"):
         context[name] = _value(DEFAULTS[name], context)
+    if refuse is not None:
+        context["hermes_agent_refuse_main_channel_targets"] = refuse
     return context
 
 
@@ -118,23 +123,33 @@ def _guard_run(caller_file, include_prefix, context):
     return None, context
 
 
-def _donna_job(**fields):
-    return {"name": "pulse", "schedule": "39 * * * *", "enabled": True, "identities": ["donna"], **fields}
+def _job(**fields):
+    return {"name": "pulse", "schedule": "39 * * * *", "enabled": True, "identities": [FIXTURE], **fields}
 
 
-def _direct(job, identity="donna", home=MAIN, failure=f"slack:{ISSUES}", profiles=None, listing="",
-            check_mode=False):
-    context = _base(job, identity, home, failure, {}, profiles or {}, listing, check_mode)
+def _shipped_job(name, identity=FIXTURE, home=MAIN):
+    """The shipped core direct-cron job called `name`, enabled, with its templates rendered."""
+    scope = {**DEFAULTS, "hermes_agent_id": identity, "hermes_agent_slack_home_channel": home}
+    scope["hermes_agent_slack_hermes_all_channel"] = _value(
+        DEFAULTS["hermes_agent_slack_hermes_all_channel"], scope)
+    job = next(j for j in DEFAULTS["hermes_agent_direct_cron_jobs_core"]
+               if _value(j["name"], scope) == name)
+    return {**job, "name": name, "enabled": True, "deliver": _value(job["deliver"], scope)}
+
+
+def _direct(job, identity=FIXTURE, home=MAIN, failure=f"slack:{ISSUES}", profiles=None, listing="",
+            check_mode=False, refuse=None):
+    context = _base(job, identity, home, failure, {}, profiles or {}, listing, check_mode, refuse)
     context = _resolve(_task("reconcile_direct_cron.yml", "Direct cron | Decide agent ownership"), context)
     context = _resolve(_task("reconcile_direct_cron.yml", "Direct cron | Resolve deliver target"), context)
-    return _guard_run("reconcile_direct_cron.yml", "Direct cron | Refuse Donna", context)
+    return _guard_run("reconcile_direct_cron.yml", "Direct cron | Refuse the main channel", context)
 
 
-def _enqueuer(job, identity="donna", home=MAIN, failure=f"slack:{ISSUES}", owners=None):
-    context = _base(job, identity, home, failure, owners or {}, {})
+def _enqueuer(job, identity=FIXTURE, home=MAIN, failure=f"slack:{ISSUES}", owners=None, refuse=None):
+    context = _base(job, identity, home, failure, owners or {}, {}, refuse=refuse)
     context = _resolve(_task("reconcile_enqueuer_cron.yml", "Enqueuer cron | Effective-active"), context)
     context = _resolve(_task("reconcile_enqueuer_cron.yml", "Enqueuer cron | Resolve fields"), context)
-    return _guard_run("reconcile_enqueuer_cron.yml", "Enqueuer cron | Refuse Donna", context)
+    return _guard_run("reconcile_enqueuer_cron.yml", "Enqueuer cron | Refuse the main channel", context)
 
 
 def _direct_passes(job, **kwargs):
