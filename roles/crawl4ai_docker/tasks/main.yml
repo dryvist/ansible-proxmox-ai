@@ -1,0 +1,52 @@
+---
+- name: Require the Crawl4AI API token
+  ansible.builtin.assert:
+    that:
+      - crawl4ai_docker_api_token | length > 0
+    fail_msg: CRAWL4AI_API_TOKEN must be supplied in the controller environment.
+    quiet: true
+
+- name: Create Crawl4AI data directory
+  ansible.builtin.file:
+    path: "{{ crawl4ai_docker_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy Crawl4AI Compose template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ crawl4ai_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Crawl4AI
+
+- name: Deploy Crawl4AI via Docker Compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ crawl4ai_docker_data_dir }}"
+    state: present
+  environment:
+    CRAWL4AI_API_TOKEN: "{{ crawl4ai_docker_api_token }}"
+  register: crawl4ai_docker_compose_result
+  changed_when: >-
+    (crawl4ai_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+  no_log: true
+
+- name: Flush handlers before checking Crawl4AI health
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify Crawl4AI health endpoint responds
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ crawl4ai_docker_port }}/health"
+    method: GET
+    status_code: 200
+  register: crawl4ai_docker_health
+  retries: 20
+  delay: 5
+  until: crawl4ai_docker_health.status == 200
+  changed_when: false
+  when: not ansible_check_mode

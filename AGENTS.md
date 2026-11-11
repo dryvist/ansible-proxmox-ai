@@ -12,6 +12,9 @@ observability roles that stay in `ansible-proxmox-apps`. This repo starts from
 a single squashed genesis commit; granular pre-split history for every role
 remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 
+> **Placement exception:** Crawl4AI's vendor ships only a Docker image, so its
+> dedicated LXC runs Docker with nesting enabled.
+
 ## This Repo Owns
 
 ### LLM serving
@@ -85,6 +88,8 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 - `langflow_docker` — LangFlow visual LLM workflow builder
 - `langgraph_docker` — LangGraph agent orchestration runtime
 - `langfuse_docker` — Langfuse LLM observability/tracing
+- `crawl4ai_docker` — Crawl4AI self-hosted web crawling API, using the upstream
+  Docker image and Compose configuration.
 - `phoenix_docker` — Arize Phoenix LLM tracing/evals/experiments. An OTLP
   sink fed by Cribl Stream, peer of Langfuse: producers never point at it
   directly (see `ai_orchestration_otel_endpoint` in `inventory/group_vars/all/`).
