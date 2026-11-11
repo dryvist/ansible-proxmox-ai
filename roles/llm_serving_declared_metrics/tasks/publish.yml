@@ -1,30 +1,41 @@
 ---
 # Publish the active profile's DECLARED serving capacity for node_exporter's
-# textfile collector. Callers pass llm_serving_declared_metrics_profile,
-# llm_serving_declared_metrics_engine, llm_serving_declared_metrics_slots and
-# llm_serving_declared_metrics_context_tokens_per_slot, each cited to its
-# start-command template at the call site. The accelerator label is this
-# guest's llm_gpu_accelerator, the same variable the router's
-# llm_router_gpu_profile_accelerators reads for this guest.
+# textfile collector. Callers pass the profile name, the profile map it is read
+# from, and the engine label. Slots and per-slot context both come from the
+# profile's own fields, which the start command passes to the engine:
+#   llama.cpp: roles/llm_gpu_serving/templates/llama-cpp-serve-args.j2 line 14 sets
+#     --ctx-size to max_model_len x max_num_seqs and line 15 sets --parallel to
+#     max_num_seqs, so each slot gets max_model_len. The llamacpp_serving role
+#     passes the same pair at roles/llamacpp_serving/templates/llama-cpp-serve-args.j2
+#     lines 7-8.
+#   vLLM: roles/vllm_serving/templates/vllm-serving.service.j2 lines 30-31
+#     (--max-model-len, --max-num-seqs); roles/llm_gpu_serving/templates/llm-gpu-serving.service.j2
+#     lines 32-33; host variant roles/llm_gpu_serving/templates/llm-gpu-serving-host.service.j2
+#     lines 25-26.
+# The accelerator label is this guest's llm_gpu_accelerator, the variable the
+# router's llm_router_gpu_profile_accelerators reads for this guest.
 - name: Check for the node_exporter textfile collector directory
   ansible.builtin.stat:
     path: "{{ llm_serving_declared_metrics_textfile_collector_dir }}"
   register: _llm_serving_declared_metrics_collector
 
 - name: Write the declared serving slots and context per slot
-  # No node_exporter on this guest: skip, never fail the converge. copy stages
-  # the content in a temporary file beside the destination and renames it into
-  # place, so a scrape never reads a half-written metric file.
+  # No node_exporter on this guest: skip, never fail the converge. copy writes the
+  # content to a temporary file and renames it over the destination, so a scrape
+  # never reads a half-written metric file. Only a rename that crosses a filesystem
+  # falls back to copying into a temporary file beside the destination.
   ansible.builtin.copy:
     dest: "{{ llm_serving_declared_metrics_textfile_collector_dir }}/{{ llm_serving_declared_metrics_metric_file }}"
     content: |
       llm_serving_declared_slots{{ _llm_serving_declared_metrics_labels }} {{
-        llm_serving_declared_metrics_slots | int }}
+        _llm_serving_declared_metrics_record.max_num_seqs | int }}
       llm_serving_declared_context_tokens_per_slot{{ _llm_serving_declared_metrics_labels }} {{
-        llm_serving_declared_metrics_context_tokens_per_slot | int }}
+        _llm_serving_declared_metrics_record.max_model_len | int }}
     mode: "0644"
   when: _llm_serving_declared_metrics_collector.stat.exists
   vars:
+    _llm_serving_declared_metrics_record: >-
+      {{ llm_serving_declared_metrics_profiles[llm_serving_declared_metrics_profile] }}
     _llm_serving_declared_metrics_labels: >-
       {{ '{accelerator="%s",profile="%s",engine="%s"}' | format(
            llm_gpu_accelerator, llm_serving_declared_metrics_profile,
