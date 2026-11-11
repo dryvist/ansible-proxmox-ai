@@ -39,6 +39,7 @@ ENV.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
 ENV.filters["bool"] = lambda value: value if isinstance(value, bool) else str(value).lower() in ("true", "yes", "1")
 ENV.filters["regex_search"] = _search
 ENV.filters["regex_escape"] = lambda value: re.escape(str(value))
+ENV.filters["regex_replace"] = lambda value, pattern, repl: re.sub(pattern, repl, str(value))
 ENV.filters["b64decode"] = lambda value: base64.b64decode(value).decode()
 ENV.filters["from_json"] = json.loads
 
@@ -86,6 +87,7 @@ def _base(job, identity, home, failure, owners, profiles, listing="", check_mode
         "ansible_check_mode": check_mode,
         "ai_agent_owner": owners,
     }
+    context["hermes_agent_env_prefix"] = _value(DEFAULTS["hermes_agent_env_prefix"], context)
     for name in ("hermes_agent_digest_slack_channel", "hermes_agent_job_identities",
                  "hermes_agent_direct_job_wanted", "hermes_agent_slack_hermes_all_channel",
                  "hermes_agent_refuse_main_channel_targets"):
