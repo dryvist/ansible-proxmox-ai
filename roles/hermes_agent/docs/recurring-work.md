@@ -33,8 +33,9 @@ and `repo-scorecard` each exceed the 1800s wall clock — `enabled: false` in
 `hermes_agent_direct_cron_jobs` plus a `cron pause` task
 (`tasks/cron_reconcile.yml`) disable them without deleting the definitions.
 
-**Not installed.** `zammad-review` has an `enabled: false` entry in
-`hermes_agent_direct_cron_jobs`. A converge removes any installed copy.
+`zammad-review` is declared with `enabled: false`. For its home, direct-cron
+reconciliation removes an installed copy when it runs; if skipped, the
+disabled-job task pauses it.
 
 **Real semantics `hermes cron create` cannot express natively** (verified
 against the live CLI's `--help` and, for profile, against `cron/scheduler.py`
@@ -42,7 +43,7 @@ itself — not assumed):
 
 - **`assignee`/profile selection** — no `cron create` flag exists. Restored
   via a per-job `hermes_home:` override (7 of the 18 converted jobs had a real
-  profile: `daily-status`, `zammad-review` → `homelab-admin` (not installed);
+  profile: `daily-status`, `zammad-review` → `homelab-admin` (disabled);
   `splunk-triage`, `splunk-security`, `splunk-parsing`, `splunk-deepdive`,
   `anomaly-hunt` → `splunk-admin`). The persistent gateway
   (`hermes-gateway.service`) ticks
