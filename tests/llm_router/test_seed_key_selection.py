@@ -177,3 +177,9 @@ def test_selection_state_is_derived_once() -> None:
         text = path.read_text(encoding="utf-8")
         assert "llm_router_seed_key_aliases | default([]) | length) == 0" not in text, path.name
         assert "llm_router_seed_key_aliases | default([]) | length) > 0" not in text, path.name
+
+
+def test_selected_seed_run_skips_the_app_agent_probe() -> None:
+    consumers = yaml.safe_load((TASK_ROOT / "seed-consumers.yml").read_text(encoding="utf-8"))
+    probe = _named_task(consumers, "Probe app-agent tool and server boundaries after converge")
+    assert probe["when"] == "not (_llm_router_seed_selected | bool)"
