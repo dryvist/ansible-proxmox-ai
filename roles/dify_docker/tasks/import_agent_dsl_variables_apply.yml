@@ -1,0 +1,124 @@
+---
+# =============================================================================
+# Write the declared variables to the imported app's draft, between the DSL import
+# and the publish. Live runs only. AppRole secret ids are minted here and go only
+# into the draft patch; import_agent_dsl.yml clears them when the app's iteration
+# ends. Draft variables that are not declared keep their existing values, because
+# the patch names only the declared variables.
+# =============================================================================
+
+- name: Target the existing Dify app when the catalog import was not needed
+  ansible.builtin.set_fact:
+    dify_docker_dsl_imported_app_id: "{{ dify_docker_dsl_existing_app.id }}"
+  when: not (dify_docker_dsl_import_needed | bool)
+  no_log: true
+
+- name: Mint an AppRole secret id for each declared secret id variable
+  ansible.builtin.uri:
+    url: >-
+      {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}/v1/auth/{{
+      dify_docker_agent_issuer_auth_mount }}/role/{{
+      item.approle_secret_id.approle }}/secret-id
+    method: POST
+    headers:
+      X-Vault-Token: "{{ dify_docker_dsl_issuer_token }}"
+    body_format: json
+    body:
+      ttl: "{{ dify_docker_agent_secret_id_ttl }}"
+      metadata: "{{ {dify_docker_agent_secret_id_app_metadata_key: dify_docker_dsl_name} | to_json }}"
+    status_code: 200
+    return_content: true
+    validate_certs: "{{ dify_docker_bao_validate_certs }}"
+  loop: "{{ dify_docker_dsl_variable_entries | selectattr('approle_secret_id', 'defined') | list }}"
+  register: dify_docker_dsl_secret_id_mints
+  changed_when: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Keep each minted secret id with its variable name for the draft patch
+  ansible.builtin.set_fact:
+    dify_docker_dsl_variable_values: >-
+      {{ dify_docker_dsl_variable_values
+         + [{'name': item.item.name,
+             'secret': item.item.secret | default(false) | bool,
+             'value': (item.json.data.secret_id | default('', true)) | string}] }}
+  loop: "{{ dify_docker_dsl_secret_id_mints.results | default([]) }}"
+  no_log: true
+
+# Accessors only (never the secret ids): the prune keeps every accessor recorded here.
+- name: Record each minted secret id accessor for this run's prune protection
+  ansible.builtin.set_fact:
+    dify_docker_dsl_minted_accessors: >-
+      {{ (dify_docker_dsl_minted_accessors | default([], true))
+         + [item.json.data.secret_id_accessor | default('', true)] }}
+  loop: "{{ dify_docker_dsl_secret_id_mints.results | default([]) }}"
+  no_log: true
+
+- name: List the declared variables with no value before the draft write
+  ansible.builtin.set_fact:
+    dify_docker_dsl_unresolved_names: >-
+      {{ dify_docker_dsl_declared_names | difference(
+           dify_docker_dsl_variable_values | rejectattr('value', 'equalto', '')
+           | map(attribute='name') | list) }}
+  no_log: true
+
+- name: Assert every declared variable has a value before the draft write
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_unresolved_names | length == 0
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: declared variables without a value (names only):
+      {{ dify_docker_dsl_unresolved_names | join(', ') }}
+
+- name: Read the imported app draft before writing the declared variables
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_dsl_imported_app_id }}/workflows/draft"
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_dsl_draft
+  changed_when: false
+  no_log: true
+
+- name: Reset the draft environment variable patch
+  ansible.builtin.set_fact:
+    dify_docker_dsl_env_patch: []
+  no_log: true
+
+- name: Add each declared variable to the draft environment variable patch
+  ansible.builtin.set_fact:
+    dify_docker_dsl_env_patch: >-
+      {{ dify_docker_dsl_env_patch
+         + [{'id': (dify_docker_dsl_draft.json.environment_variables | default([])
+                    | selectattr('name', 'equalto', item.name) | map(attribute='id') | list
+                    | first | default(((dify_docker_dsl_name ~ ':' ~ item.name) | to_uuid), true)),
+             'name': item.name,
+             'value': item.value,
+             'value_type': 'secret' if (item.secret | bool) else 'string'}] }}
+  loop: "{{ dify_docker_dsl_variable_values }}"
+  no_log: true
+
+- name: Write the declared variables to the draft environment variables
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps/{{ dify_docker_dsl_imported_app_id }}/workflows/draft"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body:
+      graph: "{{ dify_docker_dsl_draft.json.graph }}"
+      features: "{{ dify_docker_dsl_draft.json.features }}"
+      hash: "{{ dify_docker_dsl_draft.json.hash }}"
+      environment_variable_patch:
+        environment_variables: "{{ dify_docker_dsl_env_patch }}"
+        deleted_environment_variable_ids: []
+    status_code: 200
+  register: dify_docker_dsl_draft_sync
+  when: dify_docker_dsl_env_patch | length > 0
+  changed_when: true
+  no_log: true

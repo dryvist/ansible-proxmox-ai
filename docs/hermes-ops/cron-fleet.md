@@ -37,7 +37,7 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 | `homelab-ai-fabric-status` | `4 8-22 * * *` | Agent home; silent when healthy |
 | `hermes-nightly-wiki` | `0 2 * * *` | Agent home (paused, wall clock) |
 | `daily-summary` | `0 12 * * *` | Agent home |
-| `zammad-review` | `41 */2 * * *` | Agent home (paused, wall clock) |
+| `zammad-review` | `41 */2 * * *` | Agent home (disabled; a converge removes an installed copy, or pauses it where direct-cron reconcile is skipped) |
 | `splunk-triage` | `7 * * * *` | Splunk findings (paused, wall clock) |
 | `splunk-security` | `22 */6 * * *` | Splunk findings (paused, wall clock) |
 | `splunk-parsing` | `37 2 * * *` | Splunk findings |
@@ -91,7 +91,9 @@ these cron jobs file via `kanban_create` (`review`'s gap follow-ups,
 live CLI's own `--help` (not assumed) and, for the profile finding, against
 `cron/scheduler.py` itself: profile/`assignee` selection — no `cron create`
 flag exists, so the 7 jobs that had a real profile (2 → `homelab-admin`:
-`daily-status`, `zammad-review`; 5 → `splunk-admin`: `splunk-triage`,
+`daily-status`, `zammad-review` (disabled; a converge removes an installed
+copy, or pauses it where direct-cron reconcile is skipped); 5 → `splunk-admin`:
+`splunk-triage`,
 `splunk-security`, `splunk-parsing`, `splunk-deepdive`, `anomaly-hunt`) get a
 per-job `HERMES_HOME` override instead (`hermes_home:` on the item,
 `reconcile_direct_cron.yml`). That alone is not sufficient: `hermes cron`'s
@@ -204,13 +206,9 @@ mandatory rather than remembered).
 | `homelab-ai-fabric-status-v2` | `3 */6 * * *` | no | replaced by the card of the same name |
 | `splunk-hourly-digest-v3` | `52 * * * *` | no | superseded by `splunk-status-digest` |
 
-`zammad-incident-review-v2` and `github-org-triage-v2` are intentionally kept
-as crude-but-honest daily interim coverage: their kanban twins
-(`zammad-review` every 2h, `github-triage` every 6h) are richer but paused
-under the throttle, and unpausing either would multiply that topic's enqueue
-rate 4-12x — a throughput increase, not the 1-for-1 swap `splunk-parsing` got.
-Retire these two in favour of their kanban twins in the SAME change that
-unpauses them, not before, so the topic is never dropped in between.
+`zammad-review` is disabled; its declaration remains in the direct-cron table
+so a converge removes any installed copy, or pauses it where direct-cron
+reconcile is skipped. `github-triage` remains paused under the throttle.
 
 ## Systemd units (not crons)
 

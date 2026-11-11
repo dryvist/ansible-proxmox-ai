@@ -5,7 +5,7 @@ Maintenance runs daily 06:00-07:00 UTC (long jobs use 04:00-10:00 UTC).
 and posts only new findings.
 
 Every recurring workload — the Splunk fleet above, `github-triage`,
-`daily-summary`, `zammad-review`, `homelab-ai-fabric-status`, the nightly wiki
+`daily-summary`, `homelab-ai-fabric-status`, the nightly wiki
 pass, the 8h `review`, and (as of this reframe) `docs-sync` — is a
 **direct-deliver cron job** (`hermes_agent_direct_cron_jobs`,
 `tasks/reconcile_direct_cron.yml`), not a Kanban card and not an agentic cron
@@ -27,11 +27,15 @@ is actually for: ad-hoc work, and the follow-up cards these cron jobs
 themselves file via `kanban_create` (`review`'s gap follow-ups,
 `anomaly-hunt`'s findings, `ai-news`'s actionable items).
 
-**Paused (wall clock).** `hermes-nightly-wiki`, `zammad-review`,
+**Paused (wall clock).** `hermes-nightly-wiki`,
 `splunk-triage`, `splunk-security`, `anomaly-hunt`, `review`, `backlog-sweep`
 and `repo-scorecard` each exceed the 1800s wall clock — `enabled: false` in
 `hermes_agent_direct_cron_jobs` plus a `cron pause` task
 (`tasks/cron_reconcile.yml`) disable them without deleting the definitions.
+
+`zammad-review` is declared with `enabled: false`. For its home, direct-cron
+reconciliation removes an installed copy when it runs; if skipped, the
+disabled-job task pauses it.
 
 **Real semantics `hermes cron create` cannot express natively** (verified
 against the live CLI's `--help` and, for profile, against `cron/scheduler.py`
@@ -39,9 +43,11 @@ itself — not assumed):
 
 - **`assignee`/profile selection** — no `cron create` flag exists. Restored
   via a per-job `hermes_home:` override (7 of the 18 converted jobs had a real
-  profile: `daily-status`, `zammad-review` → `homelab-admin`; `splunk-triage`,
-  `splunk-security`, `splunk-parsing`, `splunk-deepdive`, `anomaly-hunt` →
-  `splunk-admin`). The persistent gateway (`hermes-gateway.service`) ticks
+  profile: `daily-status`, `zammad-review` (disabled; a converge removes an
+  installed copy, or pauses it where direct-cron reconcile is skipped) →
+  `homelab-admin`; `splunk-triage`, `splunk-security`, `splunk-parsing`,
+  `splunk-deepdive`, `anomaly-hunt` → `splunk-admin`). The persistent gateway
+  (`hermes-gateway.service`) ticks
   every profile home in-process and delivers a named profile's Slack output
   through the primary's `gateway.profile_routes` entry for that profile. The
   role no longer installs a per-profile `hermes cron tick` crontab: it had no
@@ -56,6 +62,20 @@ itself — not assumed):
   job) — `--deliver` takes exactly one fixed target. The quiet
   footer ends with bare `[SILENT]` when the healthy destination equals the
   delivery destination; no separate healthy post or heartbeat is sent.
+- **An identity's main channel is refused as a target.** While an identity's
+  `hermes_agent_refuse_main_channel_targets` is on (the default for every identity
+  except `hermes`), every entry of its jobs' deliver, failure and healthy-footer
+  values must be empty, `local`, `log`, or `slack:<ID>` with an upper-case ID other
+  than its home channel. An installed job with a refused delivery or failure target
+  is edited by id to local delivery and failure, then read back. If the read-back is
+  not exactly `local` on both, each target is edited separately and read back again.
+  If that still does not prove it, the job is withdrawn and read back. An installed
+  job whose healthy footer names the main channel in any form, or names a channel that
+  cannot be shown to be another one, has the whole job withdrawn and read back, because
+  the footer is prompt text that an edit does not change. A job is never paused: the brain watchdog
+  resumes paused seeded jobs. The converge fails and names the job when no read-back
+  proves it stopped posting, and an unreadable job store fails it too. Every refused
+  target fails the converge until it is corrected.
 
 None of these were silently dropped.
 

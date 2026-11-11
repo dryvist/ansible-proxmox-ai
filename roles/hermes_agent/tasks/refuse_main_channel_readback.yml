@@ -1,0 +1,41 @@
+---
+# Reads the job store back for the installed job and sets two facts. hermes_agent_refuse_state is
+# `clean` (listed with deliver and failure_deliver both exactly `local`), `gone` (not listed), or
+# `not_clean` (listed with any other value, or a key missing). hermes_agent_refuse_seen says what
+# was read back. A store that cannot be read or parsed fails the play; it is never read as absent.
+- name: "Read the job store back: {{ refuse_target_name }}"
+  ansible.builtin.slurp:
+    src: "{{ refuse_home }}/cron/jobs.json"
+  register: hermes_agent_refuse_store
+  failed_when: false
+  no_log: true
+
+- name: "Judge the job store read back for {{ refuse_target_name }}"
+  block:
+    - name: "List the installed job from the read-back: {{ refuse_target_name }}"
+      ansible.builtin.set_fact:
+        hermes_agent_refuse_listed: >-
+          {{ (hermes_agent_refuse_store.content | b64decode | from_json).jobs
+             | selectattr('id', 'equalto', hermes_agent_refuse_job_id) | list }}
+      no_log: true
+
+    - name: "Judge the read-back of the installed job: {{ refuse_target_name }}"
+      ansible.builtin.set_fact:
+        hermes_agent_refuse_state: >-
+          {{ 'gone' if (hermes_agent_refuse_listed | length == 0)
+             else ('clean' if (hermes_agent_refuse_listed[0].deliver | default('') == 'local'
+                               and hermes_agent_refuse_listed[0].failure_deliver | default('') == 'local')
+                   else 'not_clean') }}
+        hermes_agent_refuse_seen: >-
+          {{ 'not listed in the job store' if (hermes_agent_refuse_listed | length == 0)
+             else ('deliver=' ~ (hermes_agent_refuse_listed[0].deliver | default('<absent>'))
+                   ~ ', failure_deliver=' ~ (hermes_agent_refuse_listed[0].failure_deliver | default('<absent>'))) }}
+      no_log: true
+
+  rescue:
+    - name: "Fail closed when the job store cannot be read or parsed: {{ refuse_target_name }}"
+      ansible.builtin.fail:
+        msg: >-
+          {{ refuse_target_name }}: the job store at {{ refuse_home }}/cron/jobs.json cannot be read
+          or parsed, so installed job {{ hermes_agent_refuse_job_id }} was not judged. It was not
+          treated as absent. The play stops here.

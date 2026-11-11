@@ -57,3 +57,64 @@ dify_docker_private_agent_dsl_token: ""
 # app "ai-news"), so no agent list is kept here; this is the rotation app's
 # catalog entry name.
 dify_docker_rotation_app_name: tier2-rotation
+
+# Declared environment variables for catalog apps, keyed by catalog app name. Each entry
+# sets one draft variable and names exactly one source:
+#   value: plain text supplied by the caller.
+#   kv: {path, field} read from the KV mount; the value is never written back anywhere.
+#   approle_role_id: {approle} reads the role id of an AppRole.
+#   approle_secret_id: {approle} mints a secret id with dify_docker_agent_secret_id_ttl.
+# secret: true stores the draft variable with the secret value type. Placeholders only:
+#   dify_docker_agent_app_variables:
+#     example-app:
+#       - name: EXAMPLE_TOKEN
+#         secret: true
+#         kv: {path: example/app, field: token}
+dify_docker_agent_app_variables: {}
+# Placeholder text in a catalog app's DSL mapped to a workspace tool provider name. Each
+# placeholder is replaced by that provider's id before the app is imported.
+dify_docker_agent_tool_providers: {}
+# Lifetime of each AppRole secret id minted for a declared variable. After each publish, the
+# secret ids minted in the run are kept; of the older ids of the same app, only the newest is kept.
+dify_docker_agent_secret_id_ttl: 720h
+# The metadata key that names the catalog app on each secret id minted for it. The prune destroys
+# only the ids whose metadata names the app being reconciled.
+dify_docker_agent_secret_id_app_metadata_key: dify_app
+# The issuer AppRole mints, lists, looks up and destroys the secret ids. Its role id and secret id
+# are read from the environment variables named here. It logs in through the auth mount below, and
+# the AppRole API calls use that same mount.
+dify_docker_agent_issuer_env_names:
+  role_id: OPENBAO_APPROLE_DIFY_AGENT_SECRET_ID_ISSUER_ROLE_ID
+  secret_id: OPENBAO_APPROLE_DIFY_AGENT_SECRET_ID_ISSUER_SECRET_ID
+dify_docker_agent_issuer_role_id: >-
+  {{ lookup('env', dify_docker_agent_issuer_env_names.role_id) | default('', true) }}
+dify_docker_agent_issuer_secret_id: >-
+  {{ lookup('env', dify_docker_agent_issuer_env_names.secret_id) | default('', true) }}
+dify_docker_agent_issuer_auth_mount: approle
+# Per-app views of the maps above, evaluated lazily for the catalog app being imported.
+dify_docker_dsl_variable_entries: "{{ dify_docker_agent_app_variables.get(dify_docker_dsl_name, []) }}"
+dify_docker_dsl_tool_provider_map: "{{ dify_docker_agent_tool_providers.get(dify_docker_dsl_name, {}) }}"
+dify_docker_dsl_has_variables: >-
+  {{ (dify_docker_dsl_variable_entries | length > 0)
+     or (dify_docker_dsl_tool_provider_map | length > 0) }}
+# When true, each selected catalog app reads its declared config from its per-app OpenBao leaf,
+# the leaf at dify_docker_openbao_path/dify_docker_agent_app_leaf_segment/<app>. The leaf's
+# variables_json field is a list in the dify_docker_agent_app_variables shape, and its
+# tool_providers_json field is a map in the dify_docker_agent_tool_providers shape. The parsed
+# fields become that app's entries. An app whose inventory also declares entries fails. Both
+# fields are required for every selected app.
+dify_docker_agent_app_config_from_leaf: false
+# Catalog apps that run in live mode. For an app not listed here, every declared variable whose
+# name ends with dify_docker_agent_mode_suffix must resolve to dify_docker_agent_mode_shadow_value,
+# compared after trimming and lowercasing. Any other value fails the app before its import.
+dify_docker_agent_live_apps: []
+dify_docker_agent_mode_suffix: _MODE
+dify_docker_agent_mode_shadow_value: shadow
+# The declared-variable checks run for an app that has declared entries, an MCP tool node, or an
+# environment variable with an empty value in its definition. Other apps skip them.
+dify_docker_dsl_declared_check_needed: >-
+  {{ dify_docker_dsl_has_variables | bool
+     or (dify_docker_dsl_mcp_tool_names | length > 0)
+     or ((((dify_docker_dsl_document | default({}, true)).workflow | default({}, true))
+          .environment_variables | default([], true))
+         | selectattr('value', 'equalto', '') | list | length > 0) }}

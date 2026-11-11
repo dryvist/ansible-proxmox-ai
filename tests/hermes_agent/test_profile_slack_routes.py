@@ -189,14 +189,17 @@ def test_profile_channels_fall_back_to_the_run_environment() -> None:
     assert _channels({}) == "{}"
 
 
-def test_zammad_review_is_bounded_and_gated_on_its_route() -> None:
+def test_zammad_review_is_declared_disabled_and_kept_in_the_table() -> None:
+    # Kept declared, so reconcile can withdraw an installed copy. Not wanted by
+    # any identity: test_cron_system_ownership. Removed when installed:
+    # test_cron_reconcile_batching.
     defaults = role_defaults(ROLE_ROOT)
     assert "at most 5 tickets this run" in defaults["hermes_agent_zammad_review_cron_prompt"]
     job = next(
         j for j in defaults["hermes_agent_direct_cron_jobs"]
         if j["name"] == "{{ hermes_agent_zammad_review_cron_name }}"
     )
-    assert "'homelab-admin' in hermes_agent_slack_profile_deliver_targets" in str(job["enabled"])
+    assert job["enabled"] is False
 
 
 PROFILE_ROUTE_FLEET = ("splunk-admin", "homelab-admin")
