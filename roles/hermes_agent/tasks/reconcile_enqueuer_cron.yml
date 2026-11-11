@@ -40,6 +40,24 @@
     hermes_agent_enqueuer_deliver: "{{ item.deliver | default('local') }}"
   when: hermes_agent_enqueuer_active | bool
 
+# The same rule for a script-fed enqueuer this identity runs. Its failure notices
+# use the shared failure channel, so that target is checked too.
+- name: "Enqueuer cron | Refuse Donna's main channel as a target for {{ item.name }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - main_target not in (hermes_agent_enqueuer_deliver.split(',') | map('trim') | list)
+      - hermes_agent_cron_failure_deliver | trim != main_target
+    fail_msg: >-
+      {{ item.name }} targets Donna's main channel. Scheduled output and failure
+      notices belong in her delivery and failure channels, not the main one.
+  vars:
+    main_target: "slack:{{ hermes_agent_slack_home_channel }}"
+  when:
+    - hermes_agent_enqueuer_active | bool
+    - (hermes_agent_identity | default('hermes', true)) == 'donna'
+    - hermes_agent_slack_home_channel | length > 0
+
 # Also runs when the job is inactive-because-unowned: the withdrawal below has
 # to know whether anything is installed, and that is exactly the case where the
 # active gate is false. Titled from item.name, not the resolved name — "Resolve
