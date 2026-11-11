@@ -120,6 +120,8 @@ def test_rotation_alias_must_be_in_a_non_empty_selection() -> None:
 def test_key_write_paths_are_scoped_by_the_filtered_selection() -> None:
     create = _named_task(SEED_KEYS, "Create the caller keys that have a seeded value (an existing alias is not a failure)")
     assert "_llm_router_seed_virtual_keys" in create["loop"]
+    preflight = _named_task(SEED_KEYS, "Assert each seeded value is a valid LiteLLM custom key before minting")
+    assert "_llm_router_seed_virtual_keys" in preflight["vars"]["_llm_router_unseeded_keys"]
 
     teamless = yaml.safe_load((TASK_ROOT / "reconcile-teamless-keys.yml").read_text(encoding="utf-8"))
     teamless_loop = _named_task(teamless, "Reconcile ownership for every key changing teams independently")
