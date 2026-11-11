@@ -81,7 +81,7 @@ def test_must_block_samples_all_match():
     matches = _matcher(_phrase_patterns())
     blocks = _samples("exfiltration_must_block.txt")
 
-    assert len(blocks) >= 20
+    assert len(blocks) == 33
     assert all(matches(text) for text in blocks)
 
 
@@ -89,7 +89,7 @@ def test_known_ambiguous_samples_still_match():
     matches = _matcher(_phrase_patterns())
     known = _samples("exfiltration_known_ambiguous.txt")
 
-    assert known
+    assert len(known) == 1
     assert all(matches(text) for text in known)
 
 
