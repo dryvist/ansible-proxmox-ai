@@ -9,7 +9,7 @@ def _task(tasks, name):
     return next(task for task in tasks if task.get("name") == name)
 
 
-def test_medium_vllm_campaign_selector_uses_the_profile_and_started_vllm_guest():
+def test_medium_vllm_campaign_selector_uses_the_declared_lane_and_started_vllm_guest():
     loader = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml")
     fact = _task(loader, "Record whether the started vLLM guest is the medium campaign target")
     condition = fact["ansible.builtin.set_fact"]["load_tofu_medium_vllm_campaign"]
@@ -18,12 +18,14 @@ def test_medium_vllm_campaign_selector_uses_the_profile_and_started_vllm_guest()
 
     assert "load_tofu_gpu_engine_set_present | bool" in condition
     assert "load_tofu_gpu_engine_selector == 'vllm'" in condition
-    assert "llm_gpu_active_profiles_by_engine.get('vllm', '') is match('^medium')" in condition
+    # Selection is by the guest's declared lane, never by a profile-name prefix.
+    assert "is match(" not in condition
     assert add_target["ansible.builtin.add_host"]["groups"] == ["llm_campaign_medium_vllm_target"]
     assert add_target["when"] == [
         "load_tofu_medium_vllm_campaign | bool",
         "item.value.llm_gpu_engine_identity | default('') == 'vllm'",
         "item.value.started | default(false) | bool",
+        "(hostvars[item.key].llm_lane | default('')) == 'medium'",
     ]
     assert names.index("Add the started vLLM guest to the medium campaign target group") > names.index(
         "Add AI LXC containers to inventory"

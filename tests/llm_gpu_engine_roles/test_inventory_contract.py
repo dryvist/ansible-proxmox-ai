@@ -72,7 +72,7 @@ def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
             key: flash_next[key]
             for key in ("engine", "flash_attention", "gpu_layers", "kv_cache_dtype")
         }
-    assert profiles_by_engine["vllm"] == "medium-a"
+    assert profiles_by_engine["vllm"] == "qwen38-96k-11-fp8-mtp"
     sglang_profiles = _load(REPO_ROOT / "roles/sglang_serving/defaults/main/10-profiles.yml")[
         "sglang_serving_profiles"
     ]
@@ -92,7 +92,7 @@ def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
 
     all_engines = {"llama_cpp", "vllm", "sglang", "strata"}
     assert profile("llama_cpp", all_engines) == "medium-b"
-    assert profile("vllm", all_engines) == "medium-a"
+    assert profile("vllm", all_engines) == "qwen38-96k-11-fp8-mtp"
     assert profile("sglang", all_engines) == profiles_by_engine["sglang"]
     assert profile("strata", all_engines) == "medium-a"
     # Preserve the legacy profile if the selected engine guest is absent.
