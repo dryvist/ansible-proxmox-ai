@@ -8,6 +8,37 @@ POLICY = (
     Path(__file__).resolve().parents[2]
     / "roles/llm_router/files/guardrails/prompt_injection_data_exfiltration.yaml"
 )
+DATA_DIR = Path(__file__).resolve().parent / "data"
+# must_block misses of the category regex before the clause rewrite: it matched
+# the three hand-picked positives and none of the 32 dataset rows.
+BASELINE_MISSES = 32
+
+
+def _phrase_patterns():
+    return yaml.safe_load(POLICY.read_text(encoding="utf-8"))["phrase_patterns"]
+
+
+def _samples(name):
+    raw = (DATA_DIR / name).read_text(encoding="utf-8")
+    return [chunk.strip("\n") for chunk in raw.split("\n%%\n")[1:]]
+
+
+def test_regression_samples_have_no_false_positives_and_no_new_misses():
+    patterns = _phrase_patterns()
+
+    def matches(text):
+        return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+    passes = _samples("exfiltration_must_pass.txt")
+    blocks = _samples("exfiltration_must_block.txt")
+    assert len(passes) >= 15
+    assert len(blocks) >= 20
+
+    false_positives = [text for text in passes if matches(text)]
+    misses = [text for text in blocks if not matches(text)]
+
+    assert not false_positives
+    assert len(misses) <= BASELINE_MISSES
 
 
 def test_data_exfiltration_requires_transfer_target_and_external_sink():
