@@ -20,6 +20,7 @@ APPLY = TASKS / "import_agent_dsl_variables_apply.yml"
 PRUNE = TASKS / "import_agent_dsl_variables_prune.yml"
 EDITED = (IMPORT_ONE, IMPORT_LOOP, RECONCILE, PRE, ONE, APPLY, PRUNE)
 SELECT_STALE = "Select the older accessors to destroy, keeping the newest one not minted in this run"
+RECORD = "Record each minted secret id accessor for this run's prune protection"
 PATTERN = load_defaults()["dify_docker_agent_tool_placeholder_pattern"]
 
 RESOLVE = "Resolve declared app variables and tool provider ids before any import"
@@ -379,6 +380,45 @@ def test_declared_checks_run_for_entries_placeholders_or_empty_secrets_and_skip_
     include = next(task for task in _yaml(IMPORT_ONE)
                    if task.get("name") == "Resolve declared app variables and tool provider ids before any import")
     assert include["when"][0] == "dify_docker_dsl_declared_check_needed | bool"
+
+
+def _replay_shared_approle_run(mints_per_app):
+    """Replay the real record and prune expressions for apps that share one AppRole in one play.
+
+    Each app mints its secret ids, records their accessors, then prunes after its publish. The
+    server state keeps two older accessors that existed before the run."""
+    record = _fact(_yaml(APPLY), RECORD, "dify_docker_dsl_minted_accessors")
+    select = _fact(_yaml(PRUNE), SELECT_STALE, "dify_docker_dsl_secret_id_stale")
+    server = {"old-1": "2026-11-01T00:00:00Z", "old-2": "2026-11-02T00:00:00Z"}
+    minted, destroyed, serial = [], [], 0
+    for mints in mints_per_app:
+        for _ in range(mints):
+            serial += 1
+            accessor = f"new-{serial}"
+            server[accessor] = f"2026-11-10T00:00:{serial:02d}Z"
+            minted = _render(record, dify_docker_dsl_minted_accessors=minted,
+                             item={"json": {"data": {"secret_id_accessor": accessor}}})
+        ages = [{"accessor": name, "created": created} for name, created in server.items()]
+        for accessor in _render(select, dify_docker_dsl_secret_id_ages=ages,
+                                dify_docker_dsl_minted_accessors=minted):
+            del server[accessor]
+            destroyed.append(accessor)
+        assert set(minted) <= set(server), "an accessor minted in this run was destroyed"
+    return destroyed, set(server), minted
+
+
+def test_two_apps_sharing_one_approle_each_minting_one_id_keep_every_minted_accessor():
+    destroyed, server, minted = _replay_shared_approle_run([1, 1])
+    assert destroyed == ["old-1"]
+    assert server == {"old-2", "new-1", "new-2"}
+    assert minted == ["new-1", "new-2"]
+
+
+def test_one_app_with_three_secret_id_variables_on_one_approle_keeps_every_minted_accessor():
+    destroyed, server, minted = _replay_shared_approle_run([3])
+    assert destroyed == ["old-1"]
+    assert server == {"old-2", "new-1", "new-2", "new-3"}
+    assert minted == ["new-1", "new-2", "new-3"]
 
 
 def test_apps_without_declared_variables_keep_the_same_task_sequence():
