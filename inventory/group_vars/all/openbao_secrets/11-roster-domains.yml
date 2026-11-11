@@ -19,6 +19,17 @@ hermes_agent_pepper_runtime_selected: >-
      and ((run_tags | intersect(['all', 'tagged'] + play_tags) | length > 0 and selected_tasks | length > 0)
           or run_tags | intersect(selected_tasks) | length > 0) }}
 
+# A run whose tags select only hermes_crons fetches only what the cron reconcile reads:
+# each play host's own identity domain (openbao_secrets_domains keeps those), and
+# local-llm, which the cron profile model aliases resolve credentials from. Only a play
+# made entirely of Hermes agent hosts narrows; any other host or tag keeps every domain.
+openbao_secrets_hermes_crons_only: >-
+  {{ (ansible_run_tags | default(['all']) | sort | list == ['hermes_crons'])
+     and (ansible_skip_tags | default([]) | length == 0)
+     and (ansible_play_hosts_all | default([]) | length > 0)
+     and (ansible_play_hosts_all | default([])
+          | difference((groups | default({})).get('hermes_agent_group', [])) | length == 0) }}
+
 # Each roster identity gets its own AppRole domain; the shared role derives its
 # OPENBAO_APPROLE_<NAME>_ROLE_ID/_SECRET_ID variables from the domain name.
 # The agentgateway-agent-keys reader domain covers every gateway caller
@@ -108,5 +119,13 @@ openbao_secrets_domains: >-
   {%- endif -%}
   {%- if gateway_paths -%}
     {%- set _ = domains.append({'name': 'agentgateway-agent-keys', 'paths': gateway_paths}) -%}
+  {%- endif -%}
+  {#- A hermes_crons-only run keeps the identity domain of each of its hosts, plus local-llm. -#}
+  {%- if openbao_secrets_hermes_crons_only | default(false) | string | lower == 'true' -%}
+    {%- set _keep = ['local-llm'] -%}
+    {%- for host in ansible_play_hosts_all -%}
+      {%- set _ = _keep.append(hostvars[host].hermes_agent_identity | default('hermes', true)) -%}
+    {%- endfor -%}
+    {%- set domains = domains | selectattr('name', 'in', _keep) | list -%}
   {%- endif -%}
   {{ domains }}
