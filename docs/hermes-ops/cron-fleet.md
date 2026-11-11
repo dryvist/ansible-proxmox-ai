@@ -37,7 +37,7 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 | `homelab-ai-fabric-status` | `4 8-22 * * *` | Agent home; silent when healthy |
 | `hermes-nightly-wiki` | `0 2 * * *` | Agent home (paused, wall clock) |
 | `daily-summary` | `0 12 * * *` | Agent home |
-| `zammad-review` | `41 */2 * * *` | Agent home (disabled; reconcile withdraws it) |
+| `zammad-review` | `41 */2 * * *` | Agent home (disabled; a converge removes it, or pauses it where direct-cron reconcile is skipped) |
 | `splunk-triage` | `7 * * * *` | Splunk findings (paused, wall clock) |
 | `splunk-security` | `22 */6 * * *` | Splunk findings (paused, wall clock) |
 | `splunk-parsing` | `37 2 * * *` | Splunk findings |
@@ -205,7 +205,7 @@ mandatory rather than remembered).
 | `splunk-hourly-digest-v3` | `52 * * * *` | no | superseded by `splunk-status-digest` |
 
 `zammad-review` is disabled; its declaration remains in the direct-cron table
-so reconcile withdraws any installed copy. `github-triage` remains paused under
+so a converge removes any installed copy, or pauses it where direct-cron reconcile is skipped. `github-triage` remains paused under
 the throttle.
 
 ## Systemd units (not crons)
