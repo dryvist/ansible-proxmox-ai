@@ -174,8 +174,8 @@ def test_declared_checks_run_for_entries_mcp_nodes_or_empty_variables_and_skip_c
 
 def test_mode_variables_must_be_shadow_unless_the_app_is_listed_as_live():
     pre = _yaml(PRE)
-    collect = _fact(pre, "Collect declared _MODE variables that do not resolve to shadow for an app not listed as live",
-                    "dify_docker_dsl_bad_mode_names")
+    collect = _fact(pre, "Collect declared mode-suffix variables that do not match the configured value "
+                    "for an app not listed as live", "dify_docker_dsl_bad_mode_names")
 
     def bad(entry, values, live=(), suffix="_MODE", shadow="shadow"):
         return _render(collect, dify_docker_dsl_bad_mode_names=[], dify_docker_dsl_name="example-app",
@@ -199,7 +199,8 @@ def test_mode_variables_must_be_shadow_unless_the_app_is_listed_as_live():
     minted = {"name": "EXAMPLE_MODE", "approle_secret_id": {"approle": "agent-example"}}
     assert bad(minted, []) == ["EXAMPLE_MODE"]
 
-    check = _task(pre, "Assert each declared _MODE variable is shadow unless the app is listed as live")
+    check = _task(pre, "Assert each declared mode-suffix variable matches the configured value unless the app is "
+                       "listed as live")
     assert check.get("no_log") is not True
     assert _passes(check["ansible.builtin.assert"]["that"], dify_docker_dsl_bad_mode_names=[])
     assert not _passes(check["ansible.builtin.assert"]["that"], dify_docker_dsl_bad_mode_names=["EXAMPLE_MODE"])
