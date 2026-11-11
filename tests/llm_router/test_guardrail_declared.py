@@ -7,6 +7,7 @@ importable in this test environment, so the content filter's error handling is
 not exercised here.
 """
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -110,15 +111,36 @@ def test_config_template_includes_the_guardrail_block_once():
     assert text.count("{% include 'guardrails.yaml.j2' %}") == 1
 
 
-def test_role_assert_refuses_a_list_without_the_guardrail():
+def test_role_assert_refuses_a_list_without_the_enabled_guardrail():
     tasks = yaml.safe_load((ROLE_DIR / "tasks/assert.yml").read_text(encoding="utf-8"))
     task = next(t for t in tasks if t.get("name") == "Assert the data-exfiltration guardrail is declared")
-    condition = jinja2.Environment().compile_expression(" ".join(task["ansible.builtin.assert"]["that"][0].split()))
+    env = jinja2.Environment()
+    selected = env.compile_expression(task["vars"]["_exfiltration_guardrails"].strip()[2:-2])
+    conditions = [env.compile_expression(" ".join(c.split())) for c in task["ansible.builtin.assert"]["that"]]
     declared = yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))["llm_router_guardrails"]
 
-    assert condition(llm_router_guardrails=declared)
-    assert not condition(llm_router_guardrails=[])
-    assert not condition(llm_router_guardrails=[{"guardrail_name": "other", "litellm_params": {}}])
-    assert not condition(llm_router_guardrails=declared + declared)
+    def passes(guardrails):
+        chosen = selected(llm_router_guardrails=guardrails)
+        if len(chosen) != 1:
+            return False
+        return all(condition(_exfiltration_guardrails=chosen) for condition in conditions)
+
+    assert passes(declared)
+    assert not passes([])
+    assert not passes([{"guardrail_name": "other", "litellm_params": {}}])
+    assert not passes(declared + declared)
+    for path, value in (
+        (("default_on",), False),
+        (("mode",), "post_call"),
+        (("guardrail",), "other"),
+        (("categories", 0, "enabled"), False),
+        (("categories", 0, "action"), "MASK"),
+    ):
+        changed = copy.deepcopy(declared)
+        target = changed[0]["litellm_params"]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        assert not passes(changed), path
     # It runs before anything renders: it is the first task in the role's assert file.
     assert tasks.index(task) == 0
