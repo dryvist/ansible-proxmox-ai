@@ -19,13 +19,10 @@ PRE = TASKS / "import_agent_dsl_variables.yml"
 ONE = TASKS / "import_agent_dsl_variable_one.yml"
 APPLY = TASKS / "import_agent_dsl_variables_apply.yml"
 PRUNE = TASKS / "import_agent_dsl_variables_prune.yml"
-CONFIG = TASKS / "import_agent_dsl_config_leaf.yml"
 DERIVE = TASKS / "import_agent_dsl_derive.yml"
 PROVIDER = TASKS / "import_agent_dsl_provider_nodes.yml"
 ISSUER = TASKS / "import_agent_dsl_issuer_login.yml"
-EDITED = (IMPORT_ONE, IMPORT_LOOP, RECONCILE, PRE, ONE, APPLY, PRUNE, CONFIG, DERIVE, PROVIDER, ISSUER)
-LEAF_INCLUDE = "Read the per-app declared config from its leaf when the flag is set"
-LEAF_RESET = "Reset the per-app leaf declarations before this app"
+EDITED = (IMPORT_ONE, IMPORT_LOOP, RECONCILE, PRE, ONE, APPLY, PRUNE, DERIVE, PROVIDER, ISSUER)
 DERIVE_TASK = "Derive the declared-variable facts for this app"
 SELECT_STALE = "Select the older accessors of this app to destroy, keeping the newest one not minted in this run"
 RECORD = "Record each minted secret id accessor for this run's prune protection"
@@ -35,7 +32,7 @@ WRITE = "Write the declared app variables to the draft before publishing"
 CLEAR = "Clear the declared app variable values from facts"
 PRUNE_INCLUDE = "Prune older AppRole secret ids once the declared variables are published"
 DECLARED_PUBLISH = "Publish the declared app variables for an unchanged catalog app"
-NEW_TOP_LEVEL = {RESOLVE, WRITE, CLEAR, PRUNE_INCLUDE, DECLARED_PUBLISH, LEAF_RESET, LEAF_INCLUDE, DERIVE_TASK}
+NEW_TOP_LEVEL = {RESOLVE, WRITE, CLEAR, PRUNE_INCLUDE, DECLARED_PUBLISH, DERIVE_TASK}
 
 # Facts that hold a resolved value or a raw API response. Names-only facts are not listed,
 # so the assert tasks that print a name stay visible.
@@ -54,9 +51,6 @@ SENSITIVE = (
     "dify_docker_dsl_tool_providers",
     "dify_docker_dsl_tool_ids",
     "dify_docker_dsl_minted_accessors",
-    "dify_docker_dsl_config_leaf",
-    "dify_docker_dsl_config_variables",
-    "dify_docker_dsl_config_tool_providers",
     "dify_docker_dsl_mcp_nodes",
     "dify_docker_dsl_mcp_provider_ids",
     "dify_docker_dsl_workspace_ids",
