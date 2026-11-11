@@ -21,29 +21,8 @@
       role; this trial runner does not install or update engines.
     quiet: true
 
-- name: Create the target model cache directory for the candidate
-  ansible.builtin.file:
-    path: "{{ llm_model_trial_model_dir }}"
-    state: directory
-    owner: "{{ llm_gpu_serving_user }}"
-    group: "{{ llm_gpu_serving_group }}"
-    mode: '0750'
-
-- name: Download the selected files at the resolved SHA into the existing model cache
-  ansible.builtin.command:
-    argv: >-
-      {{ [llm_gpu_serving_hf_bin, 'download', hf_repo]
-         + (llm_model_trial_plan.files | map(attribute='path') | list)
-         + ['--revision', llm_model_trial_plan.resolved_sha,
-            '--local-dir', llm_model_trial_model_dir] }}
-  environment: >-
-    {{ llamacpp_release_proxy_environment
-       | combine({'HF_HOME': llm_gpu_serving_hf_home,
-                  'HF_HUB_DISABLE_IMPLICIT_TOKEN': '1'}) }}
-  become: true
-  become_user: "{{ llm_gpu_serving_user }}"
-  register: llm_model_trial_download
-  changed_when: true
+- name: Create the target model cache and download the selected files
+  ansible.builtin.include_tasks: download.yml
 
 - name: Stop the recorded baseline unit
   ansible.builtin.systemd:
@@ -82,96 +61,8 @@
     name: "{{ llm_model_trial_unit_name }}"
     state: started
 
-- name: Wait for the candidate OpenAI models endpoint
-  ansible.builtin.uri:
-    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_model_trial_port }}/v1/models"
-    return_content: true
-    status_code: 200
-  register: llm_model_trial_models_response
-  retries: "{{ llm_model_trial_health_retries }}"
-  delay: "{{ llm_model_trial_health_delay }}"
-  until: llm_model_trial_models_response.status | default(0) == 200
-
-- name: Require the expected candidate identity from the models endpoint
-  ansible.builtin.assert:
-    that:
-      - llm_model_trial_models_response.json.data | default([]) | length > 0
-      - >-
-        llm_model_trial_models_response.json.data
-        | selectattr('id', 'equalto', hf_repo) | list | length == 1
-    fail_msg: >-
-      Candidate /v1/models did not return exactly one model with the
-      requested Hugging Face repository id.
-    quiet: true
-
-- name: Read vLLM metrics for cache configuration proof
-  ansible.builtin.uri:
-    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_model_trial_port }}/metrics"
-    return_content: true
-    status_code: 200
-  register: llm_model_trial_metrics_response
-  when: llm_model_trial_plan.engine == 'vllm'
-
-- name: Require vLLM cache configuration proof
-  ansible.builtin.assert:
-    that:
-      - llm_model_trial_metrics_response.content is search('cache_config_info')
-    fail_msg: "The candidate vLLM endpoint did not expose cache_config_info in /metrics."
-    quiet: true
-  when: llm_model_trial_plan.engine == 'vllm'
-
-- name: Read llama.cpp properties for engine configuration proof
-  ansible.builtin.uri:
-    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_model_trial_port }}/props"
-    return_content: true
-    status_code: 200
-  register: llm_model_trial_props_response
-  when: llm_model_trial_plan.engine == 'llama_cpp'
-
-- name: Require llama.cpp properties proof
-  ansible.builtin.assert:
-    that:
-      - llm_model_trial_props_response.json is mapping
-    fail_msg: "The candidate llama.cpp endpoint did not return JSON properties from /props."
-    quiet: true
-  when: llm_model_trial_plan.engine == 'llama_cpp'
+- name: Wait for the candidate models endpoint and read its configuration proof
+  ansible.builtin.include_tasks: candidate-health.yml
 
 - name: Build health evidence and benchmark handoff facts
-  ansible.builtin.set_fact:
-    llm_model_trial_facts:
-      trial_id: "{{ llm_model_trial_id }}"
-      host: "{{ llm_model_trial_host }}"
-      inventory_host: "{{ inventory_hostname }}"
-      endpoint_url: "{{ llm_model_trial_endpoint_url }}"
-      endpoint_model: "{{ hf_repo }}"
-      hf_repo: "{{ hf_repo }}"
-      rule_version: "{{ llm_model_trial_plan.rule_version }}"
-      resolved_sha: "{{ llm_model_trial_plan.resolved_sha }}"
-      author: "{{ llm_model_trial_plan.author }}"
-      likes: "{{ llm_model_trial_plan.likes }}"
-      downloads: "{{ llm_model_trial_plan.downloads }}"
-      model_created_at: "{{ llm_model_trial_plan.created_at }}"
-      model_last_modified: "{{ llm_model_trial_plan.last_modified }}"
-      model_release_date: "{{ llm_model_trial_plan.release_date }}"
-      generation_config: "{{ llm_model_trial_plan.generation_config }}"
-      files: "{{ llm_model_trial_plan.files }}"
-      format: "{{ llm_model_trial_plan.format }}"
-      quantization: "{{ llm_model_trial_plan.quantization }}"
-      architecture: "{{ llm_model_trial_plan.architecture }}"
-      mtp_head: "{{ llm_model_trial_plan.mtp_head }}"
-      engine: "{{ llm_model_trial_plan.engine }}"
-      engine_version: >-
-        {{ (llm_model_trial_engine_version.stdout ~ ' ' ~ llm_model_trial_engine_version.stderr) | trim }}
-      engine_binary_mtime_epoch: "{{ llm_model_trial_engine_stat.stat.mtime | int }}"
-      context: "{{ llm_model_trial_plan.context }}"
-      context_maximum: "{{ llm_model_trial_plan.context_maximum }}"
-      slots: "{{ llm_model_trial_plan.slots }}"
-      flags: "{{ llm_model_trial_plan.flags }}"
-      baseline_unit: "{{ llm_model_trial_baseline_unit }}"
-      baseline_profile: "{{ llm_model_trial_baseline_profile }}"
-      health_proof:
-        models: "{{ llm_model_trial_models_response.json }}"
-        metrics: >-
-          {{ llm_model_trial_metrics_response.content | default('')
-             | regex_findall('(?m)^.*cache_config_info.*$') }}
-        props: "{{ llm_model_trial_props_response.json | default({}) }}"
+  ansible.builtin.include_tasks: candidate-facts.yml

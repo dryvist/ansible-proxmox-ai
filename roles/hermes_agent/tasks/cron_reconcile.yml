@@ -4,6 +4,47 @@
 # the whole fleet with a loud warning when NEITHER the shared digest channel
 # NOR the general Slack capability gate is satisfied (most entries carry their
 # own `deliver:` and do not depend on the shared digest channel).
+# `hermes cron create --script` resolves the script inside the job's own Hermes
+# home, so a script job homed in a named profile needs its copy there too.
+- name: Read which profile homes that run a script job exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ hermes_agent_profile_script_jobs | map(attribute='hermes_home') | unique | list }}"
+  register: hermes_agent_profile_script_homes
+  check_mode: false
+
+# Only an existing profile home gets a scripts directory: creating the home here
+# would mask a missing profile from the direct-batch preflight.
+- name: Create the scripts directory of each profile home that runs a script job
+  ansible.builtin.file:
+    path: "{{ item.item }}/scripts"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  loop: "{{ hermes_agent_profile_script_homes.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Place each profile script job's script in that profile's scripts directory
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_hermes_home }}/scripts/{{ item.script }}"
+    dest: "{{ item.hermes_home }}/scripts/{{ item.script }}"
+    remote_src: true
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  loop: "{{ hermes_agent_profile_script_jobs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  # A check run on a fresh host has no deployed source script to copy.
+  when:
+    - item.enabled | default(false) | bool
+    - >-
+      item.hermes_home in (hermes_agent_profile_script_homes.results
+      | selectattr('stat.exists') | map(attribute='item') | list)
+    - not ansible_check_mode
+
 - name: Warn when Slack is not configured (direct-deliver crons skipped)
   ansible.builtin.debug:
     msg: >-
@@ -18,6 +59,13 @@
       hermes_agent_slack_bot_token | length == 0
       or hermes_agent_slack_app_token | length == 0
       or hermes_agent_slack_home_channel | length == 0
+
+- name: Note that main-channel cron targets are not checked for this identity
+  ansible.builtin.debug:
+    msg: >-
+      Main-channel cron targets are not checked for identity {{ hermes_agent_id }}:
+      its scheduled jobs may deliver to its main channel.
+  when: not (hermes_agent_refuse_main_channel_targets | bool)
 
 - name: Read the installed cron jobs and desired-state markers once
   ansible.builtin.include_tasks:
@@ -99,12 +147,7 @@
   loop: "{{ hermes_agent_direct_cron_jobs }}"
   loop_control:
     label: "{{ item.name }}"
-  when: >-
-    hermes_agent_id == 'pepper'
-    or hermes_agent_digest_slack_channel | length > 0
-    or (hermes_agent_slack_bot_token | length > 0
-        and hermes_agent_slack_app_token | length > 0
-        and hermes_agent_slack_home_channel | length > 0)
+  when: hermes_agent_direct_cron_reconcile_runs | bool
 
 # The gateway ticks every profile home in-process and sends a satellite's Slack
 # output through the primary's profile route. A standalone per-profile

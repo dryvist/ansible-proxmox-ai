@@ -1,0 +1,52 @@
+---
+# =============================================================================
+# Checks the workspace provider id of each MCP tool node after the declared replacements. The id
+# must be one of the workspace's provider ids. A node that fails is named by its tool name only;
+# no provider id is printed.
+#
+# shortcut: only provider_type mcp nodes are checked, because the workspace list here is not split
+# by provider type and built-in providers are referenced by name. Upgrade when built-in names can
+# be matched against the provider type the list reports.
+# =============================================================================
+
+- name: Map each MCP tool node provider id through the declared replacements
+  ansible.builtin.set_fact:
+    dify_docker_dsl_mcp_provider_ids: >-
+      {{ dify_docker_dsl_mcp_provider_ids
+         | map('replace', dify_docker_dsl_tool_entry.key,
+                dify_docker_dsl_tool_ids[dify_docker_dsl_tool_entry.key] | first)
+         | list }}
+  loop: "{{ dify_docker_dsl_tool_provider_map | dict2items }}"
+  loop_control:
+    loop_var: dify_docker_dsl_tool_entry
+    label: "{{ dify_docker_dsl_tool_entry.key }}"
+  no_log: true
+
+- name: Read the workspace provider ids
+  ansible.builtin.set_fact:
+    dify_docker_dsl_workspace_ids: "{{ dify_docker_dsl_tool_providers.json | map(attribute='id') | list }}"
+  no_log: true
+
+- name: Reset the MCP tool nodes that fail the workspace check
+  ansible.builtin.set_fact:
+    dify_docker_dsl_bad_provider_nodes: []
+
+- name: Collect the MCP tool nodes whose provider id is not a workspace provider id
+  ansible.builtin.set_fact:
+    dify_docker_dsl_bad_provider_nodes: >-
+      {{ dify_docker_dsl_bad_provider_nodes
+         + ([dify_docker_dsl_mcp_node[0]]
+            if dify_docker_dsl_mcp_node[1] not in dify_docker_dsl_workspace_ids else []) }}
+  loop: "{{ dify_docker_dsl_mcp_tool_names | zip(dify_docker_dsl_mcp_provider_ids) | list }}"
+  loop_control:
+    loop_var: dify_docker_dsl_mcp_node
+    label: "{{ dify_docker_dsl_mcp_node[0] }}"
+  no_log: true
+
+- name: Assert each MCP tool node names a workspace provider id
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_bad_provider_nodes | length == 0
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: MCP tool nodes whose provider id is not a workspace provider id:
+      {{ dify_docker_dsl_bad_provider_nodes | join(', ') }}.

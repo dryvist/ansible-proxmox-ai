@@ -75,7 +75,7 @@ def _render_env(*, enabled: bool, model_exists: bool) -> str:
 
 def test_finetune_defaults_are_disabled_and_configuration_is_opt_in() -> None:
     assert DEFAULTS["laya_systemone_finetune_enabled"] is False
-    assert DEFAULTS["laya_systemone_finetune_action"] == "dispatch"
+    assert DEFAULTS["laya_systemone_finetune_action"] == ""
     assert DEFAULTS["laya_systemone_finetune_unit"] == "laya-finetune.service"
     assert DEFAULTS["laya_systemone_finetune_base_download_timeout_seconds"] == 420
     assert DEFAULTS["laya_systemone_finetune_dataset_download_timeout_seconds"] == 30

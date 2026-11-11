@@ -216,8 +216,8 @@ def test_pepper_router_key_does_not_add_the_goal_judge_route():
     env.filters['unique'] = lambda values: list(dict.fromkeys(values))
     models = env.from_string(key['models']).render(
         hermes_brain_model='fixture-brain', llm_router_d1_rungs_by_class={'local': ['fixture-local']},
-        hermes_goal_judge_model='fixture-judge')
-    assert models == ['fixture-brain', 'fixture-local']
+        llm_router_studio_model_names=['fixture-studio'], hermes_goal_judge_model='fixture-judge')
+    assert models == ['fixture-brain', 'fixture-local', 'fixture-studio']
     tasks = yaml.safe_load((ROLE / 'tasks/main.yml').read_text())
     environment = next(t['vars']['hermes_runtime_gateway_environment'] for t in tasks
                        if 'hermes_runtime_gateway_environment' in t.get('vars', {}))

@@ -82,19 +82,17 @@ def _defaults() -> dict[str, Any]:
 
 
 def _group_vars_all() -> dict[str, Any]:
-    """all.yml plus the tofu_data it now derives ai_llm_concurrency from.
+    """all.yml plus the tofu_data it derives ai_llm_concurrency from.
 
-    ai_llm_concurrency is itself a Jinja expression over tofu_data.constants
-    (dryvist/tofu-proxmox's pipeline_constants.serving.llm_concurrency,
-    published via the inventory_resolve role at playbook run time) rather
-    than a bare int. tofu_data doesn't exist outside a real inventory load,
-    so a minimal fixture stands in here — 8, matching the active profile
-    value — and ai_llm_concurrency is pre-rendered against it so _effective's
-    single-pass render below sees a resolved int, the way Ansible's templar
-    would after resolving both levels.
+    ai_llm_concurrency is a Jinja expression over tofu_data.constants.serving
+    (dryvist/tofu-proxmox's pipeline_constants.serving.llm_concurrency, published
+    at playbook run time) rather than a bare int. tofu_data doesn't exist outside
+    a real inventory load, so a fixture stands in here: 16, the max_num_seqs of
+    the active vLLM profile. ai_llm_concurrency is pre-rendered against it so
+    _effective's single-pass render below sees a resolved int.
     """
     group_vars = load_group_vars_all()
-    group_vars["tofu_data"] = {"constants": {"serving": {"llm_concurrency": 8}}}
+    group_vars["tofu_data"] = {"constants": {"serving": {"llm_concurrency": 16}}}
     group_vars["ai_llm_concurrency"] = (
         _jinja_env().from_string(str(group_vars["ai_llm_concurrency"])).render(**group_vars)
     )
@@ -104,8 +102,8 @@ def _group_vars_all() -> dict[str, Any]:
 def _effective(key: str) -> int:
     """Resolve a defaults value that may derive from a group_vars constant.
 
-    The caps below are Jinja expressions over ai_llm_concurrency rather than
-    bare ints, so comparing the raw YAML would assert the TEMPLATE TEXT and
+    The caps below are Jinja expressions over ai_agent_default_concurrency
+    (not ai_llm_concurrency) rather than bare ints, so comparing the raw YAML would assert the TEMPLATE TEXT and
     pass or fail for the wrong reason. Render it the way Ansible would and
     assert the value that actually reaches the config.
     """
@@ -222,7 +220,7 @@ def test_llm_wiki_skill_is_materializable_into_any_profile_that_opts_in() -> Non
     # as the default profile's copy in tasks/main.yml.
     profiles_tasks = (ROLE_ROOT / "tasks" / "profiles.yml").read_text()
     assert "Materialize the llm-wiki skill for profile" in profiles_tasks
-    assert "{{ hermes_agent_install_dir }}/skills/research/llm-wiki" in profiles_tasks
+    assert "{{ hermes_agent_install_dir }}/optional-skills/research/llm-wiki" in profiles_tasks
     assert (
         "when: hermes_agent_wiki_enabled | bool and 'research/llm-wiki' in item.skills"
         in profiles_tasks

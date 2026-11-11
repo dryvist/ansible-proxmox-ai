@@ -11,22 +11,69 @@
   vars:
     ansible_become: false
   tasks:
-    - name: Require exactly one GPU trial host in the inventory
+    - name: Require exactly one baseline GPU host in the inventory
       ansible.builtin.assert:
         that:
-          - groups['llm_gpu_group'] | default([]) | length == 1
+          - >-
+            (groups[llm_model_trial_inventory_group | default('llm_gpu_group')]
+             | default([llm_model_trial_inventory_group | default('llm_gpu_group')]
+                       if (llm_model_trial_inventory_group | default('llm_gpu_group')) in groups['all']
+                       else [])) | length == 1
         fail_msg: >-
-          The trial is fixed to host 6000 and requires llm_gpu_group to resolve
-          to exactly one inventory host.
+          The baseline (llm_model_trial_inventory_group: a group, or one inventory host name)
+          must resolve to exactly one inventory host.
         quiet: true
 
     - name: Run the controller-side Hugging Face preflight
       ansible.builtin.include_role:
         name: llm_model_trial
         tasks_from: preflight.yml
+        apply:
+          tags:
+            - llm_model_trial
+      tags:
+        - llm_model_trial
 
-- name: Serve one run-scoped candidate on the fixed 6000 GPU host
-  hosts: llm_gpu_group
+    - name: Place the candidate guest in its own group for the candidate play
+      ansible.builtin.add_host:
+        name: "{{ hostvars['localhost'].llm_model_trial_candidate_host }}"
+        groups: llm_model_trial_candidate_group
+        changed_when: false
+      tags:
+        - llm_model_trial
+
+- name: Download the candidate files on a separate target guest before the baseline stops (container mode only)
+  hosts: llm_model_trial_candidate_group
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Pre-stage the container candidate files
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: prestage-container.yml
+      when:
+        - hostvars['localhost'].llm_model_trial_container_settings.container_mode | bool
+        - hostvars['localhost'].llm_model_trial_container_settings.separate_guest | bool
+      tags:
+        - llm_model_trial
+
+- name: Stop the baseline behind a restore timer on the live guest (container mode only)
+  hosts: "{{ llm_model_trial_inventory_group | default('llm_gpu_group') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Run the live-guest container trial suspension
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: container-suspend.yml
+      when: hostvars['localhost'].llm_model_trial_container_settings.container_mode | bool
+      tags:
+        - llm_model_trial
+
+- name: Serve one run-scoped candidate on the target guest
+  hosts: llm_model_trial_candidate_group
   become: true
   gather_facts: true
   any_errors_fatal: true
@@ -35,5 +82,28 @@
       ansible.builtin.include_role:
         name: llm_model_trial
         tasks_from: serve.yml
+      when: not (hostvars['localhost'].llm_model_trial_container_settings.container_mode | bool)
+      tags:
+        - llm_model_trial
+
+    - name: Run the target-side container trial
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: serve-container.yml
+      when: hostvars['localhost'].llm_model_trial_container_settings.container_mode | bool
+      tags:
+        - llm_model_trial
+
+- name: Restore the baseline and finish the trial on the live guest (container mode only)
+  hosts: "{{ llm_model_trial_inventory_group | default('llm_gpu_group') }}"
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Run the live-guest container trial restoration
+      ansible.builtin.include_role:
+        name: llm_model_trial
+        tasks_from: restore-container.yml
+      when: hostvars['localhost'].llm_model_trial_container_settings.container_mode | bool
       tags:
         - llm_model_trial

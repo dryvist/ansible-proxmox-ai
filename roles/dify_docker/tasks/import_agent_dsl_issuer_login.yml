@@ -1,0 +1,60 @@
+---
+# =============================================================================
+# Logs in with the issuer AppRole, which reads the role id of an AppRole and mints, lists, looks
+# up and destroys its secret ids. Included only for an app with an AppRole-sourced variable. It
+# runs in check mode too, because the role-id read does. The login reads the auth endpoint and
+# changes nothing in the store. The token is a batch token: it is never revoked, never written
+# anywhere, and import_agent_dsl.yml clears it when the app's iteration ends. Missing credentials
+# and a refused login fail the app before its import. The messages name the variables and the
+# app, never a response or a value.
+# =============================================================================
+
+- name: Record whether the issuer AppRole credentials are set
+  ansible.builtin.set_fact:
+    dify_docker_dsl_issuer_ready: >-
+      {{ (dify_docker_agent_issuer_role_id | length > 0) and (dify_docker_agent_issuer_secret_id | length > 0) }}
+  no_log: true
+
+- name: Assert the issuer AppRole credentials are set
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_issuer_ready | bool
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: declared secret ids need the issuer AppRole credentials in the
+      environment variables {{ dify_docker_agent_issuer_env_names.role_id }} and
+      {{ dify_docker_agent_issuer_env_names.secret_id }}.
+
+- name: Log in with the issuer AppRole
+  community.hashi_vault.vault_login:
+    url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+    auth_method: approle
+    mount_point: "{{ dify_docker_agent_issuer_auth_mount }}"
+    role_id: "{{ dify_docker_agent_issuer_role_id }}"
+    secret_id: "{{ dify_docker_agent_issuer_secret_id }}"
+    validate_certs: "{{ dify_docker_bao_validate_certs }}"
+  register: dify_docker_dsl_issuer_login
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  no_log: true
+
+- name: Keep the issuer token for this app
+  ansible.builtin.set_fact:
+    dify_docker_dsl_issuer_token: >-
+      {{ ((dify_docker_dsl_issuer_login.login | default({}, true)).auth | default({}, true))
+         .client_token | default('', true) }}
+    dify_docker_dsl_issuer_logged: >-
+      {{ ((dify_docker_dsl_issuer_login.login | default({}, true)).auth | default({}, true))
+         .client_token | default('', true) | length > 0 }}
+  no_log: true
+
+- name: Assert the issuer AppRole login returned a token
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_issuer_logged | bool
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: the issuer AppRole login returned no token. No response detail is shown.

@@ -9,6 +9,9 @@ from jinja2 import Environment
 
 TASKS = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent" / "tasks"
 ENV = Environment()
+ENV.filters["bool"] = lambda value: (
+    value if isinstance(value, bool) else str(value).lower() in ("true", "yes", "1")
+)
 ENV.filters["regex_search"] = lambda value, pattern: (
     match.group(0) if (match := re.search(pattern, value)) else None
 )
@@ -23,6 +26,7 @@ def _pause_runs(snapshot: dict[str, str], *, name: str, home: str) -> bool:
     context = {
         "ansible_check_mode": False,
         "hermes_agent_hermes_home": "default-home",
+        "hermes_agent_direct_cron_reconcile_runs": False,
         "hermes_agent_direct_cron_lists": snapshot,
         "item": {"name": name, "hermes_home": home},
     }

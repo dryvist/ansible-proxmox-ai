@@ -1,0 +1,24 @@
+---
+- name: Create the target model cache directory for the candidate
+  ansible.builtin.file:
+    path: "{{ llm_model_trial_model_dir }}"
+    state: directory
+    owner: "{{ llm_gpu_serving_user }}"
+    group: "{{ llm_gpu_serving_group }}"
+    mode: '0750'
+
+- name: Download the selected files at the resolved SHA into the existing model cache
+  ansible.builtin.command:
+    argv: >-
+      {{ [llm_gpu_serving_hf_bin, 'download', hf_repo]
+         + (llm_model_trial_plan.files | map(attribute='path') | list)
+         + ['--revision', llm_model_trial_plan.resolved_sha,
+            '--local-dir', llm_model_trial_model_dir] }}
+  environment: >-
+    {{ llamacpp_release_proxy_environment
+       | combine({'HF_HOME': llm_gpu_serving_hf_home,
+                  'HF_HUB_DISABLE_IMPLICIT_TOKEN': '1'}) }}
+  become: true
+  become_user: "{{ llm_gpu_serving_user }}"
+  register: llm_model_trial_download
+  changed_when: true

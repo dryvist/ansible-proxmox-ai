@@ -158,7 +158,7 @@ def test_profile_comes_from_the_shared_selector_not_a_new_variable() -> None:
     }
     assert render_profile("llama_cpp", {}) == "medium-a"
     assert render_profile("llama_cpp", engine_groups) == "medium-b"
-    assert render_profile("vllm", engine_groups) == "medium-a"
+    assert render_profile("vllm", engine_groups) == "qwen38-96k-11-fp8-mtp"
     assert render_profile("sglang", engine_groups) == all_vars["llm_gpu_active_profiles_by_engine"]["sglang"]
     assert render_profile("strata", engine_groups) == "medium-a"
 

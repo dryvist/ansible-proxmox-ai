@@ -27,6 +27,7 @@ LEGACY_SLACK_CONFIG = """platforms:
   slack:
     reply_in_thread: true
     cron_continuable_surface: thread
+    gateway_restart_notification: false
 """
 
 
