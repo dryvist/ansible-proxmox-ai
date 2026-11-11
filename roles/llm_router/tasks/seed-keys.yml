@@ -42,6 +42,33 @@
 # either, but it turns the next occurrence into a message naming the alias
 # instead of a second log-platform trip.
 
+- name: Validate selected key aliases are declared
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (llm_router_seed_key_aliases | default([])
+         | select('in', llm_router_virtual_keys | map(attribute='alias') | list)
+         | list | length) == (llm_router_seed_key_aliases | default([]) | length)
+    fail_msg: >-
+      llm_router_seed_key_aliases contains undeclared alias(es):
+      {{ llm_router_seed_key_aliases | default([])
+         | reject('in', llm_router_virtual_keys | map(attribute='alias') | list)
+         | list | join(', ') }}.
+
+- name: Validate rotated key aliases are selected
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (llm_router_rotate_key_aliases | default([])
+         | select('in', llm_router_seed_key_aliases | default([]))
+         | list | length) == (llm_router_rotate_key_aliases | default([]) | length)
+    fail_msg: >-
+      llm_router_rotate_key_aliases must be a subset of
+      llm_router_seed_key_aliases when key selection is non-empty.
+  when: (llm_router_seed_key_aliases | default([]) | length) > 0
+
 - name: Validate privacy grants before standalone consumer seeding
   ansible.builtin.import_tasks: assert-privacy-grants.yml
 
@@ -66,6 +93,8 @@
   loop_control:
     label: "{{ item.alias }}"
 
+# For a named subset, only create a missing priority/default team its selected
+# keys need; leave existing shared team policy to the full empty-selection run.
 - name: Seed priority teams before assigning caller keys
   ansible.builtin.import_tasks: seed-priority-teams.yml
 
@@ -217,7 +246,7 @@
            if (item.daily_budget | default(0) | float > 0) else omit }}
     status_code: [200, 201, 400]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: "{{ llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list }}"
+  loop: "{{ _llm_router_seed_virtual_keys | rejectattr('value', 'equalto', '') | list }}"
   loop_control:
     label: "{{ item.alias }}"
   when: item.alias not in _llm_router_live_key_aliases
