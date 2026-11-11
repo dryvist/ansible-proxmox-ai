@@ -433,6 +433,35 @@ def test_declared_checks_run_for_entries_placeholders_or_empty_variables_and_ski
     assert include["when"][0] == "dify_docker_dsl_declared_check_needed | bool"
 
 
+def test_mode_variables_must_be_shadow_unless_the_app_is_listed_as_live():
+    pre = _yaml(PRE)
+    collect = _fact(pre, "Collect declared _MODE variables that do not resolve to shadow for an app not listed as live",
+                    "dify_docker_dsl_bad_mode_names")
+
+    def bad(entry, values, live=()):
+        return _render(collect, dify_docker_dsl_bad_mode_names=[], dify_docker_dsl_name="example-app",
+                       dify_docker_agent_live_apps=list(live), dify_docker_dsl_variable_values=values,
+                       dify_docker_dsl_mode_entry=entry)
+
+    for value, flagged in (("live", True), (" LIVE ", True), ("Shadow", False), ("shadow ", False)):
+        entry = {"name": "EXAMPLE_MODE", "value": value}
+        assert bad(entry, [{"name": "EXAMPLE_MODE", "value": value}]) == (["EXAMPLE_MODE"] if flagged else []), value
+    listed = {"name": "EXAMPLE_MODE", "value": "live"}
+    assert bad(listed, [{"name": "EXAMPLE_MODE", "value": "live"}], live=["example-app"]) == []
+    other = {"name": "EXAMPLE_TOKEN", "value": "live"}
+    assert bad(other, [{"name": "EXAMPLE_TOKEN", "value": "live"}]) == []
+    minted = {"name": "EXAMPLE_MODE", "approle_secret_id": {"approle": "agent-example"}}
+    assert bad(minted, []) == ["EXAMPLE_MODE"]
+
+    check = _task(pre, "Assert each declared _MODE variable is shadow unless the app is listed as live")
+    assert check.get("no_log") is not True
+    assert _passes(check["ansible.builtin.assert"]["that"], dify_docker_dsl_bad_mode_names=[])
+    assert not _passes(check["ansible.builtin.assert"]["that"], dify_docker_dsl_bad_mode_names=["EXAMPLE_MODE"])
+    message = _env().from_string(check["ansible.builtin.assert"]["fail_msg"]).render(
+        dify_docker_dsl_name="example-app", dify_docker_dsl_bad_mode_names=["EXAMPLE_MODE"])
+    assert "example-app" in message and "EXAMPLE_MODE" in message
+
+
 def _replay_shared_approle_run(mints_per_app):
     """Replay the real record and prune expressions for apps that share one AppRole in one play.
 

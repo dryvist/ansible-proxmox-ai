@@ -14,6 +14,7 @@
     dify_docker_dsl_bad_names: []
     dify_docker_dsl_unresolved_names: []
     dify_docker_dsl_unresolved_tools: []
+    dify_docker_dsl_bad_mode_names: []
   no_log: true
 
 - name: Collect declared variables that do not name exactly one source
@@ -114,6 +115,34 @@
       {{ dify_docker_dsl_name }}: unresolved before import. Variables without a value:
       {{ dify_docker_dsl_unresolved_names | join(', ') or 'none' }}. Tool providers without
       a single workspace match: {{ dify_docker_dsl_unresolved_tools | join(', ') or 'none' }}.
+
+# An app not listed as live must keep every declared _MODE variable at shadow. A minted secret id
+# never equals shadow, so a _MODE entry sourced from one fails for such an app.
+- name: Collect declared _MODE variables that do not resolve to shadow for an app not listed as live
+  ansible.builtin.set_fact:
+    dify_docker_dsl_bad_mode_names: >-
+      {{ dify_docker_dsl_bad_mode_names
+         + ([dify_docker_dsl_mode_entry.name]
+            if (dify_docker_dsl_mode_entry.name is search('_MODE$'))
+               and (dify_docker_dsl_name not in dify_docker_agent_live_apps)
+               and ((dify_docker_dsl_mode_entry.approle_secret_id is defined)
+                    or ((dify_docker_dsl_variable_values
+                         | selectattr('name', 'equalto', dify_docker_dsl_mode_entry.name)
+                         | map(attribute='value') | first | default('', true)) | trim | lower) != 'shadow')
+            else []) }}
+  loop: "{{ dify_docker_dsl_variable_entries }}"
+  loop_control:
+    loop_var: dify_docker_dsl_mode_entry
+    label: "{{ dify_docker_dsl_mode_entry.name | default('unnamed') }}"
+  no_log: true
+
+- name: Assert each declared _MODE variable is shadow unless the app is listed as live
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_bad_mode_names | length == 0
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: _MODE variables must be shadow unless the app is listed in
+      dify_docker_agent_live_apps. Variables: {{ dify_docker_dsl_bad_mode_names | join(', ') }}
 
 - name: List the declared tool provider placeholders missing from the app definition
   ansible.builtin.set_fact:
