@@ -1,112 +1,15 @@
-"""A Donna cron job may never deliver, or fail, to her main channel.
+"""Donna's direct cron jobs never deliver, or fail, to her main channel.
 
-The rule is one assert in refuse_main_channel_target.yml, included by the two
-reconcile files that compute each job's final targets. These tests resolve the
-targets with the real set_fact tasks in those files, then run the included assert,
-so defaults, profile remaps and channel_when_healthy are checked as they resolve.
+The rule is refuse_main_channel_target.yml, included per job by reconcile_direct_cron.yml
+after it resolves the job's targets. These tests resolve the targets with the real set_fact
+tasks, then run the guard's own tasks. The enqueuer path is in its own file.
 """
-import re
-from pathlib import Path
-
 import yaml
-from jinja2.nativetypes import NativeEnvironment
 
-from _role_files import role_defaults
+from _cron_targets_shared import GUARD_FILE, ISSUES, MAIN, ROLE, _direct, _direct_passes, _donna_job, _tasks
 
-ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
-DEFAULTS = role_defaults(ROLE)
-MAIN = "C0EXAMPLEMAIN"
-ISSUES = "C0EXAMPLEISS"
-ENV = NativeEnvironment()
-ENV.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
-ENV.filters["bool"] = lambda value: value if isinstance(value, bool) else str(value).lower() in ("true", "yes", "1")
-
-
-def _task(file, prefix):
-    tasks = yaml.safe_load((ROLE / "tasks" / file).read_text())
-    return next(t for t in tasks if str(t.get("name", "")).startswith(prefix))
-
-
-def _value(value, context):
-    """Evaluate one task value: a `{{ }}` template, or a bare `when:`/`that:` expression."""
-    if not isinstance(value, str) or not value.strip():
-        return value
-    if "{{" in value:
-        return ENV.from_string(value).render(**context)
-    return ENV.compile_expression(value)(**context)
-
-
-def _base(job, identity, home, failure, owners, profiles):
-    context = {
-        "item": job,
-        "hermes_agent_id": identity,
-        "hermes_agent_identity": identity,
-        "hermes_agent_slack_home_channel": home,
-        "hermes_agent_cron_failure_deliver": failure,
-        "hermes_agent_cron_model": "",
-        "hermes_agent_cron_model_provider": "custom",
-        "hermes_agent_hermes_home": "/var/lib/hermes",
-        "hermes_agent_direct_no_agent": False,
-        "hermes_agent_slack_profile_channels": profiles,
-        "hermes_agent_job_identities_default": DEFAULTS["hermes_agent_job_identities_default"],
-        "ai_agent_owner": owners,
-    }
-    for name in ("hermes_agent_digest_slack_channel", "hermes_agent_job_identities",
-                 "hermes_agent_direct_job_wanted"):
-        context[name] = _value(DEFAULTS[name], context)
-    return context
-
-
-def _resolve(task, context):
-    for name, value in task.get("vars", {}).items():
-        context[name] = _value(value, context)
-    for name, value in task.get("ansible.builtin.set_fact", {}).items():
-        context[name] = _value(value, context)
-    return context
-
-
-GUARD_FILE = "refuse_main_channel_target.yml"
-
-
-def _include_target(task):
-    target = task.get("ansible.builtin.include_tasks")
-    return target.get("file") if isinstance(target, dict) else target
-
-
-def _conditions(task):
-    when = task.get("when", [])
-    return [when] if isinstance(when, str) else when
-
-
-def _guard_passes(caller_file, include_prefix, context):
-    """Run a caller's include gate and vars, then the shared assert with them."""
-    include = _task(caller_file, include_prefix)
-    if not all(_value(cond, context) for cond in _conditions(include)):
-        return True
-    context = {**context, **{k: _value(v, context) for k, v in include["vars"].items()}}
-    guard = _task(GUARD_FILE, "Refuse Donna's main channel")
-    if not all(_value(cond, context) for cond in _conditions(guard)):
-        return True
-    context = {**context, **{k: _value(v, context) for k, v in guard.get("vars", {}).items()}}
-    return all(_value(cond, context) for cond in guard["ansible.builtin.assert"]["that"])
-
-
-def _direct_passes(job, identity="donna", home=MAIN, failure=f"slack:{ISSUES}", profiles=None):
-    context = _base(job, identity, home, failure, {}, profiles or {})
-    context = _resolve(_task("reconcile_direct_cron.yml", "Direct cron | Decide agent ownership"), context)
-    context = _resolve(_task("reconcile_direct_cron.yml", "Direct cron | Resolve deliver target"), context)
-    return _guard_passes("reconcile_direct_cron.yml", "Direct cron | Refuse Donna", context)
-
-
-def _enqueuer_passes(job, identity="donna", home=MAIN, failure=f"slack:{ISSUES}", owners=None):
-    context = _base(job, identity, home, failure, owners or {}, {})
-    context = _resolve(_task("reconcile_enqueuer_cron.yml", "Enqueuer cron | Effective-active"), context)
-    context = _resolve(_task("reconcile_enqueuer_cron.yml", "Enqueuer cron | Resolve fields"), context)
-    return _guard_passes("reconcile_enqueuer_cron.yml", "Enqueuer cron | Refuse Donna", context)
-
-
-def _donna_job(**fields):
-    return {"name": "pulse", "schedule": "39 * * * *", "enabled": True, "identities": ["donna"], **fields}
+ACTIVE = "  3f2a9c1d7e40 [active]\n    Name:      pulse\n"
+PAUSED = "  3f2a9c1d7e40 [paused]\n    Name:      pulse\n"
 
 
 def test_donna_jobs_aimed_at_their_own_channels_pass():
@@ -129,8 +32,6 @@ def test_failure_to_the_main_channel_fails():
 def test_a_failure_list_naming_the_main_channel_fails():
     assert not _direct_passes(_donna_job(deliver="slack:C0EXAMPLEALL",
                                          failure_deliver=f"slack:{ISSUES},slack:{MAIN}"))
-    job = {"name": "splunk-status-digest", "system": "splunk", "enabled": True, "deliver": "local"}
-    assert not _enqueuer_passes(job, owners={"splunk": "donna"}, failure=f"slack:{ISSUES}, slack:{MAIN}")
 
 
 def test_a_job_with_no_deliver_falls_back_to_the_home_channel_and_fails():
@@ -167,34 +68,81 @@ def test_other_identities_are_not_checked():
     assert _direct_passes(job, identity="hermes")
 
 
-def test_an_unset_home_channel_is_not_checked():
-    assert _direct_passes(_donna_job(deliver="slack:", failure_deliver="local"), home="")
+def test_an_unset_home_channel_fails_for_donna_and_is_not_checked_for_others():
+    assert not _direct_passes(_donna_job(deliver="slack:", failure_deliver="local"), home="")
+    job = _donna_job(identities=["hermes"], deliver="local", failure_deliver="local")
+    assert _direct_passes(job, identity="hermes", home="")
 
 
-def test_a_donna_enqueuer_delivering_to_the_main_channel_fails():
-    job = {"name": "splunk-status-digest", "system": "splunk", "enabled": True,
-           "deliver": f"slack:{MAIN}", "script": "status.py"}
-    assert not _enqueuer_passes(job, owners={"splunk": "donna"})
+def test_a_bare_channel_id_in_a_list_fails():
+    assert not _direct_passes(_donna_job(deliver=f"local,{MAIN}", failure_deliver="local"))
+    assert not _direct_passes(_donna_job(deliver="local", failure_deliver="C0EXAMPLEALL"))
 
 
-def test_a_donna_enqueuer_failing_into_the_main_channel_fails():
-    job = {"name": "splunk-status-digest", "system": "splunk", "enabled": True, "deliver": "local"}
-    assert not _enqueuer_passes(job, owners={"splunk": "donna"}, failure=f"slack:{MAIN}")
+def test_a_thread_suffix_fails():
+    assert not _direct_passes(_donna_job(deliver="slack:C0EXAMPLEALL:1700.1", failure_deliver="local"))
 
 
-def test_a_donna_enqueuer_without_deliver_stays_local():
-    job = {"name": "splunk-status-digest", "system": "splunk", "enabled": True}
-    assert _enqueuer_passes(job, owners={"splunk": "donna"})
+def test_a_lowercase_channel_id_fails():
+    assert not _direct_passes(_donna_job(deliver="slack:c0exampleall", failure_deliver="local"))
 
 
-def test_a_disabled_enqueuer_is_not_checked():
-    job = {"name": "splunk-status-digest", "system": "splunk", "enabled": False, "deliver": f"slack:{MAIN}"}
-    assert _enqueuer_passes(job, owners={"splunk": "donna"})
+def test_a_hash_channel_name_fails():
+    assert not _direct_passes(_donna_job(deliver="slack:#general", failure_deliver="local"))
 
 
-def test_an_enqueuer_owned_by_another_identity_is_not_checked():
-    job = {"name": "splunk-status-digest", "system": "splunk", "enabled": True, "deliver": f"slack:{MAIN}"}
-    assert _enqueuer_passes(job, owners={})
+def test_a_lowercase_home_channel_still_blocks_the_upper_case_form():
+    assert not _direct_passes(_donna_job(deliver=f"slack:{MAIN}", failure_deliver="local"), home=MAIN.lower())
+
+
+def test_a_padded_entry_naming_the_main_channel_fails():
+    assert not _direct_passes(_donna_job(deliver=f" slack:{MAIN} ", failure_deliver="local"))
+
+
+def test_the_allowed_forms_pass():
+    assert _direct_passes(_donna_job(deliver="slack:C0EXAMPLEALL", failure_deliver="log"))
+    assert _direct_passes(_donna_job(deliver="local,", failure_deliver=" local "))
+    assert _direct_passes(_donna_job(deliver="slack:C0EXAMPLEALL,local", failure_deliver=f"slack:{ISSUES}"))
+
+
+def test_the_failure_names_the_job_and_the_rejected_entry():
+    message, _ = _direct(_donna_job(deliver="slack:C0EXAMPLEALL:1700.1", failure_deliver="local"))
+    assert message is not None
+    assert "pulse" in message and "slack:C0EXAMPLEALL:1700.1" in message
+
+
+def test_an_installed_active_job_is_paused_when_its_target_is_refused():
+    message, context = _direct(_donna_job(deliver=f"slack:{MAIN}", failure_deliver="local"), listing=ACTIVE)
+    assert context["hermes_agent_refuse_job_id"] == "3f2a9c1d7e40"
+    assert context["hermes_agent_refuse_job_state"] == "active"
+    assert "was paused" in message
+    assert "re-run the reconcile" in message
+
+
+def test_a_job_that_is_not_installed_is_not_paused():
+    message, context = _direct(_donna_job(deliver=f"slack:{MAIN}", failure_deliver="local"), listing="")
+    assert context["hermes_agent_refuse_job_id"] == ""
+    assert "was paused" not in message
+
+
+def test_an_already_paused_job_is_not_paused_again():
+    message, context = _direct(_donna_job(deliver=f"slack:{MAIN}", failure_deliver="local"), listing=PAUSED)
+    assert context["hermes_agent_refuse_job_state"] == "paused"
+    assert "was paused" not in message
+
+
+def test_check_mode_does_not_pause_the_installed_job():
+    message, _ = _direct(_donna_job(deliver=f"slack:{MAIN}", failure_deliver="local"), listing=ACTIVE,
+                         check_mode=True)
+    assert "was paused" not in message
+
+
+def test_the_installed_job_is_paused_before_the_check_fails():
+    names = [str(t.get("name", "")) for t in _tasks(GUARD_FILE)]
+    pause = next(i for i, n in enumerate(names) if n.startswith("Pause "))
+    marker = next(i for i, n in enumerate(names) if n.startswith("Clear the desired-state marker"))
+    check = next(i for i, n in enumerate(names) if n.startswith("Refuse Donna's main channel"))
+    assert pause < marker < check
 
 
 def test_each_guard_runs_before_any_job_is_created_or_removed():
@@ -208,7 +156,8 @@ def test_each_guard_runs_before_any_job_is_created_or_removed():
         names = [str(t.get("name", "")) for t in tasks]
         first_mutation = min(i for i, n in enumerate(names) if n.startswith(mutations))
         include = next(t for t in tasks if str(t.get("name", "")).startswith(guard))
-        assert _include_target(include) == GUARD_FILE
+        target = include["ansible.builtin.include_tasks"]["file"]
+        assert target == GUARD_FILE
         assert names.index(include["name"]) < first_mutation
 
 
