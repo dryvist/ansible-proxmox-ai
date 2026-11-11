@@ -4,9 +4,9 @@
 # healthy footer there. The direct and enqueuer reconcile files include this per job, after
 # resolving its targets. Each comma-separated entry must be empty, a non-posting literal
 # (local, log), or slack:<ID> with an upper-case ID other than the home channel. Anything
-# else fails closed. An installed job on a refused target is edited to local delivery by id,
-# then read back from the job store. Its marker is cleared only when that read-back proves
-# the job no longer names the home channel.
+# else fails closed. An installed job with a refused delivery or failure target is edited to
+# local by id; one with a refused healthy footer is withdrawn, because the footer is prompt
+# text. Either way the job store is read back, and only that read decides the outcome.
 - name: "Require a Slack home channel for {{ refuse_target_name }}"
   ansible.builtin.assert:
     quiet: true
@@ -25,7 +25,6 @@
          | map('trim') | reject('eq', '') | reject('in', ['local', 'log']) | list) -%}
       {{ (entries | reject('match', '^slack:[A-Z0-9]+$') | list)
          + (entries | select('eq', 'slack:' ~ (hermes_agent_slack_home_channel | upper)) | list) }}
-    # A healthy footer is prompt text, so `cron edit` cannot stop it. It is tracked apart.
     hermes_agent_refuse_footer_home: >-
       {{ ((refuse_footer.split(',') | map('trim') | list)
          | select('match', '(?i)^slack:' ~ (hermes_agent_slack_home_channel | regex_escape) ~ '(:|$)')
@@ -68,10 +67,37 @@
     - hermes_agent_refuse_main_channel_targets | bool
     - hermes_agent_refuse_bad | length > 0
     - hermes_agent_refuse_job_id | length > 0
+    - not (hermes_agent_refuse_footer_home | bool)
     - not ansible_check_mode
 
-# The edit is confirmed from the same job store the drift check reads, not from the edit's exit
-# code. The store can carry credentials, so nothing here is logged.
+# A healthy footer cannot be edited away, so the installed job is withdrawn with the direct-cron
+# withdraw tasks, included rather than copied. Those tasks run only for an unwanted job, so the
+# include sets it unwanted and passes this job's installed listing. A failed removal is absorbed
+# here, because the read-back below decides whether the job is gone.
+- name: "Withdraw the installed job for a refused healthy footer: {{ refuse_target_name }}"
+  when:
+    - hermes_agent_refuse_main_channel_targets | bool
+    - hermes_agent_refuse_footer_home | bool
+    - hermes_agent_refuse_job_id | length > 0
+    - not ansible_check_mode
+  block:
+    - name: "Withdraw the installed job through the direct-cron withdraw tasks"
+      ansible.builtin.include_tasks:
+        file: reconcile_direct_cron_withdraw.yml
+        apply:
+          tags: hermes_crons
+      tags: hermes_crons
+      vars:
+        hermes_agent_direct_wanted: false
+        hermes_agent_direct_cron_list:
+          stdout: "{{ (hermes_agent_direct_cron_lists | default({})).get(refuse_home, '') }}"
+  rescue:
+    - name: "Report that the withdraw failed, so the read-back decides the outcome"
+      ansible.builtin.debug:
+        msg: "The withdraw of {{ refuse_target_name }} failed; the job store read-back decides."
+
+# The outcome is confirmed from the same job store the drift check reads, not from any exit code.
+# The store can carry credentials, so nothing here is logged.
 - name: "Read the installed job back from the job store: {{ refuse_target_name }}"
   ansible.builtin.slurp:
     src: "{{ refuse_home }}/cron/jobs.json"
@@ -97,11 +123,17 @@
     - hermes_agent_refuse_job_id | length > 0
     - not ansible_check_mode
 
-# A job is found when the store lists its id. Its failure target is absent when it follows
-# deliver, so an absent failure key counts as following deliver.
+# `readable`: the store could be read at all. `found`: the store lists the job's id. `known`:
+# the listed entry carries both the deliver and the failure_deliver key, so both targets can
+# be judged. A missing key is never read as "follows deliver": the outcome is then not cleared.
 - name: "Compare the read-back with the refused targets for {{ refuse_target_name }}"
   ansible.builtin.set_fact:
+    hermes_agent_refuse_readable: "{{ hermes_agent_refuse_store.content is defined }}"
     hermes_agent_refuse_found: "{{ hermes_agent_refuse_readback | default([]) | length > 0 }}"
+    hermes_agent_refuse_known: >-
+      {{ hermes_agent_refuse_readback | default([]) | length > 0
+         and hermes_agent_refuse_readback[0].deliver is defined
+         and hermes_agent_refuse_readback[0].failure_deliver is defined }}
     hermes_agent_refuse_home_left: >-
       {{ hermes_agent_refuse_readback | default([]) | length > 0
          and ((((hermes_agent_refuse_readback[0].deliver | default('')) ~ ','
@@ -117,18 +149,23 @@
     - hermes_agent_refuse_job_id | length > 0
     - not ansible_check_mode
 
-# `unchecked`: nothing was edited, so no claim is made about posting. `cleared`: the read-back
-# proves the job no longer names the home channel and the healthy footer does not name it.
-# `still`: the job is found and still names the home channel, or it is missing from the store,
-# or its healthy footer names the home channel.
+# `unchecked`: nothing was changed, so no claim is made about posting.
+# `removed`: a footer refusal, and the read-back shows the job is gone.
+# `cleared`: an edit, and the read-back proves the job no longer names the home channel.
+# `still`: anything else; the job may still post to the main channel.
 - name: "Decide the outcome for {{ refuse_target_name }}"
   ansible.builtin.set_fact:
     hermes_agent_refuse_outcome: >-
       {{ 'unchecked' if (ansible_check_mode or hermes_agent_refuse_job_id | length == 0)
-         else ('cleared' if (hermes_agent_refuse_found | default(false) | bool
-                  and not (hermes_agent_refuse_home_left | default(true) | bool)
-                  and not (hermes_agent_refuse_footer_home | bool))
-               else 'still') }}
+         else ((('removed' if (hermes_agent_refuse_readable | default(false) | bool
+                               and not (hermes_agent_refuse_found | default(false) | bool))
+                else 'still')
+                if (hermes_agent_refuse_footer_home | bool)
+                else ('cleared' if (hermes_agent_refuse_readable | default(false) | bool
+                                    and hermes_agent_refuse_found | default(false) | bool
+                                    and hermes_agent_refuse_known | default(false) | bool
+                                    and not (hermes_agent_refuse_home_left | default(true) | bool))
+                      else 'still'))) }}
   when:
     - hermes_agent_refuse_main_channel_targets | bool
     - hermes_agent_refuse_bad | length > 0
@@ -152,6 +189,10 @@
       The installed job {{ hermes_agent_refuse_job_id }} for {{ refuse_target_name }} is STILL
       posting to the main channel: its read-back still names the home channel, the job is not
       in the store, or its healthy footer names it. It was not recorded as fixed.
+      {% elif hermes_agent_refuse_outcome == 'removed' %}
+      The installed job was removed, because its healthy footer names the main channel and an
+      edit cannot change that footer. It returns when the declared target is corrected and the
+      reconcile is re-run.
       {% elif hermes_agent_refuse_outcome == 'cleared' %}
       The installed job was edited to local delivery, and its read-back confirms it no longer
       names the main channel. Correct the declared target and re-run the reconcile; the job is

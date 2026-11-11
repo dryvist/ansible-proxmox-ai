@@ -60,10 +60,11 @@ itself — not assumed):
   `hermes_agent_refuse_main_channel_targets` is on (the default for every identity
   except `hermes`), every entry of its jobs' deliver, failure and healthy-footer
   values must be empty, `local`, `log`, or `slack:<ID>` with an upper-case ID other
-  than its home channel. A job already installed on a refused target is edited to
-  local delivery by id, then read back from the job store; the converge fails until
-  the declared target is corrected. The healthy footer is prompt text that an edit
-  does not change, so a refused footer is reported as still posting.
+  than its home channel. A job installed on a refused delivery or failure target is
+  edited to local delivery by id. A job installed with a refused healthy footer is
+  withdrawn, because the footer is prompt text that an edit does not change. Either
+  way the job store is read back, and the converge fails until the declared target
+  is corrected.
 
 None of these were silently dropped.
 

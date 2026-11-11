@@ -106,32 +106,46 @@ def _guard_run(caller_file, include_prefix, context, store=None, edit_rc=0):
 
     `store` is the job list the read-back finds in jobs.json (None: no file). `edit_rc` is the
     exit code of `cron edit`. Returns (failure message or None, final context). A skipped
-    check returns None. The context records `marker_cleared` when the marker is removed.
+    check returns None. The context records `marker_cleared` when the marker is removed,
+    `withdraw_called` when the withdraw include runs, and the registers of tasks that ran.
     """
     include = _task(caller_file, include_prefix)
     if not all(_value(c, context) for c in _conditions(include)):
         return None, context
     context = {**context, **{k: _value(v, context) for k, v in include["vars"].items()}}
-    for task in _tasks(GUARD_FILE):
+    message = _run_tasks(_tasks(GUARD_FILE), context, {"store": store, "edit_rc": edit_rc})
+    return message, context
+
+
+def _run_tasks(tasks, context, state):
+    """Run guard tasks in order. `context` is updated in place; returns a failure message or None."""
+    for task in tasks:
         if task.get("register"):
             context[task["register"]] = {}
         scope = {**context, **{k: _value(v, context) for k, v in task.get("vars", {}).items()}}
         if not all(_value(c, scope) for c in _conditions(task)):
             continue
-        if "ansible.builtin.set_fact" in task:
+        if "block" in task:
+            _run_tasks(task["block"], context, state)
+        elif "ansible.builtin.include_tasks" in task:
+            context["withdraw_called"] = True
+        elif "ansible.builtin.set_fact" in task:
             for k, v in task["ansible.builtin.set_fact"].items():
                 context[k] = _value(v, scope)
         elif "ansible.builtin.command" in task:
-            context[task["register"]] = {"changed": True, "rc": edit_rc}
+            context[task["register"]] = {"changed": True, "rc": state["edit_rc"]}
         elif "ansible.builtin.slurp" in task:
-            content = None if store is None else base64.b64encode(json.dumps({"jobs": store}).encode())
-            context[task["register"]] = {} if content is None else {"content": content.decode()}
+            if state["store"] is None:
+                context[task["register"]] = {}
+            else:
+                raw = json.dumps({"jobs": state["store"]}).encode()
+                context[task["register"]] = {"content": base64.b64encode(raw).decode()}
         elif "ansible.builtin.file" in task:
             context["marker_cleared"] = True
         elif "ansible.builtin.assert" in task:
             if not all(_value(c, scope) for c in task["ansible.builtin.assert"]["that"]):
-                return _value(task["ansible.builtin.assert"]["fail_msg"], scope), context
-    return None, context
+                return _value(task["ansible.builtin.assert"]["fail_msg"], scope)
+    return None
 
 
 def _job(**fields):
