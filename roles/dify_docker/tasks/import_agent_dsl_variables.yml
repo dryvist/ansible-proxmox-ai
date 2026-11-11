@@ -101,6 +101,7 @@
     dify_docker_dsl_unresolved_names: >-
       {{ dify_docker_dsl_resolve_names | difference(
            dify_docker_dsl_variable_values | rejectattr('value', 'equalto', '')
+           | rejectattr('value', 'match', '^<[A-Z_]+>$')
            | map(attribute='name') | list) }}
   no_log: true
 
@@ -114,6 +115,21 @@
       {{ dify_docker_dsl_unresolved_names | join(', ') or 'none' }}. Tool providers without
       a single workspace match: {{ dify_docker_dsl_unresolved_tools | join(', ') or 'none' }}.
 
+- name: List the declared tool provider placeholders missing from the app definition
+  ansible.builtin.set_fact:
+    dify_docker_dsl_missing_tool_keys: >-
+      {{ dify_docker_dsl_tool_provider_map | dict2items | map(attribute='key')
+         | reject('in', dify_docker_dsl_content) | list }}
+  no_log: true
+
+- name: Assert every declared tool provider placeholder occurs in the app definition
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_missing_tool_keys | length == 0
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: declared tool provider placeholders not in the definition:
+      {{ dify_docker_dsl_missing_tool_keys | join(', ') }}
+
 - name: Replace each declared placeholder in the DSL with its tool provider id
   ansible.builtin.set_fact:
     dify_docker_dsl_content: >-
@@ -125,33 +141,47 @@
     label: "{{ dify_docker_dsl_tool_entry.key }}"
   no_log: true
 
-# Runs after the declared replacement, so a token still present is one no entry maps. The
-# definition's secret variables with an empty value must each have an entry too. Names only.
+- name: List the declared tool provider placeholders still present after the replacement
+  ansible.builtin.set_fact:
+    dify_docker_dsl_remaining_tool_keys: >-
+      {{ dify_docker_dsl_tool_provider_map | dict2items | map(attribute='key')
+         | select('in', dify_docker_dsl_content) | list }}
+  no_log: true
+
+- name: Assert no declared tool provider placeholder remains after the replacement
+  ansible.builtin.assert:
+    that:
+      - dify_docker_dsl_remaining_tool_keys | length == 0
+    fail_msg: >-
+      {{ dify_docker_dsl_name }}: declared tool provider placeholders still in the definition:
+      {{ dify_docker_dsl_remaining_tool_keys | join(', ') }}
+
+# Runs after the declared replacements, so a token still present is one no entry maps. Every
+# environment variable of the definition with an empty value needs a declared entry. Names only.
 - name: List the placeholder tokens still present after the declared replacements
   ansible.builtin.set_fact:
     dify_docker_dsl_unmapped_placeholders: >-
       {{ dify_docker_dsl_content | regex_findall(dify_docker_agent_tool_placeholder_pattern) | unique | list }}
   no_log: true
 
-- name: List the secret environment variables of the app definition with no declared entry
+- name: List the environment variables of the app definition with an empty value and no entry
   ansible.builtin.set_fact:
-    dify_docker_dsl_unmapped_secrets: >-
-      {{ ((((dify_docker_dsl_document | default({}, true)).workflow | default({}, true))
+    dify_docker_dsl_undeclared_empty: >-
+      {{ (((dify_docker_dsl_document | default({}, true)).workflow | default({}, true))
            .environment_variables | default([], true))
-          | selectattr('value_type', 'equalto', 'secret')
-          | selectattr('value', 'equalto', '')
-          | map(attribute='name') | reject('in', dify_docker_dsl_declared_names) | list) }}
+         | selectattr('value', 'equalto', '')
+         | map(attribute='name') | reject('in', dify_docker_dsl_declared_names) | list }}
   no_log: true
 
-- name: Assert the app definition has no unmapped placeholder and no secret without an entry
+- name: Assert the app definition has no unmapped placeholder and no empty variable without an entry
   ansible.builtin.assert:
     that:
       - dify_docker_dsl_unmapped_placeholders | length == 0
-      - dify_docker_dsl_unmapped_secrets | length == 0
+      - dify_docker_dsl_undeclared_empty | length == 0
     fail_msg: >-
       {{ dify_docker_dsl_name }}: unmapped placeholders: {{ dify_docker_dsl_unmapped_placeholders | join(', ')
-      or 'none' }}. Secret environment variables with no entry: {{ dify_docker_dsl_unmapped_secrets | join(', ')
-      or 'none' }}.
+      or 'none' }}. Environment variables with an empty value and no entry:
+      {{ dify_docker_dsl_undeclared_empty | join(', ') or 'none' }}.
 
 - name: Report the declared variables a live run would set, by name only
   ansible.builtin.debug:
