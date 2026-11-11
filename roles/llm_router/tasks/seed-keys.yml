@@ -73,18 +73,25 @@
          | select('in', _llm_router_agent_keys | map(attribute='alias') | list)
          | list | join(', ') }}.
 
-- name: Validate rotated key aliases are selected
+# A rotation deletes the live key and then recreates it from the seed
+# projection, so every rotated alias must be in that projection (declared, and
+# selected when a selection is set) with a non-empty replacement value, checked
+# before any delete.
+- name: Validate rotated key aliases are seeded with a replacement value
   ansible.builtin.assert:
     quiet: true
     that:
       - >-
-        (llm_router_rotate_key_aliases | default([])
-         | select('in', llm_router_seed_key_aliases | default([]))
-         | list | length) == (llm_router_rotate_key_aliases | default([]) | length)
+        llm_router_rotate_key_aliases | default([])
+        | reject('in', _llm_router_seed_virtual_keys | selectattr('value') | map(attribute='alias') | list)
+        | list | length == 0
     fail_msg: >-
-      llm_router_rotate_key_aliases must be a subset of
-      llm_router_seed_key_aliases when key selection is non-empty.
-  when: _llm_router_seed_selected | bool
+      llm_router_rotate_key_aliases names alias(es) this run cannot recreate (not
+      declared, not in llm_router_seed_key_aliases, or no replacement value):
+      {{ llm_router_rotate_key_aliases | default([])
+         | reject('in', _llm_router_seed_virtual_keys | selectattr('value') | map(attribute='alias') | list)
+         | list | join(', ') }}.
+  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
 
 - name: Validate privacy grants before standalone consumer seeding
   ansible.builtin.import_tasks: assert-privacy-grants.yml

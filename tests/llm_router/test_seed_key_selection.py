@@ -92,29 +92,29 @@ def test_undeclared_alias_assertion_precedes_the_first_import_with_a_write() -> 
     assert assertion_index < first_team_write_index
 
 
-def test_rotation_alias_must_be_in_a_non_empty_selection() -> None:
-    rotation_task = _named_task(SEED_KEYS, "Validate rotated key aliases are selected")
+def test_rotation_targets_must_be_recreatable_before_any_delete() -> None:
+    name = "Validate rotated key aliases are seeded with a replacement value"
+    rotation_task = _named_task(SEED_KEYS, name)
     task = rotation_task["ansible.builtin.assert"]
     condition = task["that"][0]
+    seeded = [{"alias": "first", "value": "sk-test-first"}, {"alias": "empty", "value": ""}]
 
-    assert _evaluate(
-        condition,
-        llm_router_rotate_key_aliases=["first"],
-        llm_router_seed_key_aliases=["first"],
+    assert _evaluate(condition, llm_router_rotate_key_aliases=["first"], _llm_router_seed_virtual_keys=seeded)
+    # An undeclared or unselected alias, or one without a replacement value, is refused.
+    assert not _evaluate(condition, llm_router_rotate_key_aliases=["gone"], _llm_router_seed_virtual_keys=seeded)
+    assert not _evaluate(condition, llm_router_rotate_key_aliases=["empty"], _llm_router_seed_virtual_keys=seeded)
+    assert "cannot recreate" in task["fail_msg"]
+    # It runs in full-seed mode too, not only under a selection.
+    assert "_llm_router_seed_selected" not in str(rotation_task["when"])
+    rotation_index = SEED_KEYS.index(rotation_task)
+    delete_index = next(
+        i for i, t in enumerate(SEED_KEYS)
+        if "llm_router_rotate_key_aliases" in str(t) and t is not rotation_task and i > rotation_index
     )
-    assert not _evaluate(
-        condition,
-        llm_router_rotate_key_aliases=["second"],
-        llm_router_seed_key_aliases=["first"],
-    )
-    assert "llm_router_seed_key_aliases" in task["fail_msg"]
-    assert rotation_task["when"] == "_llm_router_seed_selected | bool"
-    rotation_assert_index = SEED_KEYS.index(rotation_task)
     first_write_index = next(
-        index for index, item in enumerate(SEED_KEYS)
-        if item.get("ansible.builtin.import_tasks") == "seed-priority-teams.yml"
+        i for i, t in enumerate(SEED_KEYS) if t.get("ansible.builtin.import_tasks") == "seed-priority-teams.yml"
     )
-    assert rotation_assert_index < first_write_index
+    assert rotation_index < min(delete_index, first_write_index)
 
 
 def test_key_write_paths_are_scoped_by_the_filtered_selection() -> None:
