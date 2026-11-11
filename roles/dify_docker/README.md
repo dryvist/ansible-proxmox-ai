@@ -151,8 +151,8 @@ Private entries are skipped while the token is empty.
 ## Declared catalog app variables
 
 Draft environment variables for catalog apps (`dify_docker_agent_app_variables`), their tool
-provider placeholders (`dify_docker_agent_tool_providers`) are documented in
-[declared-app-variables.md](declared-app-variables.md). AppRole secret ids are minted
+provider placeholders (`dify_docker_agent_tool_providers`) and the per-app leaf option are
+documented in [declared-app-variables.md](declared-app-variables.md). AppRole secret ids are minted
 and read with the issuer AppRole named by `dify_docker_agent_issuer_env_names` and logged in through
 `dify_docker_agent_issuer_auth_mount`, never with the converge writer token.
 
