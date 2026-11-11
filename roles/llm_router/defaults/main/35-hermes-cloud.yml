@@ -22,9 +22,13 @@ llm_router_hermes_cloud_models_credentialed: >-
   {%- set ns = namespace(credentialed=[], models=[], groups=[]) -%}
   {%- for m in llm_router_hermes_cloud_models -%}
   {%- set key = _llm_router_m_resolved_credentials.get(m.credential_env, '') -%}
+  {%- set api_base = _llm_router_m_resolved_api_bases.get(m.client_model_id, '') -%}
   {%- if (key | length > 0)
         or (m.provider == 'chatgpt' and (llm_router_chatgpt_auth_file_present | default(false) | bool)) -%}
-  {%- set ns.credentialed = ns.credentialed + [m] -%}
+  {%- if m.api_base_field is not defined or api_base | length > 0 -%}
+  {%- set resolved = m | combine({'api_base': api_base}) if m.api_base_field is defined else m -%}
+  {%- set ns.credentialed = ns.credentialed + [resolved] -%}
+  {%- endif -%}
   {%- endif -%}
   {%- endfor -%}
   {%- for m in ns.credentialed -%}
@@ -67,9 +71,11 @@ llm_router_local_fallback_groups: >-
 llm_router_hermes_cloud_only_fallback_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in _llm_router_m_hermes_cloud_models_credentialed | rejectattr('hermes_chain', 'defined') -%}
+  {%- if not (m.benchmark_only | default(false) | bool) -%}
   {%- set group = m.fallback_group | default(m.route_group | default(m.client_model_id)) -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.groups }}

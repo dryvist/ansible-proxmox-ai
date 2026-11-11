@@ -127,6 +127,22 @@ llm_router_resolved_credentials: >-
   {%- endfor -%}
   {{ ns.map }}
 
+# Resolve explicit API-base field references through the same secret-map first,
+# environment fallback used for provider credentials. The value is keyed by the
+# registry model id and materialized with no_log before any render can expose it.
+llm_router_resolved_api_bases: >-
+  {%- set ns = namespace(map={}) -%}
+  {%- for m in llm_router_registry_enabled | selectattr('api_base_field', 'defined') | list -%}
+  {%- if m.client_model_id not in ns.map -%}
+  {%- set _raw = (bao_local_llm_secrets[m.api_base_field]
+        | default(lookup('env', m.api_base_field), true) | trim) -%}
+  {%- if _raw | length > 0 -%}
+  {%- set _discard = ns.map.update({m.client_model_id: _raw}) -%}
+  {%- endif -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.map }}
+
 # --- Model groups (tier views over the registry) ------------------------------
 # Each view is the enabled registry entries for one tier, in registry order.
 # The templates iterate these; the entries themselves are registry dicts
