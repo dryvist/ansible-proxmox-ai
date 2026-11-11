@@ -177,14 +177,21 @@ def test_mode_variables_must_be_shadow_unless_the_app_is_listed_as_live():
     collect = _fact(pre, "Collect declared _MODE variables that do not resolve to shadow for an app not listed as live",
                     "dify_docker_dsl_bad_mode_names")
 
-    def bad(entry, values, live=()):
+    def bad(entry, values, live=(), suffix="_MODE", shadow="shadow"):
         return _render(collect, dify_docker_dsl_bad_mode_names=[], dify_docker_dsl_name="example-app",
                        dify_docker_agent_live_apps=list(live), dify_docker_dsl_variable_values=values,
-                       dify_docker_dsl_mode_entry=entry)
+                       dify_docker_dsl_mode_entry=entry, dify_docker_agent_mode_suffix=suffix,
+                       dify_docker_agent_mode_shadow_value=shadow)
 
     for value, flagged in (("live", True), (" LIVE ", True), ("Shadow", False), ("shadow ", False)):
         entry = {"name": "EXAMPLE_MODE", "value": value}
         assert bad(entry, [{"name": "EXAMPLE_MODE", "value": value}]) == (["EXAMPLE_MODE"] if flagged else []), value
+    # The suffix and the shadow value come from variables, so other values apply the same way.
+    flag = {"name": "EXAMPLE_FLAG", "value": "off"}
+    assert bad(flag, [{"name": "EXAMPLE_FLAG", "value": "off"}], suffix="_FLAG", shadow="off") == []
+    assert bad(flag, [{"name": "EXAMPLE_FLAG", "value": "on"}], suffix="_FLAG", shadow="off") == ["EXAMPLE_FLAG"]
+    assert bad({"name": "EXAMPLE_MODE", "value": "live"}, [{"name": "EXAMPLE_MODE", "value": "live"}],
+               suffix="_FLAG") == []
     listed = {"name": "EXAMPLE_MODE", "value": "live"}
     assert bad(listed, [{"name": "EXAMPLE_MODE", "value": "live"}], live=["example-app"]) == []
     other = {"name": "EXAMPLE_TOKEN", "value": "live"}
