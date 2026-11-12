@@ -207,3 +207,34 @@
 # Vikunja bridge creates cards at RUNTIME, so a typo'd assignee there produces
 # skipped_nonspawnable cards for every task the operator files — and the only
 # symptom is their board never moving. Caught at converge instead.
+
+- name: Assert the Hermes Kanban profile and bridge bucket declarations are valid
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_id == 'pepper'
+        or hermes_agent_kanban_orchestrator_profile
+           in (hermes_agent_profiles | map(attribute='name') | list)
+      - hermes_agent_vikunja_bridge_bucket_ready | trim | length > 0
+      - >-
+        (hermes_agent_vikunja_bridge_declared_bucket_names
+         | reject('equalto', '') | list | unique | list | length)
+        == (hermes_agent_vikunja_bridge_declared_bucket_names
+            | reject('equalto', '') | list | length)
+    fail_msg: >-
+      Hermes must retain a valid Kanban orchestrator profile and an unambiguous
+      Vikunja bridge bucket contract. The Ready bucket is required; optional
+      bucket names may be empty, but configured names must be distinct.
+    success_msg: >-
+      Hermes retains its Kanban orchestrator identity and the Vikunja bridge
+      bucket names are unambiguous.
+  vars:
+    hermes_agent_vikunja_bridge_declared_bucket_names:
+      - "{{ hermes_agent_vikunja_bridge_bucket_ready }}"
+      - "{{ hermes_agent_vikunja_bridge_bucket_in_progress }}"
+      - "{{ hermes_agent_vikunja_bridge_bucket_done }}"
+      - "{{ hermes_agent_vikunja_bridge_bucket_blocked }}"
+      - "{{ hermes_agent_vikunja_bridge_bucket_needs_triage }}"
+      - "{{ hermes_agent_vikunja_bridge_bucket_busy }}"
+  when: hermes_agent_id != 'pepper'

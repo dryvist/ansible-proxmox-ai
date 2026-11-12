@@ -85,3 +85,189 @@
     - hermes_agent_splunk_mcp_url | length > 0
     - hermes_agent_splunk_mcp_token | length > 0
     - not ansible_check_mode
+
+- name: Find Hermes Kanban database files under the shared home
+  ansible.builtin.find:
+    paths:
+      - "{{ hermes_agent_hermes_home }}"
+    patterns: kanban.db
+    recurse: true
+    hidden: true
+    file_type: file
+  register: hermes_agent_kanban_db_files
+  changed_when: false
+  # Read-only; a check run must inspect the live local board-file contract.
+  check_mode: false
+
+- name: Assert Hermes uses at most one Kanban database at the configured path
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_kanban_db_files.matched | int <= 1
+      - >-
+        hermes_agent_kanban_db_files.files
+        | map(attribute='path')
+        | difference([hermes_agent_hermes_home ~ '/kanban.db'])
+        | length == 0
+    fail_msg: >-
+      Hermes must use one shared Kanban database at
+      {{ hermes_agent_hermes_home }}/kanban.db. Found
+      {{ hermes_agent_kanban_db_files.matched }} database file(s) at
+      {{ hermes_agent_kanban_db_files.files | map(attribute='path') | list }}.
+      Zero files is valid before the gateway creates the database on a new home;
+      duplicate or differently placed files need operator review.
+
+- name: Stat every declared direct-cron skill reference
+  ansible.builtin.stat:
+    path: >-
+      {{ (item.hermes_home | default(hermes_agent_hermes_home))
+         ~ '/skills/' ~ item.skill ~ '/SKILL.md' }}
+  loop: >-
+    {{ hermes_agent_direct_cron_jobs
+       | selectattr('skill', 'defined')
+       | rejectattr('skill', 'equalto', '')
+       | list }}
+  loop_control:
+    label: "{{ item.name }}: {{ item.skill }}"
+  register: hermes_agent_direct_cron_skill_stats
+  changed_when: false
+  # Read-only; a check run must inspect the deployed skill references.
+  check_mode: false
+
+- name: Assert every declared direct-cron skill is installed in its job home
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_direct_cron_skill_stats.results
+        | selectattr('stat.exists', 'equalto', false)
+        | list | length == 0
+    fail_msg: >-
+      Direct-cron jobs reference skills that are not installed in their selected
+      Hermes homes: {{ hermes_agent_direct_cron_skill_stats.results
+      | selectattr('stat.exists', 'equalto', false)
+      | map(attribute='item.name') | list }}.
+
+- name: Read Vikunja projects for the enabled Hermes bridge
+  ansible.builtin.uri:
+    url: "{{ hermes_agent_vikunja_bridge_url | regex_replace('/+$', '') }}/api/v1/projects"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ hermes_agent_vikunja_bridge_token }}"
+      Accept: application/json
+    return_content: true
+    status_code: 200
+    follow_redirects: none
+    use_proxy: false
+    timeout: 15
+  register: hermes_agent_vikunja_bridge_projects
+  changed_when: false
+  no_log: true
+  # Read-only; a check run must compare the declared bridge contract to Vikunja.
+  check_mode: false
+  when: hermes_agent_vikunja_bridge_enabled | bool
+
+- name: Assert the enabled Hermes bridge project exists exactly once
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (hermes_agent_vikunja_bridge_projects.json
+         | selectattr('title', 'equalto', hermes_agent_vikunja_bridge_project)
+         | list | length) == 1
+    fail_msg: >-
+      The enabled Hermes bridge project {{ hermes_agent_vikunja_bridge_project }}
+      must resolve to exactly one Vikunja project.
+  when: hermes_agent_vikunja_bridge_enabled | bool
+
+- name: Read the enabled Hermes bridge project's views
+  ansible.builtin.uri:
+    url: >-
+      {{ hermes_agent_vikunja_bridge_url | regex_replace('/+$', '')
+      }}/api/v1/projects/{{ (hermes_agent_vikunja_bridge_projects.json
+      | selectattr('title', 'equalto', hermes_agent_vikunja_bridge_project)
+      | first).id }}/views
+    method: GET
+    headers:
+      Authorization: "Bearer {{ hermes_agent_vikunja_bridge_token }}"
+      Accept: application/json
+    return_content: true
+    status_code: 200
+    follow_redirects: none
+    use_proxy: false
+    timeout: 15
+  register: hermes_agent_vikunja_bridge_views
+  changed_when: false
+  no_log: true
+  check_mode: false
+  when: hermes_agent_vikunja_bridge_enabled | bool
+
+- name: Select the enabled Hermes bridge's Kanban view
+  ansible.builtin.set_fact:
+    hermes_agent_vikunja_bridge_kanban_views: >-
+      {{ (hermes_agent_vikunja_bridge_views.json
+          | selectattr('view_kind', 'equalto', 3) | list)
+         + (hermes_agent_vikunja_bridge_views.json
+            | selectattr('view_kind', 'match', '(?i)^kanban$') | list) }}
+  when: hermes_agent_vikunja_bridge_enabled | bool
+
+- name: Assert the enabled Hermes bridge project has exactly one Kanban view
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_vikunja_bridge_kanban_views | length == 1
+    fail_msg: >-
+      The enabled Hermes bridge project must have exactly one Kanban view;
+      found {{ hermes_agent_vikunja_bridge_kanban_views | length }}.
+  when: hermes_agent_vikunja_bridge_enabled | bool
+
+- name: Read the enabled Hermes bridge Kanban view's buckets
+  ansible.builtin.uri:
+    url: >-
+      {{ hermes_agent_vikunja_bridge_url | regex_replace('/+$', '')
+      }}/api/v1/projects/{{ (hermes_agent_vikunja_bridge_projects.json
+      | selectattr('title', 'equalto', hermes_agent_vikunja_bridge_project)
+      | first).id }}/views/{{ (hermes_agent_vikunja_bridge_kanban_views | first).id }}/tasks
+    method: GET
+    headers:
+      Authorization: "Bearer {{ hermes_agent_vikunja_bridge_token }}"
+      Accept: application/json
+    return_content: true
+    status_code: 200
+    follow_redirects: none
+    use_proxy: false
+    timeout: 15
+  register: hermes_agent_vikunja_bridge_buckets
+  changed_when: false
+  no_log: true
+  check_mode: false
+  when: hermes_agent_vikunja_bridge_enabled | bool
+
+- name: Assert configured Hermes bridge bucket names exist in the Kanban view
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_vikunja_bridge_bucket_ready | trim | length > 0
+      - >-
+        (hermes_agent_vikunja_bridge_declared_bucket_names
+         | reject('equalto', '')
+         | difference(hermes_agent_vikunja_bridge_found_bucket_names)
+         | length) == 0
+    fail_msg: >-
+      Configured Hermes bridge bucket name(s) are absent from the Vikunja
+      Kanban view: {{ hermes_agent_vikunja_bridge_declared_bucket_names
+      | reject('equalto', '')
+      | difference(hermes_agent_vikunja_bridge_found_bucket_names) }}.
+    success_msg: Every configured Hermes bridge bucket exists in the Kanban view.
+  vars:
+    hermes_agent_vikunja_bridge_declared_bucket_names:
+      - "{{ hermes_agent_vikunja_bridge_bucket_ready }}"
+      - "{{ hermes_agent_vikunja_bridge_bucket_in_progress }}"
+      - "{{ hermes_agent_vikunja_bridge_bucket_done }}"
+      - "{{ hermes_agent_vikunja_bridge_bucket_blocked }}"
+      - "{{ hermes_agent_vikunja_bridge_bucket_needs_triage }}"
+      - "{{ hermes_agent_vikunja_bridge_bucket_busy }}"
+    hermes_agent_vikunja_bridge_found_bucket_names: >-
+      {{ hermes_agent_vikunja_bridge_buckets.json
+         | map(attribute='title') | list }}
+  when: hermes_agent_vikunja_bridge_enabled | bool
