@@ -94,6 +94,14 @@ def test_known_ambiguous_samples_still_match():
     assert all(matches(text) for text in known)
 
 
+def test_known_misses_still_do_not_match():
+    matches = _matcher(_phrase_patterns())
+    known_misses = _samples("exfiltration_known_misses.txt")
+
+    assert len(known_misses) == 3
+    assert not [text for text in known_misses if matches(text)]
+
+
 def test_data_exfiltration_requires_transfer_target_and_external_sink():
     category = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
     patterns = category["phrase_patterns"]

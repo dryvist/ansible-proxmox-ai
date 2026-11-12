@@ -1,9 +1,10 @@
 """The data-exfiltration guardrail is declared in config with one fixed shape.
 
 Renders roles/llm_router/templates/guardrails.yaml.j2 from the defaults file and
-checks the parsed result. Also checks that the options this role must never set
-appear nowhere in it. The litellm package is not importable in this test
-environment, so the content filter's error handling is not exercised here.
+checks the parsed result. Also checks that no skip option, and no other option
+this role must never set, appears anywhere in it. The litellm package is not
+importable in this test environment, so the content filter's error handling is
+not exercised here.
 """
 
 import json
@@ -19,14 +20,18 @@ TEMPLATES = ROLE_DIR / "templates"
 GUARDRAIL_TEMPLATE = "guardrails.yaml.j2"
 
 GUARDRAIL_NAME = "Prompt Injection: Data Exfiltration"
-SYSTEM_SKIP = "skip_system_message_in_guardrail"
-FORBIDDEN_OPTIONS = ("skip_tool_message_in_guardrail", "scan_only_tool_results", "only_scan_new_messages")
+# Every skip and per-message scope option the litellm guardrail layer reads.
+FORBIDDEN_OPTIONS = (
+    "skip_system_message_in_guardrail",
+    "skip_tool_message_in_guardrail",
+    "scan_only_tool_results",
+    "only_scan_new_messages",
+)
 ERROR_HANDLING_KEYS = ("fail_on_error", "unreachable_fallback", "on_flagged", "sanitize_error_detail")
 EXPECTED_PARAMS = {
     "guardrail": "litellm_content_filter",
     "mode": "pre_call",
     "default_on": True,
-    SYSTEM_SKIP: True,
     "categories": [
         {
             "category": "prompt_injection_data_exfiltration",
@@ -85,17 +90,6 @@ def test_forbidden_options_appear_nowhere_in_the_role():
     ]
 
     assert not hits, "\n".join(hits)
-
-
-def test_system_skip_is_declared_only_on_the_guardrail():
-    allowed = {DEFAULTS.resolve(), (TEMPLATES / GUARDRAIL_TEMPLATE).resolve()}
-    hits = [
-        str(path.relative_to(ROLE_DIR))
-        for path in role_text_files()
-        if SYSTEM_SKIP in path.read_text(encoding="utf-8") and path.resolve() not in allowed
-    ]
-
-    assert not hits, "global or per-key system skip found outside the guardrail:\n" + "\n".join(hits)
 
 
 def test_no_other_template_attaches_guardrails_to_keys_or_config():
