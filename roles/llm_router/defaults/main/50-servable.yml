@@ -130,10 +130,15 @@ llm_router_servable_route_groups: >-
 # large-tier gate. Keep its checked set separate and combine only for routing.
 _llm_router_gpu_servable_models_source: >-
   {{ llm_router_gpu_models | selectattr('servable', 'defined')
-     | selectattr('servable') | map(attribute='route_group') | unique | list }}
+     | selectattr('servable') | map(attribute='route_group')
+     | reject('in', llm_router_benchmark_only_model_names) | unique | list }}
 llm_router_gpu_servable_models: "{{ _llm_router_m_gpu_servable_models }}"
 llm_router_opencode_stable_alias_entries: >-
-  {{ (llm_router_opencode_models | selectattr('stable_aliases', 'defined') | list)
+  {%- set _entries = llm_router_opencode_models
+       | selectattr('stable_aliases', 'defined') | list -%}
+  {{ ((_entries | rejectattr('benchmark_only', 'defined') | list)
+      + (_entries | selectattr('benchmark_only', 'defined')
+         | rejectattr('benchmark_only', 'equalto', true) | list))
      if (_llm_router_m_resolved_credentials.get('OPENCODE_API_KEY', '')
          | string | length > 0) else [] }}
 llm_router_opencode_stable_alias_targets: >-
@@ -145,6 +150,7 @@ llm_router_gpu_co_resident_models: >-
 _llm_router_all_servable_models_source: >-
   {{ (llm_router_servable_route_groups + llm_router_gpu_servable_models
       + llm_router_opencode_stable_alias_targets) | unique
+     | reject('in', llm_router_benchmark_only_model_names)
      | reject('equalto', none) | list }}
 llm_router_all_servable_models: "{{ _llm_router_m_all_servable_models }}"
 
@@ -152,15 +158,20 @@ llm_router_all_servable_models: "{{ _llm_router_m_all_servable_models }}"
 # joining the normal GPU view. They drain with the profile switch, and also
 # require the inventory-backed endpoint.
 llm_router_direct_gpu_models: >-
-  {{ (llm_router_model_registry | selectattr('tier', 'equalto', 'gpu')
-      | selectattr('profile', 'in', llm_router_gpu_active_profiles)
-      | selectattr('direct_route_aliases', 'defined') | list)
-     if (llm_router_gpu_profiles_enabled | default(false) | bool
-         and groups['llm_gpu_group'] | default([]) | length > 0) else [] }}
+  {%- set _candidates = llm_router_model_registry
+       | selectattr('tier', 'equalto', 'gpu')
+       | selectattr('profile', 'in', llm_router_gpu_active_profiles)
+       | selectattr('direct_route_aliases', 'defined') | list -%}
+  {%- set _eligible = (_candidates | rejectattr('benchmark_only', 'defined') | list)
+       + (_candidates | selectattr('benchmark_only', 'defined')
+          | rejectattr('benchmark_only', 'equalto', true) | list) -%}
+  {{ _eligible if (llm_router_gpu_profiles_enabled | default(false) | bool
+       and groups['llm_gpu_group'] | default([]) | length > 0) else [] }}
 llm_router_direct_studio_models: >-
   {%- set ns = namespace(models=[]) -%}
   {%- for m in (llm_router_large_models
-       | selectattr('direct_route_aliases', 'defined') | list) -%}
+       | selectattr('direct_route_aliases', 'defined') | list)
+       if not (m.benchmark_only | default(false) | bool) -%}
   {%- set _aliases = m.direct_route_aliases | list -%}
   {%- if m.route_group | default('') == llm_router_primary_model -%}
   {%- set _aliases = (_aliases + [m.client_model_id]) | unique | list -%}
@@ -192,7 +203,8 @@ llm_router_direct_route_aliases: >-
 _llm_router_hermes_router_ids_source: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-router')
      | selectattr('context_window', 'defined') | rejectattr('context_window', 'none')
-     | map(attribute='client_model_id') | list }}
+     | map(attribute='client_model_id')
+     | reject('in', llm_router_benchmark_only_model_names) | list }}
 llm_router_hermes_router_ids: "{{ _llm_router_m_hermes_router_ids }}"
 llm_router_auto_router_model: ""
 
@@ -206,7 +218,8 @@ _llm_router_long_context_alias_ids_source: >-
         | selectattr('context_window', '>=', 1000000) | list -%}
   {{ (_candidates | selectattr('zero_data_retention', 'defined')
       | selectattr('zero_data_retention') | list)
-     | map(attribute='client_model_id') | list }}
+     | map(attribute='client_model_id')
+     | reject('in', llm_router_benchmark_only_model_names) | list }}
 llm_router_long_context_alias_ids: "{{ _llm_router_m_long_context_alias_ids }}"
 
 # Stable aliases belong to a route group, not to the endpoint currently
@@ -230,7 +243,8 @@ llm_router_alias_pairs: >-
        + (llm_router_registry_enabled
           | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) | list))
        | unique(attribute='client_model_id') | list -%}
-  {%- for _entry in _entries | selectattr('stable_aliases', 'defined') -%}
+  {%- for _entry in _entries | selectattr('stable_aliases', 'defined')
+       if _entry.client_model_id not in llm_router_benchmark_only_model_names -%}
   {%- for _alias in _entry.stable_aliases -%}
   {%- set _target = _entry.route_group | default(_entry.client_model_id) -%}
   {%- if _entry.tier in llm_router_local_registry_tiers

@@ -27,7 +27,8 @@ llm_router_hermes_cloud_zero_retry_groups: >-
   {%- set ns.groups = ns.groups + [group] -%}
   {%- endif -%}
   {%- endfor -%}
-  {%- for m in llm_router_hermes_local_models + _llm_router_m_hermes_cloud_models_credentialed -%}
+  {%- for m in llm_router_hermes_local_models + _llm_router_m_hermes_cloud_models_credentialed
+       if not (m.benchmark_only | default(false) | bool) -%}
   {%- if m.route_group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [m.route_group] -%}
   {%- endif -%}
@@ -59,7 +60,11 @@ llm_router_hermes_cloud_zero_retry_groups: >-
 # at zero and hands over at once. Local rungs never appear here.
 llm_router_multi_member_cloud_groups: >-
   {%- set ns = namespace(groups=[]) -%}
-  {%- set all = _llm_router_m_hermes_cloud_models_credentialed | map(attribute='route_group') | list -%}
+  {%- set _cloud_models = _llm_router_m_hermes_cloud_models_credentialed -%}
+  {%- set _eligible_models = (_cloud_models | rejectattr('benchmark_only', 'defined') | list)
+        + (_cloud_models | selectattr('benchmark_only', 'defined')
+           | rejectattr('benchmark_only', 'equalto', true) | list) -%}
+  {%- set all = _eligible_models | map(attribute='route_group') | list -%}
   {%- for g in all | unique -%}
   {%- if all | select('equalto', g) | list | length > 1 -%}
   {%- set ns.groups = ns.groups + [g] -%}
@@ -74,7 +79,8 @@ llm_router_multi_member_opencode_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- set all = namespace(groups=[]) -%}
   {%- for m in llm_router_opencode_models -%}
-  {%- if _llm_router_m_resolved_credentials.get(m.credential_env, '') | length > 0 -%}
+  {%- if not (m.benchmark_only | default(false) | bool)
+        and _llm_router_m_resolved_credentials.get(m.credential_env, '') | length > 0 -%}
   {%- set all.groups = all.groups + [m.route_group | default(m.client_model_id)] -%}
   {%- endif -%}
   {%- endfor -%}

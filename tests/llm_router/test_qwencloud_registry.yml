@@ -79,6 +79,24 @@
           - _qwen_deployments | length == 3
         fail_msg: "All credentialed Qwen client names must render once."
 
+    - name: Assert every rendered Qwen deployment is admin-only and non-ZDR
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.benchmark_only is true
+          - item.zero_data_retention is false
+          - item.hermes_chain is false
+          - item.client_model_id in llm_router_benchmark_only_model_names
+          - item.route_group in llm_router_benchmark_only_model_names
+          - >-
+            _config.model_list
+            | selectattr('model_name', 'equalto', item.route_group)
+            | list | length == 1
+        fail_msg: "Every Qwen model must render as an admin-only, non-ZDR deployment."
+      loop: "{{ _qwen_entries }}"
+      loop_control:
+        label: "{{ item.client_model_id }}"
+
     - name: Assert exactly three distinct Qwen identities are projected
       ansible.builtin.assert:
         quiet: true
@@ -149,11 +167,11 @@
     - name: Build benchmark filter cases, including an explicit false value
       ansible.builtin.set_fact:
         _qwen_false_benchmark_case: >-
-          {{ (_qwen_entries | rejectattr('benchmark_only', 'defined') | first)
+          {{ (_qwen_entries | first)
              | combine({'benchmark_only': false}) }}
         _qwen_benchmark_test_entries: >-
           {{ _qwen_entries
-             + [((_qwen_entries | rejectattr('benchmark_only', 'defined') | first)
+             + [((_qwen_entries | first)
                 | combine({'benchmark_only': false}))] }}
 
     - name: Assert explicit false remains in the non-benchmark set
@@ -182,8 +200,31 @@
         quiet: true
         that:
           - item.route_group not in llm_router_d1_ladder_groups
+          - item.route_group not in (llm_router_d1_rungs_by_class.values() | flatten)
+          - item.route_group not in llm_router_hermes_cloud_zero_retry_groups
+          - item.route_group not in llm_router_multi_member_cloud_groups
           - item.route_group not in llm_router_external_terminal_rungs
+          - item.route_group not in llm_router_hermes_default_fallback_chain
+          - item.route_group not in llm_router_hermes_cloud_only_fallback_groups
+          - item.route_group not in llm_router_hermes_cloud_subscription_groups
+          - item.route_group not in llm_router_hermes_cloud_paid_groups
+          - item.route_group not in llm_router_hermes_cloud_free_groups
+          - item.route_group not in llm_router_hermes_cloud_api_key_groups
+          - item.route_group not in llm_router_local_only_fail_fast_names
+          - item.client_model_id not in llm_router_entry_point_names
+          - item.route_group not in llm_router_entry_point_names
+          - item.route_group not in llm_router_d1_zdr_key_groups
+          - item.route_group not in llm_router_zdr_asserted_group_names
+          - item.client_model_id not in llm_router_zdr_asserted_group_names
           - item.route_group not in llm_router_d1_public_key_groups
+          - item.client_model_id not in _llm_router_key_scope_all
+          - item.route_group not in _llm_router_key_scope_all
+          - >-
+            item.client_model_id not in
+            (_llm_router_declared_virtual_keys | map(attribute='models') | flatten)
+          - >-
+            item.route_group not in
+            (_llm_router_declared_virtual_keys | map(attribute='models') | flatten)
           - item.client_model_id not in (llm_router_virtual_keys | map(attribute='models') | flatten)
           - item.route_group not in (llm_router_virtual_keys | map(attribute='models') | flatten)
         fail_msg: "A benchmark-only route entered a shared ladder or partner key scope."

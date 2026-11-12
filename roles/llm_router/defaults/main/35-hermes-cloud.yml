@@ -3,8 +3,11 @@
 # The shared D1 class ladder below serves entry points and new database roles;
 # local-only callers keep their explicit empty chains.
 llm_router_hermes_virtual_models: >-
-  {{ llm_router_registry_enabled
-     | selectattr('tier', 'equalto', 'hermes-router') | list }}
+  {%- set _models = llm_router_registry_enabled
+       | selectattr('tier', 'equalto', 'hermes-router') | list -%}
+  {{ (_models | rejectattr('benchmark_only', 'defined') | list)
+     + (_models | selectattr('benchmark_only', 'defined')
+        | rejectattr('benchmark_only', 'equalto', true) | list) }}
 llm_router_hermes_cloud_models: >-
   {{ llm_router_registry_enabled
      | selectattr('tier', 'equalto', 'hermes-cloud') | list }}
@@ -196,7 +199,8 @@ llm_router_hermes_default_fallback_chain: >-
 llm_router_hermes_cloud_budgeted_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in _llm_router_m_hermes_cloud_models_credentialed
-       if m.monthly_budget is defined or m.max_budget is defined -%}
+       if not (m.benchmark_only | default(false) | bool)
+          and (m.monthly_budget is defined or m.max_budget is defined) -%}
   {%- set group = m.fallback_group | default(m.route_group) -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
