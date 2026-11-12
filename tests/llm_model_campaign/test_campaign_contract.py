@@ -82,3 +82,17 @@ def test_large_batched_bench_is_an_artifact_capability() -> None:
 
     assert "supports_batched_bench" in conditions
     assert opted_in == ["flash-next-iq3-s"]
+
+
+def test_small_lane_serving_artifact_carries_campaign_size() -> None:
+    artifacts = [
+        artifact
+        for path in ARTIFACTS
+        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts") or key.endswith("_artifacts")
+        for artifact in entries
+        if artifact.get("serving_profile") == "small" and artifact.get("use") == "serving"
+    ]
+
+    assert len(artifacts) == 1
+    assert artifacts[0]["model_size"] == "size-small"
