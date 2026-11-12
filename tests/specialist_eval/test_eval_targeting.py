@@ -59,7 +59,7 @@ def test_the_evaluation_group_set_is_exactly_the_known_group() -> None:
 
 
 def test_prefetch_groups_come_from_the_site_playbook() -> None:
-    assert PREFETCH_GROUPS == {"managed_secrets_group", "clickhouse_group", "crawl4ai_group"}
+    assert PREFETCH_GROUPS == {"managed_secrets_group", "clickhouse_group"}
 
 
 @pytest.mark.parametrize(("name", "tags", "eval_group"), EVAL_HOSTS)
