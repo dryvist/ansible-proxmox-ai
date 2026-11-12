@@ -15,6 +15,11 @@ import re
 import tempfile
 from pathlib import Path
 
+import yaml
+from jinja2 import Environment
+
+from _role_files import role_defaults
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "roles/hermes_agent/templates/kanban-digest.py.j2"
 
@@ -126,6 +131,24 @@ def test_stall_alarm_adds_no_note_when_every_ready_assignee_is_real():
 def test_unassigned_ready_cards_are_reported_under_a_readable_name():
     with known_profiles("default"):
         assert "(unassigned) x4" in DIGEST.unspawnable_note([{"assignee": "", "n": 4}])
+
+
+def test_pepper_kanban_default_assignee_remains_the_default_profile():
+    role_root = REPO_ROOT / "roles/hermes_agent"
+    defaults = role_defaults(role_root)
+    template = (role_root / "templates/config-kanban.yaml.j2").read_text()
+    rendered = Environment(autoescape=False).from_string(template).render(
+        **{
+            **defaults,
+            "hermes_agent_kanban_max_in_progress": 4,
+            "hermes_agent_kanban_max_in_progress_per_profile": 1,
+            "_pepper": True,
+        }
+    )
+    kanban = yaml.safe_load(rendered)
+
+    assert kanban["kanban"]["orchestrator_profile"] == "default"
+    assert kanban["kanban"]["default_assignee"] == "default"
 
 
 def test_unspawnable_note_degrades_to_silence_when_profiles_are_unreadable():

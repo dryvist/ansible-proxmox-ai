@@ -118,3 +118,39 @@ def test_card_crons_get_kanban_only_through_their_per_job_toolsets() -> None:
     assert "item.hermes_home | default(hermes_agent_hermes_home)" in reconciler
     assert "from tools.cronjob_tools import cronjob" in reconciler
     assert "enabled_toolsets: \"{{ item.enabled_toolsets | default([]) }}\"" in reconciler
+
+
+def test_fabric_status_gets_kanban_at_the_job_scope_and_keeps_its_delivery() -> None:
+    defaults = _defaults()
+    env = _jinja_env()
+    status_name = defaults["hermes_agent_daily_status_cron_name"]
+    status_jobs = [
+        job for job in defaults["hermes_agent_direct_cron_jobs"]
+        if job["name"] == "{{ hermes_agent_daily_status_cron_name }}"
+    ]
+    assert len(status_jobs) == 1
+    status_job = status_jobs[0]
+    assert status_name == "homelab-ai-fabric-status"
+    assert status_job["prompt_var"] == "hermes_agent_daily_status_cron_prompt"
+
+    cron_toolsets = yaml.safe_load(env.from_string(
+        str(defaults["hermes_agent_cron_toolsets"])
+    ).render(hermes_agent_api_server_toolsets=defaults["hermes_agent_api_server_toolsets"]))
+    status_toolsets = yaml.safe_load(env.from_string(
+        str(status_job["enabled_toolsets"])
+    ).render(hermes_agent_cron_toolsets=cron_toolsets))
+    assert status_toolsets == defaults["hermes_agent_api_server_toolsets"] + ["kanban"]
+    assert "hermes_home" not in status_job  # The report stays on the existing default profile.
+    assert status_job["deliver"] == "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    assert status_job["channel_when_healthy"] == (
+        "slack:{{ hermes_agent_slack_noise_channel }}"
+    )
+
+    blocked_job = next(
+        job for job in defaults["hermes_agent_direct_cron_jobs"]
+        if job["name"] == "{{ hermes_agent_blocked_parent_triage_digest_cron_name }}"
+    )
+    blocked_toolsets = yaml.safe_load(env.from_string(
+        str(blocked_job.get("enabled_toolsets", []))
+    ).render(hermes_agent_cron_toolsets=cron_toolsets))
+    assert blocked_toolsets == []
