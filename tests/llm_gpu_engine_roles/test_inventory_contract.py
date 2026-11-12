@@ -64,7 +64,7 @@ def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
     bolt_64k = generic_profiles["nemotron-bolt-64k-16"]
     bolt_256k = generic_profiles["nemotron-bolt-256k-24"]
     assert (bolt_64k["max_model_len"], bolt_64k["max_num_seqs"]) == (65536, 16)
-    assert (bolt_256k["max_model_len"], bolt_256k["max_num_seqs"]) == (262144, 24)
+    assert (bolt_256k["max_model_len"], bolt_256k["max_num_seqs"]) == (200000, 24)
     for profile in (bolt_64k, bolt_256k):
         assert {
             key: profile[key]

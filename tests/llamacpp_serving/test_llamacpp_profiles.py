@@ -154,7 +154,7 @@ def test_flash_next_gguf_uses_the_pinned_mtp_head_within_native_context():
     for name in ("flash-next-gguf-262k-1", "flash-next-gguf-262k-2"):
         profile = profiles[name]
         command = _exec_start(_render(name, profile))
-        assert profile["max_model_len"] == 262144
+        assert profile["max_model_len"] == 200000
         assert "--rope-scaling" not in command
         assert "--model-draft" not in command
 
