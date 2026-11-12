@@ -1,0 +1,86 @@
+---
+- name: Require both Vikunja clerk credentials together
+  ansible.builtin.assert:
+    that:
+      - >-
+        (agentgateway_docker_vikunja_clerk_api_token | trim | length > 0)
+        == (agentgateway_docker_vikunja_clerk_http_token | trim | length > 0)
+      - >-
+        agentgateway_docker_vikunja_clerk_http_token | trim | length == 0
+        or agentgateway_docker_vikunja_clerk_http_token | trim | length >= 32
+    fail_msg: >-
+      The Vikunja clerk sidecar needs both its tasks-scoped Vikunja API token
+      and an MCP HTTP bearer token of at least 32 characters.
+  no_log: true
+  when: agentgateway_docker_vikunja_clerk_enabled | bool
+
+- name: Create the Vikunja clerk secret directory
+  ansible.builtin.file:
+    path: "{{ agentgateway_docker_vikunja_clerk_secrets_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  no_log: true
+  when:
+    - agentgateway_docker_vikunja_clerk_enabled | bool
+    - agentgateway_docker_vikunja_clerk_api_token | trim | length > 0
+    - agentgateway_docker_vikunja_clerk_http_token | trim | length >= 32
+
+- name: Deploy the Vikunja clerk API token file
+  ansible.builtin.copy:
+    content: "{{ agentgateway_docker_vikunja_clerk_api_token }}"
+    dest: "{{ agentgateway_docker_vikunja_clerk_api_token_file }}"
+    owner: root
+    group: root
+    # The parent directory is root-only on the host; the mounted file is
+    # readable by the upstream image's dedicated non-root process.
+    mode: "0444"
+  no_log: true
+  notify: Restart agentgateway
+  when:
+    - agentgateway_docker_vikunja_clerk_enabled | bool
+    - agentgateway_docker_vikunja_clerk_api_token | trim | length > 0
+    - agentgateway_docker_vikunja_clerk_http_token | trim | length >= 32
+
+- name: Deploy the Vikunja clerk HTTP bearer file
+  ansible.builtin.copy:
+    content: "{{ agentgateway_docker_vikunja_clerk_http_token }}"
+    dest: "{{ agentgateway_docker_vikunja_clerk_http_token_file }}"
+    owner: root
+    group: root
+    mode: "0444"
+  no_log: true
+  notify: Restart agentgateway
+  when:
+    - agentgateway_docker_vikunja_clerk_enabled | bool
+    - agentgateway_docker_vikunja_clerk_api_token | trim | length > 0
+    - agentgateway_docker_vikunja_clerk_http_token | trim | length >= 32
+
+- name: Deploy the Vikunja clerk task-only module config
+  ansible.builtin.template:
+    src: vikunja-clerk-config.json.j2
+    dest: "{{ agentgateway_docker_vikunja_clerk_config_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  no_log: true
+  notify: Restart agentgateway
+  when:
+    - agentgateway_docker_vikunja_clerk_enabled | bool
+    - agentgateway_docker_vikunja_clerk_api_token | trim | length > 0
+    - agentgateway_docker_vikunja_clerk_http_token | trim | length >= 32
+
+- name: Remove Vikunja clerk files when its credentials are unavailable
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ agentgateway_docker_vikunja_clerk_secrets_dir }}"
+    - "{{ agentgateway_docker_vikunja_clerk_config_file }}"
+  no_log: true
+  notify: Restart agentgateway
+  when: >-
+    not (agentgateway_docker_vikunja_clerk_enabled | bool)
+    or agentgateway_docker_vikunja_clerk_api_token | trim | length == 0
+    or agentgateway_docker_vikunja_clerk_http_token | trim | length < 32
