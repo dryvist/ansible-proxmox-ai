@@ -1,8 +1,10 @@
 """Dify marketplace tool plugins are pinned and credentials are read from OpenBao."""
 
+import ast
 from pathlib import Path
 
 import yaml
+from jinja2 import Environment
 
 from _defaults import load_defaults
 
@@ -20,6 +22,24 @@ def _task(tasks, name):
     return next(task for task in tasks if task.get("name") == name)
 
 
+def _provider_loop(expression, selected, app_providers):
+    environment = Environment()
+    environment.filters["dict2items"] = lambda mapping: [
+        {"key": key, "value": value} for key, value in mapping.items()
+    ]
+    environment.filters["flatten"] = lambda values: [
+        item for value in values for item in value
+    ]
+    rendered = environment.from_string(expression).render(
+        dify_docker_agent_tool_provider_plugins=load_defaults()[
+            "dify_docker_agent_tool_provider_plugins"
+        ],
+        dify_docker_agent_dsl_select=selected,
+        dify_docker_agent_tool_providers=app_providers,
+    )
+    return ast.literal_eval(rendered)
+
+
 def test_github_provider_pin_and_read_only_credential_source_are_declared():
     provider, = load_defaults()["dify_docker_agent_tool_provider_plugins"]
 
@@ -27,6 +47,7 @@ def test_github_provider_pin_and_read_only_credential_source_are_declared():
         "plugin_id": "langgenius/github",
         "plugin_version": "0.3.11",
         "provider_id": "langgenius/github/github",
+        "provider_name": "GitHub",
         "credential_name": "github-read-only",
         "credential_type": "api-key",
         "credential_visibility": "all_team_members",
@@ -41,7 +62,8 @@ def test_provider_reconciliation_runs_after_the_session_backed_model_plugin():
     include = _task(tasks, "Install and credential declared built-in tool providers")
 
     assert include["ansible.builtin.include_tasks"] == "tool_provider_one.yml"
-    assert include["loop"] == "{{ dify_docker_agent_tool_provider_plugins }}"
+    assert "dify_docker_agent_dsl_select | length == 0" in include["loop"]
+    assert "dify_docker_agent_tool_providers" in include["loop"]
     assert include["loop_control"]["loop_var"] == "dify_docker_agent_tool_provider"
     assert include["when"] == "dify_docker_provision_model_provider | bool"
     assert names.index("Model-provider plugin install and credential provisioning") < names.index(
@@ -50,6 +72,39 @@ def test_provider_reconciliation_runs_after_the_session_backed_model_plugin():
     assert names.index(include["name"]) < names.index(
         "Seed a starter chat app (best-effort, idempotent, non-fatal)"
     )
+
+
+def test_selecting_only_pr_keeper_runs_no_provider_task_but_empty_select_keeps_full_run():
+    include = _task(_yaml(MAIN), "Install and credential declared built-in tool providers")
+    app_providers = {
+        "pr-keeper": {},
+        "github-clerk": {"__GITHUB_PROVIDER__": "GitHub"},
+    }
+
+    assert _provider_loop(include["loop"], ["pr-keeper"], app_providers) == []
+    assert _provider_loop(include["loop"], [], app_providers) == load_defaults()[
+        "dify_docker_agent_tool_provider_plugins"
+    ]
+
+
+def test_selected_github_clerk_still_fails_the_existing_missing_credential_assertion():
+    include = _task(_yaml(MAIN), "Install and credential declared built-in tool providers")
+    app_providers = {"github-clerk": {"__GITHUB_PROVIDER__": "GitHub"}}
+    provider, = _provider_loop(include["loop"], ["github-clerk"], app_providers)
+    tasks = _yaml(TASKS)
+    missing_credential = _task(
+        tasks, "Assert the declared tool provider credential exists in OpenBao"
+    )
+
+    assert provider["plugin_id"] == "langgenius/github"
+    assert missing_credential["when"]
+    assert "provider_id" in str(missing_credential["when"])
+    assert Environment().from_string(
+        "{{ " + missing_credential["ansible.builtin.assert"]["that"][0] + " }}"
+    ).render(
+        dify_docker_tool_provider_openbao_secret={"secret": {}},
+        dify_docker_agent_tool_provider=provider,
+    ) == "False"
 
 
 def test_marketplace_lookup_pins_the_version_and_resolves_the_checksum():
