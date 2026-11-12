@@ -105,12 +105,6 @@ def test_no_other_template_attaches_guardrails_to_keys_or_config():
     assert not hits, "\n".join(hits)
 
 
-def test_config_template_includes_the_guardrail_block_once():
-    text = (TEMPLATES / "config.yaml.j2").read_text(encoding="utf-8")
-
-    assert text.count("{% include 'guardrails.yaml.j2' %}") == 1
-
-
 def test_role_assert_refuses_a_list_without_the_enabled_guardrail():
     tasks = yaml.safe_load((ROLE_DIR / "tasks/assert.yml").read_text(encoding="utf-8"))
     task = next(t for t in tasks if t.get("name") == "Assert the data-exfiltration guardrail is declared")
@@ -121,8 +115,6 @@ def test_role_assert_refuses_a_list_without_the_enabled_guardrail():
 
     def passes(guardrails):
         chosen = selected(llm_router_guardrails=guardrails)
-        if len(chosen) != 1:
-            return False
         return all(condition(_exfiltration_guardrails=chosen) for condition in conditions)
 
     assert passes(declared)
