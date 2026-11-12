@@ -9,13 +9,60 @@ POLICY = (
     / "roles/llm_router/files/guardrails/prompt_injection_data_exfiltration.yaml"
 )
 DATA_DIR = Path(__file__).resolve().parent / "data"
-# must_block misses of the category regex before the clause rewrite: it matched
-# the three hand-picked positives and none of the 32 dataset rows.
-BASELINE_MISSES = 32
+
+# The category file as it stood on origin/develop before the matcher rewrite. It is
+# embedded so the recall baseline is computed here from the pattern itself.
+DEVELOP_CATEGORY = r"""---
+category_name: prompt_injection_data_exfiltration
+description: Blocks explicit transfers of sensitive data to external destinations
+default_action: BLOCK
+phrase_patterns:
+  - >-
+    (?ix)\b(?:send|post|upload|publish|forward|email|transmit|encode|exfiltrate|export)\b
+    .{0,200}\b(?:
+    training\s+(?:data|set|examples)
+    |internal\s+(?:data|information)
+    |database\s+(?:contents|records)
+    |user\s+(?:data|records|information)
+    |personal\s+data
+    |private\s+(?:information|data)
+    |confidential\s+(?:data|information)
+    |sensitive\s+(?:data|information)
+    |customer\s+(?:data|records)
+    |employee\s+(?:data|records)
+    |credentials?
+    |passwords?
+    |api[\s_-]?keys?
+    |access[\s_-]?tokens?
+    |secret\s+keys?
+    |encryption\s+keys?
+    |private\s+keys?
+    |session\s+tokens?
+    |authentication\s+tokens?
+    |model\s+(?:weights|parameters)
+    |source\s+code
+    |proprietary\s+code
+    |intellectual\s+property
+    )\b.{0,200}\b(?:to|into|at)\s*(?:
+    https?://
+    |ftp://
+    |[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}
+    |(?:[a-z0-9-]+\.)*webhook\b
+    |pastebin\b
+    |(?:external|third[- ]party|public)\s+(?:server|service|endpoint|url)\b
+    )
+"""
 
 
 def _phrase_patterns():
     return yaml.safe_load(POLICY.read_text(encoding="utf-8"))["phrase_patterns"]
+
+
+def _matcher(patterns):
+    def matches(text):
+        return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+    return matches
 
 
 def _samples(name):
@@ -24,21 +71,27 @@ def _samples(name):
 
 
 def test_regression_samples_have_no_false_positives_and_no_new_misses():
-    patterns = _phrase_patterns()
-
-    def matches(text):
-        return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
-
+    matches = _matcher(_phrase_patterns())
+    develop_matches = _matcher(yaml.safe_load(DEVELOP_CATEGORY)["phrase_patterns"])
     passes = _samples("exfiltration_must_pass.txt")
     blocks = _samples("exfiltration_must_block.txt")
     assert len(passes) >= 15
     assert len(blocks) >= 20
 
     false_positives = [text for text in passes if matches(text)]
+    baseline_misses = [text for text in blocks if not develop_matches(text)]
     misses = [text for text in blocks if not matches(text)]
 
     assert not false_positives
-    assert len(misses) <= BASELINE_MISSES
+    assert len(misses) <= len(baseline_misses)
+
+
+def test_known_ambiguous_samples_still_match():
+    matches = _matcher(_phrase_patterns())
+    known = _samples("exfiltration_known_ambiguous.txt")
+
+    assert known
+    assert all(matches(text) for text in known)
 
 
 def test_data_exfiltration_requires_transfer_target_and_external_sink():
