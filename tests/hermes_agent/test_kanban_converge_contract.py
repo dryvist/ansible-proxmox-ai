@@ -1,5 +1,6 @@
 """Exercise the Hermes Kanban converge checks against rendered task conditions."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -10,6 +11,7 @@ from _role_files import role_defaults
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
 ENV = Environment(autoescape=False)
+ENV.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
 ENV.filters["bool"] = lambda value: (
     value if isinstance(value, bool) else str(value).lower() in ("true", "yes", "1")
 )
@@ -273,3 +275,24 @@ def test_bridge_requires_ready_only_while_preserving_read_only_probes():
                for condition in project_assert["ansible.builtin.assert"]["that"])
     assert any("kanban_views | length == 1" in condition
                for condition in view_assert["ansible.builtin.assert"]["that"])
+
+
+def test_kanban_view_selection_accepts_integer_and_string_view_kinds():
+    task = _named(_tasks("mcp_precheck.yml"), "Select the enabled Hermes bridge's Kanban view")
+    expression = task["ansible.builtin.set_fact"][
+        "hermes_agent_vikunja_bridge_kanban_views"
+    ].strip()
+    assert expression.startswith("{{") and expression.endswith("}}")
+
+    views = [
+        {"id": 1, "view_kind": 3},
+        {"id": 2, "view_kind": "kanban"},
+        {"id": 3, "view_kind": "KANBAN"},
+        {"id": 4, "view_kind": "list"},
+        {"id": 5, "view_kind": 1},
+    ]
+    selected = ENV.compile_expression(expression[2:-2].strip())(
+        hermes_agent_vikunja_bridge_views={"json": views}
+    )
+
+    assert selected == views[:3]
