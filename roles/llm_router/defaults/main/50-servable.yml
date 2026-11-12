@@ -103,11 +103,29 @@ llm_router_servable_models: "{{ _llm_router_m_servable_models }}"
 # The capability names those entries (and the other servable tiers) route
 # through; the alias, key-scope and fallback projections read this set.
 llm_router_servable_route_groups: >-
-  {{ ((llm_router_registry_enabled | selectattr('servable', 'defined')
-       | selectattr('servable') | rejectattr('tier', 'equalto', 'vllm') | list)
-      + (llm_router_vllm_models | selectattr('servable', 'defined')
-         | selectattr('servable') | list))
-     | map(attribute='route_group') | unique | reject('equalto', none) | list }}
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for m in llm_router_registry_enabled
+       | selectattr('servable', 'defined')
+       | selectattr('servable')
+       | rejectattr('tier', 'equalto', 'vllm') -%}
+  {%- if not (m.benchmark_only | default(false) | bool)
+        and m.route_group is defined and m.route_group is not none -%}
+  {%- if m.route_group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [m.route_group] -%}
+  {%- endif -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- for m in llm_router_vllm_models
+       | selectattr('servable', 'defined')
+       | selectattr('servable') -%}
+  {%- if not (m.benchmark_only | default(false) | bool)
+        and m.route_group is defined and m.route_group is not none -%}
+  {%- if m.route_group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [m.route_group] -%}
+  {%- endif -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
 # The Pro6000 is served by its own inventory-backed endpoint, not the Mac
 # large-tier gate. Keep its checked set separate and combine only for routing.
 _llm_router_gpu_servable_models_source: >-

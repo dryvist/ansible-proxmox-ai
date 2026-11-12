@@ -101,6 +101,22 @@ llm_router_sandbox_only_model_ids: >-
   {%- endfor -%}
   {{ ns.names | unique | list }}
 
+# Benchmark-only registry entries remain callable by the router administrator,
+# but are absent from every consumer key scope and every shared fallback.
+llm_router_benchmark_only_model_names: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for entry in llm_router_registry_enabled
+        if entry.benchmark_only | default(false) | bool -%}
+  {%- set ns.names = ns.names + [entry.client_model_id] -%}
+  {%- if entry.route_group is defined -%}
+  {%- set ns.names = ns.names + [entry.route_group] -%}
+  {%- endif -%}
+  {%- if entry.fallback_group is defined -%}
+  {%- set ns.names = ns.names + [entry.fallback_group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.names | unique | list }}
+
 _llm_router_key_scope_all_source: >-
   {{ (llm_router_all_servable_models
       + (llm_router_model_group_aliases | list
@@ -108,7 +124,8 @@ _llm_router_key_scope_all_source: >-
       + (llm_router_hermes_agents | list)
       + (llm_router_role_deployments | map(attribute='role') | list)
       + _llm_router_directly_callable_ladder_names + llm_router_studio_model_names)
-     | reject('in', llm_router_agent_only_groups + llm_router_sandbox_only_model_ids)
+     | reject('in', llm_router_agent_only_groups + llm_router_sandbox_only_model_ids
+                      + llm_router_benchmark_only_model_names)
      | unique | list }}
 _llm_router_key_scope_all: "{{ _llm_router_m_key_scope_all }}"
 # The scope above names the router's own judge role. A caller key that must reach
