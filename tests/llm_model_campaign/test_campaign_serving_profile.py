@@ -31,10 +31,14 @@ def test_campaign_serving_profile_defaults_to_artifact_and_selects_override_unit
 
     default_profile = Template(selection_template).render(
         llm_model_campaign_serving_profile="",
+        machine="medium-guest",
+        hostvars={"medium-guest": {}},
         _llm_campaign_selected_artifacts=[{"serving_profile": "artifact-profile"}],
     )
     override_profile = Template(selection_template).render(
         llm_model_campaign_serving_profile="explicit-profile",
+        machine="medium-guest",
+        hostvars={"medium-guest": {"llm_active_profile": "guest-profile"}},
         _llm_campaign_selected_artifacts=[{"serving_profile": "artifact-profile"}],
     )
     assert default_profile == "artifact-profile"
@@ -48,6 +52,30 @@ def test_campaign_serving_profile_defaults_to_artifact_and_selects_override_unit
     )
     assert unit == "llm-gpu-serving-explicit-profile.service"
     assert not any(character.isspace() for character in unit)
+
+
+def test_campaign_serving_profile_prefers_target_guest_inventory_over_artifact():
+    controller = yaml.safe_load((PLAYBOOKS / "llm-model-campaign.yml").read_text(encoding="utf-8"))
+    selection = _named(controller[0]["tasks"], "Resolve the campaign serving profile")
+    selection_template = selection["ansible.builtin.set_fact"]["_llm_campaign_selected_serving_profile"]
+
+    guest_profile = Template(selection_template).render(
+        llm_model_campaign_serving_profile="",
+        machine="medium-guest",
+        hostvars={"medium-guest": {"llm_active_profile": "guest-profile"}},
+        _llm_campaign_selected_artifacts=[{"serving_profile": "artifact-profile"}],
+    )
+    assert guest_profile == "guest-profile"
+
+    # A target with no inventory profile (e.g. an out-of-inventory MLX guest)
+    # keeps the artifact registry fallback.
+    fallback_profile = Template(selection_template).render(
+        llm_model_campaign_serving_profile="   ",
+        machine="other-guest",
+        hostvars={"other-guest": {}},
+        _llm_campaign_selected_artifacts=[{"serving_profile": "artifact-profile"}],
+    )
+    assert fallback_profile == "artifact-profile"
 
 
 def test_campaign_profile_join_rejects_a_different_artifact_before_target_work():
