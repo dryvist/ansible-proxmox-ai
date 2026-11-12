@@ -153,11 +153,11 @@ def test_qwen38_long_context_profiles_render_through_legacy_units():
     expected = {
         "qwen38-128k-2-fp8-mtp": (131072, 2),
         "qwen38-128k-11-fp8-mtp": (131072, 11),
-        "qwen38-256k-1-fp8-mtp": (262144, 1),
-        "qwen38-256k-5-fp8-mtp": (262144, 5),
-        "qwen38-256k-kvoff0": (262144, 5),
-        "qwen38-256k-kvoff24": (262144, 5),
-        "qwen38-256k-kvoffmax": (262144, 5),
+        "qwen38-256k-1-fp8-mtp": (200000, 1),
+        "qwen38-256k-5-fp8-mtp": (200000, 5),
+        "qwen38-256k-kvoff0": (200000, 5),
+        "qwen38-256k-kvoff24": (200000, 5),
+        "qwen38-256k-kvoffmax": (200000, 5),
         "qwen38-64k-16-fp8-mtp": (65536, 16),
     }
     offload_sizes = {

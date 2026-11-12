@@ -92,6 +92,24 @@ def test_component_tag_selects_only_its_own_cron_tasks() -> None:
     assert "Include fabric_watchdog role" not in listing
 
 
+def test_logging_component_selects_only_the_hermes_forwarder() -> None:
+    listing = _selected(_play_listing(), "hermes_agent_logging")
+    for task_name in (
+        "Install rsyslog",
+        "Deploy the hermes-agent rsyslog forwarding ruleset",
+        "Validate the full rsyslog configuration",
+        "Enable and start rsyslog",
+    ):
+        assert task_name in listing, task_name
+    for other_component in (
+        "Reconcile the agentic direct-deliver digest crons",
+        "Install the pinned Hermes runtime",
+        "Deploy and start the Hermes gateway and dashboard units",
+    ):
+        assert other_component not in listing, other_component
+    assert "Include fabric_watchdog role" not in listing
+
+
 def test_hermes_crons_native_task_listing_stays_below_ceiling(tmp_path: Path) -> None:
     env = dict(os.environ, ANSIBLE_LOCAL_TEMP=str(tmp_path / "ansible-local"))
     listed = subprocess.run(

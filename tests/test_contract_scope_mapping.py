@@ -33,12 +33,14 @@ def router_paths(shards: list[dict[str, str]]) -> list[str]:
 @pytest.mark.parametrize(("path", "target"), [
     ("roles/nvidia_gpu_guest/tasks/cache-sync.yml", "tests/nvidia_gpu_guest/"),
     ("roles/llm_gpu_serving/tasks/main.yml", "tests/llm_gpu_engine_roles/"),
+    ("roles/llm_serving_declared_metrics/tasks/publish.yml", "tests/llm_gpu_engine_roles/"),
     ("roles/llamacpp_serving/tasks/install.yml", "tests/llamacpp_serving/"),
     ("roles/vllm_serving/tasks/install.yml", "tests/vllm_serving/"),
     ("roles/strata_serving/tasks/main.yml", "tests/llm_gpu_engine_roles/"),
     ("roles/llm_model_trial/tasks/serve.yml", "tests/llm_model_trial/"),
     ("roles/llama_cpp/tasks/main.yml", "tests/llama_cpp/"),
     ("roles/llamacpp_release/tasks/load.yml", "tests/llamacpp_release/"),
+    ("roles/crawl4ai_docker/tasks/main.yml", "tests/crawl4ai_docker/"),
     ("roles/langflow_docker/templates/docker-compose.yml.j2", "tests/agent_concurrency/"),
     ("roles/langflow_docker/tasks/main.yml", "tests/langflow_docker/"),
     ("roles/langfuse_docker/tasks/reconcile-stage0-evaluation.yml", "tests/langfuse_docker/"),
@@ -114,6 +116,7 @@ def test_inventory_and_playbook_edits_route_to_full_suite(path: str) -> None:
 
 @pytest.mark.parametrize("path", [
     "roles/fabric_watchdog/defaults/main.yml", "roles/langfuse_docker/tasks/main.yml",
+    "roles/crawl4ai_docker/tasks/main.yml", "tests/crawl4ai_docker/test_compose_contract.py",
     "tests/clickhouse_docker/test_otelcol_config.py",
     "roles/llamacpp_serving/tasks/install.yml", "roles/nvidia_gpu_guest/tasks/cache-sync.yml",
     "roles/vllm_serving/tasks/install.yml",

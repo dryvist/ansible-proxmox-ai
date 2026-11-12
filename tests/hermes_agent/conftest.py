@@ -300,7 +300,7 @@ def _goal_runner_namespace() -> dict[str, Any]:
         "os": __import__("os"),
         "json": __import__("json"),
         "time": __import__("time"),
-        "_hermes_cron_wall_timeout_limit": lambda: None,
+        "_hermes_cron_wall_timeout_limit": lambda _job_name=None: None,
         "logger": logging.getLogger("test.cron.goal"),
     }
     exec(compile(block, "cron-goal-block", "exec"), namespace)  # noqa: S102

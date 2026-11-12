@@ -21,6 +21,10 @@
       ansible.builtin.import_tasks: vllm-multi-turn.yml
       when: benchmark_run_request.suite == 'vllm-multi-turn'
 
+    - name: Run the tau2 banking-knowledge suite
+      ansible.builtin.import_tasks: tau2.yml
+      when: benchmark_run_request.suite == 'tau2-banking-knowledge'
+
   always:
     - name: Find cache-cell telemetry snapshots on the selected node
       ansible.builtin.find:
@@ -147,6 +151,41 @@
       changed_when: false
       when: benchmark_run_request.suite is match('^promptfoo-')
 
+    - name: Collect the tau2 results file from the client
+      ansible.builtin.command:
+        argv:
+          - pct
+          - pull
+          - "{{ benchmark_run_request.client_vmid }}"
+          - >-
+            {{ _benchmark_run_client_result }}/{{ benchmark_run_request.suite }}-{{
+            benchmark_run_request.tau2_domain }}.json
+          - "{{ _benchmark_run_node_scratch }}/tau2-results.json"
+      changed_when: true
+      when:
+        - benchmark_run_request.suite == 'tau2-banking-knowledge'
+        - _benchmark_run_suite.rc | default(1) == 0
+
+    - name: Read a safe tau2 summary from its results JSON
+      ansible.builtin.command:
+        argv:
+          - jq
+          - --raw-output
+          - --arg
+          - domain
+          - "{{ benchmark_run_request.tau2_domain }}"
+          - >-
+            "domain=\($domain) tasks=\(.simulations | length)
+            average_reward=\(([.simulations[] | select(.reward_info != null)
+            | .reward_info.reward]) as $r | if ($r | length) > 0
+            then ($r | add / length) else null end)"
+          - "{{ _benchmark_run_node_scratch }}/tau2-results.json"
+      register: _benchmark_run_tau2_summary
+      changed_when: false
+      when:
+        - benchmark_run_request.suite == 'tau2-banking-knowledge'
+        - _benchmark_run_suite.rc | default(1) == 0
+
     - name: Emit a safe suite summary to the Semaphore task log
       ansible.builtin.debug:
         msg:
@@ -160,6 +199,10 @@
           promptfoo_pass_summary: >-
             {{ (_benchmark_run_promptfoo_summary.stdout | default('not reported', true))
                if benchmark_run_request.suite is match('^promptfoo-')
+               else 'not applicable' }}
+          tau2_summary: >-
+            {{ (_benchmark_run_tau2_summary.stdout | default('not reported', true))
+               if benchmark_run_request.suite == 'tau2-banking-knowledge'
                else 'not applicable' }}
       when: _benchmark_run_suite is defined
 

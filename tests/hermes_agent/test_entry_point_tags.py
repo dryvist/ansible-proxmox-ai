@@ -26,6 +26,7 @@ COMPONENT_TAGS = {
     "hermes_profiles_env",
     "hermes_crons",
     "hermes_units_gateways",
+    "hermes_agent_logging",
 }
 PROBE_TAG = "hermes_delivery_probe"
 # Reached only through agent-egress.yml's include_role (tasks_from: egress),
@@ -90,6 +91,10 @@ def test_main_task_files_have_static_tags_and_one_owner_tag_each() -> None:
     assert owner_tags["bundle_build.yml"] == {"hermes_profiles_env", "hermes_units_gateways"}
     # The probe stays scoped to its own read-only component.
     assert owner_tags["delivery_probe.yml"] == {PROBE_TAG}
+    assert owner_tags["syslog_route.yml"] == {
+        "hermes_agent_logging",
+        "hermes_units_gateways",
+    }
     for task in _task_items(main):
         if any(
             include_file(task, key) == "delivery_probe.yml"

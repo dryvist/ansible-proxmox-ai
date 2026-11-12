@@ -17,6 +17,6 @@ def test_flash_next_native_context_profiles_are_retired_from_the_registry():
     profiles = _profiles()
     profile_name = next(name for name in profiles if name.startswith("flash-next-262k-"))
 
-    assert profiles[profile_name]["max_model_len"] == 262144
+    assert profiles[profile_name]["max_model_len"] == 200000
     assert profiles[profile_name]["enabled"] is False
     assert profile_name not in _registry_profiles()

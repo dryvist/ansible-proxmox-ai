@@ -21,13 +21,12 @@ hermes_agent_slack_gateway_restart_notification: false
 # `reaction_removed` bot events.
 hermes_agent_slack_reaction_triggers: true
 
-# Hourly (waking-hours) Slack status report seeded into Hermes' built-in cron
-# scheduler. The role creates the job on converge; the gateway starts executing
-# it on the next daemon run once the Slack gateway is configured. Runs at the
-# top of every hour from 08:00–22:00 local so there is a fresh heartbeat in
-# Slack at least once an hour during waking hours even when nothing else fires
-# (the var name keeps "daily" for stability — the schedule is the source of
-# truth). Keep the prompt cheap: a short status line, no heavy tool fan-out.
+# Hourly status report seeded into the direct cron scheduler. The role creates
+# the job on converge; the gateway starts executing it on the next daemon run
+# once the Slack gateway is configured. It checks for changes at minute :04
+# every local hour (the var name keeps "daily" for stability — the schedule is
+# the source of truth). Keep the prompt cheap: a short status line, no heavy
+# tool fan-out.
 #
 # Delta discipline (2026-07-18): every fresh session used to re-post the same
 # 4 static status lines every single hour even when nothing changed. Memory
@@ -35,21 +34,21 @@ hermes_agent_slack_reaction_triggers: true
 # state infrastructure — so the job fingerprints its own findings and checks
 # them against its last post before deciding how much to say.
 hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
-# Post once per local waking hour. The queue-recovery acceptance gate verifies
-# the full enqueue-to-Slack path during this window.
+# The Slack outcome split is asserted in tests/hermes_agent/test_alert_routing_jobs.py.
 #
-# Moved off minute :00 on 2026-08-05. This is the only HOURLY agentic card, and
-# at :00 it started in the same second as the kanban-digest tick (*/15) — 15
-# collisions a day, every day, against a serving tier that admits ONE in-flight
-# request per model and rejects the rest with an instant 429. Minute :00 also
-# carries three daily/8-hourly cards (nightly-wiki, daily-summary, the 8h
-# self-review), so it was the single most contended minute in the role.
+# Moved off minute :00 on 2026-08-05. At that time it was the only HOURLY
+# agentic card. At :00 it started in the same second as the kanban-digest tick
+# (*/15) — 15 collisions a day, every day, against a serving tier that admits
+# ONE in-flight request per model and rejects the rest with an instant 429.
+# Minute :00 also carries three daily/8-hourly cards (nightly-wiki,
+# daily-summary, the 8h self-review), so it was the single most contended
+# minute in the role.
 #
 # HONEST LIMIT: this separates STARTS, not overlap. Agentic cards here carry
 # max_runtime of 25-45m, so a long run still spans the next card's start. The
 # structural fix is capacity or admission control, not a minute offset —
 # tracked separately. This is the cheap half.
-hermes_agent_daily_status_cron_schedule: "4 8-22 * * *"
+hermes_agent_daily_status_cron_schedule: "4 * * * *"
 hermes_agent_daily_status_cron_prompt_file: hermes-daily-fabric-status.md
 
 # The catalog body names the checks but not a single endpoint, so the worker
@@ -60,9 +59,9 @@ hermes_agent_daily_status_cron_prompt_file: hermes-daily-fabric-status.md
 # domain that does not resolve at all. Every probe returned 000, so it posted an
 # hourly total-outage alarm while MCP returned its documented 406 protocol
 # response and the LLM endpoint returned 401 (reachable, but not a health
-# signal). That card now reports to the issues channel,
-# where the operator asked for near-silence, so fabricated alarms are the one
-# failure mode that would make the channel worthless.
+# signal). That card now reports to the issues channel, where the operator
+# asked for near-silence, so fabricated alarms are the one failure mode that
+# would make the channel worthless.
 #
 # Endpoints are topology and must never enter the public prompt catalog, so they
 # are appended at converge from the same variables the services are deployed

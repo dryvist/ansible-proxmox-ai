@@ -23,7 +23,7 @@ HOST_MEMORY_RESERVE_GIB = 64
 # paths, host and address are intentionally omitted. max_model_len tracks the
 # repo's medium-a profile between live re-captures.
 TARGET_MEDIUM_A_ARGS = {
-    "max_model_len": 262144,
+    "max_model_len": 200000,
     "max_num_seqs": 8,
     "gpu_memory_utilization": 0.85,
     "linear_backend": "b12x",
@@ -67,14 +67,14 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
         for slots in (1, 4)
         for dtype in ("auto", "fp8")
     } | {
-        (262144, slots, dtype)
+        (200000, slots, dtype)
         for slots in (1, 2)
         for dtype in ("auto", "fp8")
     } | {
         (131072, 2, "fp8"),
         (131072, 11, "fp8"),
         (98304, 16, "fp8"),
-        (262144, 5, "fp8"),
+        (200000, 5, "fp8"),
         (65536, 16, "fp8"),
     }
 

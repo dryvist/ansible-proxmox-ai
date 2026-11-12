@@ -1,0 +1,84 @@
+---
+- name: Check for a tau2-bench clone in the client run root
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - test
+      - -d
+      - "{{ _benchmark_run_client_root }}/tau2-bench/.git"
+  register: _benchmark_run_tau2_clone_probe
+  changed_when: false
+  failed_when: false
+  when: benchmark_run_request.suite == 'tau2-banking-knowledge'
+
+- name: Clone tau2-bench into the client run root
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - git
+      - clone
+      - "{{ _benchmark_run_tau2_bench_url }}"
+      - "{{ _benchmark_run_client_root }}/tau2-bench"
+  changed_when: true
+  when:
+    - benchmark_run_request.suite == 'tau2-banking-knowledge'
+    - _benchmark_run_tau2_clone_probe.rc | default(1) != 0
+
+- name: Check out the pinned tau2-bench commit
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - git
+      - -C
+      - "{{ _benchmark_run_client_root }}/tau2-bench"
+      - checkout
+      - "{{ benchmark_run_request.tau2_bench_commit }}"
+  changed_when: true
+  when: benchmark_run_request.suite == 'tau2-banking-knowledge'
+
+- name: Read the tau2-bench clone head
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - git
+      - -C
+      - "{{ _benchmark_run_client_root }}/tau2-bench"
+      - rev-parse
+      - HEAD
+  register: _benchmark_run_tau2_head
+  changed_when: false
+  when: benchmark_run_request.suite == 'tau2-banking-knowledge'
+
+- name: Require the pinned tau2-bench commit at the clone head
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_tau2_head.stdout | trim == benchmark_run_request.tau2_bench_commit
+    fail_msg: "The tau2-bench clone head differs from the benchmark-run pin."
+    quiet: true
+  when: benchmark_run_request.suite == 'tau2-banking-knowledge'
+
+- name: Sync the pinned tau2-bench environment
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - /usr/local/bin/uv
+      - sync
+      - --directory
+      - "{{ _benchmark_run_client_root }}/tau2-bench"
+  changed_when: true
+  when: benchmark_run_request.suite == 'tau2-banking-knowledge'

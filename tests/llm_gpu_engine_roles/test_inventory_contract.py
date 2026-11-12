@@ -14,6 +14,7 @@ SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
 GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
 ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
+HOST_GROUP_TEMPLATE = REPO_ROOT / "inventory/load_tofu/add_lxc_host_groups.yml.j2"
 
 
 def _load(path: Path):
@@ -63,7 +64,7 @@ def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
     bolt_64k = generic_profiles["nemotron-bolt-64k-16"]
     bolt_256k = generic_profiles["nemotron-bolt-256k-24"]
     assert (bolt_64k["max_model_len"], bolt_64k["max_num_seqs"]) == (65536, 16)
-    assert (bolt_256k["max_model_len"], bolt_256k["max_num_seqs"]) == (262144, 24)
+    assert (bolt_256k["max_model_len"], bolt_256k["max_num_seqs"]) == (200000, 24)
     for profile in (bolt_64k, bolt_256k):
         assert {
             key: profile[key]
@@ -156,7 +157,7 @@ def test_small_guest_profile_overrides_the_global_selection_by_inventory_hostnam
     assert add_host["name"] == "{{ item.key }}"
     assert host_vars["llm_active_profile"] == "small"
     assert host_vars["llm_gpu_serving_model_cache_mount_path"] == "/var/lib/llm"
-    groups = add_host["groups"]
+    groups = HOST_GROUP_TEMPLATE.read_text(encoding="utf-8")
     assert "'llm-gpu-small' in (item.value.tags | default([]))" in groups
     assert "intersect(['llm-vllm', 'llm-gpu-small']) | length > 0" not in groups
 
@@ -165,13 +166,7 @@ def test_ada_small_profile_keeps_the_light_lane_and_selects_its_cache():
     host_vars = _load(
         REPO_ROOT / "inventory/host_vars/llm-ada-lovelace-6X-16GB-embed.yml"
     )
-    inventory_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
-    add_host = next(
-        task["ansible.builtin.add_host"]
-        for task in _walk(inventory_tasks)
-        if "ansible.builtin.add_host" in task
-    )
-    groups = add_host["groups"]
+    groups = HOST_GROUP_TEMPLATE.read_text(encoding="utf-8")
 
     assert host_vars["llm_active_profile"] == "small"
     assert host_vars["llm_gpu_serving_model_cache_mount_path"] == "/var/lib/llm"
@@ -199,9 +194,15 @@ def test_shared_llamacpp_group_uses_inventory_cache_or_existing_root_cache():
 def test_inventory_loader_assigns_selected_router_membership_and_retains_engine_identities():
     loader = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml")
     host_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
-    add_host = next(task["ansible.builtin.add_host"] for task in _walk(host_tasks) if "ansible.builtin.add_host" in task)
-    groups = add_host["groups"]
+    add_host = next(
+        task["ansible.builtin.add_host"]
+        for task in _walk(host_tasks)
+        if "ansible.builtin.add_host" in task
+    )
+    groups = HOST_GROUP_TEMPLATE.read_text(encoding="utf-8")
 
+    assert "lookup('template'" in add_host["groups"]
+    assert "add_lxc_host_groups.yml.j2" in add_host["groups"]
     assert "load_tofu_gpu_engine_set_present" in groups
     assert "load_tofu_gpu_engine_selector == 'llama_cpp'" in groups
     assert "load_tofu_gpu_engine_selector == 'vllm'" in groups

@@ -51,17 +51,17 @@ def test_long_context_profiles_match_card_limits_and_memory_targets():
         if name.startswith("nemotron-lightning-1m-")
     ]
     assert {(profile["max_model_len"], profile["max_num_seqs"]) for profile in flash} == {
-        (262144, 1),
-        (262144, 2),
+        (200000, 1),
+        (200000, 2),
     }
     assert all("hf_overrides" not in profile and not profile.get("allow_long_max_model_len") for profile in flash)
     assert {(profile["max_model_len"], profile["max_num_seqs"]) for profile in lightning} == {
-        (1000000, 1),
-        (1000000, 2),
+        (200000, 1),
+        (200000, 2),
     }
     assert all("hf_overrides" not in profile for profile in lightning)
     lightning_8 = VLLM_PROFILES["nemotron-lightning-256k-8-fp8"]
-    assert (lightning_8["max_model_len"], lightning_8["max_num_seqs"]) == (262144, 8)
+    assert (lightning_8["max_model_len"], lightning_8["max_num_seqs"]) == (200000, 8)
     assert lightning_8["reasoning_parser"] == "nemotron_v3"
     assert lightning_8["sampling_params"] == {"temperature": 1.0, "top_p": 0.95}
     super_vl = VLLM_PROFILES["nemotron-super-vl-64k-8"]
@@ -71,7 +71,7 @@ def test_long_context_profiles_match_card_limits_and_memory_targets():
     assert {
         (profile["max_model_len"], profile["max_num_seqs"])
         for profile in (*qwen_profiles.values(), VLLM_PROFILES["qwen38-64k-16-fp8-mtp"])
-    } == {(131072, 2), (131072, 11), (262144, 1), (262144, 5), (65536, 16)}
+    } == {(131072, 2), (131072, 11), (200000, 1), (200000, 5), (65536, 16)}
     for profile in (*qwen_profiles.values(), VLLM_PROFILES["qwen38-64k-16-fp8-mtp"]):
         assert profile["gpu_memory_utilization"] == qwen_mtp["gpu_memory_utilization"]
         assert profile["quantization"] == qwen_mtp["quantization"] == "modelopt"

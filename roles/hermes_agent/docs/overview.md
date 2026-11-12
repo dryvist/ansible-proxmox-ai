@@ -74,6 +74,7 @@ For focused, single-guest runs, use one entry tag at a time:
 | `hermes_crons` | SSH/cron drift, prechecks, cron reconciliation |
 | `hermes_content_scripts` | Prompt catalog, curriculum and deployed scripts |
 | `hermes_units_gateways` | Gateway, dashboard, companion units, watchdogs, relay and final verification |
+| `hermes_agent_logging` | Hermes journald and identity-scoped file forwarding to the Hermes index |
 | `hermes_delivery_probe` | Read-only delivery probe; add `-e hermes_agent_delivery_probe_only=true` |
 
 Use the site's wrapper so inventory and secret prerequisites run as usual; the

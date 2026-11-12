@@ -52,6 +52,34 @@
 - name: Model-provider plugin install and credential provisioning
   ansible.builtin.include_tasks: model_provider.yml
 
+- name: Install and credential declared built-in tool providers
+  ansible.builtin.include_tasks: tool_provider_one.yml
+  # Leaf-mode provider declarations are unavailable to this inventory filter.
+  loop: >-
+    {{
+      (dify_docker_agent_tool_provider_plugins
+       if dify_docker_agent_dsl_select | length == 0
+          or dify_docker_agent_app_config_from_leaf | bool
+       else dify_docker_agent_tool_provider_plugins
+         | selectattr(
+             'provider_name',
+             'in',
+             dify_docker_agent_tool_providers
+             | dict2items
+             | selectattr('key', 'in', dify_docker_agent_dsl_select)
+             | map(attribute='value')
+             | map('dict2items')
+             | flatten
+             | map(attribute='value')
+             | list
+           )
+         | list)
+    }}
+  loop_control:
+    loop_var: dify_docker_agent_tool_provider
+    label: "{{ dify_docker_agent_tool_provider.plugin_id }}"
+  when: dify_docker_provision_model_provider | bool
+
 - name: Seed a starter chat app (best-effort, idempotent, non-fatal)
   ansible.builtin.include_tasks: seed_app.yml
 

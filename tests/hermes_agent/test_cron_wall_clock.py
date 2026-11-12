@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -27,9 +28,21 @@ def _helper_namespace() -> dict:
     # hermes_agent_cron_wall_timeout_seconds is a derived Jinja formula now,
     # not a literal (defaults/main/20-brain-and-slack.yml) — render it for
     # real rather than reading the raw template string out of role_defaults().
-    block = Environment(autoescape=False).from_string(block).render(
-        hermes_agent_cron_wall_timeout_seconds=wall_timeout_seconds()
-    )
+    defaults = role_defaults(ROLE_ROOT)
+    environment = Environment(autoescape=False)
+    environment.filters["to_json"] = json.dumps
+    defaults["hermes_agent_direct_cron_jobs"] = [
+        {
+            **job,
+            "name": environment.from_string(job["name"]).render(**defaults),
+        }
+        for job in defaults["hermes_agent_direct_cron_jobs"]
+    ]
+    render_context = {
+        **defaults,
+        "hermes_agent_cron_wall_timeout_seconds": wall_timeout_seconds(),
+    }
+    block = environment.from_string(block).render(**render_context)
     namespace = {"logger": logging.getLogger(__name__), "os": os, "time": time}
     exec(block, namespace)  # noqa: S102 - executes the role's exact managed Python
     return namespace
@@ -218,13 +231,28 @@ def test_wall_clock_limit_parses_one_process_environment(monkeypatch) -> None:
     managed = float(wall_timeout_seconds())
     limit = _helper_namespace()["_hermes_cron_wall_timeout_limit"]
     monkeypatch.delenv("HERMES_CRON_WALL_TIMEOUT", raising=False)
-    assert limit() == managed
+    assert limit("unconfigured-job") == managed
+    assert limit("daily-summary") == 2399.0
+    assert limit("blocked-parent-triage-digest") == 2399.0
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "1800")
-    assert limit() == 1800.0
+    assert limit("unconfigured-job") == 1800.0
+    assert limit("daily-summary") == 2399.0
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "0")
-    assert limit() is None
+    assert limit("unconfigured-job") is None
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "invalid")
-    assert limit() == managed
+    assert limit("unconfigured-job") == managed
+
+
+def test_every_catalog_job_uses_its_override_or_the_derived_default(monkeypatch) -> None:
+    defaults = role_defaults(ROLE_ROOT)
+    environment = Environment(autoescape=False)
+    limit = _helper_namespace()["_hermes_cron_wall_timeout_limit"]
+    monkeypatch.delenv("HERMES_CRON_WALL_TIMEOUT", raising=False)
+
+    for job in defaults["hermes_agent_direct_cron_jobs"]:
+        name = environment.from_string(job["name"]).render(**defaults)
+        expected = job.get("wall_clock_seconds", 1800)
+        assert limit(name) == float(expected), name
 
 
 def test_native_inactivity_and_aggregate_deadlines_are_distinct() -> None:

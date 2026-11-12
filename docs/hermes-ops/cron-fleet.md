@@ -210,6 +210,17 @@ mandatory rather than remembered).
 so a converge removes any installed copy, or pauses it where direct-cron
 reconcile is skipped. `github-triage` remains paused under the throttle.
 
+## Private assistant jobs
+
+The `hermes-private` identity runs four catalog-backed assistant jobs in its
+own cron store: `assistant-pulse` and `assistant-task-triage` hourly, then
+`private-inbox-groom` and `private-evening-wrap` daily at
+10:11 and 23:11 UTC. The daily jobs reuse the existing assistant catalog prompts;
+all four use the local `medium` model route. Successful output and failure
+notices both use `local`, so the identity keeps its results in its own store
+without posting to a Slack channel. Its direct-cron reconcile gate allows these
+local jobs even when Slack is not configured.
+
 ## Systemd units (not crons)
 
 `hermes-gateway.service`, `hermes-dashboard.service`,

@@ -14,7 +14,10 @@ from functools import lru_cache
 from pathlib import Path
 
 import jinja2
+import pytest
 import yaml
+
+from _group_vars import group_var
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = REPO_ROOT / "roles/llm_router/templates"
@@ -40,7 +43,7 @@ RETIRED_FLASH_NEXT_NVFP4_PROFILES = {
 
 
 @lru_cache(maxsize=1)
-def _entries() -> list[dict]:
+def _projected_entries() -> list[dict]:
     """Read the router registry after its production catalog projection."""
     with tempfile.TemporaryDirectory(prefix="llm-router-catalog-projection-") as temp_dir:
         output = Path(temp_dir) / "gpu-registry.json"
@@ -62,7 +65,11 @@ def _entries() -> list[dict]:
         )
         assert result.returncode == 0, result.stdout + result.stderr
         projected = json.loads(output.read_text(encoding="utf-8"))
-    return [entry for entry in projected if entry["tier"] == "gpu"]
+    return projected
+
+
+def _entries() -> list[dict]:
+    return [entry for entry in _projected_entries() if entry["tier"] == "gpu"]
 
 
 def _serving_profiles() -> dict:
@@ -109,8 +116,9 @@ def _render(models: list[dict]) -> list[dict]:
     )
     text = env.get_template("model-list-gpu.yaml.j2").render(
         llm_router_gpu_models=models,
-        llm_router_gpu_accelerator="gpu-primary",
-        llm_router_gpu_profile_accelerators={},
+        llm_router_gpu_profile_accelerators={
+            m["profile"]: group_var("llm_gpu_accelerator_primary") for m in models if "profile" in m
+        },
         llm_router_priority_tiers=PRIORITY_TIERS,
         llm_router_deployment_tags_by_entry={f"{m['client_model_id']}|{m['tier']}": [] for m in models},
         llm_router_gpu_profile_base_urls={
@@ -167,6 +175,9 @@ def test_co_resident_profile_uses_the_second_inventory_derived_port():
         assert rendered["litellm_params"]["max_parallel_requests"] == 4
 
 
-def test_a_deployment_without_a_profile_renders_no_profile_marker():
+def test_a_deployment_without_a_profile_is_refused_not_rendered_unlabelled():
+    # A GPU deployment is always a member's profile, so its lane label comes from that
+    # mapping entry; a deployment without one has no label and must not render.
     entry = {key: value for key, value in _entries()[0].items() if key != "profile"}
-    assert "profile" not in _render([entry])[0]["model_info"]
+    with pytest.raises(jinja2.UndefinedError):
+        _render([entry])
