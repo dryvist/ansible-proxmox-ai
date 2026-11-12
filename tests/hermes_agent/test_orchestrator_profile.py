@@ -150,4 +150,7 @@ def test_fabric_status_gets_kanban_at_the_job_scope_and_keeps_its_delivery() -> 
         job for job in defaults["hermes_agent_direct_cron_jobs"]
         if job["name"] == "{{ hermes_agent_blocked_parent_triage_digest_cron_name }}"
     )
-    assert "kanban" not in blocked_job.get("enabled_toolsets", [])
+    blocked_toolsets = yaml.safe_load(env.from_string(
+        str(blocked_job.get("enabled_toolsets", []))
+    ).render(hermes_agent_cron_toolsets=cron_toolsets))
+    assert blocked_toolsets == []
