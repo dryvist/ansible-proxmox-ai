@@ -1,0 +1,66 @@
+---
+# The full router config must render the exfiltration guardrail as a top-level
+# guardrail entry. This uses the shared offline credentialed-render inputs.
+#
+# Run from the repository root:
+#   ansible-playbook tests/llm_router/test_guardrail_config_render.yml -i localhost, -c local
+- name: Verify the full router config renders the data-exfiltration guardrail
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - policy_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: example-host
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: medium
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load full-config render inputs without converge-time probes
+      ansible.builtin.import_tasks: tasks/credentialed_render_setup.yml
+
+    - name: Set the reserved subdomain for the render fixture
+      ansible.builtin.set_fact:
+        llm_router_subdomain: pve.example.test
+
+    - name: Render and parse the full router config
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Assert the rendered config contains the enabled exfiltration guardrail
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered_guardrail | length == 1
+          - _rendered_guardrail[0].litellm_params.guardrail == 'litellm_content_filter'
+          - _rendered_guardrail[0].litellm_params.mode == 'pre_call'
+          - _rendered_guardrail[0].litellm_params.default_on is sameas true
+          - >-
+            _rendered_guardrail[0].litellm_params.categories
+            | selectattr('category', 'equalto', 'prompt_injection_data_exfiltration')
+            | selectattr('enabled', 'sameas', true)
+            | selectattr('action', 'equalto', 'BLOCK') | list | length == 1
+        fail_msg: >-
+          The parsed full router config must contain exactly one enabled
+          litellm_content_filter guardrail that blocks prompt-injection data exfiltration.
+      vars:
+        _rendered_guardrail: >-
+          {{ _config.guardrails | default([])
+             | selectattr('guardrail_name', 'equalto', 'Prompt Injection: Data Exfiltration') | list }}
