@@ -86,6 +86,60 @@ def test_optional_declared_buckets_may_be_empty_but_names_stay_distinct():
     )
 
 
+def test_orchestrator_membership_only_applies_to_materialized_profiles():
+    assertion = _named(
+        _tasks("assert_brain_and_bridge.yml"),
+        "Assert the Hermes Kanban profile and bridge bucket declarations are valid",
+    )
+    conditions = assertion["ansible.builtin.assert"]["that"]
+    base = {
+        "hermes_agent_kanban_orchestrator_profile": "orchestrator",
+        "hermes_agent_vikunja_bridge_bucket_ready": "Ready",
+        "hermes_agent_vikunja_bridge_bucket_in_progress": "",
+        "hermes_agent_vikunja_bridge_bucket_done": "",
+        "hermes_agent_vikunja_bridge_bucket_blocked": "",
+        "hermes_agent_vikunja_bridge_bucket_needs_triage": "",
+        "hermes_agent_vikunja_bridge_bucket_busy": "",
+    }
+
+    pepper = {
+        **base,
+        "hermes_agent_id": "pepper",
+        "hermes_agent_profiles": [],
+    }
+    assert not _task_runs(assertion, pepper)
+
+    hermes_private = {
+        **base,
+        "hermes_agent_id": "hermes-private",
+        "hermes_agent_profiles": [],
+    }
+    private_context = _declared_bucket_context(assertion, hermes_private)
+    assert _task_runs(assertion, hermes_private)
+    assert _conditions_pass([conditions[0]], private_context)
+    assert _conditions_pass(conditions[1:], private_context)
+
+    normal_missing = {
+        **base,
+        "hermes_agent_id": "hermes",
+        "hermes_agent_profiles": [{"name": "worker"}],
+    }
+    assert not _conditions_pass(
+        conditions,
+        _declared_bucket_context(assertion, normal_missing),
+    )
+
+    normal_present = {
+        **base,
+        "hermes_agent_id": "hermes",
+        "hermes_agent_profiles": [{"name": "orchestrator"}],
+    }
+    assert _conditions_pass(
+        conditions,
+        _declared_bucket_context(assertion, normal_present),
+    )
+
+
 def test_board_file_check_uses_native_find_and_rejects_duplicates_or_wrong_paths():
     tasks = _tasks("mcp_precheck.yml")
     find = _named(tasks, "Find Hermes Kanban database files under the shared home")
