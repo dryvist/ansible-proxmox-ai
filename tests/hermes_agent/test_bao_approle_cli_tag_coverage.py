@@ -29,6 +29,7 @@ COMPONENT_TAGS = {
     "hermes_content_scripts",
     "hermes_crons",
     "hermes_units_gateways",
+    "hermes_agent_logging",
     "hermes_delivery_probe",
 }
 INSTALL_ROLE = "dryvist.homelab.bao_approle_cli"
