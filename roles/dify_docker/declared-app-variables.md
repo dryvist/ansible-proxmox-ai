@@ -26,6 +26,13 @@ provider name. The import replaces each token with that provider's id, read from
 `GET /workspaces/current/tool-providers`, so a provider id reaches the app graph only through an
 import. A name must match exactly one provider, or the app fails before its import.
 
+`dify_docker_agent_tool_provider_plugins` declares Marketplace plugins and credentials that the role
+installs before DSL imports. The current GitHub entry is pinned to version `0.3.11`; its credential
+comes from the declared OpenBao path and field. GitHub credentials must be fine-grained and
+read-only, because the Marketplace plugin also exposes write operations. Credential names are
+created once; Dify masks their saved secret values, so updating OpenBao alone does not rotate a
+credential already stored in Dify.
+
 An app with declared entries, an MCP tool node, or an environment variable with an empty value in its
 definition runs these checks before its import. They run in check mode too. A failure names the app
 and the items only, never a value.
