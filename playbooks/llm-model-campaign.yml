@@ -12,6 +12,10 @@
     # The runner has no sudo; the controller play needs no privilege.
     ansible_become: false
     llm_model_campaign_serving_profile: ""
+    _llm_campaign_api_key: >-
+      {{ (bao_local_llm_secrets | default({}, true)).get('OPENAI_API_KEY')
+         | default(lookup('ansible.builtin.env', 'OPENAI_API_KEY'), true)
+         | default('', true) | trim }}
     # renovate: datasource=github-releases depName=dryvist/mlx-benchmarks currentValue=v0.69.0
     _llm_campaign_benchmarks_ref: aac47c1856e7bc503c2d2527bef8be8aee86a262
   tasks:
@@ -286,14 +290,10 @@
     - name: Require runtime endpoint inputs for authenticated model recipes
       ansible.builtin.assert:
         that:
-          - _llm_campaign_serving_model is defined
           - >-
             _llm_campaign_serving_model | string is
             match('^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$')
-          - >-
-            (bao_local_llm_secrets | default({}, true)).get('OPENAI_API_KEY')
-            | default(lookup('ansible.builtin.env', 'OPENAI_API_KEY'), true)
-            | default('', true) | trim | length > 0
+          - _llm_campaign_api_key | length > 0
         fail_msg: >-
           The selected recipe requires a runtime serving-model ID and
           OPENAI_API_KEY credential.
@@ -331,6 +331,12 @@
         _llm_campaign_paired_trial: "{{ _llm_campaign_paired_trial }}"
         _llm_campaign_output_dir: "{{ _llm_campaign_output_dir }}"
         _llm_campaign_tolerance: "{{ _llm_campaign_tolerance }}"
+
+    - name: Forward the campaign API key to the inventory target play
+      ansible.builtin.set_fact:
+        _llm_campaign_api_key_for_target: "{{ _llm_campaign_api_key }}"
+      no_log: true
+      when: _llm_campaign_uses_api_key | bool
 
 - name: Continue the campaign on the selected target
   ansible.builtin.import_playbook: llm-model-campaign-target.yml

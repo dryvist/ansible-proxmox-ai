@@ -139,8 +139,13 @@ def test_vllm_kv_preflight_reads_the_current_serving_invocation():
 
 def test_authenticated_recipes_resolve_runtime_model_and_key():
     tasks = _controller_tasks()
+    controller_play = yaml.safe_load(
+        (PLAYBOOKS / "llm-model-campaign.yml").read_text(encoding="utf-8")
+    )[0]
     runtime = _named(tasks, "Require runtime endpoint inputs for authenticated model recipes")
+    forward_key = _named(tasks, "Forward the campaign API key to the inventory target play")
     serving = _named(tasks, "Resolve the campaign serving profile")
+    target_play = yaml.safe_load(TARGET_PLAYBOOK.read_text(encoding="utf-8"))[0]
     endpoint_tasks = _load_tasks(TASKS / "llm-model-campaign-endpoint-probe.yml")
     endpoint = _named(endpoint_tasks, "Verify the live endpoint advertises the expected model")
     model_check = _named(endpoint_tasks, "Require the live endpoint model ID to match this campaign pass")
@@ -148,21 +153,29 @@ def test_authenticated_recipes_resolve_runtime_model_and_key():
     command_block = _named(cell_tasks, "Run the tool-native command from the selected recipe row")
     command = command_block["block"][0]
 
-    assert "_llm_campaign_serving_model is defined" in runtime["ansible.builtin.assert"]["that"]
+    assert (
+        "_llm_campaign_serving_model is defined"
+        not in runtime["ansible.builtin.assert"]["that"]
+    )
     assert any("_llm_campaign_serving_model | string is match(" in condition
                for condition in runtime["ansible.builtin.assert"]["that"])
-    assert any("bao_local_llm_secrets" in condition and "OPENAI_API_KEY" in condition
+    assert "_llm_campaign_api_key" in controller_play["vars"]
+    assert any("_llm_campaign_api_key" in condition
                for condition in runtime["ansible.builtin.assert"]["that"])
     assert (
         "_llm_campaign_selected_artifacts[0].hf_repo"
         in serving["ansible.builtin.set_fact"]["_llm_campaign_serving_model"]
     )
     assert runtime["no_log"] is True
+    assert forward_key["no_log"] is True
+    assert "_llm_campaign_api_key_for_target" in forward_key["ansible.builtin.set_fact"]
+    assert forward_key["when"] == "_llm_campaign_uses_api_key | bool"
+    assert "_llm_campaign_api_key_for_target" in target_play["vars"]["_llm_campaign_api_key"]
     assert "Authorization" in endpoint["ansible.builtin.uri"]["headers"]
-    assert "bao_local_llm_secrets" in endpoint["ansible.builtin.uri"]["headers"]
+    assert "_llm_campaign_api_key" in endpoint["ansible.builtin.uri"]["headers"]
     assert endpoint["no_log"] == "{{ _llm_campaign_uses_api_key }}"
     assert model_check["no_log"] == "{{ _llm_campaign_uses_api_key }}"
-    assert "bao_local_llm_secrets" in command["environment"]["OPENAI_API_KEY"]
+    assert "_llm_campaign_api_key" in command["environment"]["OPENAI_API_KEY"]
 
 
 def test_coding_and_reasoning_inputs_resolve_for_the_medium_artifact():
