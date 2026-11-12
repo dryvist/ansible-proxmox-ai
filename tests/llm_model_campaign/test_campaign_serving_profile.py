@@ -24,9 +24,18 @@ def _named(tasks: list[dict[str, Any]], name: str) -> dict[str, Any]:
     return matches[0]
 
 
-def test_campaign_serving_profile_defaults_to_artifact_and_selects_override_unit():
+def _serving_input_tasks() -> list[dict[str, Any]]:
     controller = yaml.safe_load((PLAYBOOKS / "llm-model-campaign.yml").read_text(encoding="utf-8"))
-    selection = _named(controller[0]["tasks"], "Resolve the campaign serving profile")
+    assert any(
+        task.get("ansible.builtin.import_tasks")
+        == "tasks/llm-model-campaign-serving-inputs.yml"
+        for task in controller[0]["tasks"]
+    )
+    return _load_tasks(TASKS / "llm-model-campaign-serving-inputs.yml")
+
+
+def test_campaign_serving_profile_defaults_to_artifact_and_selects_override_unit():
+    selection = _named(_serving_input_tasks(), "Resolve the campaign serving profile")
     selection_template = selection["ansible.builtin.set_fact"]["_llm_campaign_selected_serving_profile"]
 
     default_profile = Template(selection_template).render(
@@ -55,8 +64,7 @@ def test_campaign_serving_profile_defaults_to_artifact_and_selects_override_unit
 
 
 def test_campaign_serving_profile_prefers_target_guest_inventory_over_artifact():
-    controller = yaml.safe_load((PLAYBOOKS / "llm-model-campaign.yml").read_text(encoding="utf-8"))
-    selection = _named(controller[0]["tasks"], "Resolve the campaign serving profile")
+    selection = _named(_serving_input_tasks(), "Resolve the campaign serving profile")
     selection_template = selection["ansible.builtin.set_fact"]["_llm_campaign_selected_serving_profile"]
 
     guest_profile = Template(selection_template).render(
@@ -82,7 +90,9 @@ def test_campaign_profile_join_rejects_a_different_artifact_before_target_work()
     plays = yaml.safe_load((PLAYBOOKS / "llm-model-campaign.yml").read_text(encoding="utf-8"))
     controller = plays[0]
     tasks = controller["tasks"]
-    include = _named(tasks, "Resolve and validate an explicit campaign serving profile")
+    serving_tasks = _serving_input_tasks()
+    include = _named(serving_tasks, "Resolve and validate an explicit campaign serving profile")
+    import_inputs = _named(tasks, "Resolve and validate campaign serving inputs")
     save = _named(tasks, "Save the prepared campaign inputs for the inventory target play")
     profile_tasks = _load_tasks(TASKS / "llm-model-campaign-serving-profile.yml")
     profile_loader = _named(profile_tasks, "Load the shared vLLM profile map for an explicit campaign profile")
@@ -90,9 +100,9 @@ def test_campaign_profile_join_rejects_a_different_artifact_before_target_work()
     guard = _named(profile_tasks, "Validate the explicit campaign profile against its artifact and engine")
 
     assert controller["hosts"] == "localhost"
-    assert include["ansible.builtin.include_tasks"] == "tasks/llm-model-campaign-serving-profile.yml"
+    assert include["ansible.builtin.include_tasks"] == "llm-model-campaign-serving-profile.yml"
     assert "llm_model_campaign_serving_profile" in include["when"]
-    assert tasks.index(include) < tasks.index(save)
+    assert tasks.index(import_inputs) < tasks.index(save)
     assert profile_loader["ansible.builtin.include_vars"]["dir"].endswith(
         "roles/vllm_serving/defaults/main"
     )

@@ -139,12 +139,21 @@ def test_vllm_kv_preflight_reads_the_current_serving_invocation():
 
 def test_authenticated_recipes_resolve_runtime_model_and_key():
     tasks = _controller_tasks()
+    assert any(
+        task.get("ansible.builtin.import_tasks")
+        == "tasks/llm-model-campaign-serving-inputs.yml"
+        for task in tasks
+    )
+    tasks.extend(_load_tasks(TASKS / "llm-model-campaign-serving-inputs.yml"))
     controller_play = yaml.safe_load(
         (PLAYBOOKS / "llm-model-campaign.yml").read_text(encoding="utf-8")
     )[0]
     runtime = _named(tasks, "Require runtime endpoint inputs for authenticated model recipes")
     forward_key = _named(tasks, "Forward the campaign API key to the inventory target play")
-    serving = _named(tasks, "Resolve the campaign serving profile")
+    serving = _named(
+        _load_tasks(TASKS / "llm-model-campaign-serving-inputs.yml"),
+        "Resolve the campaign serving profile",
+    )
     target_play = yaml.safe_load(TARGET_PLAYBOOK.read_text(encoding="utf-8"))[0]
     endpoint_tasks = _load_tasks(TASKS / "llm-model-campaign-endpoint-probe.yml")
     endpoint = _named(endpoint_tasks, "Verify the live endpoint advertises the expected model")
@@ -193,7 +202,10 @@ def test_coding_and_reasoning_inputs_resolve_for_the_medium_artifact():
     medium = next(
         artifact for artifact in medium_artifacts if artifact["artifact_id"] == "qwen38-27b-nvfp4"
     )
-    serving = _named(tasks, "Resolve the campaign serving profile")
+    serving = _named(
+        _load_tasks(TASKS / "llm-model-campaign-serving-inputs.yml"),
+        "Resolve the campaign serving profile",
+    )
     parse = _named(tasks, "Parse positive concurrency and context values")
     serving_expression = serving["ansible.builtin.set_fact"]["_llm_campaign_serving_model"]
     context_expression = parse["ansible.builtin.set_fact"]["_llm_campaign_context_values"]

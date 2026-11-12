@@ -270,41 +270,8 @@
           when its registered size is large.
         quiet: true
 
-    - name: Resolve the campaign serving profile
-      # Precedence: an explicit survey value, then the target guest's own
-      # inventory llm_active_profile, then the artifact's registry profile.
-      ansible.builtin.set_fact:
-        _llm_campaign_selected_serving_profile: >-
-          {{ llm_model_campaign_serving_profile
-             | default('', true) | trim
-             | default(hostvars[machine].llm_active_profile | default('', true) | trim, true)
-             | default(_llm_campaign_selected_artifacts[0].serving_profile | default(''), true) }}
-        _llm_campaign_selected_serving_profile_data: {}
-        # Match the selected artifact's vLLM served-model ID unless the caller
-        # supplies the existing explicit override.
-        _llm_campaign_serving_model: >-
-          {{ serving_model
-             | default(_llm_campaign_selected_artifacts[0].hf_repo, true) }}
-
-    - name: Resolve and validate an explicit campaign serving profile
-      ansible.builtin.include_tasks: tasks/llm-model-campaign-serving-profile.yml
-      when: llm_model_campaign_serving_profile | default('', true) | trim | length > 0
-
-    - name: Require runtime endpoint inputs for authenticated model recipes
-      ansible.builtin.assert:
-        that:
-          - >-
-            _llm_campaign_serving_model | string is
-            match('^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$')
-          - _llm_campaign_api_key | length > 0
-        fail_msg: >-
-          The selected recipe requires a runtime serving-model ID and
-          OPENAI_API_KEY credential.
-        quiet: true
-      no_log: true
-      when: >-
-        _llm_campaign_config.run
-        | selectattr('api_key_env', 'defined') | list | length > 0
+    - name: Resolve and validate campaign serving inputs
+      ansible.builtin.import_tasks: tasks/llm-model-campaign-serving-inputs.yml
 
     - name: Resolve the model-card context marker using the recipe output reservation
       ansible.builtin.set_fact:
