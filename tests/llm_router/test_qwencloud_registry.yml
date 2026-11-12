@@ -49,10 +49,11 @@
              | selectattr('api_base_field', 'defined')
              | list }}
 
-    - name: Select the conservative input-cap entries and rendered deployments
+    - name: Select the Qwen 3.8 entries and rendered deployments
       ansible.builtin.set_fact:
-        _qwen_conservative_input_entries: >-
-          {{ _qwen_entries | selectattr('context_window', 'equalto', 983616) | list }}
+        _qwen_38_entries: >-
+          {{ _qwen_entries
+             | selectattr('client_model_id', 'match', '^qwen3[.]8-') | list }}
         _qwen_deployments: >-
           {{ _config.model_list
              | selectattr('litellm_params.api_key', 'equalto',
@@ -65,20 +66,11 @@
         that:
           - _qwen_entries | length == 3
           - _qwen_entries | map(attribute='client_model_id') | unique | length == 3
-          - _qwen_conservative_input_entries | length == 2
+          - _qwen_38_entries | length == 2
+          - _qwen_38_entries | map(attribute='context_window') | unique | length == 1
           - _qwen_entries | map(attribute='key_field') | unique | length == 1
           - _qwen_deployments | length == _qwen_entries | length
         fail_msg: "The registered Qwen entries or rendered deployments are missing or duplicated."
-
-    - name: Assert the conservative Qwen 3.8 input caps
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - item.context_window | int == 983616
-        fail_msg: "The conservative Qwen entries must use the provider's effective input cap."
-      loop: "{{ _qwen_conservative_input_entries }}"
-      loop_control:
-        label: "{{ item.client_model_id }}"
 
     - name: Assert each OpenAI-compatible chat entry resolves and projects registry metadata
       ansible.builtin.assert:
@@ -90,21 +82,35 @@
           - item.provider == 'openai'
           - item.mode == 'chat'
           - item.credential_env == item.key_field
-          - item.api_base_field == 'QWEN_URL_OPENAI'
+          - item.api_base_field is defined
           - item.catalog_model_name is defined
           - item.catalog_model_name in item.catalog_aliases
           - item.catalog_limit_overrides | sort == ['context_window', 'max_output_tokens']
           - _qwen_deployment.litellm_params.model == item.litellm_model_name
-          - _qwen_deployment.litellm_params.api_base == 'http://localhost:4011/v1'
+          - >-
+            _qwen_deployment.litellm_params.api_base
+            == _credentialed_render_extra_secrets[item.api_base_field]
           - _qwen_deployment.litellm_params.api_key == 'os.environ/' ~ item.key_field
           - _qwen_deployment.litellm_params.max_tokens | int == item.max_output_tokens | int
           - _qwen_deployment.model_info.max_input_tokens | int == item.context_window | int
           - _qwen_deployment.model_info.max_output_tokens | int == item.max_output_tokens | int
-          - _qwen_deployment.model_info.plan_credit_unit == 'plan_credits'
+          - item.model_info.plan_credit_unit is defined
+          - _qwen_deployment.model_info.plan_credit_unit == item.model_info.plan_credit_unit
+          - item.model_info.plan_credit_multiplier_off_peak is defined
+          - >-
+            _qwen_deployment.model_info.plan_credit_multiplier_off_peak
+            == item.model_info.plan_credit_multiplier_off_peak
+          - item.model_info.plan_off_peak_window_utc is defined
+          - >-
+            _qwen_deployment.model_info.plan_off_peak_window_utc
+            == item.model_info.plan_off_peak_window_utc
           - >-
             _qwen_deployment.model_info ==
             (_qwen_deployment.model_info | combine(item.model_info, recursive=true))
-          - _qwen_deployment.model_info.plan_off_peak_window_utc is defined
+          - >-
+            '"input_cost_per_token":' not in (item | to_json)
+          - >-
+            '"output_cost_per_token":' not in (item | to_json)
           - "'input_cost_per_token' not in _qwen_deployment.litellm_params"
           - "'output_cost_per_token' not in _qwen_deployment.litellm_params"
           - "'input_cost_per_token' not in _qwen_deployment.model_info"
@@ -136,6 +142,11 @@
         quiet: true
         that:
           - _qwen_false_benchmark_case.benchmark_only is false
+          - >-
+            _qwen_entries
+            | selectattr('benchmark_only', 'defined')
+            | selectattr('benchmark_only', 'equalto', true)
+            | list | length > 0
           - >-
             _qwen_false_benchmark_case in
             (_qwen_benchmark_test_entries | rejectattr('benchmark_only', 'equalto', true) | list)
