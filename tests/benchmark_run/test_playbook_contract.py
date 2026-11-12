@@ -18,6 +18,7 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     assert vars_["_benchmark_run_evalscope_version"] == "1.13.0"
     assert vars_["_benchmark_run_promptfoo_version"] == "0.124.1"
     assert vars_["_benchmark_run_lmcache_version"] == "0.5.6"
+    assert vars_["_benchmark_run_tau2_bench_commit"] == "989d3285ae669e49503324bdb9981bf14fccedeb"
     assert vars_["_benchmark_run_vllm_client_version"] == "{{ vllm_serving_version }}"
     assert vars_["_benchmark_run_vllm_client_image"] == (
         "vllm/vllm-openai-cpu:v{{ vllm_serving_version }}-x86_64"
@@ -149,11 +150,13 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
         "stdout_line_count",
         "stderr_line_count",
         "promptfoo_pass_summary",
+        "tau2_summary",
         "workload_id",
         "kv_arm",
         "cache_workload",
     }
     assert "_benchmark_run_promptfoo_summary.stdout" in safe_summary["promptfoo_pass_summary"]
+    assert "_benchmark_run_tau2_summary.stdout" in safe_summary["tau2_summary"]
 
 
 def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
@@ -178,8 +181,10 @@ def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
     prepare = load_tasks("prepare.yml")
     assert any(task.get("ansible.builtin.import_tasks") == "patch-metadata.yml" for task in prepare)
     assert any("campaign-dimensions.json" in str(task) for task in prepare)
+    assert any(task.get("ansible.builtin.import_tasks") == "prepare-metadata.yml" for task in prepare)
     # A skipped register is still defined; non-Promptfoo suites skip the items checksum.
-    assert "_benchmark_run_items_checksum is not skipped" in str(prepare)
+    prepare_metadata = load_tasks("prepare-metadata.yml")
+    assert "_benchmark_run_items_checksum is not skipped" in str(prepare_metadata)
     metadata = load_tasks("patch-metadata.yml")
     assert any("pveversion" in str(task) for task in metadata)
     assert any("nvidia-smi" in str(task) for task in metadata)
