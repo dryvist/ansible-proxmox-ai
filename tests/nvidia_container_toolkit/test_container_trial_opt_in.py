@@ -10,7 +10,7 @@ import jinja2
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-INVENTORY = ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml"
+GROUP_TEMPLATE = ROOT / "inventory/load_tofu/add_lxc_host_groups.yml.j2"
 GUARD = ROOT / "inventory/load_tofu/refuse_container_trial_live_guest.yml"
 TRIAL_TAG = "llm-container-trial"
 TRIAL_GROUP = "llm_gpu_container_trial_group"
@@ -30,8 +30,7 @@ def _environment() -> jinja2.Environment:
 
 
 def _groups_for(tags: list[str]) -> list[str]:
-    task = next(task for task in _load(INVENTORY) if "ansible.builtin.add_host" in task)
-    rendered = _environment().from_string(task["ansible.builtin.add_host"]["groups"]).render(
+    rendered = _environment().from_string(GROUP_TEMPLATE.read_text(encoding="utf-8")).render(
         item={"key": "guest", "value": {"tags": tags}},
         _ai_agent_by_container={},
         load_tofu_gpu_engine_set_present=False,

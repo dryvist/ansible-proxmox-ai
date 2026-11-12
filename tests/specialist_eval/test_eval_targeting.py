@@ -1,22 +1,21 @@
 """Evaluation tags land only in evaluation groups, and only specialist-eval.yml targets those groups.
 
-The tag-to-group expression is rendered from add_lxc_host_inventory.yml by Ansible's Templar, for
-offline host fixtures. The prefetch and production groups come from the playbooks, not from this
-file, so a change to either shows up here.
+The extracted tag-to-group template is rendered by Ansible's Templar for offline host fixtures. The
+prefetch and production groups come from the playbooks, not from this file, so a change to either
+shows up here.
 """
 
 from __future__ import annotations
 
 
 import pytest
+import yaml
 
 from _eval_support import ROOT, load_yaml, render
 
-INVENTORY = ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml"
+GROUPS_TEMPLATE = ROOT / "inventory/load_tofu/add_lxc_host_groups.yml.j2"
 PLAYBOOKS = ROOT / "playbooks"
-GROUPS_EXPRESSION = next(task for task in load_yaml(INVENTORY) if "ansible.builtin.add_host" in task)[
-    "ansible.builtin.add_host"
-]["groups"]
+GROUPS_EXPRESSION = GROUPS_TEMPLATE.read_text(encoding="utf-8")
 EVAL_GROUPS = {"sim_eval_group"}
 PREFETCH_GROUPS = set(
     next(
@@ -47,7 +46,10 @@ def groups_for(name: str, tags: list[str]) -> set[str]:
         "load_tofu_gpu_engine_set_present": False,
         "load_tofu_gpu_engine_selector": "",
     }
-    return set(render(GROUPS_EXPRESSION, variables))
+    rendered_groups = render(GROUPS_EXPRESSION, variables)
+    if isinstance(rendered_groups, str):
+        rendered_groups = yaml.safe_load(rendered_groups)
+    return set(rendered_groups)
 
 
 def test_the_evaluation_group_set_is_exactly_the_known_group() -> None:
