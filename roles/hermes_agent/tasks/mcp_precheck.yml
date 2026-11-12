@@ -99,23 +99,32 @@
   # Read-only; a check run must inspect the live local board-file contract.
   check_mode: false
 
-- name: Assert Hermes uses at most one Kanban database at the configured path
+- name: Warn about Hermes Kanban database copies outside the resolver path
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: Hermes Kanban database copy outside the resolver path:
+      {{ item.path }}
+  loop: >-
+    {{ hermes_agent_kanban_db_files.files
+       | rejectattr('path', 'equalto', hermes_agent_hermes_home ~ '/kanban.db')
+       | list }}
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Assert an existing Hermes Kanban database is at the resolver path
   ansible.builtin.assert:
     quiet: true
     that:
-      - hermes_agent_kanban_db_files.matched | int <= 1
       - >-
-        hermes_agent_kanban_db_files.files
-        | map(attribute='path')
-        | difference([hermes_agent_hermes_home ~ '/kanban.db'])
-        | length == 0
+        hermes_agent_kanban_db_files.matched | int == 0
+        or (hermes_agent_hermes_home ~ '/kanban.db') in
+        (hermes_agent_kanban_db_files.files | map(attribute='path') | list)
     fail_msg: >-
-      Hermes must use one shared Kanban database at
+      Hermes found Kanban database file(s) but none at the resolver path
       {{ hermes_agent_hermes_home }}/kanban.db. Found
-      {{ hermes_agent_kanban_db_files.matched }} database file(s) at
       {{ hermes_agent_kanban_db_files.files | map(attribute='path') | list }}.
-      Zero files is valid before the gateway creates the database on a new home;
-      duplicate or differently placed files need operator review.
+  # A new home has no database until the first gateway start; preserve that
+  # first-deploy pass while rejecting homes that only contain off-path copies.
 
 - name: Stat the Hermes home for each direct-cron skill reference
   ansible.builtin.stat:

@@ -142,22 +142,67 @@ def test_orchestrator_membership_only_applies_to_materialized_profiles():
     )
 
 
-def test_board_file_check_uses_native_find_and_rejects_duplicates_or_wrong_paths():
+def test_board_file_check_warns_off_path_copies_and_requires_the_resolver_path():
     tasks = _tasks("mcp_precheck.yml")
     find = _named(tasks, "Find Hermes Kanban database files under the shared home")
+    warn = _named(
+        tasks, "Warn about Hermes Kanban database copies outside the resolver path"
+    )
     assertion = _named(
-        tasks, "Assert Hermes uses at most one Kanban database at the configured path"
+        tasks, "Assert an existing Hermes Kanban database is at the resolver path"
     )
 
     assert "ansible.builtin.find" in find
     assert find["ansible.builtin.find"]["patterns"] == "kanban.db"
     assert find["ansible.builtin.find"]["recurse"] is True
     assert find["check_mode"] is False
-    conditions = assertion["ansible.builtin.assert"]["that"]
-    assert any("matched | int <= 1" in condition for condition in conditions)
-    assert any("difference([hermes_agent_hermes_home ~ '/kanban.db'])" in condition
-               for condition in conditions)
     assert "ansible.builtin.shell" not in find and "ansible.builtin.command" not in find
+
+    home = "/home/hermes/.hermes"
+    canonical = home + "/kanban.db"
+    stray = home + "/profiles/orchestrator/kanban.db"
+
+    def db_files(*paths: str) -> dict:
+        return {"matched": len(paths), "files": [{"path": path} for path in paths]}
+
+    # Off-path copies are reported by path; the resolver copy is not.
+    assert "ansible.builtin.debug" in warn
+    assert "item.path" in warn["ansible.builtin.debug"]["msg"]
+    off_path = ENV.compile_expression(warn["loop"].strip()[2:-2].strip())
+    assert off_path(
+        hermes_agent_hermes_home=home,
+        hermes_agent_kanban_db_files=db_files(canonical, stray),
+    ) == [{"path": stray}]
+    assert off_path(
+        hermes_agent_hermes_home=home,
+        hermes_agent_kanban_db_files=db_files(canonical),
+    ) == []
+    assert off_path(
+        hermes_agent_hermes_home=home,
+        hermes_agent_kanban_db_files=db_files(),
+    ) == []
+
+    # Zero files passes on a fresh home; the resolver path passes even with
+    # stray copies; copies without the resolver path fail.
+    conditions = assertion["ansible.builtin.assert"]["that"]
+    assert _conditions_pass(
+        conditions,
+        {"hermes_agent_hermes_home": home, "hermes_agent_kanban_db_files": db_files()},
+    )
+    assert _conditions_pass(
+        conditions,
+        {
+            "hermes_agent_hermes_home": home,
+            "hermes_agent_kanban_db_files": db_files(canonical, stray),
+        },
+    )
+    assert not _conditions_pass(
+        conditions,
+        {
+            "hermes_agent_hermes_home": home,
+            "hermes_agent_kanban_db_files": db_files(stray),
+        },
+    )
 
 
 def test_direct_cron_skill_precheck_uses_reconcile_gates_and_existing_homes():
