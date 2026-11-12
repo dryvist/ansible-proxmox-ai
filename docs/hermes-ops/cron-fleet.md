@@ -214,7 +214,7 @@ reconcile is skipped. `github-triage` remains paused under the throttle.
 
 The `hermes-private` identity runs four catalog-backed assistant jobs in its
 own cron store: `assistant-pulse` and `assistant-task-triage` hourly, then
-`private-assistant-inbox-groom` and `private-assistant-evening-wrap` daily at
+`private-inbox-groom` and `private-evening-wrap` daily at
 10:11 and 23:11 UTC. The daily jobs reuse the existing assistant catalog prompts;
 all four use the local `medium` model route. Successful output and failure
 notices both use `local`, so the identity keeps its results in its own store

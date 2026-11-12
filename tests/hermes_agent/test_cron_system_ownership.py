@@ -89,8 +89,8 @@ def test_private_identity_owns_four_local_assistant_catalog_jobs() -> None:
     expected = {
         "assistant-pulse",
         "assistant-task-triage",
-        "private-assistant-inbox-groom",
-        "private-assistant-evening-wrap",
+        "private-inbox-groom",
+        "private-evening-wrap",
     }
     jobs = {
         _job_name(job): job
@@ -122,8 +122,8 @@ def test_private_identity_owns_four_local_assistant_catalog_jobs() -> None:
     assert schedules == {
         "assistant-pulse": "39 * * * *",
         "assistant-task-triage": "27 * * * *",
-        "private-assistant-inbox-groom": "11 10 * * *",
-        "private-assistant-evening-wrap": "11 23 * * *",
+        "private-inbox-groom": "11 10 * * *",
+        "private-evening-wrap": "11 23 * * *",
     }
     for schedule in schedules.values():
         minute = int(schedule.split()[0])
