@@ -14,7 +14,6 @@ paid ZDR rungs; long shares the standard chain; every lane has an explicit entry
 from __future__ import annotations
 
 import yaml
-from jinja2 import Environment, StrictUndefined
 
 from test_alias_sources import REPO_ROOT, _Permissive
 
@@ -26,6 +25,8 @@ ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main"
 
 
 def _render_role_default(file_name: str, variable: str, **context):
+    from jinja2 import Environment, StrictUndefined
+
     defaults = yaml.load((ROUTER_DEFAULTS / file_name).read_text(), Loader=_Permissive) or {}
     environment = Environment(undefined=StrictUndefined)
     environment.filters["bool"] = bool
