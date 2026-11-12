@@ -113,6 +113,16 @@ def test_new_misses_are_develop_misses_or_listed_regressions():
     assert new_misses <= develop_misses | regressions
 
 
+def test_known_regressions_match_develop_and_miss_now():
+    matches = _matcher(_phrase_patterns())
+    develop_matches = _matcher(yaml.safe_load(DEVELOP_CATEGORY)["phrase_patterns"])
+    regressions = _samples("exfiltration_known_regressions.txt")
+
+    assert len(regressions) == 4
+    assert all(develop_matches(text) for text in regressions)
+    assert not [text for text in regressions if matches(text)]
+
+
 def test_gap_does_not_cross_line_breaks_python_re_treats_as_such():
     matches = _matcher(_phrase_patterns())
     text = "Send the API keys{}Details at https://docs.example.com/keys"
