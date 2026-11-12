@@ -1,0 +1,44 @@
+---
+- name: Require the container trial to serve the vLLM engine
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_plan.engine == 'vllm'
+    fail_msg: >-
+      The container trial image serves vLLM only; the selected engine is not vllm.
+    quiet: true
+
+- name: Create the target model cache and download the selected files (same-host runs only)
+  ansible.builtin.include_tasks: download.yml
+  when: not (hostvars['localhost'].llm_model_trial_container_settings.separate_guest | bool)
+
+- name: Render the run-scoped container trial systemd unit
+  ansible.builtin.template:
+    src: llm-model-trial-container.service.j2
+    dest: "{{ llm_gpu_serving_systemd_dir }}/{{ llm_model_trial_unit_name }}"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd for the model trial
+
+- name: Reload systemd before starting the trial unit
+  ansible.builtin.meta: flush_handlers
+
+- name: Start this run's candidate container unit
+  ansible.builtin.systemd:
+    name: "{{ llm_model_trial_unit_name }}"
+    state: started
+
+- name: Record the container image as the engine identity for the facts
+  ansible.builtin.set_fact:
+    llm_model_trial_engine_version:
+      stdout: "{{ llm_model_trial_container_image }}"
+      stderr: ""
+    llm_model_trial_engine_stat:
+      stat:
+        mtime: 0
+
+- name: Wait for the candidate models endpoint and read its configuration proof
+  ansible.builtin.include_tasks: candidate-health.yml
+
+- name: Build health evidence and benchmark handoff facts
+  ansible.builtin.include_tasks: candidate-facts.yml

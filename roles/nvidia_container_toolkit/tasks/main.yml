@@ -1,0 +1,111 @@
+---
+# Reaches the NVIDIA apt repository through the declared artifact cache proxy.
+- name: Load shared APT proxy settings and require the proxy
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/prepare.yml"
+
+- name: Add the NVIDIA CUDA apt repository that carries the container toolkit
+  ansible.builtin.deb822_repository:
+    name: "{{ nvidia_container_toolkit_repo_name }}"
+    types: deb
+    uris: "{{ nvidia_container_toolkit_repo_uri | trim }}"
+    suites: /
+    signed_by: "{{ nvidia_container_toolkit_repo_key_url }}"
+    enabled: true
+    state: present
+  environment: "{{ llamacpp_release_proxy_environment }}"
+
+- name: Install the pinned NVIDIA container toolkit
+  ansible.builtin.apt:
+    name:
+      - "nvidia-container-toolkit={{ nvidia_container_toolkit_package_version }}"
+      - "nvidia-container-toolkit-base={{ nvidia_container_toolkit_package_version }}"
+      - "libnvidia-container-tools={{ nvidia_container_toolkit_package_version }}"
+      - "libnvidia-container1={{ nvidia_container_toolkit_package_version }}"
+    state: present
+    allow_downgrade: true
+    install_recommends: false
+    update_cache: true
+  environment: "{{ llamacpp_release_proxy_environment }}"
+
+- name: Read the Docker daemon configuration
+  ansible.builtin.slurp:
+    src: /etc/docker/daemon.json
+  register: nvidia_container_toolkit_daemon_json
+  failed_when: false
+
+- name: Check whether Docker already registers the NVIDIA runtime
+  ansible.builtin.set_fact:
+    nvidia_container_toolkit_docker_runtime_present: >-
+      {{ 'nvidia' in ((nvidia_container_toolkit_daemon_json.content | default('e30=')
+                       | b64decode | from_json).runtimes | default({})) }}
+
+- name: Register the NVIDIA runtime with Docker
+  ansible.builtin.command:
+    argv:
+      - nvidia-ctk
+      - runtime
+      - configure
+      - --runtime=docker
+      - --config=/etc/docker/daemon.json
+  when: not nvidia_container_toolkit_docker_runtime_present | bool
+  changed_when: true
+  notify: Restart Docker
+
+- name: Disable NVIDIA device-cgroup management for LXC guests
+  ansible.builtin.lineinfile:
+    path: "{{ nvidia_container_toolkit_runtime_config_path }}"
+    regexp: '^#?\s*no-cgroups\s*='
+    line: "no-cgroups = true"
+    insertafter: '^\[nvidia-container-cli\]'
+  when: nvidia_container_toolkit_no_cgroups | bool
+
+# nvidia-ctk writes the staging file; the copy installs it and reports any change.
+- name: Create the CDI specification directory
+  ansible.builtin.file:
+    path: "{{ nvidia_container_toolkit_cdi_spec_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create a staging file for the CDI specification
+  ansible.builtin.tempfile:
+    state: file
+    suffix: .yaml
+  register: nvidia_container_toolkit_cdi_stage
+  changed_when: false
+  check_mode: false
+
+- name: Generate the CDI specification for the host GPUs into the staging file
+  ansible.builtin.command:
+    argv:
+      - nvidia-ctk
+      - cdi
+      - generate
+      - "--output={{ nvidia_container_toolkit_cdi_stage.path }}"
+  changed_when: false
+  check_mode: false
+
+- name: Install the CDI specification
+  ansible.builtin.copy:
+    src: "{{ nvidia_container_toolkit_cdi_stage.path }}"
+    dest: "{{ nvidia_container_toolkit_cdi_spec_path }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Remove the CDI staging file
+  ansible.builtin.file:
+    path: "{{ nvidia_container_toolkit_cdi_stage.path }}"
+    state: absent
+  changed_when: false
+  check_mode: false
+
+# Runs a pending Docker restart before verification.
+- name: Apply pending Docker restarts before verifying GPU access
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify GPU access from a throwaway container
+  ansible.builtin.include_tasks: verify.yml
+  when: not ansible_check_mode

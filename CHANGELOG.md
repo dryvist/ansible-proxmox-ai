@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.41.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.40.0...v2.41.0) (2026-11-09)
+
+
+### Features
+
+* **agent:** autonomous opencode-local run j-b25b90d676380058 ([#2307](https://github.com/dryvist/ansible-proxmox-ai/issues/2307)) ([6bf4920](https://github.com/dryvist/ansible-proxmox-ai/commit/6bf4920fcf31e124c50034a455abd8906f20a8d9))
+* **agent:** opencode-local run j-b25b90d676380058 ([6bf4920](https://github.com/dryvist/ansible-proxmox-ai/commit/6bf4920fcf31e124c50034a455abd8906f20a8d9))
+
 ## [2.40.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.39.0...v2.40.0) (2026-11-09)
 
 

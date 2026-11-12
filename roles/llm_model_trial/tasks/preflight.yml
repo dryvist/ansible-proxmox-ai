@@ -30,12 +30,40 @@
     - name: Confirm the fixed target resolves to one inventory host
       ansible.builtin.assert:
         that:
-          - groups[llm_model_trial_inventory_group] | default([]) | length == 1
+          - (groups[llm_model_trial_inventory_group]
+             | default([llm_model_trial_inventory_group]
+                       if llm_model_trial_inventory_group in groups['all'] else [])) | length == 1
           - llm_model_trial_host == '6000'
         fail_msg: >-
-          The model trial is fixed to host 6000 and requires exactly one
-          llm_gpu_group inventory member.
+          The model trial is fixed to host 6000 and requires the baseline group, or
+          baseline host name, to resolve to exactly one inventory host.
         quiet: true
+
+    - name: Validate the container trial settings and separate-guest placement
+      ansible.builtin.set_fact:
+        llm_model_trial_container_settings: >-
+          {{ {'image': llm_model_trial_container_image,
+              'env': llm_model_trial_container_env,
+              'args': llm_model_trial_container_args,
+              'window_minutes': llm_model_trial_window_minutes,
+              'redact_regex': llm_model_trial_redact_regex,
+              'target_group': llm_model_trial_target_group,
+              'baseline_group': llm_model_trial_inventory_group,
+              'target_hosts': groups[llm_model_trial_target_group]
+                              | default([llm_model_trial_target_group]
+                                        if llm_model_trial_target_group in groups['all'] else []),
+              'baseline_hosts': groups[llm_model_trial_inventory_group]
+                                | default([llm_model_trial_inventory_group]
+                                          if llm_model_trial_inventory_group in groups['all'] else [])}
+             | llm_model_trial_validate_container }}
+
+    - name: Name the guest that runs the candidate
+      ansible.builtin.set_fact:
+        llm_model_trial_candidate_host: >-
+          {{ (groups[llm_model_trial_target_group]
+              | default([llm_model_trial_target_group]
+                        if llm_model_trial_target_group in groups['all'] else []))
+             | first }}
 
     - name: Create a temporary controller directory for revision-pinned Hub metadata
       ansible.builtin.tempfile:

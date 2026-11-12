@@ -102,11 +102,9 @@ use the Splunk findings destination; healthy and no-change runs end with
 `[SILENT]`. Hermes job failures use native cron failure delivery. Splunk
 analysis jobs stay silent unless they find something new.
 
-**Zammad review (`zammad-review`, every 2h):** proactively reads open
-incidents across ALL queues, proves finished ones complete (resolving them
-with evidence — not recommending), enriches open ones with genuinely new
-findings, and DMs the operator about incidents that appeared since its last
-run. Gated on the Zammad URL + token alongside the Slack gates.
+**Zammad review (`zammad-review`):** declared with `enabled: false`. For its
+home, direct-cron reconciliation removes an installed copy when it runs; if
+skipped, the disabled-job task pauses it.
 
 **Delta discipline (own state, not double-reported).** `splunk-triage`'s report
 recalls its OWN last-posted findings from memory (key `splunk-triage-last`)

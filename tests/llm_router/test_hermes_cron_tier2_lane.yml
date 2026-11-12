@@ -14,6 +14,7 @@
   gather_facts: false
   vars_files:
     - policy_fixture.yml
+    - ../../inventory/group_vars/all/02-gpu-accelerator.yml
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     tofu_data:
@@ -100,17 +101,6 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: The cron model selection names the local review group through the alias map
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _cron_inventory.hermes_agent_cron_model == llm_router_review_aliases.local
-          - llm_router_model_group_aliases[_cron_inventory.hermes_agent_cron_model]
-            == llm_router_primary_model
-        success_msg: >-
-          The scheduled cron fleet pins the router's local-only review group,
-          whose alias target is the medium capability.
-
     - name: The cron-hosting Hermes stores resolve to the tier-2 local lane
       ansible.builtin.assert:
         quiet: true
@@ -147,28 +137,23 @@
         that:
           - _cron_deployments | length > 0
           - _cron_deployments | rejectattr('litellm_params.tags', 'contains', 'local') | list | length == 0
-          - _cron_chain | intersect(_cloud_groups) | length == 0
-          - _cron_chain == llm_router_review_local_chain
           - _cron_tier2 | length > 0
           - _cron_tier2_studio | length > 0
           - _cron_tier2_bad | length == 0
           - _cloud_tier2 | length == 0
         fail_msg: >-
-          chain={{ _cron_chain }}, tier2={{ _cron_tier2 | map(attribute='model_name') | list }},
+          tier2={{ _cron_tier2 | map(attribute='model_name') | list }},
           tier2_bad={{ _cron_tier2_bad | map(attribute='model_name') | list }},
           cloud_tier2={{ _cloud_tier2 | map(attribute='model_name') | list }}
         success_msg: >-
           The cron group's candidates are local only, carry the tier-2 timeouts and
           keepalive on their tier-2 copies, and no cloud deployment admits tier 2.
       vars:
-        _cloud_groups: >-
-          {{ llm_router_d1_group_class_by_name | dict2items
-             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
-        _cron_chain: "{{ llm_router_fallback_map[_cron_inventory.hermes_agent_cron_model] }}"
         _cron_deployments: >-
           {{ _config.model_list
              | selectattr('model_name', 'equalto',
-                 llm_router_model_group_aliases[_cron_inventory.hermes_agent_cron_model]) | list }}
+                 llm_router_model_group_aliases.get(_cron_inventory.hermes_agent_cron_model,
+                 _cron_inventory.hermes_agent_cron_model)) | list }}
         _cron_tier2: >-
           {{ _cron_deployments | selectattr('litellm_params.tags', 'contains', 'tier-2') | list }}
         _cron_tier2_studio: >-

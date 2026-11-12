@@ -1,0 +1,225 @@
+---
+# The Mac Studio direct model is declared on every live key that carries it, with
+# the Studio probe both down and up.
+#
+# A key seed reads these lists with models_authoritative, so a probe-dependent
+# name would be removed from a live key whenever the Studio is probed down. The
+# Studio name is read from the registry (its serving_role: primary entry), not
+# re-typed here.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_key_models_match_live.yml -i localhost, -c local
+
+- name: The Studio model is declared on every live key that carries it
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # Live keys that carry the Studio model, by key alias.
+    _studio_keys:
+      - agy
+      - claude-code
+      - codex
+      - cursor
+      - dify
+      - donna
+      - evals
+      - github-actions
+      - github-actions-oss
+      - github-actions-pr-review
+      - grafana
+      - hermes-default
+      - hermes-github-maint
+      - hermes-homelab-admin
+      - hermes-orchestrator
+      - hermes-private
+      - hermes-splunk-admin
+      - langfuse
+      - langgraph
+      - litellm-local
+      - n8n
+      - open-webui
+      - opencode
+      - pepper
+      - raycast
+      - zammad
+      - zcode
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+      hermes_agents:
+        hermes-agent:
+          api_url: "http://hermes-agent.pve.example.test:8642/v1"
+          model_name: hermes-agent
+        hermes-donna:
+          api_url: "http://hermes-donna.pve.example.test:8642/v1"
+          model_name: hermes-donna
+        hermes-pepper:
+          api_url: "http://hermes-pepper.pve.example.test:8642/v1"
+          model_name: hermes-pepper
+        hermes-private:
+          api_url: "http://hermes-private.pve.example.test:8642/v1"
+          model_name: hermes-private
+    hermes_agent_profiles:
+      - name: splunk-admin
+      - name: homelab-admin
+      - name: github-maint
+      - name: orchestrator
+    bao_apps_secrets:
+      agy_llm_router_key: fixture-agy
+      claude_code_llm_router_key: fixture-claude-code
+      codex_llm_router_key: fixture-codex
+      cursor_llm_router_key: fixture-cursor
+      dify_llm_router_key: fixture-dify
+      donna_llm_router_key: fixture-donna
+      evals_llm_router_key: fixture-evals
+      github_actions_llm_router_key: fixture-github-actions
+      github_actions_oss_llm_router_key: fixture-github-actions-oss
+      github_actions_pr_review_llm_router_key: fixture-github-actions-pr-review
+      grafana_llm_router_key: fixture-grafana
+      hermes_default_llm_router_key: fixture-hermes-default
+      hermes_github_maint_llm_router_key: fixture-hermes-github-maint
+      hermes_homelab_admin_llm_router_key: fixture-hermes-homelab-admin
+      hermes_orchestrator_llm_router_key: fixture-hermes-orchestrator
+      hermes_private_llm_router_key: fixture-hermes-private
+      hermes_splunk_admin_llm_router_key: fixture-hermes-splunk-admin
+      langfuse_llm_router_key: fixture-langfuse
+      langgraph_llm_router_key: fixture-langgraph
+      litellm_local_llm_router_key: fixture-litellm-local
+      n8n_llm_router_key: fixture-n8n
+      open_webui_llm_router_key: fixture-open-webui
+      opencode_llm_router_key: fixture-opencode
+      OPENCODE_ROUTER_KEY: fixture-opencode
+      pepper_llm_router_key: fixture-pepper
+      raycast_llm_router_key: fixture-raycast
+      zammad_llm_router_key: fixture-zammad
+      zcode_llm_router_key: fixture-zcode
+      ZCODE_ROUTER_KEY: fixture-zcode
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: fixture-openrouter
+      OPENROUTER_HERMES_KEY: fixture-openrouter-hermes
+      OPENAI_API_KEY: fixture-openai
+      GEMINI_API_KEY: fixture-gemini
+      DASHSCOPE_API_KEY: fixture-dashscope
+      OPENCODE_API_KEY: fixture-opencode-provider
+    llm_router_pepper_key_enabled: true
+    llm_router_oss_ci_key_enabled: true
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: fixture-large-bearer
+    llm_router_llm_fast_base_url: http://localhost:10434/v1
+    llm_router_llm_light_base_url: http://localhost:10434/v1
+    llm_router_llm_large_base_url: http://localhost:11434/v1
+    llm_router_llm_vllm_base_url: http://localhost:10434/v1
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_agent_identity: hermes
+    hermes_brain_model: medium
+    hermes_goal_judge_model: judge
+    hindsight_retain_model: qwen3-4b
+
+    # Lazily evaluated: reads whatever _declared holds when each assert runs.
+    _studio_missing_aliases: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for alias in _studio_keys -%}
+      {%- set declared = _declared | selectattr('alias', 'equalto', alias)
+           | map(attribute='models') | first | default([], true) -%}
+      {%- if llm_router_studio_model_names | difference(declared) | length > 0 -%}
+      {%- set _ = ns.out.append(alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
+
+  tasks:
+    - name: Load router defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    # Set after include_vars: the defaults carry these switches as false, and a
+    # play var would be overridden by them. A live converge sets them true.
+    - name: Mark the 4080 profiles and the vLLM precheck as a live converge does
+      ansible.builtin.set_fact:
+        llm_router_4080_profiles_enabled: true
+        llm_router_vllm_precheck_passed: true
+
+    - name: Load registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    # The live trust tiers come from the harness caller registry the roster
+    # merges into ai_callers (inventory/group_vars/all/01-agent-roster.yml).
+    - name: Publish the harness caller registry
+      ansible.builtin.include_role:
+        name: dryvist.homelab.agent_callers
+
+    - name: Map each harness caller to its trust tier, as the roster does
+      ansible.builtin.set_fact:
+        ai_callers: >-
+          {%- set ns = namespace(out={}) -%}
+          {%- for name, caller in agent_callers_registry.items() -%}
+          {%- set _ = ns.out.update({name: {'trust_tier': caller.trust_tier}}) -%}
+          {%- endfor -%}
+          {{ ns.out }}
+
+    - name: The registry names one Studio direct model, the serving primary
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_studio_model_names | length == 1
+          - >-
+            llm_router_studio_model_names ==
+            (llm_router_registry_enabled | selectattr('serving_role', 'defined')
+             | selectattr('serving_role', 'equalto', 'primary') | map(attribute='client_model_id') | list)
+        fail_msg: "Studio model names {{ llm_router_studio_model_names }} are not the serving primary."
+
+    # Pass 1: the Studio probe is down. The Studio name must still be declared.
+    - name: Probe the Studio as down
+      ansible.builtin.set_fact:
+        llm_router_studio_precheck_passed: false
+
+    - name: Materialize the projections for the Studio-down pass
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: Resolve the declared keys with the Studio down
+      ansible.builtin.set_fact:
+        _declared: "{{ llm_router_virtual_keys }}"
+
+    - name: Every live key that carries the Studio model declares it with the Studio down
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _studio_missing_aliases | length == 0
+        fail_msg: "Studio down, these keys do not declare the Studio model: {{ _studio_missing_aliases }}"
+
+    # Pass 2: the Studio probe is up, as in a live converge.
+    - name: Probe the Studio as up
+      ansible.builtin.set_fact:
+        llm_router_studio_precheck_passed: true
+
+    - name: Materialize the projections for the Studio-up pass
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: Resolve the declared keys with the Studio up
+      ansible.builtin.set_fact:
+        _declared: "{{ llm_router_virtual_keys }}"
+
+    - name: Every live key that carries the Studio model declares it with the Studio up
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _studio_missing_aliases | length == 0
+        fail_msg: "Studio up, these keys do not declare the Studio model: {{ _studio_missing_aliases }}"

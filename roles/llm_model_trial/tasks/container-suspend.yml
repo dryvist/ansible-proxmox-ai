@@ -1,0 +1,47 @@
+---
+- name: Probe the fallback endpoint before the baseline is touched
+  ansible.builtin.uri:
+    url: "{{ llm_model_trial_fallback_probe_url | regex_replace('/+$', '') }}/v1/models"
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when: llm_model_trial_fallback_probe_url | length > 0
+
+- name: Bind the plan, take the host lock, and identify the baseline
+  ansible.builtin.include_tasks: lock.yml
+
+- name: Name the baseline restore timer for this run
+  ansible.builtin.set_fact:
+    llm_model_trial_restore_name: "llm-model-trial-restore-{{ llm_model_trial_id }}"
+
+- name: Render the baseline restore service
+  ansible.builtin.template:
+    src: llm-model-trial-restore.service.j2
+    dest: "{{ llm_gpu_serving_systemd_dir }}/{{ llm_model_trial_restore_name }}.service"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd for the model trial
+
+- name: Render the baseline restore timer
+  ansible.builtin.template:
+    src: llm-model-trial-restore.timer.j2
+    dest: "{{ llm_gpu_serving_systemd_dir }}/{{ llm_model_trial_restore_name }}.timer"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd for the model trial
+
+- name: Reload systemd before arming the baseline restore timer
+  ansible.builtin.meta: flush_handlers
+
+- name: Arm the baseline restore timer before the baseline stops
+  ansible.builtin.systemd:
+    name: "{{ llm_model_trial_restore_name }}.timer"
+    state: started
+
+- name: Stop the recorded baseline unit behind the armed timer
+  ansible.builtin.systemd:
+    name: "{{ llm_model_trial_baseline_unit }}"
+    state: stopped

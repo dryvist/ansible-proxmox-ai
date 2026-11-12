@@ -55,14 +55,14 @@ def _resolve(constants: dict[str, Any]) -> tuple[int, bool]:
 def test_resolves_when_artifact_predates_the_constant() -> None:
     """The exact outage condition: no `serving` key at all."""
     value, from_fallback = _resolve(CONSTANTS_WITHOUT_SERVING)
-    assert value == 8, "fallback must yield the active profile's published value, not blow up"
+    assert value == 16, "fallback must yield the active profile's published value, not blow up"
     assert from_fallback is True, "an artifact without serving must report the fallback path"
 
 
 def test_prefers_the_published_constant_when_present() -> None:
     """Once an apply republishes the artifact, the constant wins outright."""
-    value, from_fallback = _resolve({"serving": {"llm_concurrency": 8}})
-    assert value == 8, "the published constant must win over the fallback default"
+    value, from_fallback = _resolve({"serving": {"llm_concurrency": 16}})
+    assert value == 16, "the published constant must win over the fallback default"
     assert from_fallback is False, "with serving present nothing may report the fallback"
 
 
@@ -74,12 +74,17 @@ def test_fallback_matches_the_published_default() -> None:
     is the DRY violation this whole change set removed.
     """
     fallback_value, _ = _resolve(CONSTANTS_WITHOUT_SERVING)
-    published_value, _ = _resolve({"serving": {"llm_concurrency": 8}})
+    published_value, _ = _resolve({"serving": {"llm_concurrency": 16}})
     assert fallback_value == published_value
 
 
-def test_published_concurrency_matches_every_selectable_active_gpu_profile() -> None:
-    """The shared serving constant follows the slots in the active profile selector."""
+def test_medium_lane_slots_match_published_concurrency_and_other_profiles_declare_slots() -> None:
+    """The published serving constant equals the medium lane's active slots.
+
+    The constant feeds the shared medium-lane consumers, so only the guest whose
+    host_vars declare llm_lane: medium is held to it. Every other selectable
+    active profile keeps its own slot count and must declare it.
+    """
     all_vars = _group_vars()
     profiles = {}
     vllm_dir = REPO_ROOT / "roles/vllm_serving/defaults/main"
@@ -100,9 +105,24 @@ def test_published_concurrency_matches_every_selectable_active_gpu_profile() -> 
     ):
         profiles.update(yaml.safe_load(path.read_text())[key])
 
+    medium_lane_profiles = {
+        host_vars["llm_active_profile"]
+        for host_vars in (
+            yaml.safe_load(path.read_text()) or {}
+            for path in sorted((REPO_ROOT / "inventory/host_vars").glob("*.yml"))
+        )
+        if host_vars.get("llm_lane") == "medium"
+    }
+    assert medium_lane_profiles, "no inventory host declares llm_lane: medium"
+    published, _ = _resolve({"serving": {"llm_concurrency": 16}})
+    assert {profiles[name]["max_num_seqs"] for name in medium_lane_profiles} == {published}
+
     selected = set(all_vars["llm_gpu_active_profiles_by_engine"].values()) | {"medium-a"}
-    published, _ = _resolve({"serving": {"llm_concurrency": 8}})
-    assert {profiles[name]["max_num_seqs"] for name in selected} == {published}
+    for name in sorted(selected - medium_lane_profiles):
+        slots = profiles[name]["max_num_seqs"]
+        assert isinstance(slots, int) and not isinstance(slots, bool) and slots > 0, (
+            f"{name} must declare its own max_num_seqs as a positive int"
+        )
 
 
 def test_shim_is_documented_as_temporary() -> None:

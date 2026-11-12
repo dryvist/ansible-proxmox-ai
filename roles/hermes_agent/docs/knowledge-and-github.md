@@ -20,15 +20,15 @@ sessions don't overflow.
 ## Autonomous GitHub docs-contributor
 
 Gives Hermes a **read public dryvist repos + open signed, human-review, no-merge doc PRs**
-capability against `dryvist/docs` and `dryvist/docs-starlight`, via a dedicated
+capability against `dryvist/docs` and the private docs repository, via a dedicated
 GitHub App (`hermes-docs-bot`). Commits are authored through the
 `createCommitOnBranch` GraphQL mutation so GitHub marks them **Verified/signed**
 (a plain `git push` is rejected by the org's required-signatures ruleset). The
 bundled `dryvist/docs-pr` skill enforces the guardrails: no auto-merge, attribution
 triad, dated branches, `docs:` Conventional-Commit titles, per-repo/day caps +
-de-dup, secret redaction, and absolute privacy routing (sensitive → docs-starlight
-only). **No-merge** is guaranteed by the org ruleset (human review + signatures,
-the App is not a bypass actor), not by the token scope.
+de-dup, secret redaction, and absolute privacy routing (sensitive → the private
+docs repository only). **No-merge** is guaranteed by the org ruleset (human
+review + signatures, the App is not a bypass actor), not by the token scope.
 
 GitHub access uses installation tokens minted from the OpenBao GitHub mount
 (`hermes_agent_github_identity_mount`), one AppRole per trust boundary

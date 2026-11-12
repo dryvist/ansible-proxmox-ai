@@ -1,0 +1,54 @@
+---
+- name: Wait for the candidate OpenAI models endpoint
+  ansible.builtin.uri:
+    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_model_trial_port }}/v1/models"
+    return_content: true
+    status_code: 200
+  register: llm_model_trial_models_response
+  retries: "{{ llm_model_trial_health_retries }}"
+  delay: "{{ llm_model_trial_health_delay }}"
+  until: llm_model_trial_models_response.status | default(0) == 200
+
+- name: Require the expected candidate identity from the models endpoint
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_models_response.json.data | default([]) | length > 0
+      - >-
+        llm_model_trial_models_response.json.data
+        | selectattr('id', 'equalto', hf_repo) | list | length == 1
+    fail_msg: >-
+      Candidate /v1/models did not return exactly one model with the
+      requested Hugging Face repository id.
+    quiet: true
+
+- name: Read vLLM metrics for cache configuration proof
+  ansible.builtin.uri:
+    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_model_trial_port }}/metrics"
+    return_content: true
+    status_code: 200
+  register: llm_model_trial_metrics_response
+  when: llm_model_trial_plan.engine == 'vllm'
+
+- name: Require vLLM cache configuration proof
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_metrics_response.content is search('cache_config_info')
+    fail_msg: "The candidate vLLM endpoint did not expose cache_config_info in /metrics."
+    quiet: true
+  when: llm_model_trial_plan.engine == 'vllm'
+
+- name: Read llama.cpp properties for engine configuration proof
+  ansible.builtin.uri:
+    url: "http://{{ llm_model_trial_bind_host }}:{{ llm_model_trial_port }}/props"
+    return_content: true
+    status_code: 200
+  register: llm_model_trial_props_response
+  when: llm_model_trial_plan.engine == 'llama_cpp'
+
+- name: Require llama.cpp properties proof
+  ansible.builtin.assert:
+    that:
+      - llm_model_trial_props_response.json is mapping
+    fail_msg: "The candidate llama.cpp endpoint did not return JSON properties from /props."
+    quiet: true
+  when: llm_model_trial_plan.engine == 'llama_cpp'

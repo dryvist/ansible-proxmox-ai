@@ -18,3 +18,12 @@ def test_cron_surface_matches_reply_threading():
     assert isinstance(reply_in_thread, bool)
     assert surface in ("thread", "in_channel")
     assert surface == ("thread" if reply_in_thread else "in_channel")
+
+
+def test_gateway_lifecycle_notices_stay_off_the_home_channel():
+    assert role_defaults(ROLE)["hermes_agent_slack_gateway_restart_notification"] is False
+    template = (ROLE / "templates" / "config.yaml.j2").read_text()
+    assert (
+        "gateway_restart_notification: {{ hermes_agent_slack_gateway_restart_notification | default(false) | to_json }}"
+        in template
+    )

@@ -77,7 +77,12 @@ GPU_ANSIBLE = {test for test in ANSIBLE_TESTS if test.startswith(
 ROLE_TESTS = {
     "hermes_agent": {"tests/hermes_agent/"},
     "fabric_watchdog": {"tests/hermes_agent/"},
-    "dify_docker": set(),
+    "dify_docker": {
+        "tests/dify_docker/test_declared_variable_apply.py",
+        "tests/dify_docker/test_declared_variable_checks.py",
+        "tests/dify_docker/test_declared_variable_config.py",
+        "tests/dify_docker/test_declared_variable_provider_nodes.py",
+    },
     "langflow_docker": {"tests/agent_concurrency/", "tests/langflow_docker/"},
     "langfuse_docker": {"tests/langfuse_docker/"},
     "hindsight_docker": {"tests/hindsight_docker/"},
@@ -89,6 +94,7 @@ ROLE_TESTS = {
     "strata_serving": GPU_PYTEST,
     "nvidia_gpu_guest": GPU_PYTEST,
     "llm_gpu_serving": GPU_PYTEST,
+    "llm_serving_declared_metrics": GPU_PYTEST,
     "llm_model_trial": {"tests/llm_model_trial/"},
     "phoenix_docker": set(),
     "llamaindex": set(),

@@ -1,0 +1,35 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Run-scoped GPU model trial container {{ llm_model_trial_id }}
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f llm-model-trial-{{ llm_model_trial_id }}
+ExecStart=/usr/bin/docker run --rm --name llm-model-trial-{{ llm_model_trial_id }} \
+  --gpus all \
+  --network host \
+  --ipc host \
+  --volume {{ (llm_model_trial_model_dir ~ ':/model:ro') | quote }} \
+  --env HF_HUB_OFFLINE=1 \
+  --env TRANSFORMERS_OFFLINE=1 \
+{% for key, value in llm_model_trial_container_env | dictsort %}  --env {{ (key ~ '=' ~ (value | string)) | quote }} \
+{% endfor %}  --entrypoint vllm \
+  {{ llm_model_trial_container_image | quote }} \
+  serve /model \
+  --host {{ llm_model_trial_bind_host }} \
+  --port {{ llm_model_trial_port }} \
+  --served-model-name {{ hf_repo | quote }}{% for arg in llm_model_trial_container_args %} \
+  {{ arg | quote }}{% endfor %}
+
+ExecStop=/usr/bin/docker stop --time 60 llm-model-trial-{{ llm_model_trial_id }}
+Restart=no
+# Frees the GPU two minutes before the baseline guest's restore timer fires.
+RuntimeMaxSec={{ (llm_model_trial_window_minutes | int - 2) * 60 }}
+TimeoutStartSec=600
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

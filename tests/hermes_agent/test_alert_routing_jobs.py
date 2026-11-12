@@ -133,8 +133,8 @@ def test_scouting_jobs_report_to_the_home_channel() -> None:
 
 
 def test_every_donna_owned_job_fails_to_the_donna_failure_target() -> None:
-    """Failure notices follow the output target: both stay local until the donna
-    identity has a Slack adapter, and one variable flip moves both."""
+    """Every donna-owned job sends failure notices to the separate donna failure
+    target, which never resolves to the main output channel."""
     donna_jobs = [
         job for job in DEFAULTS["hermes_agent_direct_cron_jobs"]
         if job.get("deliver") == "{{ hermes_agent_donna_deliver }}"

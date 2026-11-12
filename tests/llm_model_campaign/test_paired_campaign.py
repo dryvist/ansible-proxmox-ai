@@ -101,3 +101,23 @@ def test_each_pass_carries_its_own_model_identity() -> None:
     assert "'model_id': llm_model_campaign_pass_hf_repo" in cell
     assert "'--model', llm_model_campaign_pass_hf_repo" in converter
     assert "'--serving-model', llm_model_campaign_pass_serving_model" in converter
+
+
+def test_paired_inputs_resolve_the_baseline_by_group_or_one_host() -> None:
+    import jinja2
+    import yaml as _yaml
+
+    tasks = _yaml.safe_load((PLAYBOOKS / "tasks/llm-model-campaign-paired-inputs.yml").read_text(encoding="utf-8"))
+    check = next(t for t in tasks if "ansible.builtin.assert" in t)
+    template = check["vars"]["_llm_paired_baseline_hosts"]
+    env = jinja2.Environment()
+
+    def hosts(groups: dict, name: str) -> str:
+        return env.from_string(template).render(groups=groups, llm_model_trial_inventory_group=name).strip()
+
+    groups = {"all": ["gpu-live", "gpu-other"], "llm_gpu_group": ["gpu-live", "gpu-other"], "solo": ["gpu-live"]}
+    assert hosts(groups, "gpu-live") == "['gpu-live']"
+    assert hosts(groups, "solo") == "['gpu-live']"
+    assert hosts(groups, "llm_gpu_group") == "['gpu-live', 'gpu-other']"
+    assert hosts(groups, "missing") == "[]"
+    assert "_llm_paired_baseline_hosts | length == 1" in check["ansible.builtin.assert"]["that"]

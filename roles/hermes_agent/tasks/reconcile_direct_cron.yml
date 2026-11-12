@@ -46,6 +46,23 @@
          else item.model_provider | default(hermes_agent_cron_model_provider) }}
     hermes_agent_direct_failure_deliver: "{{ item.failure_deliver | default(hermes_agent_cron_failure_deliver) }}"
 
+# The main-channel rule for this job, on the targets resolved above (defaults,
+# the profile remap and channel_when_healthy all count). Only an enabled job
+# this agent owns is checked: that is what hermes_agent_direct_wanted means.
+- name: "Direct cron | Refuse the main channel as a target for {{ item.name }}"
+  ansible.builtin.include_tasks:
+    file: refuse_main_channel_target.yml
+    apply:
+      tags: hermes_crons
+  tags: hermes_crons
+  vars:
+    refuse_target_name: "{{ item.name }}"
+    refuse_home: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+    refuse_deliver: "{{ hermes_agent_direct_deliver }}"
+    refuse_failure: "{{ hermes_agent_direct_failure_deliver }}"
+    refuse_footer: "{{ item.channel_when_healthy | default('') }}"
+  when: hermes_agent_direct_wanted | bool
+
 - name: "Direct cron | Load prompt + append reporting footer for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_prompt: >-
@@ -141,45 +158,15 @@
     and (item.hermes_home | default(hermes_agent_hermes_home))
         not in (hermes_agent_direct_cron_lists | default({}))
 
-# Withdraw a job this agent must not run. Without this, scoping a job to
-# another identity would only stop it being RE-created: an agent that already
-# had it installed would keep firing it indefinitely, which is precisely how a
-# second agent ended up duplicating the first agent's duties.
-- name: "Direct cron | Remove job not owned by this agent: {{ item.name }}"
-  ansible.builtin.command: >-
-    {{ hermes_agent_bin }} {{ hermes_agent_cli_profile_args | join(' ') }}
-    cron remove {{ item.name }}
-  environment:
-    HERMES_HOME: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
-  vars:
-    hermes_agent_cli_home: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_direct_cron_withdraw
-  # `hermes cron remove` exits 1 on an already-absent job ("... not found").
-  # A stale list or concurrent remove can produce that result; fail only on a
-  # real removal error and report changed only when a job was removed.
-  changed_when: hermes_agent_direct_cron_withdraw.rc == 0
-  failed_when: >-
-    hermes_agent_direct_cron_withdraw.rc != 0
-    and 'not found' not in hermes_agent_direct_cron_withdraw.stdout
-  when:
-    - not (hermes_agent_direct_wanted | bool)
-    - >-
-      (hermes_agent_direct_cron_list.stdout | default('')
-       | regex_search('(?m)^[ \\t]*Name:[ \\t]*'
-                      ~ (item.name | regex_escape) ~ '[ \\t]*$')) is not none
-    - not ansible_check_mode
-
-# Drop the desired-state marker too, so a later re-scoping of this job back to
-# this agent is seen as absent-and-create rather than unchanged-and-skip.
-- name: "Direct cron | Clear desired-state marker for withdrawn {{ item.name }}"
-  ansible.builtin.file:
-    path: "{{ hermes_agent_managed_cron_state_dir }}/{{ item.name }}.sha256"
-    state: absent
-  when:
-    - not (hermes_agent_direct_wanted | bool)
-    - item.name in (hermes_agent_direct_markers | default({}))
+# Withdraw a job this agent must not run. The tasks live in
+# reconcile_direct_cron_withdraw.yml.
+- name: "Direct cron | Withdraw a job not owned by this agent: {{ item.name }}"
+  ansible.builtin.include_tasks:
+    file: reconcile_direct_cron_withdraw.yml
+    apply:
+      tags: hermes_crons
+  tags: hermes_crons
+  when: not (hermes_agent_direct_wanted | bool)
 
 # 'workdir' is IN the checksum, not just the create argv, so a guest
 # converged before --workdir was added sees this as drift and gets its

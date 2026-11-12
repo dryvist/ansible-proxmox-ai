@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from _role_files import include_file
+from _role_files import include_file, role_defaults
 from jinja2 import Environment
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
@@ -30,6 +30,17 @@ WANTED = yaml.safe_load(
 
 def _load(name: str) -> list[dict]:
     return yaml.safe_load((TASKS / name).read_text())
+
+
+def _direct_tasks() -> list[dict]:
+    """reconcile_direct_cron.yml in run order, with the withdraw include spliced in."""
+    tasks: list[dict] = []
+    for task in _load("reconcile_direct_cron.yml"):
+        if include_file(task) == "reconcile_direct_cron_withdraw.yml":
+            tasks += _load("reconcile_direct_cron_withdraw.yml")
+        else:
+            tasks.append(task)
+    return tasks
 
 
 def _batch() -> list[dict]:
@@ -106,21 +117,23 @@ def _take_list_fails(job: dict, *, host: str, lists: dict[str, str]) -> bool:
     ))
 
 
-def _ran(*, wanted: bool, listed: bool | str, marker: str | None, changed: bool) -> set[str]:
+def _ran(
+    *, wanted: bool, listed: bool | str, marker: str | None, changed: bool, name: str = "job-a"
+) -> set[str]:
     """Names of the remote/CLI tasks whose `when` passes for one job."""
     ctx = {
-        "item": {"name": "job-a"},
+        "item": {"name": name},
         "hermes_agent_direct_wanted": wanted,
         "hermes_agent_direct_cron_list": {
             "stdout": f"Name: {listed}" if isinstance(listed, str)
-            else "Name: job-a" if listed else ""
+            else f"Name: {name}" if listed else ""
         },
-        "hermes_agent_direct_markers": {"job-a": marker} if marker else {},
+        "hermes_agent_direct_markers": {name: marker} if marker else {},
         "hermes_agent_direct_marker_probe": {"changed": changed},
         "ansible_check_mode": False,
     }
     ran = set()
-    for task in _load("reconcile_direct_cron.yml"):
+    for task in _direct_tasks():
         if not any(m in task for m in REMOTE_MODULES):
             continue
         conds = task.get("when", [])
@@ -136,6 +149,16 @@ def test_matching_marker_makes_no_cli_or_remote_call():
 
 def test_drifted_job_is_removed_recreated_and_recorded():
     assert _ran(wanted=True, listed=True, marker="old", changed=True) == {
+        "Direct cron | Remove drifted",
+        "Direct cron | Create",
+        "Direct cron | Record desired state for",
+    }
+
+
+def test_a_cleared_marker_on_an_installed_job_is_removed_and_recreated_with_the_corrected_target():
+    # The refused job's marker is cleared only after the read-back proves it is no longer
+    # posting. With the corrected declared target the next converge takes this same path.
+    assert _ran(wanted=True, listed=True, marker=None, changed=True) == {
         "Direct cron | Remove drifted",
         "Direct cron | Create",
         "Direct cron | Record desired state for",
@@ -226,3 +249,64 @@ def test_enabled_job_on_a_missing_profile_home_fails_naming_the_profile_and_path
     assert failing == ["github-review"]
     assert "'github-maint'" in messages["github-review"]
     assert f"'{GITHUB_MAINT}'" in messages["github-review"]
+
+
+ZAMMAD_REVIEW_HOME = f"{HOME}/profiles/homelab-admin"
+
+
+def _zammad_review_job() -> dict:
+    """The declared entry, with its name and home rendered as Ansible renders them."""
+    raw = next(
+        job for job in role_defaults(ROLE)["hermes_agent_direct_cron_jobs"]
+        if job["name"] == "{{ hermes_agent_zammad_review_cron_name }}"
+    )
+    context = {
+        "hermes_agent_zammad_review_cron_name": "zammad-review",
+        "hermes_agent_hermes_home": HOME,
+    }
+    return {
+        **raw,
+        "name": ENV.from_string(raw["name"]).render(**context),
+        "hermes_home": ENV.from_string(raw["hermes_home"]).render(**context),
+    }
+
+
+def test_installed_zammad_review_is_withdrawn_from_its_profile_home():
+    job = _zammad_review_job()
+    assert job["enabled"] is False
+    assert job["hermes_home"] == ZAMMAD_REVIEW_HOME
+    assert _wanted(job, host="hermes") is False
+    listed, failing, _ = _batch_facts([job], host="hermes", existing={HOME, ZAMMAD_REVIEW_HOME})
+    assert ZAMMAD_REVIEW_HOME in listed
+    assert failing == []
+
+    remove = next(
+        task for task in _direct_tasks()
+        if task.get("name", "").startswith("Direct cron | Remove job not owned")
+    )
+    remove_home = ENV.from_string(remove["environment"]["HERMES_HOME"]).render(
+        item=job, hermes_agent_hermes_home=HOME
+    )
+    assert remove_home == ZAMMAD_REVIEW_HOME
+    assert _ran(
+        name="zammad-review", wanted=False, listed=True, marker="sum", changed=True
+    ) == {
+        "Direct cron | Remove job not owned by this agent:",
+        "Direct cron | Clear desired-state marker for withdrawn",
+    }
+
+
+def test_disabled_job_pause_skips_a_job_direct_reconcile_handles():
+    job = _zammad_review_job()
+    pause = _load("cron_pause_disabled.yml")[0]
+    context = {
+        "item": job,
+        "ansible_check_mode": False,
+        "hermes_agent_hermes_home": HOME,
+        "hermes_agent_direct_cron_lists": {ZAMMAD_REVIEW_HOME: "Name: zammad-review\n"},
+        "hermes_agent_direct_cron_reconcile_runs": True,
+    }
+    assert not all(ENV.compile_expression(condition)(**context) for condition in pause["when"])
+
+    context["hermes_agent_direct_cron_reconcile_runs"] = False
+    assert all(ENV.compile_expression(condition)(**context) for condition in pause["when"])
