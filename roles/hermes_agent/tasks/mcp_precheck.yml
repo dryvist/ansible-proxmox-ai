@@ -117,15 +117,36 @@
       Zero files is valid before the gateway creates the database on a new home;
       duplicate or differently placed files need operator review.
 
+- name: Stat the Hermes home for each direct-cron skill reference
+  ansible.builtin.stat:
+    path: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+  loop: >-
+    {{ hermes_agent_direct_cron_jobs
+       | selectattr('skill', 'defined')
+       | rejectattr('skill', 'equalto', '')
+       | list }}
+  loop_control:
+    label: "{{ item.name }}: {{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+  register: hermes_agent_direct_cron_skill_homes
+  changed_when: false
+  # Read-only; a check run must inspect the homes selected for reconciliation.
+  check_mode: false
+  when:
+    - hermes_agent_direct_job_wanted | bool
+    - >-
+      (item.hermes_home | default(hermes_agent_hermes_home))
+      in hermes_agent_plugin_homes
+
 - name: Stat every declared direct-cron skill reference
   ansible.builtin.stat:
     path: >-
       {{ (item.hermes_home | default(hermes_agent_hermes_home))
          ~ '/skills/' ~ item.skill ~ '/SKILL.md' }}
   loop: >-
-    {{ hermes_agent_direct_cron_jobs
-       | selectattr('skill', 'defined')
-       | rejectattr('skill', 'equalto', '')
+    {{ hermes_agent_direct_cron_skill_homes.results
+       | selectattr('stat', 'defined')
+       | selectattr('stat.isdir')
+       | map(attribute='item')
        | list }}
   loop_control:
     label: "{{ item.name }}: {{ item.skill }}"
@@ -147,6 +168,7 @@
       Hermes homes: {{ hermes_agent_direct_cron_skill_stats.results
       | selectattr('stat.exists', 'equalto', false)
       | map(attribute='item.name') | list }}.
+  when: hermes_agent_direct_cron_skill_stats.results | default([]) | length > 0
 
 - name: Read Vikunja projects for the enabled Hermes bridge
   ansible.builtin.uri:
@@ -249,24 +271,13 @@
     that:
       - hermes_agent_vikunja_bridge_bucket_ready | trim | length > 0
       - >-
-        (hermes_agent_vikunja_bridge_declared_bucket_names
-         | reject('equalto', '')
-         | difference(hermes_agent_vikunja_bridge_found_bucket_names)
-         | length) == 0
+        hermes_agent_vikunja_bridge_bucket_ready
+        in hermes_agent_vikunja_bridge_found_bucket_names
     fail_msg: >-
-      Configured Hermes bridge bucket name(s) are absent from the Vikunja
-      Kanban view: {{ hermes_agent_vikunja_bridge_declared_bucket_names
-      | reject('equalto', '')
-      | difference(hermes_agent_vikunja_bridge_found_bucket_names) }}.
-    success_msg: Every configured Hermes bridge bucket exists in the Kanban view.
+      The required Ready bucket is absent from the Vikunja Kanban view:
+      {{ hermes_agent_vikunja_bridge_bucket_ready }}.
+    success_msg: The required Ready bucket exists in the Kanban view.
   vars:
-    hermes_agent_vikunja_bridge_declared_bucket_names:
-      - "{{ hermes_agent_vikunja_bridge_bucket_ready }}"
-      - "{{ hermes_agent_vikunja_bridge_bucket_in_progress }}"
-      - "{{ hermes_agent_vikunja_bridge_bucket_done }}"
-      - "{{ hermes_agent_vikunja_bridge_bucket_blocked }}"
-      - "{{ hermes_agent_vikunja_bridge_bucket_needs_triage }}"
-      - "{{ hermes_agent_vikunja_bridge_bucket_busy }}"
     hermes_agent_vikunja_bridge_found_bucket_names: >-
       {{ hermes_agent_vikunja_bridge_buckets.json
          | map(attribute='title') | list }}

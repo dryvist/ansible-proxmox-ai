@@ -1,11 +1,18 @@
-"""Source contracts for fail-closed, native Hermes Kanban converge checks."""
+"""Exercise the Hermes Kanban converge checks against rendered task conditions."""
 
 from pathlib import Path
 
 import yaml
+from jinja2 import Environment
+
+from _role_files import role_defaults
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
+ENV = Environment(autoescape=False)
+ENV.filters["bool"] = lambda value: (
+    value if isinstance(value, bool) else str(value).lower() in ("true", "yes", "1")
+)
 
 
 def _tasks(path: str) -> list[dict]:
@@ -16,23 +23,67 @@ def _named(tasks: list[dict], name: str) -> dict:
     return next(task for task in tasks if task.get("name") == name)
 
 
-def test_declared_bridge_bucket_names_are_nonempty_where_required_and_unambiguous():
-    tasks = _tasks("assert_brain_and_bridge.yml")
-    assertion = _named(
-        tasks, "Assert the Hermes Kanban profile and bridge bucket declarations are valid"
-    )
-    conditions = assertion["ansible.builtin.assert"]["that"]
+def _conditions_pass(conditions: list[str] | str, context: dict) -> bool:
+    if isinstance(conditions, str):
+        conditions = [conditions]
+    results = [ENV.compile_expression(str(condition))(**context) for condition in conditions]
+    assert all(isinstance(result, bool) for result in results), results
+    return all(results)
 
-    assert any("bucket_ready | trim | length > 0" in condition for condition in conditions)
-    assert any("unique | list | length" in condition for condition in conditions)
-    assert assertion["vars"]["hermes_agent_vikunja_bridge_declared_bucket_names"] == [
-        "{{ hermes_agent_vikunja_bridge_bucket_ready }}",
-        "{{ hermes_agent_vikunja_bridge_bucket_in_progress }}",
-        "{{ hermes_agent_vikunja_bridge_bucket_done }}",
-        "{{ hermes_agent_vikunja_bridge_bucket_blocked }}",
-        "{{ hermes_agent_vikunja_bridge_bucket_needs_triage }}",
-        "{{ hermes_agent_vikunja_bridge_bucket_busy }}",
+
+def _task_runs(task: dict, context: dict) -> bool:
+    return _conditions_pass(task.get("when", []), context)
+
+
+def _direct_job_wanted(job: dict, identity: str) -> bool:
+    expression = role_defaults(ROLE_ROOT)["hermes_agent_direct_job_wanted"]
+    rendered = ENV.from_string(expression).render(
+        item=job,
+        hermes_agent_id=identity,
+        hermes_agent_job_identities=job.get("identities", [identity]),
+    )
+    return rendered.lower() == "true"
+
+
+def _declared_bucket_context(assertion: dict, values: dict) -> dict:
+    declared = assertion["vars"]["hermes_agent_vikunja_bridge_declared_bucket_names"]
+    values = dict(values)
+    values["hermes_agent_vikunja_bridge_declared_bucket_names"] = [
+        ENV.from_string(name).render(**values) for name in declared
     ]
+    return values
+
+
+def test_optional_declared_buckets_may_be_empty_but_names_stay_distinct():
+    assertion = _named(
+        _tasks("assert_brain_and_bridge.yml"),
+        "Assert the Hermes Kanban profile and bridge bucket declarations are valid",
+    )
+    base = {
+        "hermes_agent_id": "hermes",
+        "hermes_agent_kanban_orchestrator_profile": "orchestrator",
+        "hermes_agent_profiles": [{"name": "orchestrator"}],
+        "hermes_agent_vikunja_bridge_bucket_ready": "Ready",
+        "hermes_agent_vikunja_bridge_bucket_in_progress": "",
+        "hermes_agent_vikunja_bridge_bucket_done": "",
+        "hermes_agent_vikunja_bridge_bucket_blocked": "",
+        "hermes_agent_vikunja_bridge_bucket_needs_triage": "",
+        "hermes_agent_vikunja_bridge_bucket_busy": "",
+    }
+    assert _conditions_pass(
+        assertion["ansible.builtin.assert"]["that"],
+        _declared_bucket_context(assertion, base),
+    )
+
+    duplicate = {
+        **base,
+        "hermes_agent_vikunja_bridge_bucket_done": "Done",
+        "hermes_agent_vikunja_bridge_bucket_busy": "Done",
+    }
+    assert not _conditions_pass(
+        assertion["ansible.builtin.assert"]["that"],
+        _declared_bucket_context(assertion, duplicate),
+    )
 
 
 def test_board_file_check_uses_native_find_and_rejects_duplicates_or_wrong_paths():
@@ -53,24 +104,76 @@ def test_board_file_check_uses_native_find_and_rejects_duplicates_or_wrong_paths
     assert "ansible.builtin.shell" not in find and "ansible.builtin.command" not in find
 
 
-def test_declared_cron_skills_are_statted_in_the_selected_home_and_missing_skills_fail():
+def test_direct_cron_skill_precheck_uses_reconcile_gates_and_existing_homes():
     tasks = _tasks("mcp_precheck.yml")
-    stat = _named(tasks, "Stat every declared direct-cron skill reference")
+    home_stat = _named(tasks, "Stat the Hermes home for each direct-cron skill reference")
+    skill_stat = _named(tasks, "Stat every declared direct-cron skill reference")
     assertion = _named(tasks, "Assert every declared direct-cron skill is installed in its job home")
 
-    assert "ansible.builtin.stat" in stat
-    assert "item.hermes_home | default(hermes_agent_hermes_home)" in stat[
-        "ansible.builtin.stat"
-    ]["path"]
-    assert "item.skill" in stat["ansible.builtin.stat"]["path"]
-    assert "SKILL.md" in stat["ansible.builtin.stat"]["path"]
-    assert "selectattr('skill', 'defined')" in stat["loop"]
-    assert "rejectattr('skill', 'equalto', '')" in stat["loop"]
-    assert any("stat.exists" in condition and "false" in condition
-               for condition in assertion["ansible.builtin.assert"]["that"])
+    base_job = {
+        "name": "profile-skill-job",
+        "enabled": True,
+        "identities": ["hermes"],
+        "skill": "dryvist/example",
+        "hermes_home": "/home/hermes/.hermes/profiles/github-maint",
+    }
+    path_context = {
+        "item": base_job,
+        "hermes_agent_hermes_home": "/home/hermes/.hermes",
+    }
+    assert ENV.from_string(home_stat["ansible.builtin.stat"]["path"]).render(
+        **path_context
+    ) == base_job["hermes_home"]
+    assert ENV.from_string(skill_stat["ansible.builtin.stat"]["path"]).render(
+        **path_context
+    ).strip() == base_job["hermes_home"] + "/skills/dryvist/example/SKILL.md"
+    cases = (
+        (base_job, "hermes", ["/home/hermes/.hermes", base_job["hermes_home"]], True),
+        ({**base_job, "enabled": False}, "hermes",
+         ["/home/hermes/.hermes", base_job["hermes_home"]], False),
+        ({**base_job, "identities": ["donna"]}, "hermes",
+         ["/home/hermes/.hermes", base_job["hermes_home"]], False),
+        (base_job, "hermes", ["/home/hermes/.hermes"], False),
+    )
+    for job, identity, materialized_homes, expected in cases:
+        context = {
+            "item": job,
+            "hermes_agent_hermes_home": "/home/hermes/.hermes",
+            "hermes_agent_plugin_homes": materialized_homes,
+            "hermes_agent_direct_job_wanted": _direct_job_wanted(job, identity),
+        }
+        assert _task_runs(home_stat, context) is expected, job
+
+    home_results = [
+        {"item": base_job, "stat": {"exists": True, "isdir": True}},
+        {"item": {**base_job, "name": "missing-home"},
+         "stat": {"exists": False, "isdir": False}},
+    ]
+    loop = skill_stat["loop"].strip()[2:-2].strip()
+    selected_jobs = ENV.compile_expression(loop)(
+        hermes_agent_direct_cron_skill_homes={"results": home_results}
+    )
+    assert [job["name"] for job in selected_jobs] == ["profile-skill-job"]
+
+    assert not _task_runs(
+        assertion, {"hermes_agent_direct_cron_skill_stats": {"results": []}}
+    )
+    assert _task_runs(
+        assertion,
+        {"hermes_agent_direct_cron_skill_stats": {"results": [{"stat": {"exists": True}}]}},
+    )
+    missing_skill = {
+        "hermes_agent_direct_cron_skill_stats": {
+            "results": [{
+                "item": {"name": "missing-skill"},
+                "stat": {"exists": False},
+            }],
+        },
+    }
+    assert not _conditions_pass(assertion["ansible.builtin.assert"]["that"], missing_skill)
 
 
-def test_bridge_bucket_check_is_read_only_fail_closed_and_uses_the_bridge_view_route():
+def test_bridge_requires_ready_only_while_preserving_read_only_probes():
     tasks = _tasks("mcp_precheck.yml")
     reads = [
         _named(tasks, name)
@@ -89,16 +192,30 @@ def test_bridge_bucket_check_is_read_only_fail_closed_and_uses_the_bridge_view_r
         reads[-1]["ansible.builtin.uri"]["url"]
     )
 
+    bucket_assert = _named(
+        tasks, "Assert configured Hermes bridge bucket names exist in the Kanban view"
+    )
+    conditions = bucket_assert["ansible.builtin.assert"]["that"]
+    assert _conditions_pass(
+        conditions,
+        {
+            "hermes_agent_vikunja_bridge_bucket_ready": "Ready",
+            "hermes_agent_vikunja_bridge_found_bucket_names": ["Ready"],
+        },
+    )
+    assert not _conditions_pass(
+        conditions,
+        {
+            "hermes_agent_vikunja_bridge_bucket_ready": "Ready",
+            "hermes_agent_vikunja_bridge_found_bucket_names": ["In Progress", "Done"],
+        },
+    )
+
     project_assert = _named(tasks, "Assert the enabled Hermes bridge project exists exactly once")
     view_assert = _named(
         tasks, "Assert the enabled Hermes bridge project has exactly one Kanban view"
-    )
-    bucket_assert = _named(
-        tasks, "Assert configured Hermes bridge bucket names exist in the Kanban view"
     )
     assert any("length) == 1" in condition
                for condition in project_assert["ansible.builtin.assert"]["that"])
     assert any("kanban_views | length == 1" in condition
                for condition in view_assert["ansible.builtin.assert"]["that"])
-    assert any("difference(hermes_agent_vikunja_bridge_found_bucket_names)" in condition
-               for condition in bucket_assert["ansible.builtin.assert"]["that"])
