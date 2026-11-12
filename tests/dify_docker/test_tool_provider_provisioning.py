@@ -22,7 +22,7 @@ def _task(tasks, name):
     return next(task for task in tasks if task.get("name") == name)
 
 
-def _provider_loop(expression, selected, app_providers):
+def _provider_loop(expression, selected, app_providers, config_from_leaf=False):
     environment = Environment()
     environment.filters["dict2items"] = lambda mapping: [
         {"key": key, "value": value} for key, value in mapping.items()
@@ -30,12 +30,16 @@ def _provider_loop(expression, selected, app_providers):
     environment.filters["flatten"] = lambda values: [
         item for value in values for item in value
     ]
+    environment.filters["bool"] = lambda value: value is True or (
+        isinstance(value, str) and value.lower() in {"true", "yes", "1"}
+    )
     rendered = environment.from_string(expression).render(
         dify_docker_agent_tool_provider_plugins=load_defaults()[
             "dify_docker_agent_tool_provider_plugins"
         ],
         dify_docker_agent_dsl_select=selected,
         dify_docker_agent_tool_providers=app_providers,
+        dify_docker_agent_app_config_from_leaf=config_from_leaf,
     )
     return ast.literal_eval(rendered)
 
@@ -85,6 +89,15 @@ def test_selecting_only_pr_keeper_runs_no_provider_task_but_empty_select_keeps_f
     assert _provider_loop(include["loop"], [], app_providers) == load_defaults()[
         "dify_docker_agent_tool_provider_plugins"
     ]
+
+
+def test_leaf_config_keeps_every_provider_for_selected_pr_keeper():
+    include = _task(_yaml(MAIN), "Install and credential declared built-in tool providers")
+    providers = load_defaults()["dify_docker_agent_tool_provider_plugins"]
+
+    assert _provider_loop(
+        include["loop"], ["pr-keeper"], {"pr-keeper": {}}, config_from_leaf=True
+    ) == providers
 
 
 def test_selected_github_clerk_still_fails_the_existing_missing_credential_assertion():
