@@ -58,8 +58,12 @@ def test_marketplace_lookup_pins_the_version_and_resolves_the_checksum():
     uri = lookup["ansible.builtin.uri"]
 
     assert uri["method"] == "GET"
-    assert "/plugins/identifier?unique_identifier=" in uri["url"]
-    assert "plugin_version" in uri["url"]
+    assert uri["url"] == (
+        "{{ dify_docker_marketplace_api_base }}/plugins/"
+        "{{ dify_docker_agent_tool_provider.plugin_id }}"
+        "/{{ dify_docker_agent_tool_provider.plugin_version | urlencode }}"
+    )
+    assert lookup["register"] == "dify_docker_tool_marketplace_package"
     assert lookup["check_mode"] is False
     assert lookup["changed_when"] is False
     assert lookup["no_log"] is True
@@ -68,6 +72,16 @@ def test_marketplace_lookup_pins_the_version_and_resolves_the_checksum():
     assert "json.data.version.version" in str(pin["ansible.builtin.assert"]["that"])
     assert "@ [0-9a-f]" not in str(pin["ansible.builtin.assert"]["that"])
     assert "[0-9a-f]{64}" in str(pin["ansible.builtin.assert"]["that"])
+
+    checksum = _task(tasks, "Keep the checksum-bearing Marketplace package identifier")
+    assert "dify_docker_tool_marketplace_package.json.data.version.unique_identifier" in str(
+        checksum["ansible.builtin.set_fact"]
+    )
+    install = _task(tasks, "Install the pinned tool plugin from Dify Marketplace")
+    assert (
+        "{{ dify_docker_tool_plugin_unique_identifier }}"
+        in str(install["ansible.builtin.uri"]["body"])
+    )
 
 
 def test_console_plugin_install_and_upgrade_are_skipped_in_check_mode():
