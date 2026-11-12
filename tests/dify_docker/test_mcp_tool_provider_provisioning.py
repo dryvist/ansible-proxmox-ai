@@ -67,6 +67,7 @@ def test_mcp_provider_api_uses_openbao_headers_and_check_mode_safe_writes():
     assert refresh["no_log"] is True
     assert token["no_log"] is True
     assert "bao_local_llm_secrets" in str(token["ansible.builtin.set_fact"])
+    assert "| trim" in token["ansible.builtin.set_fact"]["dify_docker_mcp_provider_headers"]
 
     for task in (get_providers, _task(tasks, "Read the named Dify MCP provider details"), create, update, refresh):
         assert task["ansible.builtin.uri"]["follow_redirects"] == "none"

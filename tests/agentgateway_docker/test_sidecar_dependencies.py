@@ -19,6 +19,7 @@ from test_authz_render import ENV, ROLE_DEFAULTS
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/docker-compose.yml.j2"
 VIKUNJA_CONFIG_TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/vikunja-clerk-config.json.j2"
+AGENTGATEWAY_TASKS = REPO_ROOT / "roles/agentgateway_docker/tasks/main.yml"
 SIDECAR_FILES = REPO_ROOT / "roles/agentgateway_docker/files"
 SIDECARS = {
     "mcp-docs": "mcp_docs_server.py",
@@ -49,7 +50,10 @@ EXAMPLE_VALUES: dict[str, Any] = {
     "agentgateway_docker_vikunja_clerk_http_token": "",
     "agentgateway_docker_vikunja_clerk_port": 8004,
     "agentgateway_docker_vikunja_clerk_allowed_host": "mcp-vikunja-clerk:8004",
-    "agentgateway_docker_vikunja_clerk_image": "ghcr.io/netadvanced/vikunja-mcp-ng:0.8.0-beta.0",
+    "agentgateway_docker_vikunja_clerk_image": (
+        "ghcr.io/netadvanced/vikunja-mcp-ng:0.8.0-beta.0"
+        "@sha256:5b65b7f06ce85e209dd8a2360bfb433588ed0e6bf9b375e97597ed3277daf4ee"
+    ),
     "agentgateway_docker_vikunja_clerk_api_token_file": "/run/secrets/vikunja-api-token",
     "agentgateway_docker_vikunja_clerk_http_token_file": "/run/secrets/mcp-http-token",
     "agentgateway_docker_vikunja_clerk_config_file": "/etc/vikunja-mcp/config.json",
@@ -101,7 +105,10 @@ def test_vikunja_clerk_uses_native_http_and_file_backed_credentials() -> None:
         }
     )["mcp-vikunja-clerk"]
 
-    assert clerk["image"] == "ghcr.io/netadvanced/vikunja-mcp-ng:0.8.0-beta.0"
+    assert clerk["image"] == (
+        "ghcr.io/netadvanced/vikunja-mcp-ng:0.8.0-beta.0"
+        "@sha256:5b65b7f06ce85e209dd8a2360bfb433588ed0e6bf9b375e97597ed3277daf4ee"
+    )
     assert clerk["environment"]["VIKUNJA_MCP_TRANSPORT"] == "http"
     assert clerk["environment"]["VIKUNJA_MCP_HTTP_AUTH_MODE"] == "token"
     assert clerk["environment"]["VIKUNJA_API_TOKEN_FILE"] == "/run/secrets/vikunja-api-token"
@@ -111,6 +118,30 @@ def test_vikunja_clerk_uses_native_http_and_file_backed_credentials() -> None:
     assert "VIKUNJA_MCP_HTTP_AUTH_TOKEN" not in clerk["environment"]
     assert not clerk.get("ports")
     assert len(clerk["volumes"]) == 3
+
+
+def test_vikunja_clerk_tokens_are_trimmed_and_secret_tasks_are_hidden() -> None:
+    secrets = {
+        "VIKUNJA_MCP_TOKEN_VIKUNJA_CLERK": "api-fixture-token\n",
+        "VIKUNJA_MCP_HTTP_TOKEN_VIKUNJA_CLERK": "http-fixture-token\n",
+    }
+    for name, field in (
+        ("agentgateway_docker_vikunja_clerk_api_token", "VIKUNJA_MCP_TOKEN_VIKUNJA_CLERK"),
+        ("agentgateway_docker_vikunja_clerk_http_token", "VIKUNJA_MCP_HTTP_TOKEN_VIKUNJA_CLERK"),
+    ):
+        assert ENV.from_string(ROLE_DEFAULTS[name]).render(bao_local_llm_secrets=secrets) == secrets[
+            field
+        ].strip()
+
+    tasks = yaml.safe_load(AGENTGATEWAY_TASKS.read_text())
+    credential_tasks = [
+        task
+        for task in tasks
+        if "agentgateway_docker_vikunja_clerk_api_token" in str(task)
+        or "agentgateway_docker_vikunja_clerk_http_token" in str(task)
+    ]
+    assert credential_tasks
+    assert all(task.get("no_log") is True for task in credential_tasks)
 
 
 def test_vikunja_clerk_config_exposes_only_the_tasks_module() -> None:
