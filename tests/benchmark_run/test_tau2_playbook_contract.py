@@ -14,7 +14,7 @@ def load_tasks(name: str) -> list[dict[str, object]]:
 def test_tau2_suite_prepares_clone_and_keeps_key_off_argv() -> None:
     plays = yaml.safe_load(PLAYBOOK.read_text())
     assert plays[1]["vars"]["_benchmark_run_tau2_bench_url"] == (
-        "https://github.com/JacobPEvans-ai/tau2-bench.git"
+        "https://github.com/sierra-research/tau2-bench.git"
     )
     preflight = load_tasks("preflight.yml")
     suites = preflight[0]["ansible.builtin.assert"]["that"]
