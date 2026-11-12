@@ -1,0 +1,35 @@
+---
+# Publish declared serving capacity for node_exporter's textfile collector.
+# Callers pass one profile name or an ordered profile-name list, the profile
+# map, and an engine fallback. Each profile's max_num_seqs and max_model_len
+# fields drive the serving arguments: llama.cpp uses the per-slot context times
+# the slot count for --ctx-size and the slot count for --parallel, while vLLM
+# uses those fields for --max-model-len and --max-num-seqs.
+# The accelerator label is this guest's llm_gpu_accelerator, the variable the
+# router's llm_router_gpu_profile_accelerators reads for this guest.
+- name: Check for the node_exporter textfile collector directory
+  ansible.builtin.stat:
+    path: "{{ llm_serving_declared_metrics_textfile_collector_dir }}"
+  register: _llm_serving_declared_metrics_collector
+
+- name: Write the declared serving slots and context per slot
+  # No node_exporter on this guest: skip, never fail the converge. copy writes the
+  # content to a temporary file and renames it over the destination, so a scrape
+  # never reads a half-written metric file. Only a rename that crosses a filesystem
+  # falls back to copying into a temporary file beside the destination.
+  ansible.builtin.copy:
+    dest: "{{ llm_serving_declared_metrics_textfile_collector_dir }}/{{ llm_serving_declared_metrics_metric_file }}"
+    content: |
+      {% for profile_name in llm_serving_declared_metrics_profile_names
+           | default([llm_serving_declared_metrics_profile]) %}
+      {% set profile = llm_serving_declared_metrics_profiles[profile_name] %}
+      {% set engine = profile.engine | default(llm_serving_declared_metrics_engine) %}
+      {% set labels = '{accelerator="%s",profile="%s",engine="%s"}' | format(
+           llm_gpu_accelerator, profile_name, engine) %}
+      {% set slots = profile.max_num_seqs | int %}
+      {% set context_tokens = profile.max_model_len | int %}
+      llm_serving_declared_slots{{ labels }} {{ slots }}
+      llm_serving_declared_context_tokens_per_slot{{ labels }} {{ context_tokens }}
+      {% endfor %}
+    mode: "0644"
+  when: _llm_serving_declared_metrics_collector.stat.exists
