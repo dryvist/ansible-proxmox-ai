@@ -18,6 +18,7 @@ from test_authz_render import ENV, ROLE_DEFAULTS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/docker-compose.yml.j2"
+VIKUNJA_CONFIG_TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/vikunja-clerk-config.json.j2"
 SIDECAR_FILES = REPO_ROOT / "roles/agentgateway_docker/files"
 SIDECARS = {
     "mcp-docs": "mcp_docs_server.py",
@@ -43,11 +44,22 @@ EXAMPLE_VALUES: dict[str, Any] = {
     "agentgateway_docker_nautobot_legacy_env_file": "/opt/agentgateway/nautobot.env",
     "agentgateway_docker_vikunja_url": "https://vikunja.example.com/api/v1",
     "agentgateway_docker_vikunja_read_token": "example-vikunja-token",
+    "agentgateway_docker_vikunja_clerk_enabled": True,
+    "agentgateway_docker_vikunja_clerk_api_token": "",
+    "agentgateway_docker_vikunja_clerk_http_token": "",
+    "agentgateway_docker_vikunja_clerk_port": 8004,
+    "agentgateway_docker_vikunja_clerk_allowed_host": "mcp-vikunja-clerk:8004",
+    "agentgateway_docker_vikunja_clerk_image": "ghcr.io/netadvanced/vikunja-mcp-ng:0.8.0-beta.0",
+    "agentgateway_docker_vikunja_clerk_api_token_file": "/run/secrets/vikunja-api-token",
+    "agentgateway_docker_vikunja_clerk_http_token_file": "/run/secrets/mcp-http-token",
+    "agentgateway_docker_vikunja_clerk_config_file": "/etc/vikunja-mcp/config.json",
 }
 
 
-def _services() -> dict[str, Any]:
-    rendered = ENV.from_string(COMPOSE_TEMPLATE.read_text()).render({**ROLE_DEFAULTS, **EXAMPLE_VALUES})
+def _services(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    rendered = ENV.from_string(COMPOSE_TEMPLATE.read_text()).render(
+        {**ROLE_DEFAULTS, **EXAMPLE_VALUES, **(extra or {})}
+    )
     return yaml.safe_load(rendered)["services"]
 
 
@@ -78,3 +90,33 @@ def test_every_third_party_import_is_installed(service: str, script: str) -> Non
     assert third_party, f"{script} has no third-party imports, so the check would pass vacuously"
     installed = {_package(spec) for spec in _with_specs(_services()[service]["command"])}
     assert not third_party - installed, f"{service} does not install {sorted(third_party - installed)}"
+
+
+def test_vikunja_clerk_uses_native_http_and_file_backed_credentials() -> None:
+    token = "x" * 64
+    clerk = _services(
+        {
+            "agentgateway_docker_vikunja_clerk_api_token": "fixture-vikunja-api-token",
+            "agentgateway_docker_vikunja_clerk_http_token": token,
+        }
+    )["mcp-vikunja-clerk"]
+
+    assert clerk["image"] == "ghcr.io/netadvanced/vikunja-mcp-ng:0.8.0-beta.0"
+    assert clerk["environment"]["VIKUNJA_MCP_TRANSPORT"] == "http"
+    assert clerk["environment"]["VIKUNJA_MCP_HTTP_AUTH_MODE"] == "token"
+    assert clerk["environment"]["VIKUNJA_API_TOKEN_FILE"] == "/run/secrets/vikunja-api-token"
+    assert clerk["environment"]["VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE"] == "/run/secrets/mcp-http-token"
+    assert clerk["environment"]["VIKUNJA_MCP_HTTP_ALLOWED_HOSTS"] == "mcp-vikunja-clerk:8004"
+    assert "VIKUNJA_API_TOKEN" not in clerk["environment"]
+    assert "VIKUNJA_MCP_HTTP_AUTH_TOKEN" not in clerk["environment"]
+    assert not clerk.get("ports")
+    assert len(clerk["volumes"]) == 3
+
+
+def test_vikunja_clerk_config_exposes_only_the_tasks_module() -> None:
+    rendered = ENV.from_string(VIKUNJA_CONFIG_TEMPLATE.read_text()).render()
+    config = yaml.safe_load(rendered)
+
+    assert config["readOnly"] is False
+    assert config["modules"]["tasks"] is True
+    assert all(not enabled for name, enabled in config["modules"].items() if name != "tasks")
