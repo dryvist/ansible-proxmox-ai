@@ -82,6 +82,10 @@ def test_an_unset_home_channel_fails_when_the_switch_is_on_and_is_not_checked_wh
     assert _direct_passes(job, identity="hermes", home="")
 
 
+def test_local_only_output_needs_no_slack_home_channel():
+    assert _direct_passes(_job(deliver="local", failure_deliver="local"), home="")
+
+
 def test_a_bare_channel_id_in_a_list_fails():
     assert not _direct_passes(_job(deliver=f"local,{MAIN}", failure_deliver="local"))
     assert not _direct_passes(_job(deliver="local", failure_deliver="C0EXAMPLEALL"))
