@@ -108,3 +108,17 @@ def test_config_template_includes_the_guardrail_block_once():
     text = (TEMPLATES / "config.yaml.j2").read_text(encoding="utf-8")
 
     assert text.count("{% include 'guardrails.yaml.j2' %}") == 1
+
+
+def test_role_assert_refuses_a_list_without_the_guardrail():
+    tasks = yaml.safe_load((ROLE_DIR / "tasks/assert.yml").read_text(encoding="utf-8"))
+    task = next(t for t in tasks if t.get("name") == "Assert the data-exfiltration guardrail is declared")
+    condition = jinja2.Environment().compile_expression(" ".join(task["ansible.builtin.assert"]["that"][0].split()))
+    declared = yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))["llm_router_guardrails"]
+
+    assert condition(llm_router_guardrails=declared)
+    assert not condition(llm_router_guardrails=[])
+    assert not condition(llm_router_guardrails=[{"guardrail_name": "other", "litellm_params": {}}])
+    assert not condition(llm_router_guardrails=declared + declared)
+    # It runs before anything renders: it is the first task in the role's assert file.
+    assert tasks.index(task) == 0
