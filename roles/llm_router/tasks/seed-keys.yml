@@ -98,6 +98,34 @@
 # token value, which this role does not otherwise read back.
 # A 404 from the delete means the alias is already absent, which is the state
 # the rotation wants. Every other non-success status is still an error.
+# The two asserts below refuse the delete unless every flagged alias is
+# declared and every entry for it holds a value the create can mint; they
+# name aliases only, never values.
+- name: Assert every alias flagged for rotation is declared
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_undeclared_rotate_aliases | length == 0
+    fail_msg: >-
+      Rotation would delete key alias(es)
+      {{ _llm_router_undeclared_rotate_aliases | join(', ') }} that are not
+      declared in llm_router_virtual_keys.
+  vars:
+    _llm_router_undeclared_rotate_aliases: >-
+      {{ llm_router_rotate_key_aliases | default([])
+         | reject('in', llm_router_virtual_keys | map(attribute='alias') | list)
+         | list }}
+  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
+
+- name: Assert every replacement value for a rotated alias is a valid LiteLLM custom key
+  ansible.builtin.import_tasks: assert-seed-key-format.yml
+  vars:
+    _llm_router_unseeded_keys: >-
+      {{ llm_router_virtual_keys
+         | selectattr('alias', 'in', llm_router_rotate_key_aliases | default([]))
+         | list }}
+  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
+
 - name: Delete the live key for every alias flagged for rotation
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/delete"
