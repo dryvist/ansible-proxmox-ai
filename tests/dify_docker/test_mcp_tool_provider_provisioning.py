@@ -42,6 +42,7 @@ def test_mcp_provider_reconciliation_precedes_catalog_import():
     assert include["loop"] == "{{ dify_docker_agent_mcp_providers }}"
     assert include["loop_control"]["loop_var"] == "dify_docker_agent_mcp_provider"
     assert include["when"][0] == "dify_docker_provision_model_provider | bool"
+    assert "| trim | length >= 32" in include["when"][1]
     assert tasks.index(include) < tasks.index(import_dsls)
 
 
