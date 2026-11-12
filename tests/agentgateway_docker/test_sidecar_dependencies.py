@@ -121,11 +121,7 @@ def test_vikunja_clerk_uses_native_http_and_file_backed_credentials() -> None:
 
 
 def test_vikunja_clerk_role_default_image_is_digest_pinned() -> None:
-    role_defaults = yaml.safe_load(
-        (REPO_ROOT / "roles/agentgateway_docker/defaults/main/00-gateway.yml").read_text()
-    )
-
-    assert role_defaults["agentgateway_docker_vikunja_clerk_image"] == (
+    assert ROLE_DEFAULTS["agentgateway_docker_vikunja_clerk_image"] == (
         "ghcr.io/netadvanced/vikunja-mcp-ng:0.8.0-beta.0"
         "@sha256:5b65b7f06ce85e209dd8a2360bfb433588ed0e6bf9b375e97597ed3277daf4ee"
     )
@@ -144,7 +140,14 @@ def test_vikunja_clerk_tokens_are_trimmed_and_secret_tasks_are_hidden() -> None:
             field
         ].strip()
 
-    tasks = yaml.safe_load(AGENTGATEWAY_TASKS.read_text())
+    main_tasks = yaml.safe_load(AGENTGATEWAY_TASKS.read_text())
+    clerk_include = next(
+        task["ansible.builtin.include_tasks"]
+        for task in main_tasks
+        if task.get("ansible.builtin.include_tasks") == "vikunja_clerk.yml"
+    )
+    clerk_tasks = yaml.safe_load((AGENTGATEWAY_TASKS.parent / clerk_include).read_text())
+    tasks = [*main_tasks, *clerk_tasks]
     credential_tasks = [
         task
         for task in tasks
