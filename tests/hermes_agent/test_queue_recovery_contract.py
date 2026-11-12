@@ -37,20 +37,20 @@ def test_queue_recovery_archives_each_board_before_reconciling() -> None:
     assert "Assert no active tasks remain" in tasks
 
 
-def test_heartbeat_is_limited_to_waking_hours() -> None:
-    """Hourly, and only while the operator is awake.
+def test_heartbeat_runs_every_hour_of_every_day() -> None:
+    """The status check now runs hourly throughout the day.
 
     Asserts the HOUR field, not the whole expression. It used to pin the exact
     string "0 8-22 * * *", which made the minute part of a contract that is
-    about waking hours — so moving the card off minute :00 to stop it colliding
-    with the */15 board digest every hour failed a test named for something
-    else. The minute is deliberately free to change; where it may land is the
-    separate concern owned by test_cron_stagger.py.
+    about the schedule's cadence — so moving the card off minute :00 to stop it
+    colliding with the */15 board digest every hour failed a test named for
+    something else. The minute is deliberately free to change; where it may
+    land is the separate concern owned by test_cron_stagger.py.
     """
     defaults = role_defaults(DEFAULTS)
     minute, hours, dom, month, dow = defaults["hermes_agent_daily_status_cron_schedule"].split()
 
-    assert hours == "8-22", "the heartbeat must stay inside waking hours"
+    assert hours == "*", "the heartbeat must run in every hour"
     assert (dom, month, dow) == ("*", "*", "*"), "the heartbeat runs every day"
     assert minute.isdigit(), f"the heartbeat runs once per hour, not on {minute!r}"
 
