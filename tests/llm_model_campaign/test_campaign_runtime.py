@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Template
+from jinja2 import Environment, Template
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -136,22 +137,65 @@ def test_vllm_kv_preflight_reads_the_current_serving_invocation():
     assert pre_tasks.index(running_guard) < pre_tasks.index(journal_read) < pre_tasks.index(kv_preflight)
 
 
-def test_authenticated_recipes_require_runtime_alias_and_key():
+def test_authenticated_recipes_resolve_runtime_model_and_key():
     tasks = _controller_tasks()
     runtime = _named(tasks, "Require runtime endpoint inputs for authenticated model recipes")
-    target = yaml.safe_load(TARGET_PLAYBOOK.read_text(encoding="utf-8"))[0]
+    serving = _named(tasks, "Resolve the campaign serving profile")
     endpoint_tasks = _load_tasks(TASKS / "llm-model-campaign-endpoint-probe.yml")
     endpoint = _named(endpoint_tasks, "Verify the live endpoint advertises the expected model")
     model_check = _named(endpoint_tasks, "Require the live endpoint model ID to match this campaign pass")
-    saved = _named(tasks, "Save the prepared campaign inputs for the inventory target play")
+    cell_tasks = _load_tasks(TASKS / "llm-model-campaign-cell.yml")
+    command_block = _named(cell_tasks, "Run the tool-native command from the selected recipe row")
+    command = command_block["block"][0]
 
-    assert "serving_model is defined" in runtime["ansible.builtin.assert"]["that"]
-    assert "lookup('env', 'OPENAI_API_KEY') | length > 0" in runtime["ansible.builtin.assert"]["that"]
+    assert "_llm_campaign_serving_model is defined" in runtime["ansible.builtin.assert"]["that"]
+    assert any("_llm_campaign_serving_model | string is match(" in condition
+               for condition in runtime["ansible.builtin.assert"]["that"])
+    assert any("bao_local_llm_secrets" in condition and "OPENAI_API_KEY" in condition
+               for condition in runtime["ansible.builtin.assert"]["that"])
+    assert (
+        "_llm_campaign_selected_artifacts[0].hf_repo"
+        in serving["ansible.builtin.set_fact"]["_llm_campaign_serving_model"]
+    )
     assert runtime["no_log"] is True
     assert "Authorization" in endpoint["ansible.builtin.uri"]["headers"]
+    assert "bao_local_llm_secrets" in endpoint["ansible.builtin.uri"]["headers"]
     assert endpoint["no_log"] == "{{ _llm_campaign_uses_api_key }}"
     assert model_check["no_log"] == "{{ _llm_campaign_uses_api_key }}"
-    assert "_llm_campaign_serving_model" in saved["ansible.builtin.set_fact"]
+    assert "bao_local_llm_secrets" in command["environment"]["OPENAI_API_KEY"]
+
+
+def test_coding_and_reasoning_inputs_resolve_for_the_medium_artifact():
+    tasks = _controller_tasks()
+    survey = _named(tasks, "Validate the required survey values and safe config name")
+    config_rule = next(
+        condition
+        for condition in survey["ansible.builtin.assert"]["that"]
+        if condition.startswith("config_name is match(")
+    )
+    config_pattern = re.fullmatch(r"config_name is match\('(.+)'\)", config_rule).group(1)
+    medium_artifacts = yaml.safe_load(
+        (REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml").read_text(encoding="utf-8")
+    )["_llm_model_artifacts_nvfp4_sweep"]
+    medium = next(
+        artifact for artifact in medium_artifacts if artifact["artifact_id"] == "qwen38-27b-nvfp4"
+    )
+    serving = _named(tasks, "Resolve the campaign serving profile")
+    parse = _named(tasks, "Parse positive concurrency and context values")
+    serving_expression = serving["ansible.builtin.set_fact"]["_llm_campaign_serving_model"]
+    context_expression = parse["ansible.builtin.set_fact"]["_llm_campaign_context_values"]
+    environment = Environment()
+    environment.tests["match"] = lambda value, pattern: re.match(pattern, str(value)) is not None
+
+    for recipe in ("lm-eval/coding", "lm-eval/reasoning"):
+        assert re.match(config_pattern, recipe)
+        resolved_model = Template(serving_expression).render(
+            serving_model=None,
+            _llm_campaign_selected_artifacts=[medium],
+        )
+        resolved_context = environment.from_string(context_expression).render(context_list="8192")
+        assert resolved_model == medium["hf_repo"]
+        assert resolved_context.strip() == "[8192]"
 
 
 def test_model_card_context_marker_resolves_from_the_model_registry():

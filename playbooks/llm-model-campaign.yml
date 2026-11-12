@@ -273,6 +273,11 @@
              | default('', true) | trim
              | default(_llm_campaign_selected_artifacts[0].serving_profile | default(''), true) }}
         _llm_campaign_selected_serving_profile_data: {}
+        # Match the selected artifact's vLLM served-model ID unless the caller
+        # supplies the existing explicit override.
+        _llm_campaign_serving_model: >-
+          {{ serving_model
+             | default(_llm_campaign_selected_artifacts[0].hf_repo, true) }}
 
     - name: Resolve and validate an explicit campaign serving profile
       ansible.builtin.include_tasks: tasks/llm-model-campaign-serving-profile.yml
@@ -281,12 +286,17 @@
     - name: Require runtime endpoint inputs for authenticated model recipes
       ansible.builtin.assert:
         that:
-          - serving_model is defined
-          - serving_model | string is match('^[A-Za-z0-9._-]+$')
-          - lookup('env', 'OPENAI_API_KEY') | length > 0
+          - _llm_campaign_serving_model is defined
+          - >-
+            _llm_campaign_serving_model | string is
+            match('^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$')
+          - >-
+            (bao_local_llm_secrets | default({}, true)).get('OPENAI_API_KEY')
+            | default(lookup('ansible.builtin.env', 'OPENAI_API_KEY'), true)
+            | default('', true) | trim | length > 0
         fail_msg: >-
-          The selected recipe requires a runtime serving-model alias and
-          OPENAI_API_KEY environment variable.
+          The selected recipe requires a runtime serving-model ID and
+          OPENAI_API_KEY credential.
         quiet: true
       no_log: true
       when: >-
@@ -310,7 +320,6 @@
         _llm_campaign_model: "{{ _llm_campaign_selected_artifacts[0] }}"
         _llm_campaign_serving_profile: "{{ _llm_campaign_selected_serving_profile }}"
         _llm_campaign_serving_profile_data: "{{ _llm_campaign_selected_serving_profile_data }}"
-        _llm_campaign_serving_model: "{{ serving_model | default(_llm_campaign_selected_artifacts[0].hf_repo) }}"
         _llm_campaign_uses_api_key: >-
           {{ _llm_campaign_config.run
              | selectattr('api_key_env', 'defined') | list | length > 0 }}
