@@ -16,8 +16,7 @@ from ansible.plugins.test.core import TestModule as AnsibleTestModule
 from _group_vars import load_group_vars_all
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/00-gateway.yml"
-MCP_ROUTE_AUTH_DEFAULTS = REPO_ROOT / "roles/agentgateway_docker/defaults/main/30-mcp-route-auth.yml"
+DEFAULTS_DIR = REPO_ROOT / "roles/agentgateway_docker/defaults/main"
 TASKS = REPO_ROOT / "roles/agentgateway_docker/tasks/main.yml"
 TEMPLATE = REPO_ROOT / "roles/agentgateway_docker/templates/config.yaml.j2"
 # The shared-route auth policies are normalized below so this remains a check of
@@ -43,14 +42,10 @@ ENV = jinja2.Environment(
 ENV.filters.update(FilterModule().filters())
 ENV.tests.update(AnsibleTestModule().tests())
 INVENTORY_VARS = load_group_vars_all()
-FACADE_DEFAULTS = yaml.safe_load((DEFAULTS.parent / "40-facade.yml").read_text())
-ROLE_DEFAULTS = {
-    **yaml.safe_load(DEFAULTS.read_text()),
-    **yaml.safe_load(MCP_ROUTE_AUTH_DEFAULTS.read_text()),
-    **yaml.safe_load((DEFAULTS.parent / "05-a2a-targets.yml").read_text()),
-    **yaml.safe_load((DEFAULTS.parent / "06-agent-routes.yml").read_text()),
-    **FACADE_DEFAULTS,
-}
+FACADE_DEFAULTS = yaml.safe_load((DEFAULTS_DIR / "40-facade.yml").read_text())
+ROLE_DEFAULTS: dict[str, Any] = {}
+for defaults_file in sorted(path for path in DEFAULTS_DIR.iterdir() if path.is_file()):
+    ROLE_DEFAULTS.update(yaml.safe_load(defaults_file.read_text()))
 HINDSIGHT_DEFAULTS = yaml.safe_load(
     (REPO_ROOT / "roles/agentgateway_docker/defaults/main/20-hindsight-acl.yml").read_text()
 )
@@ -124,6 +119,11 @@ def _render(
         "agentgateway_docker_vikunja_mcp_enabled": True,
         "agentgateway_docker_vikunja_read_token": "example-vikunja-token",
         "agentgateway_docker_vikunja_mcp_port": 8002,
+        "agentgateway_docker_vikunja_clerk_enabled": False,
+        "agentgateway_docker_vikunja_clerk_api_token": "",
+        "agentgateway_docker_vikunja_clerk_http_token": "",
+        "agentgateway_docker_vikunja_clerk_port": 8004,
+        "agentgateway_docker_vikunja_clerk_allowed_host": "mcp-vikunja-clerk:8004",
         "agentgateway_docker_nautobot_mcp_enabled": True,
         "agentgateway_docker_nautobot_read_token": "example-nautobot-token",
         "agentgateway_docker_nautobot_mcp_port": 8003,

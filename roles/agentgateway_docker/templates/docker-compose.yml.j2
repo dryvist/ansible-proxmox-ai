@@ -71,6 +71,33 @@ services:
       VIKUNJA_URL: "{{ agentgateway_docker_vikunja_url }}"
       VIKUNJA_API_TOKEN: "{{ agentgateway_docker_vikunja_read_token }}"
 {% endif %}
+{% if agentgateway_docker_vikunja_clerk_enabled | bool
+      and agentgateway_docker_vikunja_clerk_api_token | trim | length > 0
+      and agentgateway_docker_vikunja_clerk_http_token | trim | length >= 32 %}
+
+  # Dify's writable Vikunja MCP peer. Its own bearer token and tasks-scoped
+  # Vikunja API token are mounted as files; only agentgateway can reach it.
+  mcp-vikunja-clerk:
+    image: {{ agentgateway_docker_vikunja_clerk_image }}
+    container_name: mcp-vikunja-clerk
+    restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
+    environment:
+      VIKUNJA_URL: "{{ agentgateway_docker_vikunja_url }}"
+      VIKUNJA_API_TOKEN_FILE: /run/secrets/vikunja-api-token
+      VIKUNJA_MCP_TRANSPORT: http
+      VIKUNJA_MCP_HTTP_AUTH_MODE: token
+      VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE: /run/secrets/mcp-http-token
+      VIKUNJA_MCP_HTTP_HOST: 0.0.0.0
+      VIKUNJA_MCP_HTTP_PORT: "{{ agentgateway_docker_vikunja_clerk_port }}"
+      VIKUNJA_MCP_HTTP_PATH: /mcp
+      VIKUNJA_MCP_HTTP_ALLOWED_HOSTS: "{{ agentgateway_docker_vikunja_clerk_allowed_host }}"
+      VIKUNJA_MCP_CONFIG: /etc/vikunja-mcp/config.json
+    volumes:
+      - "{{ agentgateway_docker_vikunja_clerk_api_token_file }}:/run/secrets/vikunja-api-token:ro"
+      - "{{ agentgateway_docker_vikunja_clerk_http_token_file }}:/run/secrets/mcp-http-token:ro"
+      - "{{ agentgateway_docker_vikunja_clerk_config_file }}:/etc/vikunja-mcp/config.json:ro"
+{% endif %}
 {% if agentgateway_docker_nautobot_mcp_enabled | bool
       and agentgateway_docker_nautobot_read_token | length > 0
       and not (agentgateway_docker_nautobot_openapi_enabled | bool) %}
