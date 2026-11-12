@@ -52,7 +52,7 @@ def test_other_slack_identities_keep_prefixed_identity_view_fields():
     assert resolve('hermes_agent_slack_app_token', context) == 'private-app'
 
 
-def test_pepper_digest_accepts_only_its_declared_channel_and_empty_disables():
+def test_pepper_digest_accepts_only_its_declared_destinations_and_empty_disables():
     defaults = role_defaults(ROLE)
     context = dict(
         hermes_agent_id='pepper',
@@ -64,8 +64,8 @@ def test_pepper_digest_accepts_only_its_declared_channel_and_empty_disables():
     home_channel = resolve('hermes_agent_slack_home_channel', context)
     allowed_destinations = NativeEnvironment().from_string(
         defaults['hermes_agent_pepper_digest_allowed_destinations']
-    ).render(hermes_agent_slack_home_channel=home_channel)
-    assert allowed_destinations == [f'slack:{home_channel}']
+    ).render(hermes_agent_slack_home_channel=f' {home_channel} ')
+    assert allowed_destinations == ['local', f'slack:{home_channel}']
 
     tasks = yaml.safe_load((ROLE / 'tasks/cron_reconcile.yml').read_text())
     guard = next(task for task in tasks if task['name'] == 'Assert Pepper owns only its declared jobs')
@@ -78,16 +78,18 @@ def test_pepper_digest_accepts_only_its_declared_channel_and_empty_disables():
     )
     enabled = NativeEnvironment().from_string(cron['enabled'])
 
-    def accepted(deliver):
+    def accepted(deliver, bot_token='fixture-bot-token', app_token='fixture-app-token'):
         return accepts_destination(
             hermes_agent_pepper_digest_deliver=deliver,
             hermes_agent_pepper_digest_allowed_destinations=allowed_destinations,
-            hermes_agent_slack_bot_token='fixture-bot-token',
-            hermes_agent_slack_app_token='fixture-app-token',
+            hermes_agent_slack_bot_token=bot_token,
+            hermes_agent_slack_app_token=app_token,
         )
 
     assert accepted(f'slack:{home_channel}')
+    assert accepted('local', bot_token='', app_token='')
     assert not accepted('slack:foreign-channel-fixture')
+    assert not accepted(f'slack:{home_channel}', bot_token='', app_token='')
     assert accepted('')
     assert enabled.render(hermes_agent_pepper_digest_deliver='') is False
     assert enabled.render(hermes_agent_pepper_digest_deliver=f'slack:{home_channel}') is True
