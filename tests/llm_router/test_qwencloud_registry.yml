@@ -20,11 +20,11 @@
         (llm_router_hermes_cloud_models
          | selectattr('provider', 'equalto', 'openai')
          | selectattr('api_base_field', 'defined')
-         | map(attribute='credential_env') | first): 'qwen-test-placeholder',
+         | map(attribute='credential_env') | first): 'test-token',
         (llm_router_hermes_cloud_models
          | selectattr('provider', 'equalto', 'openai')
          | selectattr('api_base_field', 'defined')
-         | map(attribute='api_base_field') | first): 'http://localhost:4011/v1'
+         | map(attribute='api_base_field') | first): 'https://example.invalid/v1'
       } }}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -58,9 +58,26 @@
              | selectattr('client_model_id', 'match', '^qwen3[.]8-') | list }}
         _qwen_deployments: >-
           {{ _config.model_list
+             | selectattr('litellm_params.api_key', 'defined')
              | selectattr('litellm_params.api_key', 'equalto',
                  'os.environ/' ~ (_qwen_entries | first).key_field)
              | list }}
+
+    - name: Assert all credentialed Qwen names render and the credential guard passes
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-hermes-cloud-credentialed-models.yml"
+
+    - name: Assert the three Qwen client names are rendered
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _qwen_entries | map(attribute='client_model_id') | sort
+            == (_config.model_list
+                | selectattr('model_name', 'in', _qwen_entries | map(attribute='route_group') | list)
+                | map(attribute='model_name') | unique | sort | list)
+          - _qwen_entries | length == 3
+          - _qwen_deployments | length == 3
+        fail_msg: "All credentialed Qwen client names must render once."
 
     - name: Assert exactly three distinct Qwen identities are projected
       ansible.builtin.assert:
@@ -176,74 +193,3 @@
            | selectattr('benchmark_only', 'equalto', true) | list }}
       loop_control:
         label: "{{ item.client_model_id }}"
-
-    - name: Save the fully credentialed inputs for missing-field render cases
-      ansible.builtin.set_fact:
-        _qwen_resolved_credentials_with_key: "{{ _llm_router_m_resolved_credentials }}"
-        _qwen_resolved_api_bases_with_endpoint: "{{ _llm_router_m_resolved_api_bases }}"
-        _qwen_route_groups: "{{ _qwen_entries | map(attribute='route_group') | list }}"
-        _qwen_non_qwen_deployments: >-
-          {{ _config.model_list
-             | rejectattr('model_name', 'in', _qwen_entries | map(attribute='route_group') | list)
-             | list }}
-      no_log: true
-
-    - name: Render with the Qwen key present and its endpoint absent
-      ansible.builtin.set_fact:
-        _llm_router_m_resolved_credentials: "{{ _qwen_resolved_credentials_with_key }}"
-        _llm_router_m_resolved_api_bases: >-
-          {{ _qwen_resolved_api_bases_with_endpoint | dict2items
-             | rejectattr('key', 'in', _qwen_entries | map(attribute='client_model_id') | list)
-             | items2dict }}
-      no_log: true
-
-    - name: Recompute the cloud projection without the Qwen endpoint
-      ansible.builtin.set_fact:
-        _llm_router_m_hermes_cloud_models_credentialed: "{{ llm_router_hermes_cloud_models_credentialed }}"
-      no_log: true
-
-    - name: Render without the Qwen endpoint
-      ansible.builtin.set_fact:
-        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-      no_log: true
-
-    - name: Assert a missing Qwen endpoint omits Qwen and preserves other deployments
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _config.model_list | selectattr('model_name', 'in', _qwen_route_groups) | list | length == 0
-          - >-
-            (_config.model_list
-             | rejectattr('model_name', 'in', _qwen_route_groups) | list)
-            == _qwen_non_qwen_deployments
-        fail_msg: "A Qwen deployment rendered without its endpoint or removed another deployment."
-
-    - name: Render with the Qwen endpoint present and its key absent
-      ansible.builtin.set_fact:
-        _llm_router_m_resolved_credentials: >-
-          {{ _qwen_resolved_credentials_with_key | dict2items
-             | rejectattr('key', 'in', _qwen_entries | map(attribute='credential_env') | list)
-             | items2dict }}
-        _llm_router_m_resolved_api_bases: "{{ _qwen_resolved_api_bases_with_endpoint }}"
-      no_log: true
-
-    - name: Recompute the cloud projection without the Qwen key
-      ansible.builtin.set_fact:
-        _llm_router_m_hermes_cloud_models_credentialed: "{{ llm_router_hermes_cloud_models_credentialed }}"
-      no_log: true
-
-    - name: Render without the Qwen key
-      ansible.builtin.set_fact:
-        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-      no_log: true
-
-    - name: Assert a missing Qwen key omits Qwen and preserves other deployments
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _config.model_list | selectattr('model_name', 'in', _qwen_route_groups) | list | length == 0
-          - >-
-            (_config.model_list
-             | rejectattr('model_name', 'in', _qwen_route_groups) | list)
-            == _qwen_non_qwen_deployments
-        fail_msg: "A Qwen deployment rendered without its key or removed another deployment."
