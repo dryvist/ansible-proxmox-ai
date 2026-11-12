@@ -33,9 +33,11 @@ and `repo-scorecard` each exceed the 1800s wall clock — `enabled: false` in
 `hermes_agent_direct_cron_jobs` plus a `cron pause` task
 (`tasks/cron_reconcile.yml`) disable them without deleting the definitions.
 
-`zammad-review` is declared with `enabled: false`. For its home, direct-cron
-reconciliation removes an installed copy when it runs; if skipped, the
-disabled-job task pauses it.
+`zammad-review` runs in the `homelab-admin` profile with the
+`dryvist/zammad-incidents` skill. It is enabled only when the Zammad URL and
+token, the primary gateway's Slack credentials, and the profile's routed
+channel are configured. Delivery goes through the primary gateway's
+`profile_routes`; the named profile does not hold Slack credentials.
 
 **Real semantics `hermes cron create` cannot express natively** (verified
 against the live CLI's `--help` and, for profile, against `cron/scheduler.py`
@@ -43,9 +45,8 @@ itself — not assumed):
 
 - **`assignee`/profile selection** — no `cron create` flag exists. Restored
   via a per-job `hermes_home:` override (7 of the 18 converted jobs had a real
-  profile: `daily-status`, `zammad-review` (disabled; a converge removes an
-  installed copy, or pauses it where direct-cron reconcile is skipped) →
-  `homelab-admin`; `splunk-triage`, `splunk-security`, `splunk-parsing`,
+  profile: `daily-status`, `zammad-review` → `homelab-admin`;
+  `splunk-triage`, `splunk-security`, `splunk-parsing`,
   `splunk-deepdive`, `anomaly-hunt` → `splunk-admin`). The persistent gateway
   (`hermes-gateway.service`) ticks
   every profile home in-process and delivers a named profile's Slack output

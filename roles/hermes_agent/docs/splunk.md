@@ -102,9 +102,11 @@ use the Splunk findings destination; healthy and no-change runs end with
 `[SILENT]`. Hermes job failures use native cron failure delivery. Splunk
 analysis jobs stay silent unless they find something new.
 
-**Zammad review (`zammad-review`):** declared with `enabled: false`. For its
-home, direct-cron reconciliation removes an installed copy when it runs; if
-skipped, the disabled-job task pauses it.
+**Zammad review (`zammad-review`):** runs in the `homelab-admin` profile with
+the `dryvist/zammad-incidents` skill. It is enabled only when the Zammad URL
+and token, primary gateway Slack credentials, and the profile's routed channel
+are configured. The primary gateway delivers through `profile_routes`; the
+named profile has no Slack platform or token.
 
 **Delta discipline (own state, not double-reported).** `splunk-triage`'s report
 recalls its OWN last-posted findings from memory (key `splunk-triage-last`)

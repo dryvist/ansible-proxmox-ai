@@ -112,22 +112,18 @@ def _declared_direct_jobs() -> list[dict]:
     return jobs
 
 
-def test_every_routed_profile_direct_cron_single_slack_target_uses_its_channel() -> None:
+def test_every_profile_homed_slack_cron_uses_its_gateway_route() -> None:
     defaults = role_defaults(ROLE_ROOT)
     jobs = _declared_direct_jobs()
-    profiles = {profile["name"] for profile in defaults["hermes_agent_profiles"]}
-    profiles.add(defaults.get("hermes_agent_kanban_orchestrator_profile", "orchestrator"))
-    profiles.update(
-        profile
-        for job in jobs
-        for profile in re.findall(r"/profiles/([a-z0-9-]+)", str(job.get("hermes_home", "")))
-    )
-    channels = {profile: f"C0TEST{index:02d}" for index, profile in enumerate(sorted(profiles), 1)}
+    channels = {**CHANNELS, "github-maint": "C0EXAMPLE3", "orchestrator": "C0EXAMPLE4"}
     context = {
         "hermes_agent_hermes_home": "/srv/hermes-home",
         "hermes_agent_kanban_orchestrator_profile": defaults.get(
             "hermes_agent_kanban_orchestrator_profile", "orchestrator"
         ),
+        "hermes_agent_credential_canary_profile": defaults[
+            "hermes_agent_credential_canary_profile"
+        ],
         **{
             key: "C0TEST00"
             for key in defaults
@@ -144,7 +140,7 @@ def test_every_routed_profile_direct_cron_single_slack_target_uses_its_channel()
             continue
         home = _render_nested(raw_home, context)
         match = re.search(r"/profiles/([^/]+)$", home)
-        if not match or match.group(1) not in channels:
+        if not match:
             continue
         profile = match.group(1)
         expanded = dict(job)
@@ -152,8 +148,26 @@ def test_every_routed_profile_direct_cron_single_slack_target_uses_its_channel()
             expanded["deliver"] = _render_nested(expanded["deliver"], {**context, "item": job})
         expanded["hermes_home"] = home
         target = expanded.get("deliver", "slack:C0TEST00")
-        if re.fullmatch(r"slack:[^,]+", target):
-            assert _resolve_deliver(expanded, channels, "C0TEST00") == f"slack:{channels[profile]}", job["name"]
+        if str(target).startswith("slack:"):
+            assert re.fullmatch(r"slack:[^,]+", str(target)), job["name"]
+            assert profile in channels, f"{job['name']} has no gateway Slack route for {profile!r}"
+            assert _resolve_deliver(expanded, channels, "C0TEST00") == (
+                f"slack:{channels[profile]}"
+            ), job["name"]
+            raw_deliver = str(job.get("deliver", ""))
+            if (
+                "hermes_agent_slack_profile_deliver_targets" in raw_deliver
+                and not job.get("no_agent", False)
+                and job.get("enabled") is not False
+            ):
+                route_key = (
+                    "hermes_agent_kanban_orchestrator_profile"
+                    if "hermes_agent_kanban_orchestrator_profile" in raw_deliver
+                    else repr(profile)
+                )
+                assert f"{route_key} in hermes_agent_slack_profile_deliver_targets" in str(
+                    job.get("enabled", "")
+                ), job["name"]
             checked += 1
     assert checked > 0
 
@@ -189,17 +203,51 @@ def test_profile_channels_fall_back_to_the_run_environment() -> None:
     assert _channels({}) == "{}"
 
 
-def test_zammad_review_is_declared_disabled_and_kept_in_the_table() -> None:
-    # Kept declared, so reconcile can withdraw an installed copy. Not wanted by
-    # any identity: test_cron_system_ownership. Removed when installed:
-    # test_cron_reconcile_batching.
+def test_zammad_review_requires_its_reader_credentials_and_gateway_route() -> None:
     defaults = role_defaults(ROLE_ROOT)
     assert "at most 5 tickets this run" in defaults["hermes_agent_zammad_review_cron_prompt"]
     job = next(
         j for j in defaults["hermes_agent_direct_cron_jobs"]
         if j["name"] == "{{ hermes_agent_zammad_review_cron_name }}"
     )
-    assert job["enabled"] is False
+    reader = next(
+        profile for profile in defaults["hermes_agent_profiles"]
+        if profile["name"] == "homelab-admin"
+    )
+    assert job["skill"] == "dryvist/zammad-incidents"
+    assert job["hermes_home"].endswith("/profiles/homelab-admin")
+    assert "zammad" in reader["env"]
+    assert job["skill"] in reader["skills"]
+    assert job["deliver"] == (
+        "{{ hermes_agent_slack_profile_deliver_targets.get('homelab-admin', '') }}"
+    )
+
+    enabled = Environment().from_string(str(job["enabled"]))
+    ready = {
+        "hermes_agent_zammad_url": "https://zammad.example.com",
+        "hermes_agent_zammad_api_token": "fixture-token",
+        "hermes_agent_slack_bot_token": "fixture-bot-token",
+        "hermes_agent_slack_app_token": "fixture-app-token",
+        "hermes_agent_slack_profile_deliver_targets": {"homelab-admin": "slack:C0EXAMPLE2"},
+    }
+    assert enabled.render(**ready).strip() == "True"
+    for missing in (
+        "hermes_agent_zammad_url",
+        "hermes_agent_zammad_api_token",
+        "hermes_agent_slack_bot_token",
+        "hermes_agent_slack_app_token",
+    ):
+        unavailable = {**ready, missing: ""}
+        assert enabled.render(**unavailable).strip() == "False", missing
+    assert enabled.render(
+        **{**ready, "hermes_agent_slack_profile_deliver_targets": {}}
+    ).strip() == "False"
+    assert enabled.render(
+        **{
+            **ready,
+            "hermes_agent_slack_profile_deliver_targets": {"homelab-admin": "slack:"},
+        }
+    ).strip() == "False"
 
 
 PROFILE_ROUTE_FLEET = ("splunk-admin", "homelab-admin")
