@@ -85,6 +85,81 @@ def test_empty_roster_preserves_every_job_identity() -> None:
         assert _direct_owned_names(identity, {}) == expected
 
 
+def test_private_identity_owns_four_local_assistant_catalog_jobs() -> None:
+    expected = {
+        "assistant-pulse",
+        "assistant-task-triage",
+        "private-assistant-inbox-groom",
+        "private-assistant-evening-wrap",
+    }
+    jobs = {
+        _job_name(job): job
+        for job in DEFAULTS["hermes_agent_direct_cron_jobs"]
+        if "hermes-private" in _identities(job, "hermes-private", {})
+    }
+
+    assert set(jobs) == expected
+    context = dict(
+        DEFAULTS,
+        hermes_agent_donna_deliver="local",
+        hermes_agent_donna_failure_deliver="local",
+    )
+    for name, job in jobs.items():
+        deliver = Environment(autoescape=False).from_string(job["deliver"]).render(**context)
+        failure_deliver = Environment(autoescape=False).from_string(
+            job["failure_deliver"]
+        ).render(**context)
+        assert deliver == "local", name
+        assert failure_deliver == "local", name
+        assert job.get("model") is None, name
+        assert job.get("hermes_home") is None, name
+
+    core_vars_path = REPO_ROOT / "inventory" / "group_vars" / "all" / "00-core.yml"
+    core_vars = core_vars_path.read_text()
+    assert "hermes_agent_cron_model: medium" in core_vars
+
+    schedules = _render_schedule(jobs)
+    assert schedules == {
+        "assistant-pulse": "39 * * * *",
+        "assistant-task-triage": "27 * * * *",
+        "private-assistant-inbox-groom": "11 10 * * *",
+        "private-assistant-evening-wrap": "11 23 * * *",
+    }
+    for schedule in schedules.values():
+        minute = int(schedule.split()[0])
+        assert minute % 2 == 1
+        assert minute not in {0, 15, 30, 45}
+
+
+def _render_schedule(jobs: dict[str, dict]) -> dict[str, str]:
+    return {
+        name: Environment(autoescape=False)
+        .from_string(job["schedule"])
+        .render(**DEFAULTS)
+        for name, job in jobs.items()
+    }
+
+
+def test_private_local_jobs_reconcile_without_slack_configuration() -> None:
+    runs = Environment(autoescape=False).from_string(
+        DEFAULTS["hermes_agent_direct_cron_reconcile_runs"]
+    )
+    no_slack = {
+        "hermes_agent_digest_slack_channel": "",
+        "hermes_agent_slack_bot_token": "",
+        "hermes_agent_slack_app_token": "",
+        "hermes_agent_slack_home_channel": "",
+    }
+
+    for identity, expected in (
+        ("hermes-private", "True"),
+        ("pepper", "True"),
+        ("hermes", "False"),
+    ):
+        context = dict(DEFAULTS, hermes_agent_id=identity, **no_slack)
+        assert runs.render(**context).strip() == expected
+
+
 def test_splunk_owner_takes_only_splunk_jobs() -> None:
     jobs = _jobs()
     tagged = {_job_name(job) for job in jobs if job.get("system") == "splunk"}
