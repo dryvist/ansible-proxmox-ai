@@ -7,6 +7,7 @@ environment. The guard against a role-exempting option is
 test_guardrail_declared.py::test_forbidden_options_appear_nowhere_in_the_role.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -35,4 +36,6 @@ def test_system_prompt_style_injection_text_matches():
 
 
 def test_tool_result_style_injection_text_matches():
-    assert matches(INJECTION)
+    tool_message = json.dumps({"role": "tool", "content": INJECTION})
+
+    assert matches(tool_message)
