@@ -92,6 +92,24 @@ _llm_router_registry_enabled_source: >-
   {{ ns.out }}
 llm_router_registry_enabled: "{{ _llm_router_m_registry_enabled }}"
 
+# One shared denylist for benchmark-only identities and every name that could
+# route to them. Admin model-list rendering still uses the full registry.
+llm_router_benchmark_only_model_names: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for entry in llm_router_registry_enabled
+        if entry.benchmark_only | default(false) | bool -%}
+  {%- set ns.names = ns.names + [entry.client_model_id] -%}
+  {%- if entry.route_group is defined -%}
+  {%- set ns.names = ns.names + [entry.route_group] -%}
+  {%- endif -%}
+  {%- if entry.fallback_group is defined -%}
+  {%- set ns.names = ns.names + [entry.fallback_group] -%}
+  {%- endif -%}
+  {%- set ns.names = ns.names + (entry.stable_aliases | default([]))
+        + (entry.direct_route_aliases | default([])) -%}
+  {%- endfor -%}
+  {{ ns.names | unique | list }}
+
 # --- Model groups (tier views over the registry) ------------------------------
 # Each view is the enabled registry entries for one tier, in registry order.
 # The templates iterate these; the entries themselves are registry dicts

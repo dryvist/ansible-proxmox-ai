@@ -4,7 +4,9 @@
 # local-only callers keep their explicit empty chains.
 llm_router_hermes_virtual_models: >-
   {{ llm_router_registry_enabled
-     | selectattr('tier', 'equalto', 'hermes-router') | list }}
+     | selectattr('tier', 'equalto', 'hermes-router')
+     | rejectattr('client_model_id', 'in', llm_router_benchmark_only_model_names)
+     | list }}
 llm_router_hermes_cloud_models: >-
   {{ llm_router_registry_enabled
      | selectattr('tier', 'equalto', 'hermes-cloud') | list }}
@@ -71,8 +73,9 @@ llm_router_local_fallback_groups: >-
 llm_router_hermes_cloud_only_fallback_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in _llm_router_m_hermes_cloud_models_credentialed | rejectattr('hermes_chain', 'defined') -%}
-  {%- if not (m.benchmark_only | default(false) | bool) -%}
   {%- set group = m.fallback_group | default(m.route_group | default(m.client_model_id)) -%}
+  {%- if m.client_model_id not in llm_router_benchmark_only_model_names
+        and group not in llm_router_benchmark_only_model_names -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
   {%- endif -%}
@@ -196,7 +199,9 @@ llm_router_hermes_default_fallback_chain: >-
 llm_router_hermes_cloud_budgeted_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in _llm_router_m_hermes_cloud_models_credentialed
-       if m.monthly_budget is defined or m.max_budget is defined -%}
+       if m.client_model_id not in llm_router_benchmark_only_model_names
+          and (m.route_group | default(m.client_model_id)) not in llm_router_benchmark_only_model_names
+          and (m.monthly_budget is defined or m.max_budget is defined) -%}
   {%- set group = m.fallback_group | default(m.route_group) -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}

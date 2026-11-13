@@ -78,14 +78,19 @@
           - _escape_entry_points | difference(_cwf_keys) | length == 0
           - llm_router_cross_modality_fail_fast_names | intersect(_cwf_keys) | length == 0
           - llm_router_context_window_no_wider_entry_points | intersect(_cwf_keys) | length == 0
-          # Entry-point chains target the primary's ladder. The primary is a
-          # valid rung for other names, while each entry point must exclude
+          # Entry-point chains may target the shared D1 ladder, declared
+          # external terminal rungs, or the private CI Luna rung. Every target
+          # must also have a rendered deployment. Each entry point excludes
           # its own name and resolved alias target to prevent a self-cycle.
           - _entry_point_targets | length > 0
           - _entry_point_reentries | length == 0
           - >-
             _entry_point_targets
-            | difference(llm_router_hermes_default_fallback_chain)
+            | difference(_allowed_entry_point_targets)
+            | length == 0
+          - >-
+            _entry_point_targets
+            | difference(_rendered_model_targets)
             | length == 0
         fail_msg: >-
           Every entry point must have a fallback entry, and every chat entry
@@ -96,7 +101,10 @@
           {{ _escape_entry_points | difference(_cwf_keys) }}.
           Unexpected cross-modality escapes:
           {{ llm_router_cross_modality_fail_fast_names | intersect(_cwf_keys) }}.
-          Entry-point targets: {{ _entry_point_targets }}.
+          Unapproved entry-point targets:
+          {{ _entry_point_targets | difference(_allowed_entry_point_targets) }}.
+          Unrendered entry-point targets:
+          {{ _entry_point_targets | difference(_rendered_model_targets) }}.
         success_msg: >-
           All {{ _entry_points | length }} typeable names have their
           modality-appropriate fallback and context-window entries.
@@ -122,6 +130,12 @@
              | map('dict2items') | flatten
              | selectattr('key', 'in', _entry_points)
              | map(attribute='value') | flatten | unique | list }}
+        _allowed_entry_point_targets: >-
+          {{ (llm_router_hermes_default_fallback_chain
+              + llm_router_external_terminal_rungs
+              + llm_router_ci_luna_groups) | unique | list }}
+        _rendered_model_targets: >-
+          {{ _config.model_list | map(attribute='model_name') | unique | list }}
         _entry_point_reentries: >-
           {%- set ns = namespace(names=[]) -%}
           {%- for pair in (_config.router_settings.fallbacks
