@@ -204,6 +204,38 @@
             | list | length > 0
         fail_msg: "Small-lane labels: {{ _small_lane | map(attribute='model_info.accelerator') | unique | list }}"
 
+    # Reuse the vLLM host after the primary assertion so this play exercises
+    # both branches of the role's llm_gpu_legacy_group host mapping.
+    - name: Add the vLLM serving host to the legacy GPU group
+      ansible.builtin.add_host:
+        name: llm-vllm-fixture
+        groups: llm_gpu_legacy_group
+        llm_gpu_accelerator: "{{ llm_gpu_accelerator_secondary }}"
+
+    - name: Render the router configuration with the legacy vLLM host
+      ansible.builtin.set_fact:
+        _legacy_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: The rendered vLLM entry labels the secondary machine that serves the lane
+      vars:
+        _legacy_small_lane: >-
+          {{ _legacy_config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url) | list }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'llm-vllm-fixture' in groups['llm_vllm_group']"
+          - "'llm-vllm-fixture' in groups['llm_gpu_legacy_group']"
+          - _legacy_small_lane | length > 0
+          - >-
+            _legacy_small_lane | map(attribute='model_info.accelerator') | unique | list
+            == [llm_gpu_accelerator_secondary]
+          - llm_router_llm_vllm_accelerator == llm_gpu_accelerator_secondary
+        fail_msg: >-
+          Legacy small-lane labels:
+          {{ _legacy_small_lane | map(attribute='model_info.accelerator') | unique | list }}
+
     - name: The legacy card keeps its lane label on the fast rung and the profiles it serves
       vars:
         _fast_rung: >-
