@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[2]
     (['agent'], [], True), (['ai'], [], True),
     (['hermes_profiles_env'], [], True), (['hermes_patches'], [], True),
     (['hermes_crons'], [], True), (['hermes_runtime_install'], [], True),
-    (['hermes_units_gateways'], [], True), (['hermes_content_scripts'], [], True),
+    (['hermes_units_gateways'], [], True), (['hermes_agent_logging'], [], True),
+    (['hermes_content_scripts'], [], True),
     (['hermes_delivery_probe'], [], True), (['tagged'], [], True),
     (['squid'], [], False), (['squid'], ['squid'], False), (['squid'], ['hermes_agent'], False),
     (['untagged'], [], False), (['always'], [], False),
@@ -29,7 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
     (['all'], ['all'], False), (['all'], ['tagged'], False),
     (['all'], ['hermes_crons'], True),
     (['all'], ['hermes_runtime_install', 'hermes_content_scripts', 'hermes_profiles_env',
-               'hermes_patches', 'hermes_crons', 'hermes_units_gateways', 'hermes_delivery_probe'], False),
+               'hermes_patches', 'hermes_crons', 'hermes_units_gateways',
+               'hermes_agent_logging', 'hermes_delivery_probe'], False),
 ])
 def test_pepper_secret_domain_is_selected_only_for_its_runtime(identities, run_tags, skip_tags, selected):
     directory = ROOT / 'inventory/group_vars/all/openbao_secrets'

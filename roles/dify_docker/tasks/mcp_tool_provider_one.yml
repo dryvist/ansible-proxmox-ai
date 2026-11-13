@@ -1,0 +1,201 @@
+---
+# Reconcile one statically authenticated MCP provider using Dify's workspace
+# MCP API. This follows tool_provider_one.yml's read/compare/write/check-mode
+# contract while storing the bearer header in Dify's encrypted MCP provider.
+
+- name: Read the declared MCP provider bearer token from the OpenBao view
+  ansible.builtin.set_fact:
+    dify_docker_mcp_provider_headers: >-
+      {{ {dify_docker_agent_mcp_provider.header_name:
+          dify_docker_agent_mcp_provider.header_prefix
+          ~ (bao_local_llm_secrets[dify_docker_agent_mcp_provider.openbao_field] | trim)} }}
+  no_log: true
+
+- name: Build the declared Dify MCP provider request
+  ansible.builtin.set_fact:
+    dify_docker_mcp_provider_request:
+      name: "{{ dify_docker_agent_mcp_provider.name }}"
+      server_identifier: "{{ dify_docker_agent_mcp_provider.server_identifier }}"
+      server_url: "{{ dify_docker_agent_mcp_provider.server_url }}"
+      icon: "{{ dify_docker_agent_mcp_provider.icon }}"
+      icon_type: "{{ dify_docker_agent_mcp_provider.icon_type }}"
+      icon_background: "{{ dify_docker_agent_mcp_provider.icon_background }}"
+      headers: "{{ dify_docker_mcp_provider_headers }}"
+      configuration:
+        timeout: "{{ dify_docker_agent_mcp_provider.timeout }}"
+        sse_read_timeout: "{{ dify_docker_agent_mcp_provider.sse_read_timeout }}"
+      identity_mode: "off"
+  no_log: true
+
+- name: Read current Dify workspace MCP providers
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/workspaces/current/tool-providers?type=mcp"
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    follow_redirects: none
+    use_proxy: false
+    status_code: 200
+    return_content: true
+  register: dify_docker_mcp_workspace_providers
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+- name: Find the named Dify MCP provider
+  ansible.builtin.set_fact:
+    dify_docker_mcp_matching_providers: >-
+      {{ dify_docker_mcp_workspace_providers.json
+         | selectattr('name', 'equalto', dify_docker_agent_mcp_provider.name)
+         | list }}
+  no_log: true
+
+- name: Assert the declared Dify MCP provider name is unique
+  ansible.builtin.assert:
+    that:
+      - dify_docker_mcp_matching_providers | length <= 1
+    fail_msg: >-
+      Dify has duplicate MCP providers named {{ dify_docker_agent_mcp_provider.name }};
+      refusing to choose one for reconciliation.
+
+- name: Read the named Dify MCP provider details
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_console_api_base }}/workspaces/current/tool-provider/mcp/tools/{{
+      dify_docker_mcp_provider_id }}
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    follow_redirects: none
+    use_proxy: false
+    status_code: 200
+    return_content: true
+  register: dify_docker_mcp_provider_details
+  check_mode: false
+  changed_when: false
+  no_log: true
+  when: dify_docker_mcp_matching_providers | length == 1
+  vars:
+    dify_docker_mcp_provider_id: "{{ dify_docker_mcp_matching_providers[0].id }}"
+
+- name: Decide whether the declared Dify MCP provider needs reconciliation
+  ansible.builtin.set_fact:
+    dify_docker_mcp_provider_needs_reconcile: >-
+      {{ dify_docker_mcp_matching_providers | length == 0
+         or dify_docker_mcp_provider_details.json.server_url
+            != dify_docker_agent_mcp_provider.server_url
+         or dify_docker_mcp_provider_details.json.server_identifier
+            != dify_docker_agent_mcp_provider.server_identifier
+         or dify_docker_mcp_provider_details.json.original_headers | default({})
+            != dify_docker_mcp_provider_headers
+         or dify_docker_mcp_provider_details.json.configuration.timeout | string
+            != dify_docker_agent_mcp_provider.timeout | string
+         or dify_docker_mcp_provider_details.json.configuration.sse_read_timeout | string
+            != dify_docker_agent_mcp_provider.sse_read_timeout | string }}
+  no_log: true
+
+- name: Report the declared Dify MCP provider change in check mode
+  ansible.builtin.debug:
+    msg: >-
+      {% if dify_docker_mcp_matching_providers | length == 0 %}
+      Dify would register MCP provider {{ dify_docker_agent_mcp_provider.name }}.
+      {% elif dify_docker_mcp_provider_needs_reconcile | bool %}
+      Dify would update MCP provider {{ dify_docker_agent_mcp_provider.name }}.
+      {% else %}
+      Dify MCP provider {{ dify_docker_agent_mcp_provider.name }} already matches its declaration.
+      {% endif %}
+  changed_when: dify_docker_mcp_provider_needs_reconcile | bool
+  when: ansible_check_mode
+
+- name: Register the declared Dify MCP provider
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/workspaces/current/tool-provider/mcp"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    follow_redirects: none
+    use_proxy: false
+    body_format: json
+    body: "{{ dify_docker_mcp_provider_request }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_mcp_provider_create
+  when:
+    - not ansible_check_mode
+    - dify_docker_mcp_matching_providers | length == 0
+  changed_when: true
+  no_log: true
+
+- name: Update the declared Dify MCP provider
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/workspaces/current/tool-provider/mcp"
+    method: PUT
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    follow_redirects: none
+    use_proxy: false
+    body_format: json
+    body: >-
+      {{ dify_docker_mcp_provider_request
+         | combine({'provider_id': dify_docker_mcp_matching_providers[0].id}) }}
+    status_code: 200
+    return_content: true
+  register: dify_docker_mcp_provider_update
+  when:
+    - not ansible_check_mode
+    - dify_docker_mcp_matching_providers | length == 1
+    - dify_docker_mcp_provider_needs_reconcile | bool
+  changed_when: true
+  no_log: true
+
+- name: Keep the Dify MCP provider id for tool refresh
+  ansible.builtin.set_fact:
+    dify_docker_mcp_provider_resolved_id: >-
+      {{ dify_docker_mcp_provider_create.json.id
+         if dify_docker_mcp_provider_create is not skipped else
+         dify_docker_mcp_matching_providers[0].id }}
+  when:
+    - not ansible_check_mode
+    - dify_docker_mcp_matching_providers | length == 0
+      or dify_docker_mcp_provider_needs_reconcile | bool
+  no_log: true
+
+- name: Refresh tools for the changed Dify MCP provider
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_console_api_base }}/workspaces/current/tool-provider/mcp/update/{{
+      dify_docker_mcp_provider_resolved_id }}
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    follow_redirects: none
+    use_proxy: false
+    status_code: 200
+    return_content: true
+  register: dify_docker_mcp_provider_refresh
+  when:
+    - not ansible_check_mode
+    - dify_docker_mcp_matching_providers | length == 0
+      or dify_docker_mcp_provider_needs_reconcile | bool
+  changed_when: true
+  no_log: true
+
+- name: Assert the declared Dify MCP provider exposes its required tool
+  ansible.builtin.assert:
+    that:
+      - >-
+        (dify_docker_mcp_provider_refresh.json.tools
+         if dify_docker_mcp_provider_refresh is not skipped else
+         dify_docker_mcp_provider_details.json.tools | default([]))
+        | selectattr('name', 'equalto', dify_docker_agent_mcp_provider.tool_name)
+        | list | length == 1
+    fail_msg: >-
+      Dify MCP provider {{ dify_docker_agent_mcp_provider.name }} does not expose
+      {{ dify_docker_agent_mcp_provider.tool_name }}.
+  when: not ansible_check_mode
+  no_log: true
