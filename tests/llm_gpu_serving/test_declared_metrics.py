@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 
 import jinja2
 import jinja2.nativetypes
+import pytest
 import yaml
 
 from _group_vars import group_var
@@ -59,6 +64,64 @@ def _text(template: str, context: dict) -> str:
 
 def _task(path: Path, name: str) -> dict:
     return next(task for task in _load(path) if task.get("name") == name)
+
+
+def _run_publish_task(tmp_path: Path, collector_dir: Path) -> subprocess.CompletedProcess[str]:
+    ansible_playbook = shutil.which("ansible-playbook")
+    if ansible_playbook is None:
+        sibling = Path(sys.executable).with_name("ansible-playbook")
+        ansible_playbook = str(sibling) if sibling.is_file() else None
+    if ansible_playbook is None:
+        pytest.skip("ansible-playbook is not available")
+
+    playbook = tmp_path / "publish.yml"
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "hosts": "localhost",
+                    "gather_facts": False,
+                    "tasks": [
+                        {"ansible.builtin.import_tasks": str(SHARED_ROOT / "tasks/publish.yml")}
+                    ],
+                    "vars": {
+                        TEXTFILE_DIR_KEY: str(collector_dir),
+                        "llm_serving_declared_metrics_metric_file": METRIC_FILE,
+                        "llm_serving_declared_metrics_profile": "example",
+                        "llm_serving_declared_metrics_profiles": {
+                            "example": {
+                                "engine": "example",
+                                "max_num_seqs": 3,
+                                "max_model_len": 4096,
+                            }
+                        },
+                        "llm_serving_declared_metrics_engine": "example",
+                        "llm_gpu_accelerator": "example",
+                    },
+                }
+            ],
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    temp_dir = tmp_path / "tmp"
+    temp_dir.mkdir()
+    local_tmp = tmp_path / "ansible-local"
+    local_tmp.mkdir()
+    env = {
+        **os.environ,
+        "ANSIBLE_LOCAL_TEMP": str(local_tmp),
+        "ANSIBLE_NOCOLOR": "1",
+        "TMPDIR": str(temp_dir),
+    }
+    return subprocess.run(
+        [ansible_playbook, "-i", "localhost,", "-c", "local", str(playbook)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
 
 
 def _module_task(path: Path, module: str) -> dict:
@@ -342,14 +405,58 @@ def test_declared_metrics_match_rendered_start_flag_values():
     )
 
 
-def test_publish_skips_without_the_collector_and_never_fails():
+def test_publish_writes_metrics_when_the_collector_directory_exists(tmp_path: Path):
+    collector_dir = tmp_path / "textfile_collector"
+    collector_dir.mkdir()
+
+    result = _run_publish_task(tmp_path, collector_dir)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    content = (collector_dir / METRIC_FILE).read_text(encoding="utf-8")
+    assert 'llm_serving_declared_slots{accelerator="example",profile="example",engine="example"} 3' in content
+
+
+def test_publish_creates_a_missing_collector_directory_and_writes_metrics(tmp_path: Path):
+    collector_dir = tmp_path / "textfile_collector"
+
+    result = _run_publish_task(tmp_path, collector_dir)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    content = (collector_dir / METRIC_FILE).read_text(encoding="utf-8")
+    assert 'llm_serving_declared_slots{accelerator="example",profile="example",engine="example"} 3' in content
+
+
+def test_publish_fails_loudly_when_the_collector_directory_cannot_be_created(tmp_path: Path):
+    blocker = tmp_path / "not_a_directory"
+    blocker.write_text("example", encoding="utf-8")
+    collector_dir = blocker / "missing_textfile_collector"
+
+    result = _run_publish_task(tmp_path, collector_dir)
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert str(collector_dir) in output
+    assert TEXTFILE_DIR_KEY in output
+    assert "Cannot publish declared serving metrics" in output
+    assert "could not be created" in output
+
+
+def test_publish_creates_the_collector_directory_and_reports_creation_failure():
     shared = _load(SHARED_ROOT / "tasks/publish.yml")
-    stat = next(task for task in shared if "ansible.builtin.stat" in task)
+    ensure = next(
+        task
+        for task in shared
+        if task.get("name") == "Ensure the node_exporter textfile collector directory exists"
+    )
+    create = next(task for task in ensure["block"] if "ansible.builtin.file" in task)
+    failure = next(task for task in ensure["rescue"] if "ansible.builtin.fail" in task)
     copy = next(task for task in shared if "ansible.builtin.copy" in task)
-    assert stat["ansible.builtin.stat"]["path"] == "{{ llm_serving_declared_metrics_textfile_collector_dir }}"
-    # The directory check is the only gate: without node_exporter the write
-    # skips and nothing in this task file can fail the converge.
-    assert copy["when"] == "_llm_serving_declared_metrics_collector.stat.exists"
+    assert create["ansible.builtin.file"]["path"] == "{{ llm_serving_declared_metrics_textfile_collector_dir }}"
+    assert create["ansible.builtin.file"]["state"] == "directory"
+    assert TEXTFILE_DIR_KEY in failure["ansible.builtin.fail"]["msg"]
+    assert "{{ llm_serving_declared_metrics_textfile_collector_dir }}" in failure["ansible.builtin.fail"]["msg"]
+    assert "could not be created" in failure["ansible.builtin.fail"]["msg"]
+    assert "when" not in copy
     assert copy["ansible.builtin.copy"]["mode"] == "0644"
     assert copy["ansible.builtin.copy"]["dest"] == (
         "{{ llm_serving_declared_metrics_textfile_collector_dir }}/{{ llm_serving_declared_metrics_metric_file }}"

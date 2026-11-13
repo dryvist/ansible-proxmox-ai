@@ -7,16 +7,26 @@
 # uses those fields for --max-model-len and --max-num-seqs.
 # The accelerator label is this guest's llm_gpu_accelerator, the variable the
 # router's llm_router_gpu_profile_accelerators reads for this guest.
-- name: Check for the node_exporter textfile collector directory
-  ansible.builtin.stat:
-    path: "{{ llm_serving_declared_metrics_textfile_collector_dir }}"
-  register: _llm_serving_declared_metrics_collector
+- name: Ensure the node_exporter textfile collector directory exists
+  block:
+    - name: Create the configured node_exporter textfile collector directory
+      ansible.builtin.file:
+        path: "{{ llm_serving_declared_metrics_textfile_collector_dir }}"
+        state: directory
+        mode: "0755"
+  rescue:
+    - name: Fail when the node_exporter textfile collector directory cannot be created
+      ansible.builtin.fail:
+        msg: >-
+          Cannot publish declared serving metrics because the node_exporter textfile collector
+          directory '{{ llm_serving_declared_metrics_textfile_collector_dir }}' is missing and
+          could not be created. Ensure llm_serving_declared_metrics_textfile_collector_dir names
+          the configured collector directory and that it can be created.
 
 - name: Write the declared serving slots and context per slot
-  # No node_exporter on this guest: skip, never fail the converge. copy writes the
-  # content to a temporary file and renames it over the destination, so a scrape
-  # never reads a half-written metric file. Only a rename that crosses a filesystem
-  # falls back to copying into a temporary file beside the destination.
+  # copy writes the content to a temporary file and renames it over the destination,
+  # so a scrape never reads a half-written metric file. Only a rename that crosses a
+  # filesystem falls back to copying into a temporary file beside the destination.
   ansible.builtin.copy:
     dest: "{{ llm_serving_declared_metrics_textfile_collector_dir }}/{{ llm_serving_declared_metrics_metric_file }}"
     content: |
@@ -32,4 +42,3 @@
       llm_serving_declared_context_tokens_per_slot{{ labels }} {{ context_tokens }}
       {% endfor %}
     mode: "0644"
-  when: _llm_serving_declared_metrics_collector.stat.exists
