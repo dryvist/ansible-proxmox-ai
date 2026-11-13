@@ -141,6 +141,54 @@ def test_one_variable_defaults_change_selects_only_referencing_playbooks(
     assert len(selection["llm_router_playbooks"]) < len(GENERATED_MATRIX)
 
 
+def test_router_default_referenced_in_role_tasks_selects_everything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = "roles/llm_router/defaults/main/59-key-scopes.yml"
+    key = "_llm_router_private_zdr_model_scope"
+    versions = {"base": f"{key}: old\n", "head": f"{key}: new\n"}
+    monkeypatch.setattr(router_shards_module, "git_file_at_ref", lambda ref, _: versions[ref])
+
+    selection = SELECTOR_MODULE["select"]([defaults], "base", "head")
+    full = json.loads(run_selector("--full").stdout)
+
+    assert selection == full
+
+
+def test_router_default_with_no_proven_references_selects_everything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = "roles/llm_router/defaults/main/00-identity.yml"
+    key = "_router_default_without_any_contract_reference"
+    versions = {"base": f"{key}: old\n", "head": f"{key}: new\n"}
+    monkeypatch.setattr(router_shards_module, "git_file_at_ref", lambda ref, _: versions[ref])
+
+    selection = SELECTOR_MODULE["select"]([defaults], "base", "head")
+    full = json.loads(run_selector("--full").stdout)
+
+    assert selection == full
+
+
+def test_computed_lookup_name_in_contract_selects_everything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = "roles/llm_router/defaults/main/00-identity.yml"
+    key = "_router_dynamic_lookup_scope"
+    versions = {"base": f"{key}: old\n", "head": f"{key}: new\n"}
+    content = f"{{{{ {key} | default(lookup('vars', 'prefix' ~ suffix)) }}}}"
+    monkeypatch.setattr(router_shards_module, "git_file_at_ref", lambda ref, _: versions[ref])
+    monkeypatch.setattr(
+        router_shards_module,
+        "_contract_sources",
+        lambda playbook, changed: ([(playbook, content)], False),
+    )
+
+    selection = SELECTOR_MODULE["select"]([defaults], "base", "head")
+    full = json.loads(run_selector("--full").stdout)
+
+    assert selection == full
+
+
 def test_unparseable_router_defaults_selects_everything(monkeypatch: pytest.MonkeyPatch) -> None:
     defaults = "roles/llm_router/defaults/main/00-identity.yml"
     versions = {"base": "llm_router_user: old\n", "head": "llm_router_user: [broken\n"}

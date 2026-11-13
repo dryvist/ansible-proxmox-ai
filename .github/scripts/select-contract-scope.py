@@ -255,7 +255,7 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
                         route_full = True
                     else:
                         entries, unresolved = router_default_playbooks(path, changed_keys, matrix)
-                        if unresolved:
+                        if unresolved or not entries:
                             route_full = True
                         else:
                             router_tests.update(" ".join(entry) for entry in entries)
