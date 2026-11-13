@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 SELECTOR = Path(__file__).parents[1] / ".github/scripts/select-contract-scope.py"
 CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
@@ -16,9 +17,10 @@ router_shards_module = importlib.import_module("router_shards")
 router_shard_target = router_shards_module.router_shard_target
 router_weight = router_shards_module.router_weight
 
-# The router matrix as the selector generates it from the workflow.
+# The router matrix is generated from the checked-in contract registry.
 GENERATED_MATRIX = runpy.run_path(str(SELECTOR))["llm_router_matrix"]()
-ROUTER_SHARDS = runpy.run_path(str(SELECTOR))["router_shards"]
+SELECTOR_MODULE = runpy.run_path(str(SELECTOR))
+ROUTER_SHARDS = SELECTOR_MODULE["router_shards"]
 
 
 def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
@@ -97,6 +99,78 @@ def test_changed_router_playbook_selects_only_its_playbook() -> None:
     assert selection["llm_router_playbooks"][0]["playbooks"].split() == [
         "tests/llm_router/test_service_restart_policy.yml"
     ]
+
+
+def test_new_router_test_and_registry_entry_select_only_that_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    new_test = "tests/llm_router/test_new_registry_entry.yml"
+    config = yaml.safe_load(router_shards_module.ROUTER_CONTRACTS_FILE.read_text())
+    config["contracts"].append([new_test])
+    registry = tmp_path / "router-contracts.yml"
+    registry.write_text(yaml.safe_dump(config, sort_keys=False))
+    monkeypatch.setattr(router_shards_module, "ROUTER_CONTRACTS_FILE", registry)
+    exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda path: True if path.as_posix() == new_test else exists(path))
+
+    selection = SELECTOR_MODULE["select"]([new_test, ".github/router-contracts.yml"])
+
+    assert router_paths(selection["llm_router_playbooks"]) == [new_test]
+    assert len(selection["llm_router_playbooks"]) == 1
+    assert "tests/test_router_shard_weights.py" in selection["pytest_targets"]
+    assert "tests/repo_guards/test_router_contract_batches.py" in selection["pytest_targets"]
+
+
+def test_one_variable_defaults_change_selects_only_referencing_playbooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = "roles/llm_router/defaults/main/56a-target-keys.yml"
+    key = "_llm_router_claude_ocg_model_scope"
+    versions = {
+        "base": f"{key}: old-value\n",
+        "head": f"{key}: new-value\n",
+    }
+    monkeypatch.setattr(router_shards_module, "git_file_at_ref", lambda ref, _: versions[ref])
+
+    selection = SELECTOR_MODULE["select"]([defaults], "base", "head")
+
+    assert sorted(router_paths(selection["llm_router_playbooks"])) == [
+        "tests/llm_router/test_claude_ocg_trust_caller.yml",
+        "tests/llm_router/test_local_class_keys_no_hosted_reach.yml",
+    ]
+    assert len(selection["llm_router_playbooks"]) < len(GENERATED_MATRIX)
+
+
+def test_unparseable_router_defaults_selects_everything(monkeypatch: pytest.MonkeyPatch) -> None:
+    defaults = "roles/llm_router/defaults/main/00-identity.yml"
+    versions = {"base": "llm_router_user: old\n", "head": "llm_router_user: [broken\n"}
+    monkeypatch.setattr(router_shards_module, "git_file_at_ref", lambda ref, _: versions[ref])
+
+    selection = SELECTOR_MODULE["select"]([defaults], "base", "head")
+    full = json.loads(run_selector("--full").stdout)
+
+    assert selection["pytest_targets"] == full["pytest_targets"] == ["tests/"]
+    assert selection["ansible_tests"] == full["ansible_tests"]
+    assert selection["llm_router_playbooks"] == full["llm_router_playbooks"]
+
+
+def test_router_workflow_edit_selects_every_router_contract() -> None:
+    selection = SELECTOR_MODULE["select"]([".github/workflows/_llm-router-contract.yml"])
+    full = json.loads(run_selector("--full").stdout)
+
+    assert selection["llm_router_playbooks"] == full["llm_router_playbooks"]
+
+
+def test_six_or_fewer_router_playbooks_run_in_one_job() -> None:
+    six = [[f"tests/llm_router/test_alpha_{index}.yml"] for index in range(6)]
+    seven = [[f"tests/llm_router/test_alpha_{index}.yml"] for index in range(7)]
+
+    one_job = ROUTER_SHARDS(six, shard_target=1)
+    weighted_jobs = ROUTER_SHARDS(seven, shard_target=1)
+
+    assert len(one_job) == 1
+    assert router_paths(one_job) == sorted(path for entry in six for path in entry)
+    assert len(weighted_jobs) > 1
 
 
 @pytest.mark.parametrize("path", [
@@ -200,7 +274,10 @@ def test_llm_router_role_paths_select_the_complete_router_contract(path: str) ->
     selection = json.loads(result.stdout)
     full = json.loads(run_selector("--full").stdout)
     assert selection["llm_router_playbooks"] == full["llm_router_playbooks"]
-    assert {"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"} <= set(selection["pytest_targets"])
+    if path.startswith("roles/llm_router/defaults/main/"):
+        assert selection["pytest_targets"] == ["tests/"]
+    else:
+        assert {"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"} <= set(selection["pytest_targets"])
 
 
 def test_unmapped_yaml_contract_routes_to_full_suite(tmp_path: Path) -> None:

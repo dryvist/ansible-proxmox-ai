@@ -16,7 +16,14 @@ from typing import TypedDict
 # runpy loaders do not put the script directory on sys.path, so add it before the sibling import.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from router_shards import RouterShard, router_shard_target, router_shards
+from router_shards import (
+    RouterShard,
+    load_router_contracts,
+    router_default_changed_keys,
+    router_default_playbooks,
+    router_shard_target,
+    router_shards,
+)
 
 ANSIBLE_TESTS = {
     "tests/repo_guards/test_env_guards_actually_fire.yml",
@@ -54,6 +61,7 @@ PYTEST_PATH_TARGETS = {
     ".github/scripts/check-installer-sha.sh": "tests/llamacpp_release/test_checksum_gate.py",
     ".github/workflows/fix-installer-sha.yml": "tests/repo_guards/test_installer_sha_workflow_race.py",
     ".github/workflows/_llm-router-contract.yml": "tests/repo_guards/test_router_contract_batches.py",
+    ".github/router-contract-weights.yml": "tests/test_router_shard_weights.py",
 }
 
 
@@ -121,24 +129,7 @@ class Selection(TypedDict):
 
 
 def llm_router_matrix() -> list[list[str]]:
-    workflow = Path(".github/workflows/_llm-router-contract.yml").read_text()
-    in_matrix = False
-    entries: list[list[str]] = []
-    for line in workflow.splitlines():
-        if re.match(r"\s*shard:", line):
-            in_matrix = True
-            continue
-        if in_matrix:
-            match = re.match(r"\s*#?\s*-\s*(tests/llm_router/[^#]+)", line)
-            if match:
-                entries.append(match.group(1).split())
-            elif entries and (continuation := re.match(r"\s*#\s+(tests/llm_router/[^#]+)", line)):
-                entries[-1].extend(continuation.group(1).split())
-            elif line.strip() and not line.lstrip().startswith("#") and not line.startswith(" "):
-                break
-    if not entries:
-        raise ValueError("could not read explicit LLM Router matrix entries")
-    return entries
+    return load_router_contracts()
 
 
 def router_imports(matrix: list[list[str]]) -> dict[str, list[str]]:
@@ -166,7 +157,7 @@ def full_selection() -> Selection:
     }
 
 
-def select(paths: list[str]) -> Selection:
+def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selection:
     pytest_targets: set[str] = set()
     ansible_tests: set[str] = set()
     router_tests: set[str] = set()
@@ -176,7 +167,7 @@ def select(paths: list[str]) -> Selection:
     matrix = llm_router_matrix()
     matrix_by_test = {test: entry for entry in matrix for test in entry}
 
-    def role_scope(role: str) -> None:
+    def role_scope(role: str, include_router_contracts: bool = True) -> None:
         pytest_targets.update(ROLE_TESTS.get(role, set()))
         if role in OTEL_CONSUMER_ROLES and Path(OTEL_CONSUMER_TEST).is_file():
             pytest_targets.add(OTEL_CONSUMER_TEST)
@@ -189,7 +180,8 @@ def select(paths: list[str]) -> Selection:
             # hermes_agent tests read the router role defaults (alias and role
             # contract), so any router change selects them too.
             pytest_targets.update({"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"})
-            router_tests.update(" ".join(entry) for entry in matrix)
+            if include_router_contracts:
+                router_tests.update(" ".join(entry) for entry in matrix)
 
     for raw_path in paths:
         path = raw_path.removeprefix("./")
@@ -256,7 +248,19 @@ def select(paths: list[str]) -> Selection:
         elif path.startswith("roles/"):
             role = path.split("/")[1]
             if role in ROLE_TESTS or role == "llm_router":
-                role_scope(role)
+                if role == "llm_router" and path.startswith("roles/llm_router/defaults/main/"):
+                    role_scope(role, include_router_contracts=False)
+                    changed_keys = router_default_changed_keys(path, base_ref, head_ref)
+                    if changed_keys is None:
+                        route_full = True
+                    else:
+                        entries, unresolved = router_default_playbooks(path, changed_keys, matrix)
+                        if unresolved:
+                            route_full = True
+                        else:
+                            router_tests.update(" ".join(entry) for entry in entries)
+                else:
+                    role_scope(role)
             else:
                 warn_unmapped(path)
                 route_full = True  # unmapped role: no contract family to narrow to
@@ -300,10 +304,18 @@ def select(paths: list[str]) -> Selection:
         elif path == ".github/workflows/_llm-router-contract.yml":
             role_scope("llm_router")
             run_selector_checks = True
+        elif path == ".github/router-contracts.yml":
+            pytest_targets.update({
+                "tests/test_contract_scope_selector.py",
+                "tests/test_router_shard_weights.py",
+                "tests/repo_guards/test_router_contract_batches.py",
+            })
         elif path.startswith((".github/workflows/", ".github/scripts/")) or path == ".github/requirements-ci.txt":
             run_selector_checks = True
             pytest_targets.update({"tests/test_contract_scope_selector.py", "tests/test_contract_scope_mapping.py",
-                                  "tests/test_ci_workflow_policy.py", "tests/test_ci_gate_dispatch.py"})
+                                  "tests/test_ci_workflow_policy.py", "tests/test_ci_gate_dispatch.py",
+                                  "tests/test_router_shard_weights.py",
+                                  "tests/repo_guards/test_router_contract_batches.py"})
         elif (path.lower().endswith((".md", ".mdx", ".txt")) or path.startswith("docs/")
               or path == ".release-please-manifest.json"):
             continue
@@ -331,6 +343,8 @@ def main() -> int:
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--skip-router", action="store_true",
                         help="omit router shards from a full selection for docs-only promotions")
+    parser.add_argument("--base-ref", default="", help="base commit for changed defaults comparison")
+    parser.add_argument("--head-ref", default="", help="head commit for changed defaults comparison")
     args = parser.parse_args()
     if args.full:
         result = full_selection()
@@ -338,7 +352,7 @@ def main() -> int:
         paths = args.paths
         if args.paths_file:
             paths = Path(args.paths_file).read_text().splitlines()
-        result = select(paths)
+        result = select(paths, args.base_ref, args.head_ref)
     if args.skip_router:
         result["llm_router_playbooks"] = []
     encoded = json.dumps(result, sort_keys=True)
