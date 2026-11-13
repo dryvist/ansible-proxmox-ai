@@ -74,23 +74,32 @@
             paid:
               groups: "{{ llm_router_hermes_cloud_paid_groups }}"
               members: >-
-                {{ llm_router_hermes_cloud_models_credentialed
-                   | selectattr('price_class', 'equalto', 'paid')
-                   | rejectattr('hermes_chain', 'defined')
-                   | rejectattr('review_private_only', 'defined')
+                {%- set _members = llm_router_hermes_cloud_models_credentialed
+                     | selectattr('price_class', 'equalto', 'paid')
+                     | rejectattr('hermes_chain', 'defined')
+                     | rejectattr('review_private_only', 'defined') | list -%}
+                {{ ((_members | rejectattr('benchmark_only', 'defined') | list)
+                    + (_members | selectattr('benchmark_only', 'defined')
+                       | rejectattr('benchmark_only', 'equalto', true) | list))
                    | map(attribute='client_model_id') | list }}
             free:
               groups: "{{ llm_router_hermes_cloud_free_groups }}"
               members: >-
-                {{ llm_router_hermes_cloud_models_credentialed
-                   | selectattr('price_class', 'equalto', 'free')
+                {%- set _members = llm_router_hermes_cloud_models_credentialed
+                     | selectattr('price_class', 'equalto', 'free') | list -%}
+                {{ ((_members | rejectattr('benchmark_only', 'defined') | list)
+                    + (_members | selectattr('benchmark_only', 'defined')
+                       | rejectattr('benchmark_only', 'equalto', true) | list))
                    | map(attribute='client_model_id') | list }}
             subscription:
               groups: "{{ llm_router_hermes_cloud_subscription_groups }}"
               members: >-
-                {{ llm_router_hermes_cloud_models_credentialed
-                   | selectattr('price_class', 'equalto', 'subscription')
-                   | rejectattr('review_private_only', 'defined')
+                {%- set _members = llm_router_hermes_cloud_models_credentialed
+                     | selectattr('price_class', 'equalto', 'subscription')
+                     | rejectattr('review_private_only', 'defined') | list -%}
+                {{ ((_members | rejectattr('benchmark_only', 'defined') | list)
+                    + (_members | selectattr('benchmark_only', 'defined')
+                       | rejectattr('benchmark_only', 'equalto', true) | list))
                    | map(attribute='client_model_id') | list }}
           d1:
             rungs_by_class: "{{ llm_router_d1_rungs_by_class }}"
@@ -118,6 +127,10 @@
 
     - name: Materialize router inputs for the logged-out cloud fixture
       ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assertion-inputs.yml
+
+    - name: Render the config for the logged-out cloud fixture
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
     - name: Load the sanitized primary capability row from the live-router fixture
       ansible.builtin.set_fact:

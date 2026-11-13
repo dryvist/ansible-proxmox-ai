@@ -8,10 +8,13 @@ from jinja2 import Environment
 
 from _cron_pool_ceiling_shared import (
     cron_min_gap_minutes,
+    min_job_interval_seconds,
     resolved_defaults,
     router_request_timeout_seconds,
+    run_budget_seconds,
+    wall_timeout_seconds,
 )
-from _role_files import role_tasks
+from _role_files import role_tasks, template_text
 
 
 ROLE_ROOT = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
@@ -37,6 +40,26 @@ def test_only_the_two_slow_daily_jobs_have_a_longer_limit() -> None:
                 job["wall_clock_seconds"]
                 < cron_min_gap_minutes(job["schedule"]) * 60
             )
+
+
+def test_agent_run_budget_admits_the_longest_job_limit() -> None:
+    defaults = resolved_defaults()
+    ceiling = wall_timeout_seconds(defaults)
+    overrides = [
+        job["wall_clock_seconds"]
+        for job in defaults["hermes_agent_direct_cron_jobs"]
+        if "wall_clock_seconds" in job
+    ]
+    budget = run_budget_seconds(defaults)
+
+    assert overrides and budget == max(overrides) > ceiling
+    assert budget < router_request_timeout_seconds()
+    assert budget < min_job_interval_seconds(defaults)
+    for template in ("config.yaml.j2", "config-profile.yaml.j2"):
+        assert (
+            "run_budget_seconds: {{ hermes_agent_run_budget_seconds }}"
+            in template_text(ROLE_ROOT, template)
+        )
 
 
 def test_per_job_validation_rejects_a_limit_at_the_router_ceiling() -> None:

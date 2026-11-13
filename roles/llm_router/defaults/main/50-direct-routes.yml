@@ -1,0 +1,115 @@
+---
+# Direct route and alias projections split from 50-servable.yml to keep both
+# defaults files within the per-file token budget. The directory is loaded as
+# a whole; these expressions resolve against the same registry and probe facts.
+
+# Direct-only GPU routes use the currently selected physical profile without
+# joining the normal GPU view. They drain with the profile switch, and also
+# require the inventory-backed endpoint.
+llm_router_direct_gpu_models: >-
+  {%- set _candidates = llm_router_model_registry
+       | selectattr('tier', 'equalto', 'gpu')
+       | selectattr('profile', 'in', llm_router_gpu_active_profiles)
+       | selectattr('direct_route_aliases', 'defined') | list -%}
+  {%- set _eligible = _candidates
+       | rejectattr('client_model_id', 'in', llm_router_benchmark_only_model_names) | list -%}
+  {{ _eligible if (llm_router_gpu_profiles_enabled | default(false) | bool
+       and groups['llm_gpu_group'] | default([]) | length > 0) else [] }}
+llm_router_direct_studio_models: >-
+  {%- set ns = namespace(models=[]) -%}
+  {%- for m in (llm_router_large_models
+       | selectattr('direct_route_aliases', 'defined') | list)
+       if m.client_model_id not in llm_router_benchmark_only_model_names -%}
+  {%- set _aliases = m.direct_route_aliases | list -%}
+  {%- if m.route_group | default('') == llm_router_primary_model -%}
+  {%- set _aliases = (_aliases + [m.client_model_id]) | unique | list -%}
+  {%- endif -%}
+  {%- set ns.models = ns.models + [m | combine({'direct_route_aliases': _aliases})] -%}
+  {%- endfor -%}
+  {{ ns.models }}
+# The Mac Studio lane's direct model: the declared primary when it carries a
+# direct route. Filtered on serving_role, not the primary capability, which moves
+# to another local model while the Studio is probed down.
+llm_router_studio_model_names: >-
+  {{ llm_router_direct_studio_models
+     | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'primary')
+     | map(attribute='client_model_id') | list }}
+llm_router_direct_route_alias_pairs: >-
+  {%- set ns = namespace(pairs=[]) -%}
+  {%- for m in llm_router_direct_gpu_models + llm_router_direct_studio_models -%}
+  {%- for alias in m.direct_route_aliases -%}
+  {%- set ns.pairs = ns.pairs + [[alias, alias]] -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.pairs }}
+llm_router_direct_route_aliases: >-
+  {{ llm_router_direct_route_alias_pairs | map('last') | unique | list }}
+
+# Stable aliases carry no deployment configuration. Direct aliases are
+# separate model-list groups projected from their registry source entries.
+_llm_router_hermes_router_ids_source: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-router')
+     | selectattr('context_window', 'defined') | rejectattr('context_window', 'none')
+     | map(attribute='client_model_id')
+     | reject('in', llm_router_benchmark_only_model_names) | list }}
+llm_router_hermes_router_ids: "{{ _llm_router_m_hermes_router_ids }}"
+llm_router_auto_router_model: ""
+
+# OpenRouter candidates for long-context requests and the retained legacy
+# fallback. Only an explicit zero_data_retention assertion qualifies; a missing
+# field is retaining.
+_llm_router_long_context_alias_ids_source: >-
+  {%- set _candidates = llm_router_registry_enabled
+        | selectattr('tier', 'equalto', 'openrouter')
+        | selectattr('context_window', 'defined')
+        | selectattr('context_window', '>=', 1000000) | list -%}
+  {{ (_candidates | selectattr('zero_data_retention', 'defined')
+      | selectattr('zero_data_retention') | list)
+     | map(attribute='client_model_id')
+     | reject('in', llm_router_benchmark_only_model_names) | list }}
+llm_router_long_context_alias_ids: "{{ _llm_router_m_long_context_alias_ids }}"
+
+# Stable aliases belong to a route group, not to the endpoint currently
+# selected to serve it. Keep enabled local declarations in the projection even
+# when their inventory-backed endpoint is absent; the target below resolves to
+# an active member of the same group, or the existing local fallback. Other
+# tiers still contribute only while the registry loader admits them. OpenCode
+# Go is directly rendered as a credential-gated standalone tier, so its
+# enabled registry entries may also own stable aliases without `servable`.
+llm_router_alias_pairs: >-
+  {%- set ns = namespace(pairs=[]) -%}
+  {%- set _local_entries = (llm_router_model_registry
+       | selectattr('tier', 'in', llm_router_local_registry_tiers)
+       | selectattr('enabled')
+       | selectattr('servable', 'defined') | selectattr('servable') | list) -%}
+  {%- set _other_entries = (llm_router_registry_enabled
+       | rejectattr('tier', 'in', llm_router_local_registry_tiers)
+       | selectattr('servable', 'defined') | selectattr('servable') | list) -%}
+  {%- set _entries = (_local_entries + _other_entries
+       + llm_router_opencode_stable_alias_entries
+       + (llm_router_registry_enabled
+          | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) | list))
+       | unique(attribute='client_model_id') | list -%}
+  {%- for _entry in _entries | selectattr('stable_aliases', 'defined')
+       if _entry.client_model_id not in llm_router_benchmark_only_model_names -%}
+  {%- for _alias in _entry.stable_aliases -%}
+  {%- set _target = _entry.route_group | default(_entry.client_model_id) -%}
+  {%- if _entry.tier in llm_router_local_registry_tiers
+        and _target not in llm_router_rendered_capability_names -%}
+  {%- set _target = llm_router_primary_large_model -%}
+  {%- endif -%}
+  {%- set ns.pairs = ns.pairs + [[_target, _alias]] -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {%- for _group in [_llm_router_declared_primary.route_group, llm_router_small_capability_name] | unique -%}
+  {%- if _group not in llm_router_rendered_capability_names -%}
+  {%- set ns.pairs = ns.pairs
+        + [[llm_router_primary_large_model, _group]] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.pairs + llm_router_direct_route_alias_pairs }}
+_llm_router_model_group_aliases_source: >-
+  {{ dict(llm_router_alias_pairs | map(attribute=1)
+          | zip(llm_router_alias_pairs | map(attribute=0))) }}
+llm_router_model_group_aliases: "{{ _llm_router_m_model_group_aliases }}"
