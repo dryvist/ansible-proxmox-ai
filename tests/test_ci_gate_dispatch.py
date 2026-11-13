@@ -77,6 +77,8 @@ def test_actual_scope_step_dispatches_full_or_focused(
 ) -> None:
     step = next(step for step in yaml.safe_load(CI_GATE.read_text())["jobs"]["contract-scope"]["steps"]
                 if step.get("id") == "select")
+    assert '--base-ref "$BASE_SHA"' in step["run"]
+    assert '--head-ref "$HEAD_SHA"' in step["run"]
     mock_bin = tmp_path / "bin"
     mock_bin.mkdir()
     git = mock_bin / "git"
