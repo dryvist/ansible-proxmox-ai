@@ -113,3 +113,13 @@ def wall_timeout_seconds(defaults: dict | None = None) -> int:
         "ai_router_request_timeout_seconds": router_request_timeout_seconds(),
     }
     return int(_render(defaults["hermes_agent_cron_wall_timeout_seconds"], context))
+
+
+def run_budget_seconds(defaults: dict | None = None) -> int:
+    """Render hermes_agent_run_budget_seconds on top of the real ceiling."""
+    defaults = defaults if defaults is not None else resolved_defaults()
+    context = {
+        **defaults,
+        "hermes_agent_cron_wall_timeout_seconds": wall_timeout_seconds(defaults),
+    }
+    return int(_render(defaults["hermes_agent_run_budget_seconds"], context))
