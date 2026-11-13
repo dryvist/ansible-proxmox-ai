@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Select focused contract tests from an explicit changed-path mapping.
-
-A path the mapping does not cover selects the full suite instead of failing.
-"""
+"""Select focused contract tests from changed paths."""
 
 from __future__ import annotations
 
@@ -10,13 +7,31 @@ import argparse
 import json
 import re
 import sys
+from os import environ
 from pathlib import Path
 from typing import TypedDict
 
-# runpy loaders do not put the script directory on sys.path, so add it before the sibling import.
+# runpy needs sibling imports.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from router_shards import RouterShard, router_shard_target, router_shards
+if __name__ == "__main__" and sys.argv[1:] == ["--report"]:
+    event, ref, base, result = (environ.get(key, "") for key in (
+        "EVENT_NAME", "GITHUB_REF", "BASE_REF", "SELECT_RESULT"))
+    full = (event == "push" and ref in {"refs/heads/main", "refs/heads/develop"}
+            or event == "pull_request" and base == "main")
+    scope = "full" if full else "failed-unmapped" if result != "success" else "focused"
+    with Path(environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+        summary.write(f"Data Contract selection: {scope}\n")
+    raise SystemExit(0)
+
+from router_shards import (
+    RouterShard,
+    load_router_contracts,
+    router_default_changed_keys,
+    router_default_playbooks,
+    router_shard_target,
+    router_shards,
+)
 
 ANSIBLE_TESTS = {
     "tests/repo_guards/test_env_guards_actually_fire.yml",
@@ -42,8 +57,7 @@ ANSIBLE_TESTS = {
 }
 
 
-# Test files this change deletes. Nothing runs for them, and the registry edit
-# that retires each one is part of the same diff.
+# Removed tests have no contract; their registry cleanup is in the same diff.
 RETIRED_TESTS = {"tests/langfuse_docker/test_code_eval_dispatcher.yml"}
 
 PYTEST_PATH_TARGETS = {
@@ -54,19 +68,18 @@ PYTEST_PATH_TARGETS = {
     ".github/scripts/check-installer-sha.sh": "tests/llamacpp_release/test_checksum_gate.py",
     ".github/workflows/fix-installer-sha.yml": "tests/repo_guards/test_installer_sha_workflow_race.py",
     ".github/workflows/_llm-router-contract.yml": "tests/repo_guards/test_router_contract_batches.py",
+    ".github/router-contract-weights.yml": "tests/test_router_shard_weights.py",
 }
 
 
-# Consumers of ai_orchestration_otel_endpoint; the OTEL test renders each one.
-# The file is selected only when the checkout contains it.
+# Select the OTEL test only when the checkout contains it.
 OTEL_CONSUMER_TEST = "tests/hermes_agent/test_otel_endpoint_consumers.py"
 OTEL_CONSUMER_ROLES = {
     "llm_router", "agent_exec", "dify_docker", "langgraph_docker", "hindsight_docker",
     "hermes_agent", "open_webui", "agentgateway_docker",
 }
 
-# Role closures use the existing contract directories and playbooks. Shared GPU
-# roles consume the same profiles, model-store contract and rendered units.
+# Shared GPU roles use the same contract families.
 GPU_PYTEST = {
     "tests/nvidia_gpu_guest/", "tests/llm_gpu_engine_roles/",
     "tests/llm_gpu_legacy/", "tests/llm_gpu_serving/",
@@ -121,24 +134,7 @@ class Selection(TypedDict):
 
 
 def llm_router_matrix() -> list[list[str]]:
-    workflow = Path(".github/workflows/_llm-router-contract.yml").read_text()
-    in_matrix = False
-    entries: list[list[str]] = []
-    for line in workflow.splitlines():
-        if re.match(r"\s*shard:", line):
-            in_matrix = True
-            continue
-        if in_matrix:
-            match = re.match(r"\s*#?\s*-\s*(tests/llm_router/[^#]+)", line)
-            if match:
-                entries.append(match.group(1).split())
-            elif entries and (continuation := re.match(r"\s*#\s+(tests/llm_router/[^#]+)", line)):
-                entries[-1].extend(continuation.group(1).split())
-            elif line.strip() and not line.lstrip().startswith("#") and not line.startswith(" "):
-                break
-    if not entries:
-        raise ValueError("could not read explicit LLM Router matrix entries")
-    return entries
+    return load_router_contracts()
 
 
 def router_imports(matrix: list[list[str]]) -> dict[str, list[str]]:
@@ -152,7 +148,6 @@ def router_imports(matrix: list[list[str]]) -> dict[str, list[str]]:
 
 
 def warn_unmapped(path: str) -> None:
-    # Stderr, not stdout: stdout carries the JSON selection the workflow reads.
     print(f"::warning::unmapped path {path} selects the full suite", file=sys.stderr)
 
 
@@ -166,7 +161,7 @@ def full_selection() -> Selection:
     }
 
 
-def select(paths: list[str]) -> Selection:
+def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selection:
     pytest_targets: set[str] = set()
     ansible_tests: set[str] = set()
     router_tests: set[str] = set()
@@ -176,7 +171,7 @@ def select(paths: list[str]) -> Selection:
     matrix = llm_router_matrix()
     matrix_by_test = {test: entry for entry in matrix for test in entry}
 
-    def role_scope(role: str) -> None:
+    def role_scope(role: str, include_router_contracts: bool = True) -> None:
         pytest_targets.update(ROLE_TESTS.get(role, set()))
         if role in OTEL_CONSUMER_ROLES and Path(OTEL_CONSUMER_TEST).is_file():
             pytest_targets.add(OTEL_CONSUMER_TEST)
@@ -189,7 +184,8 @@ def select(paths: list[str]) -> Selection:
             # hermes_agent tests read the router role defaults (alias and role
             # contract), so any router change selects them too.
             pytest_targets.update({"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"})
-            router_tests.update(" ".join(entry) for entry in matrix)
+            if include_router_contracts:
+                router_tests.update(" ".join(entry) for entry in matrix)
 
     for raw_path in paths:
         path = raw_path.removeprefix("./")
@@ -236,9 +232,8 @@ def select(paths: list[str]) -> Selection:
                     router_tests.update(importers)
                 else:
                     warn_unmapped(path)
-                    route_full = True  # unmapped router playbook: run the full matrix
+                    route_full = True
             elif path.startswith("tests/llm_router/") and path.endswith(".py"):
-                # The generic pytest job excludes this scope; its job runs only with router shards selected.
                 role_scope("llm_router")
             elif Path(path).suffix == ".py" and Path(path).is_file():
                 pytest_targets.add(path)
@@ -247,19 +242,31 @@ def select(paths: list[str]) -> Selection:
                     ansible_tests.add(path)
                 else:
                     warn_unmapped(path)
-                    route_full = True  # unmapped Ansible test: run the full suite
+                    route_full = True
             elif Path(path).is_dir():
                 pytest_targets.add(path)
             else:
                 warn_unmapped(path)
-                route_full = True  # unmapped test file: run the full suite
+                route_full = True
         elif path.startswith("roles/"):
             role = path.split("/")[1]
             if role in ROLE_TESTS or role == "llm_router":
-                role_scope(role)
+                if role == "llm_router" and path.startswith("roles/llm_router/defaults/main/"):
+                    role_scope(role, include_router_contracts=False)
+                    changed_keys = router_default_changed_keys(path, base_ref, head_ref)
+                    if changed_keys is None:
+                        route_full = True
+                    else:
+                        entries, unresolved = router_default_playbooks(path, changed_keys, matrix)
+                        if unresolved or not entries:
+                            route_full = True
+                        else:
+                            router_tests.update(" ".join(entry) for entry in entries)
+                else:
+                    role_scope(role)
             else:
                 warn_unmapped(path)
-                route_full = True  # unmapped role: no contract family to narrow to
+                route_full = True
         elif path.startswith("llm-models.d/"):
             role_scope("llm_router")
             pytest_targets.update(GPU_PYTEST | {"tests/llm_model_campaign/", "tests/hermes_agent/"})
@@ -294,22 +301,35 @@ def select(paths: list[str]) -> Selection:
                     ansible_tests.add(reader)
                 else:
                     warn_unmapped(reader)
-                    route_full = True  # a reader with no contract entry: run the full suite
+                    route_full = True
         elif path.startswith(("inventory/", "group_vars/", "host_vars/", "playbooks/")) or path == "requirements.yml":
-            route_full = True  # every role and router playbook reads these files
+            route_full = True
         elif path == ".github/workflows/_llm-router-contract.yml":
             role_scope("llm_router")
             run_selector_checks = True
+        elif path == ".github/router-contracts.yml":
+            # Registry edits affect the workflow matrix, so run the router
+            # workflow's registry validator against every current entry.
+            router_tests.update(" ".join(entry) for entry in matrix)
+            pytest_targets.update({
+                "tests/test_contract_scope_selector.py",
+                "tests/test_contract_scope_router_selector.py",
+                "tests/test_router_shard_weights.py",
+                "tests/repo_guards/test_router_contract_batches.py",
+            })
         elif path.startswith((".github/workflows/", ".github/scripts/")) or path == ".github/requirements-ci.txt":
             run_selector_checks = True
-            pytest_targets.update({"tests/test_contract_scope_selector.py", "tests/test_contract_scope_mapping.py",
-                                  "tests/test_ci_workflow_policy.py", "tests/test_ci_gate_dispatch.py"})
+            pytest_targets.update({"tests/test_contract_scope_selector.py", "tests/test_contract_scope_router_selector.py",
+                                  "tests/test_contract_scope_mapping.py",
+                                  "tests/test_ci_workflow_policy.py", "tests/test_ci_gate_dispatch.py",
+                                  "tests/test_router_shard_weights.py",
+                                  "tests/repo_guards/test_router_contract_batches.py"})
         elif (path.lower().endswith((".md", ".mdx", ".txt")) or path.startswith("docs/")
               or path == ".release-please-manifest.json"):
             continue
         else:
             warn_unmapped(path)
-            route_full = True  # unmapped root file: no narrower scope is known
+            route_full = True
 
     if route_full:
         return full_selection()
@@ -331,6 +351,8 @@ def main() -> int:
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--skip-router", action="store_true",
                         help="omit router shards from a full selection for docs-only promotions")
+    parser.add_argument("--base-ref", default="", help="base commit for changed defaults comparison")
+    parser.add_argument("--head-ref", default="", help="head commit for changed defaults comparison")
     args = parser.parse_args()
     if args.full:
         result = full_selection()
@@ -338,7 +360,7 @@ def main() -> int:
         paths = args.paths
         if args.paths_file:
             paths = Path(args.paths_file).read_text().splitlines()
-        result = select(paths)
+        result = select(paths, args.base_ref, args.head_ref)
     if args.skip_router:
         result["llm_router_playbooks"] = []
     encoded = json.dumps(result, sort_keys=True)

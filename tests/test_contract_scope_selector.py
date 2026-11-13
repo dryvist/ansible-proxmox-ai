@@ -1,37 +1,13 @@
 from __future__ import annotations
 
-import importlib
 import json
-import runpy
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-SELECTOR = Path(__file__).parents[1] / ".github/scripts/select-contract-scope.py"
-CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
-sys.path.insert(0, str(SELECTOR.parent))
-router_shards_module = importlib.import_module("router_shards")
-router_shard_target = router_shards_module.router_shard_target
-router_weight = router_shards_module.router_weight
-
-# The router matrix as the selector generates it from the workflow.
-GENERATED_MATRIX = runpy.run_path(str(SELECTOR))["llm_router_matrix"]()
-ROUTER_SHARDS = runpy.run_path(str(SELECTOR))["router_shards"]
-
-
-def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, str(SELECTOR), *paths],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-
-def router_paths(shards: list[dict[str, str]]) -> list[str]:
-    return [path for shard in shards for path in shard["playbooks"].split()]
+from test_contract_scope_mapping import CI_GATE, SELECTOR, run_selector
 
 
 def test_hermes_agent_role_selects_its_role_tests() -> None:
@@ -77,69 +53,6 @@ def test_hermes_agent_change_set_selects_only_the_router_reader() -> None:
     assert selection["ansible_tests"] == ["tests/openbao_secrets/test_hermes_domain_view.yml"]
     assert selection["llm_router_playbooks"] == [{"name": "hermes", "playbooks": "tests/llm_router/test_hermes_agents.yml"}]
     assert selection["run_inventory"]
-
-
-def test_changed_llm_router_playbook_selects_its_matrix_entry() -> None:
-    result = run_selector("tests/llm_router/test_review_key_scopes.yml")
-
-    assert result.returncode == 0, result.stderr
-    selection = json.loads(result.stdout)
-    assert len(selection["llm_router_playbooks"]) == 1
-    assert "tests/llm_router/test_review_key_scopes.yml" in selection["llm_router_playbooks"][0]["playbooks"].split()
-
-
-def test_changed_router_playbook_selects_only_its_playbook() -> None:
-    result = run_selector("tests/llm_router/test_service_restart_policy.yml")
-
-    assert result.returncode == 0, result.stderr
-    selection = json.loads(result.stdout)
-    assert len(selection["llm_router_playbooks"]) == 1
-    assert selection["llm_router_playbooks"][0]["playbooks"].split() == [
-        "tests/llm_router/test_service_restart_policy.yml"
-    ]
-
-
-@pytest.mark.parametrize("path", [
-    "tests/llm_router/test_gpu_registry.py",
-    "tests/llm_router/test_gpu_registry_projection.py",
-])
-def test_changed_router_pytest_selects_router_contract_job(path: str) -> None:
-    result = run_selector(path)
-
-    assert result.returncode == 0, result.stderr
-    selection = json.loads(result.stdout)
-    assert selection["llm_router_playbooks"]
-
-
-@pytest.mark.parametrize("playbook", [
-    "tests/llm_router/test_drift_live_keys.yml",
-    "tests/llm_router/test_hermes_public_key_alias_brain.yml",
-    "tests/llm_router/test_zcode_sandbox_route_exclusions.yml",
-    "tests/llm_router/test_virtual_key_sub_retains_matrix.yml",
-])
-def test_registered_router_playbook_selects_its_own_entry(playbook: str) -> None:
-    result = run_selector(playbook)
-
-    assert result.returncode == 0, result.stderr
-    shards = json.loads(result.stdout)["llm_router_playbooks"]
-    assert router_paths(shards) == [playbook]
-
-
-@pytest.mark.parametrize(("imported", "importer"), [
-    ("tests/llm_router/test_ladder_keys_order.yml", "tests/llm_router/test_ladder_keys.yml"),
-    ("tests/llm_router/test_ladder_keys_consumers.yml", "tests/llm_router/test_ladder_keys.yml"),
-    ("tests/llm_router/test_ladder_keys_consumers_permissions.yml", "tests/llm_router/test_ladder_keys.yml"),
-    ("tests/llm_router/test_ladder_keys_zdr.yml", "tests/llm_router/test_ladder_keys.yml"),
-    ("tests/llm_router/test_gpu_pro6000_inactive_render.yml",
-     "tests/llm_router/test_gpu_pro6000_render.yml"),
-])
-def test_imported_router_playbook_selects_its_importing_entry(imported: str, importer: str) -> None:
-    result = run_selector(imported)
-
-    assert result.returncode == 0, result.stderr
-    entries = json.loads(result.stdout)["llm_router_playbooks"]
-    assert len(entries) == 1
-    assert importer in entries[0]["playbooks"].split()
 
 
 @pytest.mark.parametrize("path", [
@@ -189,20 +102,6 @@ def test_nix_ai_pin_roles_are_mapped_without_contracts() -> None:
     assert selection["ansible_tests"] == []
 
 
-@pytest.mark.parametrize("path", [
-    "roles/llm_router/tasks/main.yml",
-    "roles/llm_router/defaults/main/59-key-scopes.yml",
-])
-def test_llm_router_role_paths_select_the_complete_router_contract(path: str) -> None:
-    result = run_selector(path)
-
-    assert result.returncode == 0, result.stderr
-    selection = json.loads(result.stdout)
-    full = json.loads(run_selector("--full").stdout)
-    assert selection["llm_router_playbooks"] == full["llm_router_playbooks"]
-    assert {"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"} <= set(selection["pytest_targets"])
-
-
 def test_unmapped_yaml_contract_routes_to_full_suite(tmp_path: Path) -> None:
     contract = tmp_path / "tests/phoenix_docker/unmapped-contract.yml"
     contract.parent.mkdir(parents=True)
@@ -241,33 +140,3 @@ def test_changed_python_test_selects_only_that_file() -> None:
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
     assert selection["pytest_targets"] == ["tests/test_contract_scope_selector.py"]
-
-
-def test_full_suite_keeps_every_router_matrix_entry() -> None:
-    result = subprocess.run(
-        [sys.executable, str(SELECTOR), "--full"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    selection = json.loads(result.stdout)
-    assert len(selection["llm_router_playbooks"]) <= 16
-    assert sorted(router_paths(selection["llm_router_playbooks"])) == sorted(
-        path for entry in GENERATED_MATRIX for path in entry)
-
-
-def test_router_shards_pack_topics_and_split_only_oversized_topics() -> None:
-    paths = [f"tests/llm_router/test_alpha_{index}_contract.yml" for index in range(3)]
-    paths.extend(f"tests/llm_router/test_topic{index}_contract.yml" for index in range(14))
-    shards = ROUTER_SHARDS([[path] for path in paths])
-    alpha = [shard for shard in shards if "alpha " in shard["name"]]
-
-    assert len(shards) <= 16
-    assert len(alpha) == 2
-    assert {shard["name"].split(", ", 1)[0] for shard in alpha} == {"alpha 1/2", "alpha 2/2"}
-    assert any(", " in shard["name"] for shard in shards)
-    assert max(sum(router_weight(path) for path in shard["playbooks"].split())
-               for shard in shards) <= router_shard_target([[path] for path in paths])
-    assert sorted(router_paths(shards)) == sorted(paths)
