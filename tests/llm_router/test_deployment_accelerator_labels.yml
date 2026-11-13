@@ -89,6 +89,14 @@
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
+    # include_vars outranks the play vars above. Reapply these after defaults
+    # so the fixture URLs are the ones the registry and rendered config use.
+    - name: Set the fixture lane URLs after loading role defaults
+      ansible.builtin.set_fact:
+        llm_router_llm_fast_base_url: http://127.0.0.1:10434/v1
+        llm_router_llm_light_base_url: http://127.0.0.1:10534/v1
+        llm_router_llm_large_base_url: http://127.0.0.1:11434/v1
+
     # set_fact, and before the registry load: the catalog projection bakes each
     # entry's enabled state when registry.yml runs, and the included role
     # default (false) outranks a play var here.
@@ -117,6 +125,20 @@
     - name: Render the complete router configuration
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Confirm the rendered config uses the fixture lane URLs
+      vars:
+        _rendered_urls: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | map(attribute='litellm_params.api_base') | list }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'http://127.0.0.1:10434/v1' in _rendered_urls"
+          - "'http://127.0.0.1:10534/v1' in _rendered_urls"
+          - "'http://127.0.0.1:11434/v1' in _rendered_urls"
+        fail_msg: "Fixture lane URLs missing from rendered config: {{ _rendered_urls }}"
 
     - name: Map every local lane's URL to the accelerator value its machine carries
       ansible.builtin.set_fact:
