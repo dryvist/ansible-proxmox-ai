@@ -58,7 +58,7 @@ def test_new_router_test_and_registry_entry_select_only_that_test(
     assert "tests/repo_guards/test_router_contract_batches.py" in selection["pytest_targets"]
 
 
-def test_one_variable_defaults_change_selects_only_referencing_playbooks(
+def test_changed_default_used_by_sibling_default_selects_full_router_suite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     defaults = "roles/llm_router/defaults/main/56a-target-keys.yml"
@@ -70,12 +70,10 @@ def test_one_variable_defaults_change_selects_only_referencing_playbooks(
     monkeypatch.setattr(router_shards_module, "git_file_at_ref", lambda ref, _: versions[ref])
 
     selection = SELECTOR_MODULE["select"]([defaults], "base", "head")
+    full = json.loads(run_selector("--full").stdout)
 
-    assert sorted(router_paths(selection["llm_router_playbooks"])) == [
-        "tests/llm_router/test_claude_ocg_trust_caller.yml",
-        "tests/llm_router/test_local_class_keys_no_hosted_reach.yml",
-    ]
-    assert len(selection["llm_router_playbooks"]) < len(GENERATED_MATRIX)
+    assert selection == full
+    assert "tests/llm_router/test_ladder_keys.yml" in router_paths(selection["llm_router_playbooks"])
 
 
 def test_router_default_referenced_in_role_tasks_selects_everything(

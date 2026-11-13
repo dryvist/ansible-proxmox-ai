@@ -259,11 +259,33 @@ def _contract_reference_source(path: Path) -> bool:
     return parts[0] in {"inventory", "llm-models.d", "playbooks", "tests"}
 
 
+def _default_value_references(value: object, patterns: list[re.Pattern[str]]) -> bool:
+    if isinstance(value, str):
+        return any(pattern.search(value) for pattern in patterns)
+    if isinstance(value, dict):
+        return any(_default_value_references(child, patterns) for child in value.values())
+    if isinstance(value, list):
+        return any(_default_value_references(child, patterns) for child in value)
+    return False
+
+
 def _uncovered_default_reference(
     defaults_path: str, changed_keys: set[str], covered_paths: set[str]
 ) -> bool:
     patterns = [re.compile(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])")
                 for key in changed_keys]
+    try:
+        defaults = yaml.safe_load((REPO_ROOT / defaults_path).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return True
+    if not isinstance(defaults, dict):
+        return True
+    if any(
+        key not in changed_keys and _default_value_references(value, patterns)
+        for key, value in defaults.items()
+    ):
+        return True
+
     filename = Path(defaults_path).name
     for directory in ("inventory", "llm-models.d", "playbooks", "roles", "tests"):
         root = REPO_ROOT / directory
