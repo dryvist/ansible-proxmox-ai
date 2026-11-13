@@ -111,6 +111,8 @@ _MISSING = object()
 _JINJA = re.compile(r"{{.*?}}|{%.*?%}", re.DOTALL)
 _JINJA_NAME = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
 _IMPORT_KEYS = {"import_playbook", "import_tasks", "include_tasks"}
+_PLAIN_STRING_LITERAL = re.compile(r'''^(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")$''')
+_CONTRACT_REFERENCE_SUFFIXES = {".yml", ".yaml", ".j2"}
 
 
 def _walk_yaml(value: object):
@@ -209,38 +211,80 @@ def _contract_sources(playbook: str, changed_keys: set[str]) -> tuple[list[tuple
         return [], True
 
 
-def _registered_enabled_vars() -> set[str] | None:
-    variables: set[str] = set()
-    try:
-        for path in (REPO_ROOT / "llm-models.d").rglob("*.yml"):
-            document = yaml.safe_load(path.read_text(encoding="utf-8"))
-            variables.update(value for key, value in _walk_yaml(document)
-                             if key == "enabled_var" and isinstance(value, str))
-        return variables
-    except (OSError, yaml.YAMLError):
-        return None
+def _dynamic_var_access(expression: str) -> bool:
+    lookups = re.finditer(
+        r"\b(lookup|query)\s*\(\s*(['\"])(?:ansible\.builtin\.)?vars\2\s*,([^)]*)\)",
+        expression,
+    )
+    for match in lookups:
+        if match.group(1) == "query":
+            return True
+        first_argument = match.group(3).split(",", 1)[0].strip()
+        if not _PLAIN_STRING_LITERAL.fullmatch(first_argument):
+            return True
+    return bool(
+        re.search(r"\bvars\s*\[", expression)
+        or re.search(r"\bhostvars\s*\[[^\]]+\]\s*\[", expression)
+        or re.search(r"\bvarnames\b", expression)
+        or re.search(r"\bvars\s*\|\s*(?:dict2items|items)\b", expression)
+    )
 
 
 def _unresolved_jinja_reference(
-    content: str, changed_keys: set[str], enabled_vars: set[str] | None
+    content: str,
+    changed_keys: set[str],
+    defaults_path: str,
 ) -> bool:
+    changed_area = any(
+        re.search(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])", content)
+        for key in changed_keys
+    ) or Path(defaults_path).name in content or defaults_path in content
+    if not changed_area:
+        return False
+
     for expression in _JINJA.findall(content):
-        lookup = re.search(
-            r"\blookup\s*\(\s*['\"](?:ansible\.builtin\.)?vars['\"]\s*,\s*([^,]+)", expression,
-        )
-        if lookup and not lookup.group(1).strip().startswith(("'", '"')):
-            argument = lookup.group(1).strip()
-            if "model.enabled_var" in argument:
-                if enabled_vars is None or changed_keys.intersection(enabled_vars):
-                    return True
-            else:
+        if _dynamic_var_access(expression):
+            return True
+    return False
+
+
+def _contract_reference_source(path: Path) -> bool:
+    if path.suffix not in _CONTRACT_REFERENCE_SUFFIXES:
+        return False
+    parts = path.parts
+    if parts[0] == "roles":
+        return len(parts) > 2 and parts[2] in {
+            "defaults", "handlers", "tasks", "templates", "vars",
+        }
+    return parts[0] in {"inventory", "llm-models.d", "playbooks", "tests"}
+
+
+def _uncovered_default_reference(
+    defaults_path: str, changed_keys: set[str], covered_paths: set[str]
+) -> bool:
+    patterns = [re.compile(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])")
+                for key in changed_keys]
+    filename = Path(defaults_path).name
+    for directory in ("inventory", "llm-models.d", "playbooks", "roles", "tests"):
+        root = REPO_ROOT / directory
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file() or not _contract_reference_source(path.relative_to(REPO_ROOT)):
+                continue
+            relative = path.relative_to(REPO_ROOT).as_posix()
+            if relative in covered_paths or relative == defaults_path:
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except OSError:
                 return True
-        if re.search(r"\bvars\s*\[\s*(?!['\"])", expression):
-            return True
-        if re.search(r"\bhostvars\s*\[[^\]]+\]\s*\[\s*(?!['\"])", expression):
-            return True
-        if re.search(r"\bvars\s*\|\s*(?:dict2items|items)\b", expression):
-            return True
+            if any(pattern.search(content) for pattern in patterns):
+                return True
+            if (filename in content or defaults_path in content) and any(
+                _dynamic_var_access(expression) for expression in _JINJA.findall(content)
+            ):
+                return True
     return False
 
 
@@ -249,24 +293,29 @@ def router_default_playbooks(
 ) -> tuple[list[list[str]], bool]:
     selected: list[list[str]] = []
     filename = Path(defaults_path).name
-    enabled_vars = _registered_enabled_vars() if changed_keys else set()
     key_patterns = [re.compile(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])")
                     for key in changed_keys]
+    covered_paths: set[str] = set()
     for entry in matrix:
         affected = False
         for playbook in entry:
             sources, unresolved = _contract_sources(playbook, changed_keys)
             if unresolved:
                 return [], True
-            for _, content in sources:
+            for source_path, content in sources:
+                covered_paths.add(source_path)
                 if defaults_path in content or filename in content:
                     affected = True
                 if any(pattern.search(content) for pattern in key_patterns):
                     affected = True
-                if changed_keys and _unresolved_jinja_reference(content, changed_keys, enabled_vars):
+                if changed_keys and _unresolved_jinja_reference(
+                    content, changed_keys, defaults_path,
+                ):
                     return [], True
         if affected:
             selected.append(entry)
+    if _uncovered_default_reference(defaults_path, changed_keys, covered_paths):
+        return [], True
     return selected, False
 
 
