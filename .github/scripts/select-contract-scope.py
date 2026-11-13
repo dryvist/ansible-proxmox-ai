@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Select focused contract tests from an explicit changed-path mapping.
-
-A path the mapping does not cover selects the full suite instead of failing.
-"""
+"""Select focused contract tests from changed paths."""
 
 from __future__ import annotations
 
@@ -10,11 +7,22 @@ import argparse
 import json
 import re
 import sys
+from os import environ
 from pathlib import Path
 from typing import TypedDict
 
-# runpy loaders do not put the script directory on sys.path, so add it before the sibling import.
+# runpy needs sibling imports.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+if __name__ == "__main__" and sys.argv[1:] == ["--report"]:
+    event, ref, base, result = (environ.get(key, "") for key in (
+        "EVENT_NAME", "GITHUB_REF", "BASE_REF", "SELECT_RESULT"))
+    full = (event == "push" and ref in {"refs/heads/main", "refs/heads/develop"}
+            or event == "pull_request" and base == "main")
+    scope = "full" if full else "failed-unmapped" if result != "success" else "focused"
+    with Path(environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+        summary.write(f"Data Contract selection: {scope}\n")
+    raise SystemExit(0)
 
 from router_shards import (
     RouterShard,
@@ -49,8 +57,7 @@ ANSIBLE_TESTS = {
 }
 
 
-# Test files this change deletes. Nothing runs for them, and the registry edit
-# that retires each one is part of the same diff.
+# Removed tests have no contract; their registry cleanup is in the same diff.
 RETIRED_TESTS = {"tests/langfuse_docker/test_code_eval_dispatcher.yml"}
 
 PYTEST_PATH_TARGETS = {
@@ -65,16 +72,14 @@ PYTEST_PATH_TARGETS = {
 }
 
 
-# Consumers of ai_orchestration_otel_endpoint; the OTEL test renders each one.
-# The file is selected only when the checkout contains it.
+# Select the OTEL test only when the checkout contains it.
 OTEL_CONSUMER_TEST = "tests/hermes_agent/test_otel_endpoint_consumers.py"
 OTEL_CONSUMER_ROLES = {
     "llm_router", "agent_exec", "dify_docker", "langgraph_docker", "hindsight_docker",
     "hermes_agent", "open_webui", "agentgateway_docker",
 }
 
-# Role closures use the existing contract directories and playbooks. Shared GPU
-# roles consume the same profiles, model-store contract and rendered units.
+# Shared GPU roles use the same contract families.
 GPU_PYTEST = {
     "tests/nvidia_gpu_guest/", "tests/llm_gpu_engine_roles/",
     "tests/llm_gpu_legacy/", "tests/llm_gpu_serving/",
@@ -143,7 +148,6 @@ def router_imports(matrix: list[list[str]]) -> dict[str, list[str]]:
 
 
 def warn_unmapped(path: str) -> None:
-    # Stderr, not stdout: stdout carries the JSON selection the workflow reads.
     print(f"::warning::unmapped path {path} selects the full suite", file=sys.stderr)
 
 
@@ -228,9 +232,8 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
                     router_tests.update(importers)
                 else:
                     warn_unmapped(path)
-                    route_full = True  # unmapped router playbook: run the full matrix
+                    route_full = True
             elif path.startswith("tests/llm_router/") and path.endswith(".py"):
-                # The generic pytest job excludes this scope; its job runs only with router shards selected.
                 role_scope("llm_router")
             elif Path(path).suffix == ".py" and Path(path).is_file():
                 pytest_targets.add(path)
@@ -239,12 +242,12 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
                     ansible_tests.add(path)
                 else:
                     warn_unmapped(path)
-                    route_full = True  # unmapped Ansible test: run the full suite
+                    route_full = True
             elif Path(path).is_dir():
                 pytest_targets.add(path)
             else:
                 warn_unmapped(path)
-                route_full = True  # unmapped test file: run the full suite
+                route_full = True
         elif path.startswith("roles/"):
             role = path.split("/")[1]
             if role in ROLE_TESTS or role == "llm_router":
@@ -263,7 +266,7 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
                     role_scope(role)
             else:
                 warn_unmapped(path)
-                route_full = True  # unmapped role: no contract family to narrow to
+                route_full = True
         elif path.startswith("llm-models.d/"):
             role_scope("llm_router")
             pytest_targets.update(GPU_PYTEST | {"tests/llm_model_campaign/", "tests/hermes_agent/"})
@@ -298,21 +301,23 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
                     ansible_tests.add(reader)
                 else:
                     warn_unmapped(reader)
-                    route_full = True  # a reader with no contract entry: run the full suite
+                    route_full = True
         elif path.startswith(("inventory/", "group_vars/", "host_vars/", "playbooks/")) or path == "requirements.yml":
-            route_full = True  # every role and router playbook reads these files
+            route_full = True
         elif path == ".github/workflows/_llm-router-contract.yml":
             role_scope("llm_router")
             run_selector_checks = True
         elif path == ".github/router-contracts.yml":
             pytest_targets.update({
                 "tests/test_contract_scope_selector.py",
+                "tests/test_contract_scope_router_selector.py",
                 "tests/test_router_shard_weights.py",
                 "tests/repo_guards/test_router_contract_batches.py",
             })
         elif path.startswith((".github/workflows/", ".github/scripts/")) or path == ".github/requirements-ci.txt":
             run_selector_checks = True
-            pytest_targets.update({"tests/test_contract_scope_selector.py", "tests/test_contract_scope_mapping.py",
+            pytest_targets.update({"tests/test_contract_scope_selector.py", "tests/test_contract_scope_router_selector.py",
+                                  "tests/test_contract_scope_mapping.py",
                                   "tests/test_ci_workflow_policy.py", "tests/test_ci_gate_dispatch.py",
                                   "tests/test_router_shard_weights.py",
                                   "tests/repo_guards/test_router_contract_batches.py"})
@@ -321,7 +326,7 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
             continue
         else:
             warn_unmapped(path)
-            route_full = True  # unmapped root file: no narrower scope is known
+            route_full = True
 
     if route_full:
         return full_selection()
