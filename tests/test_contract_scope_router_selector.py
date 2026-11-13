@@ -38,7 +38,7 @@ def test_changed_router_playbook_selects_only_its_playbook() -> None:
     ]
 
 
-def test_new_router_test_and_registry_entry_select_only_that_test(
+def test_registry_edit_selects_full_router_workflow_matrix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     new_test = "tests/llm_router/test_new_registry_entry.yml"
@@ -47,15 +47,27 @@ def test_new_router_test_and_registry_entry_select_only_that_test(
     registry = tmp_path / "router-contracts.yml"
     registry.write_text(yaml.safe_dump(config, sort_keys=False))
     monkeypatch.setattr(router_shards_module, "ROUTER_CONTRACTS_FILE", registry)
-    exists = Path.exists
-    monkeypatch.setattr(Path, "exists", lambda path: True if path.as_posix() == new_test else exists(path))
 
-    selection = SELECTOR_MODULE["select"]([new_test, ".github/router-contracts.yml"])
+    selection = SELECTOR_MODULE["select"]([".github/router-contracts.yml"])
 
-    assert router_paths(selection["llm_router_playbooks"]) == [new_test]
-    assert len(selection["llm_router_playbooks"]) == 1
+    assert sorted(router_paths(selection["llm_router_playbooks"])) == sorted(
+        path for entry in config["contracts"] for path in entry
+    )
+    assert selection["llm_router_playbooks"]
     assert "tests/test_router_shard_weights.py" in selection["pytest_targets"]
     assert "tests/repo_guards/test_router_contract_batches.py" in selection["pytest_targets"]
+
+
+@pytest.mark.parametrize("contents", ["contracts: []\n", "", "contracts: [\n"])
+def test_invalid_router_registry_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contents: str,
+) -> None:
+    registry = tmp_path / "router-contracts.yml"
+    registry.write_text(contents)
+    monkeypatch.setattr(router_shards_module, "ROUTER_CONTRACTS_FILE", registry)
+
+    with pytest.raises((ValueError, yaml.YAMLError)):
+        router_shards_module.load_router_contracts()
 
 
 def test_changed_default_used_by_sibling_default_selects_full_router_suite(

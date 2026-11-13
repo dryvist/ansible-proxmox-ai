@@ -52,27 +52,11 @@ def _valid_contracts(value: object) -> list[list[str]]:
     return contracts
 
 
-def _scan_router_playbooks() -> list[list[str]]:
-    contracts: list[list[str]] = []
-    for path in sorted((REPO_ROOT / "tests/llm_router").glob("*.yml")):
-        try:
-            document = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError):
-            continue
-        if isinstance(document, list) and any(
-            isinstance(item, dict) and {"hosts", "import_playbook", "ansible.builtin.import_playbook"} & set(item)
-            for item in document
-        ):
-            contracts.append([path.relative_to(REPO_ROOT).as_posix()])
-    return contracts
-
-
 def load_router_contracts() -> list[list[str]]:
-    try:
-        config = yaml.safe_load(ROUTER_CONTRACTS_FILE.read_text(encoding="utf-8"))
-        return _valid_contracts(config["contracts"])
-    except (AttributeError, KeyError, OSError, TypeError, ValueError, yaml.YAMLError):
-        return _scan_router_playbooks()
+    config = yaml.safe_load(ROUTER_CONTRACTS_FILE.read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        raise ValueError("router contracts registry must be a mapping")
+    return _valid_contracts(config.get("contracts"))
 
 
 def git_file_at_ref(ref: str, path: str) -> str | None:

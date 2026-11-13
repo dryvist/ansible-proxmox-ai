@@ -308,6 +308,9 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
             role_scope("llm_router")
             run_selector_checks = True
         elif path == ".github/router-contracts.yml":
+            # Registry edits affect the workflow matrix, so run the router
+            # workflow's registry validator against every current entry.
+            router_tests.update(" ".join(entry) for entry in matrix)
             pytest_targets.update({
                 "tests/test_contract_scope_selector.py",
                 "tests/test_contract_scope_router_selector.py",
