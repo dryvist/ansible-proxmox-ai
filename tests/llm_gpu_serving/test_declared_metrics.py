@@ -7,6 +7,7 @@ from llm_gpu_serving.declared_metrics_helpers import (
     LEGACY_GROUP,
     LEGACY_ROOT,
     LLAMACPP_ROOT,
+    METRIC_FILE,
     SGLANG_ROOT,
     VLLM_ROOT,
     _capacity_from_flags,
