@@ -66,24 +66,28 @@
         ansible_connection: local
         llm_active_profile: "{{ item.profile }}"
         llm_gpu_serving_api_port: "{{ item.port }}"
+        llm_gpu_accelerator: "{{ item.accelerator }}"
       loop:
         - name: llm-gpu-fixture
           groups: llm_gpu_group
           profile: medium-a
           port: 11444
+          accelerator: "{{ llm_gpu_accelerator_primary }}"
         - name: llm-gpu-legacy-fixture
           groups: [llm_gpu_group, llm_gpu_legacy_group]
           profile: medium-b
           port: 11445
+          accelerator: "{{ llm_gpu_accelerator_secondary }}"
 
-    # The small lane's serving host is a legacy-group member, so its label
-    # resolves through the legacy branch of the host mapping.
-    - name: Add the small-lane serving host from the legacy group
+    # The small lane's serving host is a primary GPU member, so its label
+    # resolves through the non-legacy branch of the host mapping.
+    - name: Add the small-lane serving host from the primary group
       ansible.builtin.add_host:
         name: llm-vllm-fixture
-        groups: [llm_vllm_group, llm_gpu_legacy_group]
+        groups: llm_vllm_group
         ansible_connection: local
         llama_cpp_parallel: 2
+        llm_gpu_accelerator: "{{ llm_gpu_accelerator_primary }}"
 
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -181,7 +185,7 @@
     # The 4080 entry is the tier's only registry entry; it renders because the
     # fixture enables llm_router_4080_profiles_enabled, and every deployment
     # on the lane carries the serving machine's accelerator.
-    - name: The rendered 4080 entry labels the legacy machine that serves the lane
+    - name: The rendered vLLM entry labels the primary machine that serves the lane
       vars:
         _small_lane: >-
           {{ _config.model_list
@@ -192,9 +196,8 @@
         quiet: true
         that:
           - _small_lane | length > 0
-          - _small_lane | map(attribute='model_info.accelerator') | unique | list == ['gpu-secondary']
-          - llm_router_llm_vllm_accelerator == llm_router_llm_fast_accelerator
-          - llm_router_llm_fast_accelerator == 'gpu-secondary'
+          - _small_lane | map(attribute='model_info.accelerator') | unique | list == ['gpu-primary']
+          - llm_router_llm_vllm_accelerator == llm_gpu_accelerator_primary
           - >-
             _small_lane | selectattr('litellm_params.model', 'equalto', 'openai/' ~ _lane_model)
             | list | length > 0
@@ -233,7 +236,7 @@
       vars:
         _gpu_profiles: >-
           {{ llm_router_gpu_profile_accelerators | dict2items
-             | selectattr('value', 'equalto', llm_router_gpu_accelerator)
+             | selectattr('value', 'equalto', llm_gpu_accelerator_primary)
              | map(attribute='key') | list }}
         _gpu_urls: >-
           {{ llm_router_gpu_profile_base_urls | dict2items
@@ -248,7 +251,7 @@
         that:
           - _gpu_profiles | length > 0
           - _gpu_entries | length > 0
-          - _gpu_entries | map(attribute='model_info.accelerator') | unique | list == ['gpu-primary']
+          - _gpu_entries | map(attribute='model_info.accelerator') | unique | list == [llm_gpu_accelerator_primary]
         fail_msg: "GPU-member labels: {{ _gpu_entries | map(attribute='model_info.accelerator') | unique | list }}"
 
     - name: The Studio lane keeps its own label
