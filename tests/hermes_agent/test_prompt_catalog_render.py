@@ -37,7 +37,7 @@ def test_prompt_sources_preserve_the_original_literal_bytes():
     for key, body in bodies.items():
         assert hashlib.sha256(body.encode()).hexdigest() == expected[key], key
     assert re.fullmatch(
-        r"github:dryvist/ai-llm-prompts/[0-9a-f]{40}#auto-ai-agent",
+        r"github:jpe-ai-agents/ai-llm-prompts/[0-9a-f]{40}#auto-ai-agent",
         defaults["hermes_agent_prompts_flake_ref"],
     )
 

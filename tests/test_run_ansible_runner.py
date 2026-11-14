@@ -72,7 +72,7 @@ class RunAnsibleShimContract(unittest.TestCase):
             self.argv_log.read_text(encoding="utf-8").splitlines(),
             [
                 "run",
-                f"github:dryvist/homelab-contracts/{refs[0]}#run-ansible",
+                f"github:jpe-ansible/homelab-contracts/{refs[0]}#run-ansible",
                 "--",
                 "playbooks/site.yml",
                 "--limit",

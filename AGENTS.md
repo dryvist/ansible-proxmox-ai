@@ -192,7 +192,7 @@ way if staleness matters there.
 2. **Direct local converge (day-to-day app changes).** No tofu run needed
    when guests haven't changed: converge directly with the commands above.
    Inventory resolution is owned by the shared `inventory_resolve` role; its
-   [README](https://github.com/dryvist/homelab-contracts/tree/main/ansible/roles/inventory_resolve)
+   [README](https://github.com/jpe-ansible/homelab-contracts/tree/main/ansible/roles/inventory_resolve)
    is the canonical description.
 
 ### Shared-role duplication (deliberate)
