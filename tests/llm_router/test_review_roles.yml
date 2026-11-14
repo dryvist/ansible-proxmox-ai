@@ -53,6 +53,12 @@
       ansible.builtin.set_fact:
         llm_router_chatgpt_auth_file_present: true
 
+    - name: Model a ready vLLM endpoint for the OCR render cases
+      ansible.builtin.set_fact:
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_router_llm_vllm_base_url: http://localhost:10434/v1
+
     - name: Refresh cached router projections after fixture input changes [review-roles-1]
       ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
 
@@ -107,6 +113,8 @@
     - name: Capture virtual-key and review-role outputs with OCR enabled
       ansible.builtin.set_fact:
         _optional_ocr_group: "{{ _optional_ocr_role_entries[0].route_group }}"
+        _optional_ocr_rendered_models: >-
+          {{ lookup('template', _role_dir ~ '/templates/model-list.yaml.j2') | from_yaml }}
         _optional_ocr_enabled_key_models: >-
           {{ (llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local') | first).models }}
         _optional_ocr_enabled_review_groups: "{{ llm_router_cross_modality_fail_fast_names }}"
@@ -119,6 +127,10 @@
           - _optional_ocr_group in _optional_ocr_enabled_key_models
           - _optional_ocr_group in _optional_ocr_enabled_review_groups
           - _optional_ocr_group in llm_router_capability_names
+          - >-
+            _optional_ocr_rendered_models
+            | selectattr('model_name', 'equalto', _optional_ocr_group)
+            | list | length == llm_router_priority_tiers | length
         fail_msg: >-
           OCR registry group {{ _optional_ocr_group }} is missing from the enabled
           virtual-key or review-role output.
