@@ -208,6 +208,17 @@
          | map(attribute='name') | reject('in', dify_docker_dsl_declared_names) | list }}
   no_log: true
 
+# An import-all run (the app not named in dify_docker_agent_dsl_select) skips such an
+# app instead of failing on it: it is not imported or overwritten, the run continues
+# with the next app, and the end-of-run summary names it and its missing variables.
+# Naming the app in dify_docker_agent_dsl_select keeps the hard failure.
+- name: Decide whether an app with undeclared variables is skipped by this run
+  ansible.builtin.set_fact:
+    dify_docker_dsl_skip_import: >-
+      {{ (dify_docker_dsl_undeclared_empty | length > 0)
+         and (dify_docker_dsl_name not in dify_docker_agent_dsl_select) }}
+  no_log: true
+
 - name: Assert every environment variable of the app definition with an empty value has an entry
   ansible.builtin.assert:
     that:
@@ -215,6 +226,15 @@
     fail_msg: >-
       {{ dify_docker_dsl_name }}: environment variables with an empty value and no entry:
       {{ dify_docker_dsl_undeclared_empty | join(', ') or 'none' }}.
+  when: dify_docker_dsl_name in dify_docker_agent_dsl_select
+
+- name: Record the app skipped for its undeclared variables
+  ansible.builtin.set_fact:
+    dify_docker_dsl_skipped_apps: >-
+      {{ dify_docker_dsl_skipped_apps | default([])
+         + [{'name': dify_docker_dsl_name, 'variables': dify_docker_dsl_undeclared_empty}] }}
+  when: dify_docker_dsl_skip_import | bool
+  no_log: true
 
 - name: Report the declared variables a live run would set, by name only
   ansible.builtin.debug:
@@ -224,4 +244,5 @@
   when:
     - ansible_check_mode
     - dify_docker_dsl_has_variables | bool
+    - not dify_docker_dsl_skip_import | bool
   changed_when: false

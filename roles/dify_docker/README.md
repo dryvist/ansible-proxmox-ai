@@ -137,7 +137,8 @@ entries keep their existing reconciliation behavior.
 
 `dify_docker_agent_dsl_select` (default `[]`) names the catalog entries one run
 imports. Empty imports every manifest entry. A name missing from the manifest
-fails the run before any catalog DSL fetch. A sliced run wires the rotation only
+fails the run before any catalog DSL fetch. Naming an app also keeps its
+undeclared-variables check fatal. A sliced run wires the rotation only
 when its selection names the rotation app, so the last slice imports it.
 
 `dify_docker_private_agent_dsls` (default `[]`) adds private sources alongside
@@ -152,9 +153,12 @@ Private entries are skipped while the token is empty.
 
 Draft environment variables for catalog apps (`dify_docker_agent_app_variables`), their tool
 provider placeholders (`dify_docker_agent_tool_providers`) and the per-app leaf option are
-documented in [declared-app-variables.md](declared-app-variables.md). AppRole secret ids are minted
-and read with the issuer AppRole named by `dify_docker_agent_issuer_env_names` and logged in through
-`dify_docker_agent_issuer_auth_mount`, never with the converge writer token.
+documented in [declared-app-variables.md](declared-app-variables.md). In an import-all run
+(empty `dify_docker_agent_dsl_select`), a catalog app whose empty-value variables are not all
+declared is skipped, not imported or overwritten, and named with its missing variable names in
+the end-of-run summary; naming the app in the selection keeps the check fatal. AppRole secret
+ids are minted and read with the issuer AppRole named by `dify_docker_agent_issuer_env_names`
+and logged in through `dify_docker_agent_issuer_auth_mount`, never with the converge writer token.
 
 ## Built-in tool providers
 

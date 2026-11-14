@@ -32,6 +32,7 @@ def test_api_key_provisioning_is_wired_after_each_agent_dsl():
     assert "not (dify_docker_dsl_import_needed | bool)" in provision["when"][3]
     assert "completed" in provision["when"][3]
     assert "completed-with-warnings" in provision["when"][3]
+    assert "not dify_docker_dsl_skip_import | bool" in provision["when"]
     assert not any("dify_docker_dsl_app_matches | length == 0" in condition for condition in provision["when"])
     assert provision["no_log"] is True
 

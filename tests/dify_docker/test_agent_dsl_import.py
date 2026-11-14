@@ -129,7 +129,9 @@ def test_changed_workflow_is_published_after_successful_import_and_failure_is_fa
         "use_icon_as_answer_icon": True,
         "max_active_requests": 10,
     }
-    assert "not (dify_docker_dsl_import_needed | bool)" in key_task["when"][-1]
+    assert any(
+        "not (dify_docker_dsl_import_needed | bool)" in condition for condition in key_task["when"]
+    )
 
     import_failure = environment.from_string("{{ " + import_task["failed_when"] + " }}")
     confirm_failure = environment.from_string("{{ " + confirm_task["failed_when"] + " }}")
