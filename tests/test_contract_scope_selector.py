@@ -140,3 +140,40 @@ def test_changed_python_test_selects_only_that_file() -> None:
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
     assert selection["pytest_targets"] == ["tests/test_contract_scope_selector.py"]
+
+
+def test_campaign_only_change_set_selects_campaign_tests_without_router_matrix() -> None:
+    result = run_selector(
+        "playbooks/tasks/llm-model-campaign-paired-passes.yml",
+        "tests/llm_model_campaign/test_paired_campaign.py",
+    )
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert selection["pytest_targets"] == ["tests/llm_model_campaign/"]
+    assert selection["llm_router_playbooks"] == []
+    assert selection["ansible_tests"] == []
+    assert not selection["run_inventory"]
+    assert not selection["run_selector_checks"]
+
+
+def test_campaign_file_beside_a_router_role_change_keeps_the_router_matrix() -> None:
+    result = run_selector(
+        "playbooks/llm-model-campaign.yml",
+        "roles/llm_router/tasks/main.yml",
+    )
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    full = json.loads(run_selector("--full").stdout)
+    assert selection["llm_router_playbooks"] == full["llm_router_playbooks"]
+    assert "tests/llm_model_campaign/" in selection["pytest_targets"]
+
+
+def test_router_read_campaign_file_keeps_the_full_suite() -> None:
+    result = run_selector("playbooks/tasks/llm-model-campaign-endpoint-policy.yml")
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    full = json.loads(run_selector("--full").stdout)
+    assert selection == full

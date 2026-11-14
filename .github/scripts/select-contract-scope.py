@@ -60,6 +60,17 @@ ANSIBLE_TESTS = {
 # Removed tests have no contract; their registry cleanup is in the same diff.
 RETIRED_TESTS = {"tests/langfuse_docker/test_code_eval_dispatcher.yml"}
 
+# Model campaign playbooks and their test tree select the campaign tests
+# instead of the router contract matrix.
+CAMPAIGN_TEST_SCOPE = "tests/llm_model_campaign/"
+CAMPAIGN_PATHS = (
+    "playbooks/llm-model-campaign",
+    "playbooks/llm-model-paired-campaign",
+    "playbooks/tasks/llm-model-campaign",
+    "playbooks/templates/llm-model-campaign",
+    "playbooks/vars/llm-model-campaign",
+)
+
 PYTEST_PATH_TARGETS = {
     "roles/dify_docker/templates/docker-compose.yml.j2": "tests/agent_concurrency/test_runner_compose_caps.py",
     "roles/langflow_docker/defaults/main.yml": "tests/agent_concurrency/test_runner_compose_caps.py",
@@ -147,6 +158,16 @@ def router_imports(matrix: list[list[str]]) -> dict[str, list[str]]:
     return importers
 
 
+def campaign_path(path: str) -> bool:
+    return path.startswith(CAMPAIGN_PATHS) or path.startswith(CAMPAIGN_TEST_SCOPE)
+
+
+def router_contract_reads(path: str) -> bool:
+    name = Path(path).name
+    return any(name in reader.read_text(errors="ignore")
+               for reader in Path("tests/llm_router").rglob("*") if reader.is_file())
+
+
 def warn_unmapped(path: str) -> None:
     print(f"::warning::unmapped path {path} selects the full suite", file=sys.stderr)
 
@@ -194,6 +215,14 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
         if path in PYTEST_PATH_TARGETS:
             pytest_targets.add(PYTEST_PATH_TARGETS[path])
         if path in RETIRED_TESTS:
+            continue
+        if campaign_path(path):
+            # Router contract playbooks import some campaign task files, so a
+            # read campaign file keeps the full suite.
+            if router_contract_reads(path):
+                route_full = True
+            else:
+                pytest_targets.add(CAMPAIGN_TEST_SCOPE)
             continue
         if path.startswith("tests/"):
             parts = Path(path).parts
