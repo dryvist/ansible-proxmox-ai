@@ -10,7 +10,7 @@ EXPECTED_VARIABLES = [
     {
         "name": "PR_AUTOMATION_REPOS",
         "secret": False,
-        "value": "JacobPEvans-ai/pr-automation-fixture",
+        "value": "{{ lookup('env', 'DIFY_PR_AUTOMATION_REPOS') | default('example-org/example-repo', true) }}",
     },
 ]
 
