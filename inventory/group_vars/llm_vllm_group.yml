@@ -1,7 +1,7 @@
 ---
-# Dedicated small-capability endpoint. The group's historical inventory name
-# is retained; its router-facing identity and selected backend come from the
-# fabric registry.
+# The Vulkan guest serves a 9B text model and an image-text model for
+# dense-layout image text. Router-facing identities and backend facts come
+# from the fabric registry.
 llama_cpp_gpu_backend: vulkan
 llama_cpp_registry_tier: vllm
 llama_cpp_max_param_billions: 14
@@ -9,31 +9,51 @@ llama_cpp_max_param_billions: 14
 # the router renders this as the rung's admission cap and the parity contract
 # fails on any disagreement.
 llama_cpp_parallel: 2
-llama_cpp_models_max: 1
+llama_cpp_models_max: 2
 # The profile unit that held this guest's card and port before this lane.
 llama_cpp_retired_units:
   - llm-gpu-serving-qwen38-27b-131k-1.service
 
 _llama_cpp_vllm_dense_entry: >-
-  {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list | first)
-     | default({}) }}
+  {{ (llm_router_registry_enabled
+      | selectattr('tier', 'equalto', 'vllm')
+      | selectattr('client_model_id', 'equalto', 'qwen3.5-9b-4080')
+      | list | first) | default({}) }}
 _llama_cpp_vllm_dense_artifact: >-
   {{ llm_router_model_artifacts_by_id.get(_llama_cpp_vllm_dense_entry.get('artifact_id', ''), {}) }}
+_llama_cpp_vllm_ocr_entry: >-
+  {{ (llm_router_registry_enabled
+      | selectattr('tier', 'equalto', 'vllm')
+      | selectattr('client_model_id', 'equalto', 'glm-ocr')
+      | list | first) | default({}) }}
+_llama_cpp_vllm_ocr_artifact: >-
+  {{ llm_router_model_artifacts_by_id.get(_llama_cpp_vllm_ocr_entry.get('artifact_id', ''), {}) }}
 llama_cpp_catalog_lookup_names: >-
-  {{ [_llama_cpp_vllm_dense_entry.client_model_id]
-     if _llama_cpp_vllm_dense_entry else [] }}
+  {{ ([_llama_cpp_vllm_dense_entry.client_model_id] if _llama_cpp_vllm_dense_entry else [])
+     + ([_llama_cpp_vllm_ocr_entry.client_model_id] if _llama_cpp_vllm_ocr_entry else []) }}
 
 llama_cpp_ctx_size: "{{ _llama_cpp_vllm_dense_entry.get('context_window', 0) }}"
 llama_cpp_models: >-
-  {{ [{
-       'name': _llama_cpp_vllm_dense_entry.client_model_id,
-       'aliases': [],
-       'hf_repo': _llama_cpp_vllm_dense_artifact.hf_repo,
-       'gguf': _llama_cpp_vllm_dense_artifact.include_globs | first,
-       'param_billions': 9,
-       'embeddings': false,
-       'kv_unified': true,
-     }] if _llama_cpp_vllm_dense_entry else [] }}
+  {{ ([{
+        'name': _llama_cpp_vllm_dense_entry.client_model_id,
+        'aliases': [],
+        'hf_repo': _llama_cpp_vllm_dense_artifact.hf_repo,
+        'gguf': _llama_cpp_vllm_dense_artifact.include_globs | first,
+        'param_billions': 9,
+        'embeddings': false,
+        'kv_unified': true,
+      }] if _llama_cpp_vllm_dense_entry else [])
+     + ([{
+        'name': _llama_cpp_vllm_ocr_entry.client_model_id,
+        'aliases': [],
+        'hf_repo': _llama_cpp_vllm_ocr_artifact.hf_repo,
+        'gguf': _llama_cpp_vllm_ocr_artifact.include_globs | first,
+        'mmproj_file': _llama_cpp_vllm_ocr_artifact.mmproj_file,
+        'ctx_size': _llama_cpp_vllm_ocr_entry.context_window,
+        'param_billions': 0.9,
+        'embeddings': false,
+        'kv_unified': true,
+      }] if _llama_cpp_vllm_ocr_entry else []) }}
 
 systemd_restart_policy_services:
   - llama-server

@@ -83,6 +83,23 @@ def test_every_section_model_path_resolves_under_the_configured_mount():
         assert model_path.startswith("/mnt/ro-models/"), f"{section!r} model path {model_path!r} escapes the mount"
 
 
+def test_image_text_model_renders_mmproj_only_when_configured():
+    models = [
+        {
+            "name": "fixture-image-text",
+            "aliases": [],
+            "gguf": "fixture-image-text.gguf",
+            "embeddings": False,
+            "mmproj_file": "fixture-projector.gguf",
+        },
+        {"name": "fixture-chat", "aliases": [], "gguf": "fixture-chat.gguf", "embeddings": False},
+    ]
+    parser = _parse(render(llama_cpp_models_present=models))
+
+    assert parser.get("fixture-image-text", "mmproj") == "/mnt/ro-models/fixture-projector.gguf"
+    assert not parser.has_option("fixture-chat", "mmproj")
+
+
 def test_chat_section_omits_embeddings_flags_and_carries_cache_reuse():
     parser = _parse(render())
     # "pooling" is emitted only in the embeddings branch, so its absence here
