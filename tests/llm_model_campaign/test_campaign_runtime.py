@@ -324,6 +324,9 @@ def test_cell_command_timeout_and_keyed_no_log():
     timeout_seconds = target["vars"]["llm_model_campaign_cell_timeout_seconds"]
     fail_msg = failure["ansible.builtin.fail"]["msg"]
 
+    assert command["ansible.builtin.command"]["argv"] == (
+        "{{ [_llm_campaign_run.executable] + _llm_campaign_rendered_argv }}"
+    )
     assert "OPENAI_API_KEY" in command["environment"]
     assert "HF_ALLOW_CODE_EVAL" in command["environment"]
     assert command["async"] == "{{ llm_model_campaign_cell_timeout_seconds }}"
