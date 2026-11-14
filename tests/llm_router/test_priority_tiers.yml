@@ -53,6 +53,7 @@
         groups: llm_gpu_group
         ansible_connection: local
         llm_gpu_accelerator: "{{ llm_gpu_accelerator_primary }}"
+        llm_active_profile: medium-a
 
     - name: Load role defaults
       ansible.builtin.include_vars:
@@ -72,7 +73,7 @@
         llm_router_llm_large_standby_base_url: http://localhost:12434/v1
         llm_active_profile: medium-a
 
-    - name: Refresh projections for the complete fixture
+    - name: Materialize the enabled GPU profile projections
       ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
 
     - name: Render the complete router configuration
@@ -148,8 +149,23 @@
           {%- set out = [] -%}
           {%- for d in _members -%}
           {%- set p = d.litellm_params -%}
+          {%- set _sources = namespace(timeouts=[]) -%}
+          {%- for m in llm_router_capability_members -%}
+          {%- if m.route_group == d.model_name
+                and (m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id)) == p.model
+                and (m.profile | default(none)) == d.get('model_info', {}).get('profile') -%}
+          {%- set _source_timeout = ([m.request_timeout | int,
+                llm_router_local_request_timeout_seconds | int] | min)
+                if m.request_timeout is defined else llm_router_tier_2_timeout_seconds | int -%}
+          {%- set _sources.timeouts = _sources.timeouts + [_source_timeout] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- set _source_timeouts = _sources.timeouts | unique | list -%}
+          {%- set _expected_timeout = _source_timeouts | first
+                | default(llm_router_tier_2_timeout_seconds | int) -%}
           {%- if p.extra_body.priority != item.priority or p.extra_body.priority == 0
-                or (item.tier == 2 and (p.timeout != llm_router_tier_2_timeout_seconds
+                or (item.tier == 2 and (_source_timeouts | length > 1
+                    or p.timeout | int != _expected_timeout | int
                     or p.stream_timeout != llm_router_tier_2_timeout_seconds
                     or p.keepalive_seconds != llm_router_tier_2_keepalive_seconds))
                 or (item.tier != 2 and (p.timeout > llm_router_local_request_timeout_seconds

@@ -70,17 +70,26 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list | length == 1
-          - llm_router_probe_prechecks | selectattr('tier', 'equalto', 'vllm') | list | length == 1
+          - _vllm_registry_entries | length > 0
           - >-
-            (llm_router_probe_prechecks | selectattr('tier', 'equalto', 'vllm') | first).endpoint
-            == llm_router_llm_vllm_base_url ~ '/models'
+            _vllm_registry_entries | map(attribute='route_group') | unique | sort
+            == _vllm_probe_prechecks | map(attribute='route_name') | unique | sort
+          - >-
+            _vllm_probe_prechecks | map(attribute='endpoint') | unique | list
+            == [llm_router_llm_vllm_base_url ~ '/models']
           - not (llm_router_vllm_precheck_passed | bool)
           - llm_router_vllm_models | length == 0
           - >-
             _unprobed_config.model_list | selectattr('litellm_params.api_base', 'defined')
             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url)
             | list | length == 0
+      vars:
+        _vllm_registry_entries: >-
+          {{ llm_router_registry_enabled
+             | selectattr('tier', 'equalto', 'vllm') | list }}
+        _vllm_probe_prechecks: >-
+          {{ llm_router_probe_prechecks
+             | selectattr('tier', 'equalto', 'vllm') | list }}
 
     - name: Enable profile and precheck projections for the render fixture
       ansible.builtin.set_fact:

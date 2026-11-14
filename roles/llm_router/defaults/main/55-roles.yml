@@ -5,10 +5,27 @@ llm_router_embedding_model: >-
   {{ (llm_router_registry_enabled | selectattr('embedding', 'defined')
       | selectattr('embedding') | first).route_group }}
 llm_router_ocr_model: >-
-  {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
-      | selectattr('serving_role', 'equalto', 'ocr')
-      | map(attribute='route_group') | first) | default('', true) }}
-# Embed is always registered; OCR is absent when no enabled registry entry
+  {%- set _ocr_entries = (llm_router_capability_members
+      | selectattr('serving_role', 'defined')
+      | selectattr('serving_role', 'equalto', 'ocr') | list) -%}
+  {%- set _ocr_fallback = (_ocr_entries | map(attribute='route_group') | first)
+      | default('', true) -%}
+  {%- if llm_roles is defined
+        and llm_roles.roles is defined
+        and llm_roles.roles.ocr is defined
+        and llm_roles.roles.ocr.model is defined
+        and llm_roles.models is defined
+        and llm_roles.roles.ocr.model in llm_roles.models -%}
+  {%- set _ocr_model_id = llm_roles.models[llm_roles.roles.ocr.model].id -%}
+  {%- set _ocr_role_entry = (_ocr_entries
+      | selectattr('catalog_model_name', 'defined')
+      | selectattr('catalog_model_name', 'equalto', _ocr_model_id)
+      | first) | default(none) -%}
+  {{ _ocr_role_entry.route_group if _ocr_role_entry is not none else _ocr_fallback }}
+  {%- else -%}
+  {{ _ocr_fallback }}
+  {%- endif -%}
+# Embed is always registered; OCR is absent when no active registry entry
 # serves it. Consumers share this filtered projection instead of repeating it.
 llm_router_optional_capability_models: >-
   {{ [llm_router_embedding_model, llm_router_ocr_model]

@@ -20,7 +20,7 @@
 # Fails the converge when:
 #   - a router-selected model has neither an enabled, servable entry nor a parked entry;
 #   - that entry's max_parallel_requests differs from the catalog's limit;
-#   - the servable set differs from the server class's resident + swap models;
+#   - server-class servable entries differ from its resident + swap models;
 #   - a role names a model the map does not define.
 
 - name: Assert the registry serves exactly what the role map names
@@ -38,7 +38,7 @@
       {{ _llm_roles_unmatched | join(', ') }}.
       Entries whose max_parallel_requests differs from the catalog:
       {{ _llm_roles_concurrency_drift | join(', ') }}.
-      Servable entries the server class does not serve:
+      Server-class servable entries the server class does not serve:
       {{ _llm_roles_servable_extra | join(', ') }}.
       Models the server class serves with no servable entry:
       {{ _llm_roles_servable_missing | join(', ') }}.
@@ -90,8 +90,13 @@
       {%- endfor -%}
       {%- endfor -%}
       {{ ns.out }}
+    # The vllm tier runs on the GPU guest, outside the server-class resident set.
+    _llm_roles_server_class_entries: >-
+      {{ (_llm_roles_entries | rejectattr('tier', 'defined') | list)
+         + (_llm_roles_entries | selectattr('tier', 'defined')
+            | rejectattr('tier', 'equalto', 'vllm') | list) }}
     _llm_roles_servable_extra: >-
-      {{ _llm_roles_entries | map(attribute='catalog_model_name')
+      {{ _llm_roles_server_class_entries | map(attribute='catalog_model_name')
          | difference(_llm_roles_servable_ids) | list }}
     _llm_roles_servable_missing: >-
       {{ _llm_roles_servable_ids
