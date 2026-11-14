@@ -31,21 +31,22 @@
          ~ ('-s' ~ _llm_campaign_sample_slice_value if 'sample_slice_list' in _llm_campaign_run.dimensions else '')
          ~ '-r' ~ _llm_campaign_repetition_value }}
 
-- name: Create the row's target and controller result directories
+- name: Create the row's target result directory
   ansible.builtin.file:
-    path: "{{ item.path }}"
+    path: "{{ _llm_campaign_cell_target_dir }}"
     state: directory
     mode: "0750"
-  loop:
-    - path: "{{ _llm_campaign_cell_target_dir }}"
-      delegate: "{{ machine }}"
-    - path: "{{ _llm_campaign_cell_controller_dir }}"
-      delegate: localhost
-  loop_control:
-    label: "{{ item.path }}"
-  delegate_to: "{{ item.delegate }}"
+  delegate_to: "{{ machine }}"
+  become: true
+
+- name: Create the row's controller result directory
+  ansible.builtin.file:
+    path: "{{ _llm_campaign_cell_controller_dir }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
   vars:
-    ansible_become: "{{ item.delegate != 'localhost' }}"
+    ansible_become: false
 
 - name: Build the config-declared arguments from the current row parameters
   ansible.builtin.set_fact:
@@ -191,6 +192,7 @@
   when:
     - _llm_campaign_run.converter is defined
     - _llm_campaign_run.converter.kind == 'vllm'
+    - _llm_campaign_run.run_on != 'controller'
   register: _llm_campaign_vllm_fetch
 
 - name: Find lm-eval result and sample files for its converter
@@ -223,7 +225,7 @@
     paths: "{{ _llm_campaign_cell_controller_dir }}"
     patterns: "{{ 'results_*.json' if _llm_campaign_run.converter.kind == 'lm-eval'
                 else _llm_campaign_cell_slug ~ '.json' }}"
-    recurse: false
+    recurse: true
     file_type: file
   delegate_to: localhost
   vars:

@@ -152,3 +152,25 @@ def test_latency_gate_tasks_on_the_controller_never_escalate() -> None:
         assert delegated
         for task in delegated:
             assert task.get("vars", {}).get("ansible_become") is False, task["name"]
+
+
+def test_cell_result_directories_are_created_without_reading_a_loop_item() -> None:
+    cell = _tasks(PLAYBOOKS / "tasks/llm-model-campaign-cell.yml")
+    by_name = {task.get("name"): task for task in _walk(cell)}
+    target = by_name["Create the row's target result directory"]
+    controller = by_name["Create the row's controller result directory"]
+
+    assert "loop" not in target and "loop" not in controller
+    assert target["delegate_to"] == "{{ machine }}"
+    assert controller["delegate_to"] == "localhost"
+    assert controller["vars"] == {"ansible_become": False}
+    for task in _walk(cell):
+        for value in (task.get("vars") or {}).values():
+            assert "item." not in str(value), task.get("name")
+
+
+def test_cell_collects_results_from_the_host_that_wrote_them() -> None:
+    by_name = {task.get("name"): task for task in _walk(_tasks(PLAYBOOKS / "tasks/llm-model-campaign-cell.yml"))}
+
+    assert "_llm_campaign_run.run_on != 'controller'" in by_name["Fetch vLLM's existing result file for the existing converter"]["when"]
+    assert by_name["Find local converter inputs for this cell"]["ansible.builtin.find"]["recurse"] is True
