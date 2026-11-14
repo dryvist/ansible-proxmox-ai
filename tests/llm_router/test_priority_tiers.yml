@@ -54,6 +54,7 @@
         groups: llm_gpu_group
         ansible_connection: local
         llm_gpu_accelerator: "{{ llm_gpu_accelerator_primary }}"
+        llm_active_profile: medium-a
 
     - name: Load role defaults
       ansible.builtin.include_vars:
@@ -73,12 +74,15 @@
         llm_router_llm_large_standby_base_url: http://localhost:12434/v1
         llm_active_profile: medium-a
 
-    - name: Give the primary fixture model a catalog request timeout
+    - name: Materialize the enabled GPU profile before adding timeout fixture
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Give the active GPU profile a catalog request timeout
       ansible.builtin.set_fact:
-        llm_router_studio_shared_models: >-
+        llm_router_gpu_models: >-
           {%- set ns = namespace(models=[]) -%}
-          {%- for model in llm_router_studio_shared_models -%}
-          {%- if model.route_group == llm_router_primary_model -%}
+          {%- for model in llm_router_gpu_models -%}
+          {%- if model.profile == llm_active_profile -%}
           {%- set ns.models = ns.models + [model | combine({
                 'request_timeout': _llm_router_test_catalog_request_timeout_seconds})] -%}
           {%- else -%}
@@ -163,11 +167,23 @@
           {%- set out = [] -%}
           {%- for d in _members -%}
           {%- set p = d.litellm_params -%}
+          {%- set _sources = namespace(timeouts=[]) -%}
+          {%- for m in llm_router_capability_members -%}
+          {%- if m.route_group == d.model_name
+                and (m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id)) == p.model
+                and (m.profile | default(none)) == d.get('model_info', {}).get('profile') -%}
+          {%- set _source_timeout = ([m.request_timeout | int,
+                llm_router_local_request_timeout_seconds | int] | min)
+                if m.request_timeout is defined else llm_router_tier_2_timeout_seconds | int -%}
+          {%- set _sources.timeouts = _sources.timeouts + [_source_timeout] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- set _source_timeouts = _sources.timeouts | unique | list -%}
+          {%- set _expected_timeout = _source_timeouts | first
+                | default(llm_router_tier_2_timeout_seconds | int) -%}
           {%- if p.extra_body.priority != item.priority or p.extra_body.priority == 0
-                or (item.tier == 2 and (p.timeout != (
-                    _llm_router_test_catalog_request_timeout_seconds
-                    if d.model_name == llm_router_primary_model
-                    else llm_router_tier_2_timeout_seconds)
+                or (item.tier == 2 and (_source_timeouts | length > 1
+                    or p.timeout | int != _expected_timeout | int
                     or p.stream_timeout != llm_router_tier_2_timeout_seconds
                     or p.keepalive_seconds != llm_router_tier_2_keepalive_seconds))
                 or (item.tier != 2 and (p.timeout > llm_router_local_request_timeout_seconds
@@ -178,25 +194,40 @@
           {%- endfor -%}
           {{ out }}
 
-    - name: Tier two honors the primary model catalog request timeout
+    - name: Tier two renders the active GPU profile timeout fixture at its local cap
       ansible.builtin.assert:
         quiet: true
         that:
+          - _fixture_timeout_models | length == 1
+          - _fixture_timeout_model.get('request_timeout', -1) | int == _llm_router_test_catalog_request_timeout_seconds
           - _catalog_timeout_routes | length == 1
           - >-
             _catalog_timeout_routes | map(attribute='litellm_params.timeout') | list
-            == [_llm_router_test_catalog_request_timeout_seconds]
+            == [[_fixture_timeout_model.get('request_timeout', -1) | int,
+                 llm_router_local_request_timeout_seconds | int] | min]
         fail_msg: >-
-          Tier-two deployments for {{ llm_router_primary_model }} must use its
-          catalog request_timeout of {{ _llm_router_test_catalog_request_timeout_seconds }} seconds.
+          Tier-two deployment for {{ _fixture_timeout_model.get('route_group', '<missing>') }} must render
+          its catalog request_timeout of {{ _fixture_timeout_model.get('request_timeout', '<missing>') }}
+          seconds capped at {{ llm_router_local_request_timeout_seconds }} seconds.
         success_msg: >-
-          Tier two uses the catalog request_timeout of
-          {{ _llm_router_test_catalog_request_timeout_seconds }} seconds.
+          Tier two renders the active profile's catalog request_timeout fixture within the local cap.
       vars:
+        _fixture_timeout_models: >-
+          {{ llm_router_gpu_models
+             | selectattr('profile', 'equalto', llm_active_profile)
+             | selectattr('request_timeout', 'defined') | list }}
+        _fixture_timeout_model: "{{ _fixture_timeout_models | first | default({}) }}"
+        _fixture_timeout_upstream: >-
+          {{ _fixture_timeout_model.get('litellm_model_name')
+             | default(_fixture_timeout_model.get('provider', '') ~ '/'
+                       ~ _fixture_timeout_model.get('upstream_model_id', ''), true) }}
         _catalog_timeout_routes: >-
           {{ _config.model_list
-             | selectattr('model_name', 'equalto', llm_router_primary_model)
-             | selectattr('litellm_params.tags', 'contains', 'tier-2') | list }}
+             | selectattr('model_name', 'equalto', _fixture_timeout_model.get('route_group', '<missing>'))
+             | selectattr('litellm_params.model', 'equalto', _fixture_timeout_upstream)
+             | selectattr('litellm_params.tags', 'contains', 'tier-2')
+             | selectattr('litellm_params.api_base', 'equalto',
+                         llm_router_gpu_profile_base_urls[llm_active_profile]) | list }}
 
     - name: Cloud entries admit tiers 0 and 1 only
       ansible.builtin.assert:
