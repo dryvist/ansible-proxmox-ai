@@ -1,5 +1,54 @@
 # Changelog
 
+## [2.43.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.42.0...v2.43.0) (2026-11-14)
+
+
+### Features
+
+* **ai:** install Crawl4AI 0.9.5 in its own guest ([#2363](https://github.com/dryvist/ansible-proxmox-ai/issues/2363)) ([f5a6701](https://github.com/dryvist/ansible-proxmox-ai/commit/f5a670169277108f2289df62cd6f3f5da159d0c3))
+* **benchmark-run:** add the tau2 suite with a bearer key read from the secret store ([#2346](https://github.com/dryvist/ansible-proxmox-ai/issues/2346)) ([2ad553c](https://github.com/dryvist/ansible-proxmox-ai/commit/2ad553c30f7399344e918fb4f22e9d4798c3b6af))
+* **crawl4ai_docker:** default the API token from the apps domain ([#2383](https://github.com/dryvist/ansible-proxmox-ai/issues/2383)) ([bb6268f](https://github.com/dryvist/ansible-proxmox-ai/commit/bb6268fed3ddbe1de84f5848c78e14be9c3bb093))
+* **crawl4ai_docker:** read API token from OpenBao first ([bb6268f](https://github.com/dryvist/ansible-proxmox-ai/commit/bb6268fed3ddbe1de84f5848c78e14be9c3bb093))
+* **dify_docker:** declare PR automation shadow variables in inventory ([#2373](https://github.com/dryvist/ansible-proxmox-ai/issues/2373)) ([d28fb8c](https://github.com/dryvist/ansible-proxmox-ai/commit/d28fb8cb339c1dac26afdddad5da603bd938284b))
+* **dify_docker:** provision pinned Dify tool providers ([#2372](https://github.com/dryvist/ansible-proxmox-ai/issues/2372)) ([41ba75f](https://github.com/dryvist/ansible-proxmox-ai/commit/41ba75f27b0fcda44515a9994f923f2dd9249b00))
+* **dify_docker:** register the Vikunja clerk MCP provider ([#2392](https://github.com/dryvist/ansible-proxmox-ai/issues/2392)) ([d1c016f](https://github.com/dryvist/ansible-proxmox-ai/commit/d1c016f5c68516c9e9101ace1d581cbe43a81b1f))
+* **herdr_server:** start and probe the Orca server ([#2405](https://github.com/dryvist/ansible-proxmox-ai/issues/2405)) ([632c4bb](https://github.com/dryvist/ansible-proxmox-ai/commit/632c4bbb2f5175f22001a92fc93ce254f11107ee))
+* **hermes_agent:** allow a per-job wall-clock limit for cron jobs ([#2398](https://github.com/dryvist/ansible-proxmox-ai/issues/2398)) ([a62e204](https://github.com/dryvist/ansible-proxmox-ai/commit/a62e20490b666e4d5ff11526b8b2c43dc85781a6))
+* **hermes_agent:** allow a per-job wall-clock limit for long cron runs ([a62e204](https://github.com/dryvist/ansible-proxmox-ai/commit/a62e20490b666e4d5ff11526b8b2c43dc85781a6))
+* **hermes_agent:** enable zammad-review when configured ([#2400](https://github.com/dryvist/ansible-proxmox-ai/issues/2400)) ([ce11a4c](https://github.com/dryvist/ansible-proxmox-ai/commit/ce11a4cccff76b6e6aa2ea0240d3a2fe065911c1))
+* **hermes_agent:** give the private identity two hourly and two daily local jobs ([#2397](https://github.com/dryvist/ansible-proxmox-ai/issues/2397)) ([9468c76](https://github.com/dryvist/ansible-proxmox-ai/commit/9468c76f2b6fcc99df04113cb29b817c93684060))
+* **hermes_agent:** kanban toolset, empty default assignee and converge contract asserts ([#2367](https://github.com/dryvist/ansible-proxmox-ai/issues/2367)) ([0362601](https://github.com/dryvist/ansible-proxmox-ai/commit/0362601b668f51c9efa46c08e023140ebbba0a94))
+* **hermes_agent:** run zammad-review in homelab-admin when its credentials exist ([ce11a4c](https://github.com/dryvist/ansible-proxmox-ai/commit/ce11a4cccff76b6e6aa2ea0240d3a2fe065911c1))
+* **hermes_agent:** schedule hourly local agent jobs ([#2376](https://github.com/dryvist/ansible-proxmox-ai/issues/2376)) ([319a094](https://github.com/dryvist/ansible-proxmox-ai/commit/319a0944d70ddd46f036e6feed144575cbb8c269))
+* **llm-router:** add QwenCloud Token Plan model entries ([#2368](https://github.com/dryvist/ansible-proxmox-ai/issues/2368)) ([6bab7e9](https://github.com/dryvist/ansible-proxmox-ai/commit/6bab7e97d8d28585bb44ad529b70ce496763a82f))
+* **model_campaign:** resolve authenticated lm-eval inputs and small-lane metadata ([#2395](https://github.com/dryvist/ansible-proxmox-ai/issues/2395)) ([7288da4](https://github.com/dryvist/ansible-proxmox-ai/commit/7288da441e0fe47e0fd445d0939ef209ae89075f))
+* serve dense-layout image text on Vulkan ([#2419](https://github.com/dryvist/ansible-proxmox-ai/issues/2419)) ([60884e5](https://github.com/dryvist/ansible-proxmox-ai/commit/60884e58647e7f51d1fad437f8c4e7da4b25dfe0))
+
+
+### Bug Fixes
+
+* **dify_docker:** install tool providers only for selected apps that bind them ([#2384](https://github.com/dryvist/ansible-proxmox-ai/issues/2384)) ([49d6ded](https://github.com/dryvist/ansible-proxmox-ai/commit/49d6dedcb26653e9d0b41a6a20bbfa48d83c6976))
+* **dify_docker:** pin the agent DSL catalog to ai-llm-prompts v1.109.1 ([#2381](https://github.com/dryvist/ansible-proxmox-ai/issues/2381)) ([7b798fe](https://github.com/dryvist/ansible-proxmox-ai/commit/7b798fe6133a471a786816d490fe9346768d4991))
+* **dify_docker:** pin the agent DSL catalog to ai-llm-prompts v1.111.1 ([#2394](https://github.com/dryvist/ansible-proxmox-ai/issues/2394)) ([5d5fc8d](https://github.com/dryvist/ansible-proxmox-ai/commit/5d5fc8d8b91a18241a3427708d34b604fb3dbdd0))
+* **dify_docker:** resolve tool plugin pins through the per-version Marketplace endpoint ([#2380](https://github.com/dryvist/ansible-proxmox-ai/issues/2380)) ([ff2a3f9](https://github.com/dryvist/ansible-proxmox-ai/commit/ff2a3f982bd31b04f5f7a5d07c7171e962d56076))
+* **hermes_agent:** give the log route its own import ([#2399](https://github.com/dryvist/ansible-proxmox-ai/issues/2399)) ([acebe69](https://github.com/dryvist/ansible-proxmox-ai/commit/acebe698297d3bf96094b44e2e8b39ad714f700e))
+* **hermes_agent:** let a logging-only run reach the Hermes log route ([acebe69](https://github.com/dryvist/ansible-proxmox-ai/commit/acebe698297d3bf96094b44e2e8b39ad714f700e))
+* **hermes_agent:** pass the kanban precheck on the canonical DB and warn on other copies ([#2390](https://github.com/dryvist/ansible-proxmox-ai/issues/2390)) ([0af9d4b](https://github.com/dryvist/ansible-proxmox-ai/commit/0af9d4bdbf3bbb905e701cf7cb31846c148dddd9))
+* **hermes_agent:** pin the prompt catalog to v1.108.0 ([#2379](https://github.com/dryvist/ansible-proxmox-ai/issues/2379)) ([d21e1f8](https://github.com/dryvist/ansible-proxmox-ai/commit/d21e1f86e486ab9e42be8b743b6be36b1874e2e7))
+* **hermes_agent:** restrict Pepper digest destinations ([#2371](https://github.com/dryvist/ansible-proxmox-ai/issues/2371)) ([2c21d40](https://github.com/dryvist/ansible-proxmox-ai/commit/2c21d40bfa368dec510d1095a0d200bb86ba22dc))
+* **hermes_agent:** size the agent run budget to the longest cron job limit ([#2410](https://github.com/dryvist/ansible-proxmox-ai/issues/2410)) ([d4a17fa](https://github.com/dryvist/ansible-proxmox-ai/commit/d4a17fa79770f7d859dec6ae394d4a89fa08f791))
+* **inventory:** generic defaults for two repository references ([#2423](https://github.com/dryvist/ansible-proxmox-ai/issues/2423)) ([60b88ad](https://github.com/dryvist/ansible-proxmox-ai/commit/60b88adf02c3ca246b0512bd46d36359e9f5c5b9))
+* **llm_router:** add the Qwen Token Plan path ([#2374](https://github.com/dryvist/ansible-proxmox-ai/issues/2374)) ([431f4d8](https://github.com/dryvist/ansible-proxmox-ai/commit/431f4d8de35d9ece5ee003913dfbf1dbeda8269f))
+* **llm_router:** block sentence-chained transfers of a named sensitive item ([00a3f40](https://github.com/dryvist/ansible-proxmox-ai/commit/00a3f401f7311153f2e439725abc81507420025f))
+* **llm_router:** block verb-led chained transfers of a named sensitive item ([#2414](https://github.com/dryvist/ansible-proxmox-ai/issues/2414)) ([00a3f40](https://github.com/dryvist/ansible-proxmox-ai/commit/00a3f401f7311153f2e439725abc81507420025f))
+* **llm_router:** cap local model context at 200000 ([#2375](https://github.com/dryvist/ansible-proxmox-ai/issues/2375)) ([79afa35](https://github.com/dryvist/ansible-proxmox-ai/commit/79afa3543f864a90c9bba4e5ea0d8d1189c1d241))
+* **llm_router:** fail when a seeded Qwen cloud model drops from the rendered list ([#2393](https://github.com/dryvist/ansible-proxmox-ai/issues/2393)) ([d5f7ecc](https://github.com/dryvist/ansible-proxmox-ai/commit/d5f7ecc67bdb3fcb4e2e7fbcffefca7b14475d19))
+* **llm_router:** label each deployment with the accelerator that serves it ([#2415](https://github.com/dryvist/ansible-proxmox-ai/issues/2415)) ([3582cb7](https://github.com/dryvist/ansible-proxmox-ai/commit/3582cb7400088199f6ff47d33c9a9bf81dc21319))
+* **llm_router:** refuse a key rotation that cannot re-mint every flagged alias ([#2362](https://github.com/dryvist/ansible-proxmox-ai/issues/2362)) ([dad26e9](https://github.com/dryvist/ansible-proxmox-ai/commit/dad26e9e0926e9149a7e132c79bdaa0077fbb43c))
+* **llm_serving_declared_metrics:** create the textfile collector directory or fail ([#2404](https://github.com/dryvist/ansible-proxmox-ai/issues/2404)) ([32a8812](https://github.com/dryvist/ansible-proxmox-ai/commit/32a8812cfb118c0e0ebcdd882a7ab2760b5b39a5))
+* **llm:** target the medium lane's served profile in the model campaign ([#2391](https://github.com/dryvist/ansible-proxmox-ai/issues/2391)) ([3161b73](https://github.com/dryvist/ansible-proxmox-ai/commit/3161b731fc43ffaf7a1f80bd97fcba4c43b9e763))
+* prefer canonical catalog model matches ([#2417](https://github.com/dryvist/ansible-proxmox-ai/issues/2417)) ([10e3181](https://github.com/dryvist/ansible-proxmox-ai/commit/10e31819ae799c94581339de481e893218e0c86d))
+
 ## [2.42.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.41.0...v2.42.0) (2026-11-12)
 
 
