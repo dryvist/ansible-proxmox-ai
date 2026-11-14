@@ -20,6 +20,7 @@
     dify_docker_dsl_unresolved_names: []
     dify_docker_dsl_unresolved_tools: []
     dify_docker_dsl_bad_mode_names: []
+    dify_docker_dsl_skipped_tool_providers: []
   no_log: true
 
 - name: Collect declared variables that do not name exactly one source
@@ -111,6 +112,33 @@
            | map(attribute='name') | list) }}
   no_log: true
 
+# An import-all run (the app not named in dify_docker_agent_dsl_select) skips an
+# app whose declared tool provider does not name exactly one workspace provider:
+# it is not imported or overwritten, the run continues with the next app, and the
+# end-of-run summary names it and its unresolved providers. Naming the app in
+# dify_docker_agent_dsl_select keeps the hard failure, and so does a private
+# definition, which the deployment supplied itself.
+- name: Decide whether an app with unresolved tool providers is skipped by this run
+  ansible.builtin.set_fact:
+    dify_docker_dsl_skip_import: >-
+      {{ (dify_docker_dsl_unresolved_tools | length > 0)
+         and (dify_docker_dsl_name not in dify_docker_agent_dsl_select)
+         and not (dify_docker_agent_dsl.private | default(false) | bool) }}
+  no_log: true
+
+# The assert below stays fatal on unresolved variables for every app. A skipped
+# app holds its unresolved provider names here for its record and the end-of-run
+# summary instead, so the assert sees none of them, and its provider-dependent
+# checks are released: the placeholder replacement never runs and the MCP tool
+# node check keeps its own gate on the now empty MCP tool names.
+- name: Keep the unresolved tool provider names of a skipped app for its record
+  ansible.builtin.set_fact:
+    dify_docker_dsl_skipped_tool_providers: "{{ dify_docker_dsl_unresolved_tools }}"
+    dify_docker_dsl_unresolved_tools: []
+    dify_docker_dsl_mcp_tool_names: []
+  when: dify_docker_dsl_skip_import | bool
+  no_log: true
+
 - name: Assert every declared variable and tool provider resolved before any import
   ansible.builtin.assert:
     that:
@@ -156,6 +184,7 @@
     dify_docker_dsl_missing_tool_keys: >-
       {{ dify_docker_dsl_tool_provider_map | dict2items | map(attribute='key')
          | reject('in', dify_docker_dsl_content) | list }}
+  when: not dify_docker_dsl_skip_import | bool
   no_log: true
 
 - name: Assert every declared tool provider placeholder occurs in the app definition
@@ -165,6 +194,7 @@
     fail_msg: >-
       {{ dify_docker_dsl_name }}: declared tool provider placeholders not in the definition:
       {{ dify_docker_dsl_missing_tool_keys | join(', ') }}
+  when: not dify_docker_dsl_skip_import | bool
 
 - name: Replace each declared placeholder in the DSL with its tool provider id
   ansible.builtin.set_fact:
@@ -175,6 +205,7 @@
   loop_control:
     loop_var: dify_docker_dsl_tool_entry
     label: "{{ dify_docker_dsl_tool_entry.key }}"
+  when: not dify_docker_dsl_skip_import | bool
   no_log: true
 
 - name: List the declared tool provider placeholders still present after the replacement
@@ -182,6 +213,7 @@
     dify_docker_dsl_remaining_tool_keys: >-
       {{ dify_docker_dsl_tool_provider_map | dict2items | map(attribute='key')
          | select('in', dify_docker_dsl_content) | list }}
+  when: not dify_docker_dsl_skip_import | bool
   no_log: true
 
 - name: Assert no declared tool provider placeholder remains after the replacement
@@ -191,6 +223,7 @@
     fail_msg: >-
       {{ dify_docker_dsl_name }}: declared tool provider placeholders still in the definition:
       {{ dify_docker_dsl_remaining_tool_keys | join(', ') }}
+  when: not dify_docker_dsl_skip_import | bool
 
 # MCP tool nodes name a provider id that must be a workspace id once the replacements are done.
 - name: Check each MCP tool node names a workspace provider id after the replacements
@@ -208,17 +241,21 @@
          | map(attribute='name') | reject('in', dify_docker_dsl_declared_names) | list }}
   no_log: true
 
-# An import-all run (the app not named in dify_docker_agent_dsl_select) skips such an
-# app instead of failing on it: it is not imported or overwritten, the run continues
-# with the next app, and the end-of-run summary names it and its missing variables.
-# Naming the app in dify_docker_agent_dsl_select keeps the hard failure, and so does a
-# private definition, which the deployment supplied itself.
+# An import-all run (the app not named in dify_docker_agent_dsl_select) skips an
+# app with undeclared variables on top of the tool-provider skip above: it is not
+# imported or overwritten, the run continues with the next app, and the
+# end-of-run summary names it and its missing variables. Naming the app in
+# dify_docker_agent_dsl_select keeps the hard failure, and so does a private
+# definition, which the deployment supplied itself. An app already skipped for
+# its unresolved tool providers stays skipped, and its one record below carries
+# both reason lists.
 - name: Decide whether an app with undeclared variables is skipped by this run
   ansible.builtin.set_fact:
     dify_docker_dsl_skip_import: >-
-      {{ (dify_docker_dsl_undeclared_empty | length > 0)
-         and (dify_docker_dsl_name not in dify_docker_agent_dsl_select)
-         and not (dify_docker_agent_dsl.private | default(false) | bool) }}
+      {{ dify_docker_dsl_skip_import | bool
+         or ((dify_docker_dsl_undeclared_empty | length > 0)
+             and (dify_docker_dsl_name not in dify_docker_agent_dsl_select)
+             and not (dify_docker_agent_dsl.private | default(false) | bool)) }}
   no_log: true
 
 - name: Assert every environment variable of the app definition with an empty value has an entry
@@ -232,11 +269,13 @@
     dify_docker_dsl_name in dify_docker_agent_dsl_select
     or (dify_docker_agent_dsl.private | default(false) | bool)
 
-- name: Record the app skipped for its undeclared variables
+- name: Record the app skipped by this run
   ansible.builtin.set_fact:
     dify_docker_dsl_skipped_apps: >-
       {{ dify_docker_dsl_skipped_apps | default([])
-         + [{'name': dify_docker_dsl_name, 'variables': dify_docker_dsl_undeclared_empty}] }}
+         + [{'name': dify_docker_dsl_name,
+            'variables': dify_docker_dsl_undeclared_empty,
+            'tool_providers': dify_docker_dsl_skipped_tool_providers | default([])}] }}
   when: dify_docker_dsl_skip_import | bool
   no_log: true
 
