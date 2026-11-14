@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.48.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.47.2...v2.48.0) (2026-11-14)
+
+
+### Features
+
+* **agent:** zcode run j-af57754f42ef2adb ([f62c4ed](https://github.com/dryvist/ansible-proxmox-ai/commit/f62c4edddddcef1c33f13977217492d86d2c55e0))
+
+
+### Bug Fixes
+
+* **dify_docker:** skip an app with an unresolved tool provider in an import-all run ([#2474](https://github.com/dryvist/ansible-proxmox-ai/issues/2474)) ([f62c4ed](https://github.com/dryvist/ansible-proxmox-ai/commit/f62c4edddddcef1c33f13977217492d86d2c55e0))
+
 ## [2.47.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.47.1...v2.47.2) (2026-11-14)
 
 
