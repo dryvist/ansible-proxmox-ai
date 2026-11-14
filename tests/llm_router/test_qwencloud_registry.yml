@@ -1,0 +1,241 @@
+---
+- name: Verify Qwen Token Plan registry entries and projections
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../inventory/group_vars/all/02-gpu-accelerator.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    _credentialed_render_extra_secrets: >-
+      {{ {
+        (llm_router_hermes_cloud_models
+         | selectattr('provider', 'equalto', 'openai')
+         | selectattr('api_base_field', 'defined')
+         | map(attribute='credential_env') | first): 'test-token',
+        (llm_router_hermes_cloud_models
+         | selectattr('provider', 'equalto', 'openai')
+         | selectattr('api_base_field', 'defined')
+         | map(attribute='api_base_field') | first): 'https://example.invalid/v1'
+      } }}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: medium
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Render with synthetic Qwen credential fields
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: Select Qwen entries from the registry provider projection
+      ansible.builtin.set_fact:
+        _qwen_entries: >-
+          {{ llm_router_hermes_cloud_models
+             | selectattr('provider', 'equalto', 'openai')
+             | selectattr('api_base_field', 'defined')
+             | list }}
+
+    - name: Select the Qwen 3.8 entries and rendered deployments
+      ansible.builtin.set_fact:
+        _qwen_38_entries: >-
+          {{ _qwen_entries
+             | selectattr('client_model_id', 'match', '^qwen3[.]8-') | list }}
+        _qwen_deployments: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_key', 'defined')
+             | selectattr('litellm_params.api_key', 'equalto',
+                 'os.environ/' ~ (_qwen_entries | first).key_field)
+             | list }}
+
+    - name: Assert all credentialed Qwen names render and the credential guard passes
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-hermes-cloud-credentialed-models.yml"
+
+    - name: Assert the three Qwen client names are rendered
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _qwen_entries | map(attribute='client_model_id') | sort
+            == (_config.model_list
+                | selectattr('model_name', 'in', _qwen_entries | map(attribute='route_group') | list)
+                | map(attribute='model_name') | unique | sort | list)
+          - _qwen_entries | length == 3
+          - _qwen_deployments | length == 3
+        fail_msg: "All credentialed Qwen client names must render once."
+
+    - name: Assert every rendered Qwen deployment is admin-only and non-ZDR
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.benchmark_only is true
+          - item.zero_data_retention is false
+          - item.hermes_chain is false
+          - item.client_model_id in llm_router_benchmark_only_model_names
+          - item.route_group in llm_router_benchmark_only_model_names
+          - >-
+            _config.model_list
+            | selectattr('model_name', 'equalto', item.route_group)
+            | list | length == 1
+        fail_msg: "Every Qwen model must render as an admin-only, non-ZDR deployment."
+      loop: "{{ _qwen_entries }}"
+      loop_control:
+        label: "{{ item.client_model_id }}"
+
+    - name: Assert exactly three distinct Qwen identities are projected
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _qwen_entries | length == 3
+          - _qwen_entries | map(attribute='client_model_id') | unique | length == 3
+          - _qwen_38_entries | length == 2
+          - _qwen_38_entries | map(attribute='context_window') | unique | length == 1
+          - _qwen_entries | map(attribute='key_field') | unique | length == 1
+          - _qwen_deployments | length == _qwen_entries | length
+        fail_msg: "The registered Qwen entries or rendered deployments are missing or duplicated."
+
+    - name: Assert each OpenAI-compatible chat entry resolves and projects registry metadata
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.client_model_id == item.upstream_model_id
+          - item.route_group == item.client_model_id
+          - item.litellm_model_name == 'openai/' ~ item.upstream_model_id
+          - item.provider == 'openai'
+          - item.mode == 'chat'
+          - item.credential_env == item.key_field
+          - item.api_base_field is defined
+          - item.catalog_model_name is defined
+          - item.catalog_model_name == item.client_model_id
+            or item.catalog_model_name in item.catalog_aliases
+          - >-
+            (llm_model_catalog_models
+             | selectattr('name', 'equalto', item.client_model_id) | list | length == 0)
+            or item.catalog_model_name == item.client_model_id
+          - item.catalog_limit_overrides | sort == ['context_window', 'max_output_tokens']
+          - _qwen_deployment.litellm_params.model == item.litellm_model_name
+          - >-
+            _qwen_deployment.litellm_params.api_base
+            == _credentialed_render_extra_secrets[item.api_base_field]
+          - _qwen_deployment.litellm_params.api_key == 'os.environ/' ~ item.key_field
+          - _qwen_deployment.litellm_params.max_tokens | int == item.max_output_tokens | int
+          - _qwen_deployment.model_info.max_input_tokens | int == item.context_window | int
+          - _qwen_deployment.model_info.max_output_tokens | int == item.max_output_tokens | int
+          - item.model_info.plan_credit_unit is defined
+          - _qwen_deployment.model_info.plan_credit_unit == item.model_info.plan_credit_unit
+          - item.model_info.plan_credit_multiplier_off_peak is defined
+          - >-
+            _qwen_deployment.model_info.plan_credit_multiplier_off_peak
+            == item.model_info.plan_credit_multiplier_off_peak
+          - item.model_info.plan_off_peak_window_utc is defined
+          - >-
+            _qwen_deployment.model_info.plan_off_peak_window_utc
+            == item.model_info.plan_off_peak_window_utc
+          - >-
+            _qwen_deployment.model_info ==
+            (_qwen_deployment.model_info | combine(item.model_info, recursive=true))
+          - >-
+            '"input_cost_per_token":' not in (item | to_json)
+          - >-
+            '"output_cost_per_token":' not in (item | to_json)
+          - "'input_cost_per_token' not in _qwen_deployment.litellm_params"
+          - "'output_cost_per_token' not in _qwen_deployment.litellm_params"
+          - "'input_cost_per_token' not in _qwen_deployment.model_info"
+          - "'output_cost_per_token' not in _qwen_deployment.model_info"
+          - _qwen_deployment.model_info.off_peak_pricing is not defined
+        fail_msg: "A Qwen entry did not resolve its endpoint or preserve its registry metadata."
+      loop: "{{ _qwen_entries }}"
+      loop_control:
+        label: "{{ item.client_model_id }}"
+      vars:
+        _qwen_deployment: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', item.route_group)
+             | selectattr('litellm_params.model', 'equalto', item.litellm_model_name)
+             | first }}
+
+    - name: Build benchmark filter cases, including an explicit false value
+      ansible.builtin.set_fact:
+        _qwen_false_benchmark_case: >-
+          {{ (_qwen_entries | first)
+             | combine({'benchmark_only': false}) }}
+        _qwen_benchmark_test_entries: >-
+          {{ _qwen_entries
+             + [((_qwen_entries | first)
+                | combine({'benchmark_only': false}))] }}
+
+    - name: Assert explicit false remains in the non-benchmark set
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _qwen_false_benchmark_case.benchmark_only is false
+          - >-
+            _qwen_entries
+            | selectattr('benchmark_only', 'defined')
+            | selectattr('benchmark_only', 'equalto', true)
+            | list | length > 0
+          - >-
+            _qwen_false_benchmark_case in
+            ((_qwen_benchmark_test_entries | rejectattr('benchmark_only', 'defined') | list)
+             + (_qwen_benchmark_test_entries | selectattr('benchmark_only', 'defined')
+                | rejectattr('benchmark_only', 'equalto', true) | list))
+          - >-
+            _qwen_false_benchmark_case not in
+            (_qwen_benchmark_test_entries | selectattr('benchmark_only', 'defined')
+             | selectattr('benchmark_only', 'equalto', true) | list)
+        fail_msg: "An explicit false benchmark_only value must remain eligible."
+
+    - name: Assert benchmark-only entries do not enter shared ladders or partner key scopes
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.route_group not in llm_router_d1_ladder_groups
+          - item.route_group not in (llm_router_d1_rungs_by_class.values() | flatten)
+          - item.route_group not in llm_router_hermes_cloud_zero_retry_groups
+          - item.route_group not in llm_router_multi_member_cloud_groups
+          - item.route_group not in llm_router_external_terminal_rungs
+          - item.route_group not in llm_router_hermes_default_fallback_chain
+          - item.route_group not in llm_router_hermes_cloud_only_fallback_groups
+          - item.route_group not in llm_router_hermes_cloud_subscription_groups
+          - item.route_group not in llm_router_hermes_cloud_paid_groups
+          - item.route_group not in llm_router_hermes_cloud_free_groups
+          - item.route_group not in llm_router_hermes_cloud_api_key_groups
+          - item.route_group not in llm_router_local_only_fail_fast_names
+          - item.client_model_id not in llm_router_entry_point_names
+          - item.route_group not in llm_router_entry_point_names
+          - item.route_group not in llm_router_d1_zdr_key_groups
+          - item.route_group not in llm_router_zdr_asserted_group_names
+          - item.client_model_id not in llm_router_zdr_asserted_group_names
+          - item.route_group not in llm_router_d1_public_key_groups
+          - item.client_model_id not in _llm_router_key_scope_all
+          - item.route_group not in _llm_router_key_scope_all
+          - >-
+            item.client_model_id not in
+            (_llm_router_declared_virtual_keys | map(attribute='models') | flatten)
+          - >-
+            item.route_group not in
+            (_llm_router_declared_virtual_keys | map(attribute='models') | flatten)
+          - item.client_model_id not in (llm_router_virtual_keys | map(attribute='models') | flatten)
+          - item.route_group not in (llm_router_virtual_keys | map(attribute='models') | flatten)
+        fail_msg: "A benchmark-only route entered a shared ladder or partner key scope."
+      loop: >-
+        {{ _qwen_benchmark_test_entries
+           | selectattr('benchmark_only', 'defined')
+           | selectattr('benchmark_only', 'equalto', true) | list }}
+      loop_control:
+        label: "{{ item.client_model_id }}"

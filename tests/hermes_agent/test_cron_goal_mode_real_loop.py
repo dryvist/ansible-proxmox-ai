@@ -178,7 +178,7 @@ def test_budget_wrapup_returns_a_structured_partial_result(
             return result
 
     namespace = _goal_runner_namespace()
-    namespace["_hermes_cron_wall_timeout_limit"] = wall_timeout_seconds
+    namespace["_hermes_cron_wall_timeout_limit"] = lambda _job_name: wall_timeout_seconds()
     run = namespace["_hermes_cron_goal_run"]
     agent = _BudgetAgent()
     result = run(agent, "sweep splunk", "splunk-triage", "task-id")

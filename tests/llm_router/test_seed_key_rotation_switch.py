@@ -15,6 +15,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+from jinja2 import Environment
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "llm_router"
 
@@ -68,3 +71,28 @@ def test_keys_are_re_read_after_a_rotation_delete() -> None:
         "Create the caller keys that have a seeded value"
     )
     assert delete_idx < reread_idx < create_idx
+
+
+def test_rotation_refuses_an_alias_it_cannot_re_mint_before_the_delete() -> None:
+    tasks = yaml.safe_load(SEED_KEYS_SOURCE)
+    names = [task.get("name") for task in tasks]
+    declared_name = "Assert every alias flagged for rotation is declared"
+    format_name = "Assert every replacement value for a rotated alias is a valid LiteLLM custom key"
+    delete_index = names.index("Delete the live key for every alias flagged for rotation")
+    assert names.index(declared_name) < names.index(format_name) < delete_index
+    gate = "(llm_router_rotate_key_aliases | default([]) | length) > 0"
+    environment = Environment()
+
+    declared = tasks[names.index(declared_name)]
+    assert declared["when"] == gate
+    undeclared = environment.compile_expression(declared["vars"]["_llm_router_undeclared_rotate_aliases"].strip()[2:-2])
+    keys = [{"alias": "first", "value": "sk-" + "a" * 13}, {"alias": "first", "value": ""}, {"alias": "other", "value": ""}]
+    assert undeclared(llm_router_rotate_key_aliases=["first"], llm_router_virtual_keys=keys) == []
+    assert undeclared(llm_router_rotate_key_aliases=["first", "gone"], llm_router_virtual_keys=keys) == ["gone"]
+
+    # The shared format assert receives every entry for a rotated alias, duplicates included.
+    format_check = tasks[names.index(format_name)]
+    assert format_check["ansible.builtin.import_tasks"] == "assert-seed-key-format.yml"
+    assert format_check["when"] == gate
+    candidates = environment.compile_expression(format_check["vars"]["_llm_router_unseeded_keys"].strip()[2:-2])
+    assert candidates(llm_router_rotate_key_aliases=["first"], llm_router_virtual_keys=keys) == keys[:2]

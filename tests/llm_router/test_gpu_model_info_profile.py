@@ -43,7 +43,7 @@ RETIRED_FLASH_NEXT_NVFP4_PROFILES = {
 
 
 @lru_cache(maxsize=1)
-def _entries() -> list[dict]:
+def _projected_entries() -> list[dict]:
     """Read the router registry after its production catalog projection."""
     with tempfile.TemporaryDirectory(prefix="llm-router-catalog-projection-") as temp_dir:
         output = Path(temp_dir) / "gpu-registry.json"
@@ -65,7 +65,11 @@ def _entries() -> list[dict]:
         )
         assert result.returncode == 0, result.stdout + result.stderr
         projected = json.loads(output.read_text(encoding="utf-8"))
-    return [entry for entry in projected if entry["tier"] == "gpu"]
+    return projected
+
+
+def _entries() -> list[dict]:
+    return [entry for entry in _projected_entries() if entry["tier"] == "gpu"]
 
 
 def _serving_profiles() -> dict:

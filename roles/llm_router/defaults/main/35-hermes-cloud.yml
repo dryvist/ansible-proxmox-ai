@@ -4,7 +4,9 @@
 # local-only callers keep their explicit empty chains.
 llm_router_hermes_virtual_models: >-
   {{ llm_router_registry_enabled
-     | selectattr('tier', 'equalto', 'hermes-router') | list }}
+     | selectattr('tier', 'equalto', 'hermes-router')
+     | rejectattr('client_model_id', 'in', llm_router_benchmark_only_model_names)
+     | list }}
 llm_router_hermes_cloud_models: >-
   {{ llm_router_registry_enabled
      | selectattr('tier', 'equalto', 'hermes-cloud') | list }}
@@ -22,9 +24,13 @@ llm_router_hermes_cloud_models_credentialed: >-
   {%- set ns = namespace(credentialed=[], models=[], groups=[]) -%}
   {%- for m in llm_router_hermes_cloud_models -%}
   {%- set key = _llm_router_m_resolved_credentials.get(m.credential_env, '') -%}
+  {%- set api_base = _llm_router_m_resolved_api_bases.get(m.client_model_id, '') -%}
   {%- if (key | length > 0)
         or (m.provider == 'chatgpt' and (llm_router_chatgpt_auth_file_present | default(false) | bool)) -%}
-  {%- set ns.credentialed = ns.credentialed + [m] -%}
+  {%- if m.api_base_field is not defined or api_base | length > 0 -%}
+  {%- set resolved = m | combine({'api_base': api_base}) if m.api_base_field is defined else m -%}
+  {%- set ns.credentialed = ns.credentialed + [resolved] -%}
+  {%- endif -%}
   {%- endif -%}
   {%- endfor -%}
   {%- for m in ns.credentialed -%}
@@ -68,8 +74,11 @@ llm_router_hermes_cloud_only_fallback_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in _llm_router_m_hermes_cloud_models_credentialed | rejectattr('hermes_chain', 'defined') -%}
   {%- set group = m.fallback_group | default(m.route_group | default(m.client_model_id)) -%}
+  {%- if m.client_model_id not in llm_router_benchmark_only_model_names
+        and group not in llm_router_benchmark_only_model_names -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.groups }}
@@ -190,7 +199,9 @@ llm_router_hermes_default_fallback_chain: >-
 llm_router_hermes_cloud_budgeted_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in _llm_router_m_hermes_cloud_models_credentialed
-       if m.monthly_budget is defined or m.max_budget is defined -%}
+       if m.client_model_id not in llm_router_benchmark_only_model_names
+          and (m.route_group | default(m.client_model_id)) not in llm_router_benchmark_only_model_names
+          and (m.monthly_budget is defined or m.max_budget is defined) -%}
   {%- set group = m.fallback_group | default(m.route_group) -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}

@@ -254,8 +254,8 @@ def test_enabled_job_on_a_missing_profile_home_fails_naming_the_profile_and_path
 ZAMMAD_REVIEW_HOME = f"{HOME}/profiles/homelab-admin"
 
 
-def _zammad_review_job() -> dict:
-    """The declared entry, with its name and home rendered as Ansible renders them."""
+def _zammad_review_job(*, routed: bool = True) -> dict:
+    """The declared entry with its readiness gate, name, and home rendered."""
     raw = next(
         job for job in role_defaults(ROLE)["hermes_agent_direct_cron_jobs"]
         if job["name"] == "{{ hermes_agent_zammad_review_cron_name }}"
@@ -263,31 +263,44 @@ def _zammad_review_job() -> dict:
     context = {
         "hermes_agent_zammad_review_cron_name": "zammad-review",
         "hermes_agent_hermes_home": HOME,
+        "hermes_agent_zammad_url": "https://zammad.example.com",
+        "hermes_agent_zammad_api_token": "fixture-zammad-token",
+        "hermes_agent_slack_bot_token": "fixture-slack-bot-token",
+        "hermes_agent_slack_app_token": "fixture-slack-app-token",
+        "hermes_agent_slack_profile_deliver_targets": (
+            {"homelab-admin": "slack:C0TEST"} if routed else {}
+        ),
     }
     return {
         **raw,
         "name": ENV.from_string(raw["name"]).render(**context),
         "hermes_home": ENV.from_string(raw["hermes_home"]).render(**context),
+        "enabled": ENV.from_string(str(raw["enabled"])).render(**context).strip() == "True",
     }
 
 
-def test_installed_zammad_review_is_withdrawn_from_its_profile_home():
+def test_zammad_review_is_reconciled_in_its_profile_home_when_ready():
     job = _zammad_review_job()
-    assert job["enabled"] is False
+    assert job["enabled"] is True
     assert job["hermes_home"] == ZAMMAD_REVIEW_HOME
-    assert _wanted(job, host="hermes") is False
+    assert _wanted(job, host="hermes") is True
     listed, failing, _ = _batch_facts([job], host="hermes", existing={HOME, ZAMMAD_REVIEW_HOME})
     assert ZAMMAD_REVIEW_HOME in listed
     assert failing == []
 
-    remove = next(
-        task for task in _direct_tasks()
-        if task.get("name", "").startswith("Direct cron | Remove job not owned")
-    )
-    remove_home = ENV.from_string(remove["environment"]["HERMES_HOME"]).render(
-        item=job, hermes_agent_hermes_home=HOME
-    )
-    assert remove_home == ZAMMAD_REVIEW_HOME
+    assert _ran(
+        name="zammad-review", wanted=True, listed=False, marker=None, changed=True
+    ) == {
+        "Direct cron | Create",
+        "Direct cron | Record desired state for",
+    }
+
+
+def test_zammad_review_is_withdrawn_when_its_gateway_route_is_missing():
+    job = _zammad_review_job(routed=False)
+    assert job["enabled"] is False
+    assert job["hermes_home"] == ZAMMAD_REVIEW_HOME
+    assert _wanted(job, host="hermes") is False
     assert _ran(
         name="zammad-review", wanted=False, listed=True, marker="sum", changed=True
     ) == {
@@ -297,7 +310,7 @@ def test_installed_zammad_review_is_withdrawn_from_its_profile_home():
 
 
 def test_disabled_job_pause_skips_a_job_direct_reconcile_handles():
-    job = _zammad_review_job()
+    job = _zammad_review_job(routed=False)
     pause = _load("cron_pause_disabled.yml")[0]
     context = {
         "item": job,

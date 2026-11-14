@@ -87,7 +87,11 @@ def test_pepper_cron_ownership_and_schedules_preserve_existing_identities():
     pepper = [j for j in jobs if j['identities'] == ['pepper']]
     assert [(j['name'], j['schedule']) for j in pepper] == [
         ('pepper-nightly-intake', '17 6 * * *'), ('pepper-weekly-digest', '47 7 * * 0')]
-    assert all(j['identities'] == ['donna'] for j in jobs if j not in pepper)
+    private = {'assistant-pulse': ['donna', 'hermes-private'],
+               'assistant-task-triage': ['donna', 'hermes-private'],
+               'private-inbox-groom': ['hermes-private'],
+               'private-evening-wrap': ['hermes-private']}
+    assert all(j['identities'] == private.get(j['name'], ['donna']) for j in jobs if j not in pepper)
     assert defaults['hermes_agent_job_identities_default'] == ['hermes']
     assert 'default(false)' in pepper[0]['enabled']
 

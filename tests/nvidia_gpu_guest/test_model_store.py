@@ -85,14 +85,17 @@ def test_model_store_writer_group_comes_from_declared_gpu_mount_access():
     inventory_tasks = yaml.safe_load(
         (REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml").read_text(encoding="utf-8")
     )
+    host_group_template = (REPO_ROOT / "inventory/load_tofu/add_lxc_host_groups.yml.j2").read_text(
+        encoding="utf-8"
+    )
     add_host = next(
         task["ansible.builtin.add_host"]
         for task in inventory_tasks
         if task.get("name", "").startswith("Add AI LXC containers to inventory")
     )
-    assert "llm_model_store_writer_group" in add_host["groups"]
-    assert "models_origin_mount_path" in add_host["groups"]
-    assert "models_origin_mount_read_only" in add_host["groups"]
+    assert "llm_model_store_writer_group" in host_group_template
+    assert "models_origin_mount_path" in host_group_template
+    assert "models_origin_mount_read_only" in host_group_template
     assert "item.value.models_origin_mount_path" in add_host["container_models_origin_mount_path"]
 
 

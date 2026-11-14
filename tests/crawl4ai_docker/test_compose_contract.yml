@@ -1,0 +1,49 @@
+---
+- name: Verify Crawl4AI Compose contract
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../roles/crawl4ai_docker/defaults/main.yml
+  vars:
+    ansible_become: false
+    ansible_managed: Ansible managed
+    _template: "{{ playbook_dir }}/../../roles/crawl4ai_docker/templates/docker-compose.yml.j2"
+    _expected_tmpfs:
+      - /tmp
+      - /var/lib/redis
+      - /var/lib/crawl4ai/outputs
+      - /home/appuser/.crawl4ai
+      - /home/appuser/.cache/url_seeder
+      - /home/appuser/.gunicorn
+    _expected_api_token_expression: >-
+      ${CRAWL4AI_API_TOKEN:?CRAWL4AI_API_TOKEN must be set}
+  tasks:
+    - name: Render the Compose document
+      ansible.builtin.set_fact:
+        _rendered: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+
+    - name: Render Compose with a non-default host port
+      ansible.builtin.set_fact:
+        _nondefault_rendered: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+      vars:
+        crawl4ai_docker_port: 12345
+
+    - name: Assert the pinned upstream deployment settings
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services.crawl4ai.image == 'unclecode/crawl4ai:0.9.5'
+          - _rendered.services.crawl4ai.container_name == 'crawl4ai'
+          - _rendered.services.crawl4ai.ports == ['11235:11235']
+          - _nondefault_rendered.services.crawl4ai.ports == ['12345:11235']
+          - _rendered.services.crawl4ai.cap_drop == ['ALL']
+          - _rendered.services.crawl4ai.security_opt == ['no-new-privileges:true']
+          - _rendered.services.crawl4ai.read_only | bool
+          - _rendered.services.crawl4ai.mem_limit == crawl4ai_docker_memory_limit
+          - _rendered.services.crawl4ai.pids_limit == crawl4ai_docker_pids_limit
+          - _rendered.services.crawl4ai.shm_size == '1gb'
+          - _rendered.services.crawl4ai.tmpfs == _expected_tmpfs
+          - >-
+            _rendered.services.crawl4ai.environment.CRAWL4AI_API_TOKEN
+            == _expected_api_token_expression
+          - _rendered.services.crawl4ai.volumes is not defined

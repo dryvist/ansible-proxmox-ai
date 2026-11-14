@@ -1,0 +1,303 @@
+---
+# Resolve a Marketplace version to Dify's checksum-bearing package identifier.
+# This mirrors Dify 1.18's own Marketplace lookup and refuses a moving version.
+- name: Read the declared built-in tool plugin from Dify Marketplace
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_marketplace_api_base }}/plugins/{{ dify_docker_agent_tool_provider.plugin_id }}/{{
+      dify_docker_agent_tool_provider.plugin_version | urlencode }}
+    method: GET
+    status_code: 200
+    return_content: true
+  register: dify_docker_tool_marketplace_package
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+- name: Assert the Marketplace package matches its declared plugin pin
+  ansible.builtin.assert:
+    that:
+      - >-
+        dify_docker_tool_marketplace_package.json.data.version.version
+        == dify_docker_agent_tool_provider.plugin_version
+      - >-
+        dify_docker_tool_marketplace_package.json.data.version.unique_identifier
+        is match('^' ~ (dify_docker_agent_tool_provider.plugin_id | regex_escape)
+                 ~ ':' ~ (dify_docker_agent_tool_provider.plugin_version | regex_escape)
+                 ~ '@[0-9a-f]{64}$')
+    fail_msg: >-
+      The declared Dify Marketplace plugin is missing or its package identifier does not
+      match the pinned version.
+  no_log: true
+
+- name: Keep the checksum-bearing Marketplace package identifier
+  ansible.builtin.set_fact:
+    dify_docker_tool_plugin_unique_identifier: >-
+      {{ dify_docker_tool_marketplace_package.json.data.version.unique_identifier }}
+  no_log: true
+
+- name: Read current Dify installation of the declared tool plugin
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/workspaces/current/plugin/list/installations/ids"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body:
+      plugin_ids:
+        - "{{ dify_docker_agent_tool_provider.plugin_id }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_tool_plugin_installation
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+- name: List installed versions of the declared tool plugin
+  ansible.builtin.set_fact:
+    dify_docker_tool_installed_plugin_identifiers: >-
+      {{ dify_docker_tool_plugin_installation.json.plugins | default([])
+         | selectattr('plugin_id', 'equalto', dify_docker_agent_tool_provider.plugin_id)
+         | map(attribute='plugin_unique_identifier') | list }}
+  no_log: true
+
+- name: Assert there is at most one installed version of the declared tool plugin
+  ansible.builtin.assert:
+    that:
+      - dify_docker_tool_installed_plugin_identifiers | length <= 1
+    fail_msg: >-
+      More than one installation of {{ dify_docker_agent_tool_provider.plugin_id }} was
+      returned by Dify; refusing to choose one for upgrade.
+
+- name: Report the declared tool plugin change in check mode
+  ansible.builtin.debug:
+    msg: >-
+      {% if dify_docker_tool_installed_plugin_identifiers | length == 0 %}
+      Dify would install {{ dify_docker_agent_tool_provider.plugin_id }} at
+      {{ dify_docker_agent_tool_provider.plugin_version }}.
+      {% elif dify_docker_tool_installed_plugin_identifiers[0]
+              != dify_docker_tool_plugin_unique_identifier %}
+      Dify would upgrade {{ dify_docker_agent_tool_provider.plugin_id }} to
+      {{ dify_docker_agent_tool_provider.plugin_version }}.
+      {% else %}
+      Dify already has {{ dify_docker_agent_tool_provider.plugin_id }} at the pinned version.
+      {% endif %}
+  changed_when: >-
+    dify_docker_tool_installed_plugin_identifiers | length == 0
+    or dify_docker_tool_installed_plugin_identifiers[0]
+       != dify_docker_tool_plugin_unique_identifier
+  when: ansible_check_mode
+
+- name: Install the pinned tool plugin from Dify Marketplace
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/workspaces/current/plugin/install/marketplace"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body:
+      plugin_unique_identifiers:
+        - "{{ dify_docker_tool_plugin_unique_identifier }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_tool_plugin_install
+  when:
+    - not ansible_check_mode
+    - dify_docker_tool_installed_plugin_identifiers | length == 0
+  changed_when: not (dify_docker_tool_plugin_install.json.all_installed | default(false))
+  no_log: true
+
+- name: Upgrade the installed tool plugin to its declared pin
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/workspaces/current/plugin/upgrade/marketplace"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body:
+      original_plugin_unique_identifier: "{{ dify_docker_tool_installed_plugin_identifiers[0] }}"
+      new_plugin_unique_identifier: "{{ dify_docker_tool_plugin_unique_identifier }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_tool_plugin_upgrade
+  when:
+    - not ansible_check_mode
+    - dify_docker_tool_installed_plugin_identifiers | length == 1
+    - dify_docker_tool_installed_plugin_identifiers[0] != dify_docker_tool_plugin_unique_identifier
+  changed_when: true
+  no_log: true
+
+- name: Wait for the pinned tool plugin installation task
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_plugin_tasks_api_base }}/{{ dify_docker_tool_plugin_task_id }}
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_tool_plugin_task
+  when:
+    - not ansible_check_mode
+    - dify_docker_tool_plugin_task_id | length > 0
+  retries: 60
+  delay: 2
+  until: dify_docker_tool_plugin_task.json.task.status in ['success', 'failed']
+  failed_when: dify_docker_tool_plugin_task.json.task.status == 'failed'
+  changed_when: false
+  no_log: true
+  vars:
+    dify_docker_tool_plugin_task_id: >-
+      {{ (dify_docker_tool_plugin_install.json.task_id
+          if dify_docker_tool_plugin_install is not skipped else
+          dify_docker_tool_plugin_upgrade.json.task_id)
+         | default('', true) }}
+
+- name: Read current Dify workspace tool providers
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/workspaces/current/tool-providers?type=builtin"
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_tool_workspace_providers
+  check_mode: false
+  changed_when: false
+  retries: 30
+  delay: 2
+  until: >-
+    ansible_check_mode
+    or (dify_docker_tool_workspace_providers.json
+        | selectattr('id', 'equalto', dify_docker_agent_tool_provider.provider_id)
+        | list | length == 1)
+  no_log: true
+
+- name: Assert the declared built-in tool provider is available after installation
+  ansible.builtin.assert:
+    that:
+      - >-
+        dify_docker_tool_workspace_providers.json
+        | selectattr('id', 'equalto', dify_docker_agent_tool_provider.provider_id)
+        | list | length == 1
+    fail_msg: >-
+      Dify does not expose the declared tool provider
+      {{ dify_docker_agent_tool_provider.provider_id }} after plugin installation.
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Read current credentials for the declared built-in tool provider
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_console_api_base }}/workspaces/current/tool-provider/builtin/{{
+      dify_docker_agent_tool_provider.provider_id }}/credentials
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_tool_provider_credentials
+  check_mode: false
+  changed_when: false
+  when: >-
+    dify_docker_tool_workspace_providers.json
+    | selectattr('id', 'equalto', dify_docker_agent_tool_provider.provider_id)
+    | list | length == 1
+  no_log: true
+
+- name: Find the named credential for the declared tool provider
+  ansible.builtin.set_fact:
+    dify_docker_tool_provider_matching_credentials: >-
+      {{ dify_docker_tool_provider_credentials.json | default([])
+         | selectattr('name', 'equalto', dify_docker_agent_tool_provider.credential_name)
+         | list }}
+  when: dify_docker_tool_provider_credentials is not skipped
+  no_log: true
+
+- name: Assert the declared tool provider has no duplicate named credential
+  ansible.builtin.assert:
+    that:
+      - dify_docker_tool_provider_matching_credentials | length <= 1
+    fail_msg: >-
+      Dify has duplicate credentials named {{ dify_docker_agent_tool_provider.credential_name }}
+      for {{ dify_docker_agent_tool_provider.provider_id }}.
+  when: dify_docker_tool_provider_credentials is not skipped
+  no_log: true
+
+- name: Read the declared tool provider credential from OpenBao
+  community.hashi_vault.vault_kv2_get:
+    url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default('', true) }}"
+    auth_method: token
+    token: "{{ openbao_secrets_converge_writer_token }}"
+    engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+    path: "{{ dify_docker_agent_tool_provider.openbao_path }}"
+    validate_certs: "{{ dify_docker_bao_validate_certs }}"
+  register: dify_docker_tool_provider_openbao_secret
+  check_mode: false
+  changed_when: false
+  delegate_to: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  when: dify_docker_tool_workspace_providers.json
+        | selectattr('id', 'equalto', dify_docker_agent_tool_provider.provider_id)
+        | list | length == 1
+  no_log: true
+
+- name: Assert the declared tool provider credential exists in OpenBao
+  ansible.builtin.assert:
+    that:
+      - >-
+        (dify_docker_tool_provider_openbao_secret.secret
+         | default({}, true)).get(dify_docker_agent_tool_provider.openbao_field, '') | length > 0
+    fail_msg: >-
+      OpenBao is missing the required field for {{ dify_docker_agent_tool_provider.plugin_id }}.
+  when:
+    - dify_docker_tool_workspace_providers.json
+      | selectattr('id', 'equalto', dify_docker_agent_tool_provider.provider_id)
+      | list | length == 1
+  no_log: true
+
+- name: Report the declared tool provider credential change in check mode
+  ansible.builtin.debug:
+    msg: >-
+      Dify would add the {{ dify_docker_agent_tool_provider.credential_visibility }}
+      credential for {{ dify_docker_agent_tool_provider.provider_id }}.
+  changed_when: dify_docker_tool_provider_matching_credentials | length == 0
+  when:
+    - ansible_check_mode
+    - dify_docker_tool_provider_credentials is not skipped
+    - dify_docker_tool_provider_matching_credentials | length == 0
+  no_log: true
+
+- name: Add the read-only credential to the declared tool provider
+  ansible.builtin.uri:
+    url: >-
+      {{ dify_docker_console_api_base }}/workspaces/current/tool-provider/builtin/{{
+      dify_docker_agent_tool_provider.provider_id }}/add
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body:
+      credentials:
+        access_tokens: >-
+          {{ dify_docker_tool_provider_openbao_secret.secret[dify_docker_agent_tool_provider.openbao_field] }}
+      name: "{{ dify_docker_agent_tool_provider.credential_name }}"
+      type: "{{ dify_docker_agent_tool_provider.credential_type }}"
+      visibility: "{{ dify_docker_agent_tool_provider.credential_visibility }}"
+    status_code: 200
+    return_content: true
+  when:
+    - not ansible_check_mode
+    - dify_docker_tool_provider_credentials is not skipped
+    - dify_docker_tool_provider_matching_credentials | length == 0
+  no_log: true

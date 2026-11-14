@@ -65,16 +65,18 @@
           'fallback_chain': rs.default_fallbacks | default([]),
           'rungs': out.rungs, 'primary_win': out.primary_win} }}
 
-# Names the role itself declares fail-fast, read from role data, never typed:
-# the cross-modality and local-only lists (58-review-roles.yml), plus every
-# ladder terminal — a medium chain group with no admissible rung left
+# Names the role explicitly gives no general fallback, read from role data,
+# never typed: the cross-modality and local-only lists (58-review-roles.yml),
+# the credentialed CI Luna terminal (whose exact empty entry is pinned by
+# test_ci_luna_render.yml), plus every ladder terminal — a medium chain group
+# with no admissible rung left
 # after it (the chain's own tail, minus every ZDR-unasserted rung for a
 # ZDR-asserted group). The terminals are recomputed here from the chain and
 # the ZDR sets rather than read off llm_router_hermes_own_fallback_by_group,
 # so a tail the role empties by mistake still fails (a).
-- name: Derive the names the role declares fail-fast
+- name: Derive the names the role intentionally gives no general fallback
   ansible.builtin.set_fact:
-    _fail_fast_exempt: >-
+    _no_rung_exempt: >-
       {%- set chain = llm_router_hermes_default_fallback_chain -%}
       {%- set ns = namespace(terminals=[]) -%}
       {%- for g in chain -%}
@@ -86,15 +88,16 @@
       {%- set ns.terminals = ns.terminals + [g] -%}
       {%- endif -%}
       {%- endfor -%}
-      {{ (llm_router_cross_modality_fail_fast_names + llm_router_local_only_fail_fast_names
-          + ns.terminals) | unique | list }}
+      {{ (llm_router_cross_modality_fail_fast_names
+          + llm_router_local_only_fail_fast_names
+          + llm_router_ci_luna_groups + ns.terminals) | unique | list }}
 
 - name: Collect the violations of each contract
   ansible.builtin.set_fact:
     _no_rung: >-
       {{ _routing.rungs | dict2items
          | selectattr('value.general', 'equalto', []) | map(attribute='key')
-         | reject('in', _fail_fast_exempt) | sort }}
+         | reject('in', _no_rung_exempt) | sort }}
     # (b) A primary needs ONE rung in its general chain at least as wide as
     # itself; narrower rungs earlier in the chain are fine, litellm walks on.
     # Explicit entry-point overrides may intentionally contain only narrower
@@ -179,7 +182,7 @@
       - _routing.fb_keys | length > 0
       - _routing.fallback_chain | length > 0
       - _routing.win | dict2items | rejectattr('value', 'none') | list | length > 0
-      - _fail_fast_exempt | length > 0
+      - _no_rung_exempt | length > 0
       # THE CONTRACTS.
       - _no_rung | length == 0
       - _no_wide_rung | length == 0
@@ -187,7 +190,7 @@
       - _dangling | length == 0
     fail_msg: >-
       (a) {{ _no_rung | length }} routable name(s) outside the role's
-      declared fail-fast names with NO fallback rung, so a single failed
+      explicit no-rung names with NO fallback rung, so a single failed
       deployment fails the call completely: {{ _no_rung }}.
       (b) {{ _no_wide_rung | length }} primary(ies) whose chain never reaches
       a rung as wide as itself, with a wider served group that no rendered
@@ -200,6 +203,6 @@
     success_msg: >-
       All {{ _routing.names | length }} routable names
       ({{ _routing.groups | length }} groups, {{ _routing.aliases | length }}
-      aliases, {{ _routing.seeded | length }} seeded roles; {{ _fail_fast_exempt | length }}
-      declared fail-fast; explicit narrow overrides checked exactly) reach a
+      aliases, {{ _routing.seeded | length }} seeded roles; {{ _no_rung_exempt | length }}
+      explicit no-rung names; explicit narrow overrides checked exactly) reach a
       served rung at least as wide as themselves.

@@ -70,6 +70,9 @@ def test_cron_wall_clock_verify_assert_runs_with_real_ansible(tmp_path: Path) ->
                     "vars": {
                         "hermes_agent_install_dir": str(install_dir),
                         "hermes_agent_cron_wall_timeout_seconds": 1800,
+                        "hermes_agent_direct_cron_jobs": [
+                            {"name": "daily-summary", "wall_clock_seconds": 2399}
+                        ],
                     },
                     "tasks": patch_tasks
                     + [

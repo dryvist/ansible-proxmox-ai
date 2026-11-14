@@ -1,11 +1,11 @@
-"""One medium deployment admits the medium model's full native context.
+"""One medium deployment admits the medium model's capped maximum context.
 
 The native maximum is read from the model-card facts the artifact registry
 records (context_window_tokens with model_task_source: model_card), never
 from this file. A long-context caller must always have a medium leg that
-admits the full native window, and the pre-call context checks can only
-steer an oversize prompt to that leg when it is the widest medium member,
-so both properties are asserted here.
+admits the maximum capped at 200000 total tokens. The pre-call context checks
+can only steer an oversize prompt to that leg when it is the widest medium
+member, so both properties are asserted here.
 """
 
 from pathlib import Path
@@ -57,7 +57,7 @@ def _model_card_window(entry, artifacts):
     return artifact.get("context_window_tokens")
 
 
-def test_one_medium_deployment_admits_the_full_native_context():
+def test_one_medium_deployment_admits_the_capped_maximum_context():
     entries = _medium_entries()
     artifacts = _artifacts_by_id()
     native = {
@@ -67,20 +67,21 @@ def test_one_medium_deployment_admits_the_full_native_context():
     }
     assert len(native) == 1, f"medium artifacts disagree on the model card: {native}"
     native = native.pop()
+    capped = min(native, 200000)
 
     profiles = _serving_profiles()
-    full_native = [
+    full_capped = [
         entry
         for entry in entries
         if "context_window" in entry
-        and entry["context_window"] + entry["max_output_tokens"] == native
-        and profiles[entry["profile"]][ENGINE_WINDOW_FIELD] == native
+        and entry["context_window"] + entry["max_output_tokens"] == capped
+        and profiles[entry["profile"]][ENGINE_WINDOW_FIELD] == capped
     ]
-    assert len(full_native) == 1, (
-        f"expected exactly one medium deployment at the native maximum, "
-        f"found {len(full_native)}"
+    assert len(full_capped) == 1, (
+        f"expected exactly one medium deployment at the capped maximum, "
+        f"found {len(full_capped)}"
     )
-    winner = full_native[0]
+    winner = full_capped[0]
     assert winner["profile"] == "medium-a"
     assert artifacts[winner["artifact_id"]]["context_window_tokens"] == native
 

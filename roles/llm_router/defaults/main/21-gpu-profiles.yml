@@ -7,13 +7,13 @@
 # CPU pool so this proxy never advertises a backend without a tofu-tagged host.
 llm_router_gpu_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu') | list }}
-# One deployment per (llm_gpu_group member, enabled GPU entry it serves). Port: the
+# One deployment per (llm_gpu_group member, shared or direct GPU entry it serves). Port: the
 # entry's api_port_key when it declares one; otherwise the member's serving port,
 # plus one for a co-resident profile on that member.
 _llm_router_gpu_deployment_targets_source: >-
   {%- set ns = namespace(out=[]) -%}
   {%- for member in llm_router_gpu_members -%}
-  {%- for m in llm_router_gpu_models
+  {%- for m in (llm_router_gpu_models + llm_router_direct_gpu_models) | unique(attribute='profile')
         if m.profile == member.active or m.profile in member.co_resident -%}
   {%- set port = (tofu_data.constants.service_ports[m.api_port_key]
         if m.api_port_key is defined

@@ -28,4 +28,7 @@ Each caller passes three parameters and nothing else:
 ```
 
 The directory and file name are declared in `defaults/main/00-textfile.yml`.
-When the directory is absent (node_exporter not installed), the write is skipped.
+The role creates the textfile collector directory when it is missing. Its path
+must match the directory configured for node_exporter to collect. If directory
+creation fails, the role fails with the path and the
+`llm_serving_declared_metrics_textfile_collector_dir` variable name.

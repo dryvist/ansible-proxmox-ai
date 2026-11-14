@@ -38,9 +38,21 @@
     marker: "# {mark} ANSIBLE MANAGED BLOCK cron aggregate wall clock"
     insertbefore: '^def run_job\('
     block: |
-      def _hermes_cron_wall_timeout_limit():
-          """Return the configured aggregate cron deadline, or None when off."""
+      _HERMES_CRON_WALL_TIMEOUT_OVERRIDES = {
+      {% for cron_job in hermes_agent_direct_cron_jobs %}
+      {% if cron_job.wall_clock_seconds is defined %}
+          {{ cron_job.name | to_json }}: {{ cron_job.wall_clock_seconds | int }},
+      {% endif %}
+      {% endfor %}
+      }
+
+
+      def _hermes_cron_wall_timeout_limit(job_name):
+          """Return this job's deadline, falling back to the managed default."""
           managed = float({{ hermes_agent_cron_wall_timeout_seconds | int }})
+          job_override = _HERMES_CRON_WALL_TIMEOUT_OVERRIDES.get(job_name)
+          if job_override is not None:
+              return float(job_override)
           raw = os.getenv("HERMES_CRON_WALL_TIMEOUT", "").strip()
           if not raw:
               return managed
@@ -83,7 +95,7 @@
   vars:
     _hermes_cron_limits_block: |-
       _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-      _cron_wall_timeout_limit = _hermes_cron_wall_timeout_limit()
+      _cron_wall_timeout_limit = _hermes_cron_wall_timeout_limit(job_name)
   notify: Restart hermes-gateway
 
 - name: Start the aggregate cron clock before submitting the conversation

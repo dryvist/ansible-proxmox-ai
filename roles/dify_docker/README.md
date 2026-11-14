@@ -156,6 +156,25 @@ documented in [declared-app-variables.md](declared-app-variables.md). AppRole se
 and read with the issuer AppRole named by `dify_docker_agent_issuer_env_names` and logged in through
 `dify_docker_agent_issuer_auth_mount`, never with the converge writer token.
 
+## Built-in tool providers
+
+`dify_docker_agent_tool_provider_plugins` declares Marketplace plugins that the role installs before
+catalog agent DSL imports. The default GitHub entry pins `langgenius/github` at `0.3.11`; the role
+resolves the checksum-bearing identifier from Dify Marketplace and stops if the returned version
+does not match the pin. It then uses the existing Dify console session to install or upgrade the
+plugin and ensures the `langgenius/github/github` provider has a team-visible credential.
+
+The GitHub token is read from `dify_docker_agent_tool_provider_plugins[].openbao_path` and
+`openbao_field` (`GITHUB_READ_ONLY_TOKEN` by default). Store a fine-grained token limited to the
+repositories needed by the agent and grant read access only, including Pull requests and Contents.
+The Marketplace plugin also exposes write operations; GitHub's read-only permissions reject those
+calls, while graph changes should add only list/read PR tools. The credential is created when its
+declared name is absent. Dify's credential list does not expose the saved secret, so changing the
+OpenBao token alone does not rotate a credential that Dify already stores.
+
+In check mode, the role reads Marketplace, Dify and OpenBao state and reports missing plugin or
+credential changes. It skips the console API writes.
+
 ## Tier2 rotation webhook wiring
 
 After the agent DSL import, the role wires the `tier2-rotation` catalog

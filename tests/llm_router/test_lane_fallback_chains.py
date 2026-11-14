@@ -1,11 +1,10 @@
 """Lane fallback chains obey the lane contract on the registry they project.
 
 The chains are Jinja projections in roles/llm_router/defaults/main/58-review-roles.yml.
-This module cannot render Jinja, so it mirrors the registry facts those projections
-read (59-key-scopes.yml, 36-hermes-cloud-segments.yml, 50-servable.yml) and checks the
-mirrored chains. The mirror assumes every credential is present. Each checker is
-proven on a planted violation. The role's own Ansible render path stays the source of
-truth for rendered chains.
+This module mirrors their registry facts and renders the narrower role-default
+projections directly for focused filter cases. The mirror assumes every credential is
+present. Each checker is proven on a planted violation. The role's own Ansible render
+path stays the source of truth for rendered chains.
 
 Lane contract: light never leaves local rungs (an exact empty fail-fast entry); standard
 pays only over ZDR routes; critical leads with the registry subscription rung, then
@@ -22,6 +21,17 @@ LANES = ("light", "standard", "critical", "long")
 LIGHT_ALIASES = ("light", "fast", "cheap")
 # Mirrors llm_router_local_registry_tiers (59-key-scopes.yml).
 LOCAL_TIERS = frozenset({"local-large", "light", "vllm", "gpu", "hermes-local", "cpu-moe", "cpu-9b"})
+ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main"
+
+
+def _render_role_default(file_name: str, variable: str, **context):
+    from jinja2 import Environment, StrictUndefined
+
+    defaults = yaml.load((ROUTER_DEFAULTS / file_name).read_text(), Loader=_Permissive) or {}
+    environment = Environment(undefined=StrictUndefined)
+    environment.filters["bool"] = bool
+    template = environment.from_string(defaults[variable])
+    return yaml.safe_load(template.render(**context))
 
 
 def load_registry(root=REPO_ROOT) -> list[dict]:
@@ -238,3 +248,81 @@ def test_critical_leads_with_the_subscription_then_zdr_paid_rungs() -> None:
 def test_long_paid_rungs_are_zdr() -> None:
     entries = load_registry()
     assert unzdr_paid_groups(mirrored_chains(entries)["long"], entries) == []
+
+
+def _benchmark_flag_entries(prefix: str, *, price_class: str) -> list[dict]:
+    return [
+        {
+            "client_model_id": f"{prefix}-false",
+            "route_group": f"{prefix}-false",
+            "price_class": price_class,
+            "benchmark_only": False,
+        },
+        {
+            "client_model_id": f"{prefix}-true",
+            "route_group": f"{prefix}-true",
+            "price_class": price_class,
+            "benchmark_only": True,
+        },
+        {
+            "client_model_id": f"{prefix}-absent",
+            "route_group": f"{prefix}-absent",
+            "price_class": price_class,
+        },
+    ]
+
+
+def test_benchmark_only_false_is_normal_in_hermes_cloud_segments() -> None:
+    segments = (
+        ("paid", "paid", {}),
+        ("subscription", "subscription", {}),
+        ("api_key", "paid", {"hermes_chain": True}),
+        ("free", "free", {}),
+    )
+    for suffix, price_class, extra in segments:
+        rows = _benchmark_flag_entries(f"fixture-{suffix}", price_class=price_class)
+        for row in rows:
+            row.update(extra)
+        projected = _render_role_default(
+            "36-hermes-cloud-segments.yml",
+            f"llm_router_hermes_cloud_{suffix}_groups",
+            _llm_router_m_hermes_cloud_models_credentialed=rows,
+        )
+        assert projected == [f"fixture-{suffix}-false", f"fixture-{suffix}-absent"]
+
+
+def test_benchmark_only_false_is_normal_in_servable_route_groups() -> None:
+    registry_rows = _benchmark_flag_entries("fixture-registry", price_class="paid")
+    vllm_rows = _benchmark_flag_entries("fixture-vllm", price_class="paid")
+    for row in registry_rows:
+        row.update({"tier": "hermes-cloud", "servable": True})
+    for row in vllm_rows:
+        row["servable"] = True
+
+    projected = _render_role_default(
+        "50-servable.yml",
+        "llm_router_servable_route_groups",
+        llm_router_registry_enabled=registry_rows,
+        llm_router_vllm_models=vllm_rows,
+    )
+    assert projected == [
+        "fixture-registry-false",
+        "fixture-registry-absent",
+        "fixture-vllm-false",
+        "fixture-vllm-absent",
+    ]
+
+
+def test_benchmark_only_false_is_normal_in_ladder_paid_groups() -> None:
+    rows = _benchmark_flag_entries("fixture-ladder", price_class="paid")
+    projected = _render_role_default(
+        "57-ladder.yml",
+        "llm_router_d1_paid_groups_by_class",
+        llm_router_openrouter_models=[],
+        _llm_router_m_hermes_cloud_models_credentialed=rows,
+        _llm_router_m_deployment_class_by_model={
+            row["client_model_id"]: "paid-zdr" for row in rows
+        },
+    )
+    assert projected["paid-zdr"] == ["fixture-ladder-false", "fixture-ladder-absent"]
+    assert projected["retains"] == []

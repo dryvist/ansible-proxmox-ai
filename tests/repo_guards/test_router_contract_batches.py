@@ -13,6 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/_llm-router-contract.yml").read_text())
 JOB = WORKFLOW["jobs"]["llm-router-contract"]
+DEPENDENCIES = WORKFLOW["jobs"]["router-contract-dependencies"]
 SELECTOR = runpy.run_path(str(ROOT / ".github/scripts/select-contract-scope.py"))
 BATCHES = SELECTOR["router_shards"](SELECTOR["llm_router_matrix"]())
 LOOP = JOB["steps"][-1]["run"]
@@ -71,6 +72,11 @@ def test_matrix_paths_are_nonempty_unique_existing_playbooks():
     assert all((ROOT / path).is_file() for path in paths)
     assert JOB["strategy"]["fail-fast"] is False
     assert JOB["strategy"]["max-parallel"] == 16
+    registry_check = next(step for step in DEPENDENCIES["steps"]
+                          if step.get("name") == "Verify selected playbooks are registered")
+    assert ".github/router-contracts.yml" in registry_check["run"]
+    assert "registry['contracts']" in registry_check["run"]
+    assert "This commented playbook list" not in (ROOT / ".github/workflows/_llm-router-contract.yml").read_text()
 
 
 @pytest.mark.parametrize("batch", BATCHES, ids=lambda batch: batch["name"])

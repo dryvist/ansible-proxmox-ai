@@ -1,10 +1,12 @@
 # Operational log shipping (index=hermes)
 
-Ships every `hermes-*` systemd unit record and active `.hermes/logs/*.log` file
-to a dedicated Splunk `index=hermes`, so agent health is searchable apart from
-the shared `os` index. The rsyslog unit match also captures child processes
-whose `programname` is not `hermes`. Both sources forward to the `hermes_agent` AI ingest
-listener (`syslog.${PROXMOX_SUBDOMAIN}`, port from `tofu_data`), then `stop`s
+Ships every `hermes-*` systemd unit record and active Hermes log file under the
+identity's `/var/lib/<identity>/.hermes` home to a dedicated Splunk `index=hermes`,
+so agent health is searchable apart from the shared `os` index. The file inputs
+cover the main, Kanban, board, and profile log directories. The rsyslog unit
+match also captures child processes whose `programname` is not `hermes`. Both
+sources forward to the `hermes_agent` AI ingest listener
+(`syslog.${PROXMOX_SUBDOMAIN}`, port from `tofu_data`), then `stop`s
 them so they never also double-ship into `os`. Mirrors the `openbao_audit`
 shipping pattern. The port/index/sourcetype are the single tofu-constants
 source of truth (`ai_log_routing.hermes_agent`); Cribl Stream's syslog input and
@@ -16,6 +18,10 @@ the `hermes` index are provisioned by `ansible-proxmox-apps` / `ansible-splunk`.
 | `hermes_agent_log_directory` | `.hermes/logs` | Active Hermes file logs to forward |
 | `hermes_agent_syslog_host` | `syslog.{{ PROXMOX_SUBDOMAIN }}` | ingest FQDN |
 | `hermes_agent_syslog_port` | `ai_log_routing.hermes_agent.port` (tofu) | ingest TCP port |
+
+Run `--tags hermes_agent_logging` to select the forwarding component; shared
+`always` guards still run. The normal converge and `hermes_units_gateways`
+entry point also deploy it.
 
 Use this public-safe timeline search to see each event at second precision and
 the extracted model latency where Hermes emitted it:
@@ -102,9 +108,11 @@ use the Splunk findings destination; healthy and no-change runs end with
 `[SILENT]`. Hermes job failures use native cron failure delivery. Splunk
 analysis jobs stay silent unless they find something new.
 
-**Zammad review (`zammad-review`):** declared with `enabled: false`. For its
-home, direct-cron reconciliation removes an installed copy when it runs; if
-skipped, the disabled-job task pauses it.
+**Zammad review (`zammad-review`):** runs in the `homelab-admin` profile with
+the `dryvist/zammad-incidents` skill. It is enabled only when the Zammad URL
+and token, primary gateway Slack credentials, and the profile's routed channel
+are configured. The primary gateway delivers through `profile_routes`; the
+named profile has no Slack platform or token.
 
 **Delta discipline (own state, not double-reported).** `splunk-triage`'s report
 recalls its OWN last-posted findings from memory (key `splunk-triage-last`)

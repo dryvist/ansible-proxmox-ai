@@ -15,6 +15,27 @@
 # GET), and both force themselves to run in check mode rather than reporting a
 # check they skipped.
 
+- name: Assert the data-exfiltration guardrail is declared
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _exfiltration_guardrails | length == 1
+      - _exfiltration_guardrails[0].litellm_params.guardrail | default('') == 'litellm_content_filter'
+      - _exfiltration_guardrails[0].litellm_params.mode | default('') == 'pre_call'
+      - _exfiltration_guardrails[0].litellm_params.default_on | default(false) is sameas true
+      - >-
+        _exfiltration_guardrails[0].litellm_params.categories | default([])
+        | selectattr('category', 'equalto', 'prompt_injection_data_exfiltration')
+        | selectattr('enabled', 'sameas', true) | selectattr('action', 'equalto', 'BLOCK')
+        | list | length == 1
+    fail_msg: >-
+      llm_router_guardrails must declare exactly one 'Prompt Injection: Data Exfiltration'
+      guardrail: litellm_content_filter, pre_call, default_on, with its category enabled to BLOCK.
+  vars:
+    _exfiltration_guardrails: >-
+      {{ llm_router_guardrails | default([])
+         | selectattr('guardrail_name', 'equalto', 'Prompt Injection: Data Exfiltration') | list }}
+
 - name: Assert managed keys, profiles, and team defaults respect privacy grants
   ansible.builtin.import_tasks: assert-privacy-grants.yml
 
@@ -32,6 +53,9 @@
 
 - name: Assert Hermes cloud route classes are explicit and valid
   ansible.builtin.import_tasks: assert-hermes-cloud-price-class.yml
+
+- name: Check dropped Hermes cloud models against their seeded fields
+  ansible.builtin.import_tasks: assert-hermes-cloud-credentialed-models.yml
 
 - name: Assert every registry alias targets an advertised capability or cloud model
   ansible.builtin.assert:

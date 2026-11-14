@@ -1,5 +1,53 @@
 # Changelog
 
+## [2.42.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.41.0...v2.42.0) (2026-11-12)
+
+
+### Features
+
+* **agent:** autonomous opencode-local run j-0d10009e22414316 ([#2310](https://github.com/dryvist/ansible-proxmox-ai/issues/2310)) ([b4fed11](https://github.com/dryvist/ansible-proxmox-ai/commit/b4fed11ddce9e8f75432d178792204e64d59d607))
+* **agent:** opencode-local run j-0d10009e22414316 ([b4fed11](https://github.com/dryvist/ansible-proxmox-ai/commit/b4fed11ddce9e8f75432d178792204e64d59d607))
+* **agent:** zcode run j-1e9f95191a9dd6b8 ([a7d7224](https://github.com/dryvist/ansible-proxmox-ai/commit/a7d722419513085972c460a98eca70009776fa85))
+* **dify:** read declared catalog app config from a per-app OpenBao leaf ([#2360](https://github.com/dryvist/ansible-proxmox-ai/issues/2360)) ([0bf4bef](https://github.com/dryvist/ansible-proxmox-ai/commit/0bf4befba41174e52c0942106b999906d7af314a))
+* **dify:** set declared environment variables and tool provider ids on catalog apps ([#2351](https://github.com/dryvist/ansible-proxmox-ai/issues/2351)) ([a9cbceb](https://github.com/dryvist/ansible-proxmox-ai/commit/a9cbceb73699807e19698236b151a822df3ff845))
+* **hermes_agent:** run Hermes crons on the small lane ([#2314](https://github.com/dryvist/ansible-proxmox-ai/issues/2314)) ([2d5d650](https://github.com/dryvist/ansible-proxmox-ai/commit/2d5d650f06a545e1eb618a4f21285d04f7086300))
+* **hermes:** deliver Donna job output to her Slack channel ([#2324](https://github.com/dryvist/ansible-proxmox-ai/issues/2324)) ([9fc953c](https://github.com/dryvist/ansible-proxmox-ai/commit/9fc953c79b69a63eb083859b4d6afbf5a68527fa))
+* **hermes:** read profile Slack channels from the identity OpenBao domain ([#2330](https://github.com/dryvist/ansible-proxmox-ai/issues/2330)) ([953ee7e](https://github.com/dryvist/ansible-proxmox-ai/commit/953ee7ef8a92f9762922563a58a3957abe091555))
+* **hermes:** read profile Slack channels from the identity's OpenBao domain ([953ee7e](https://github.com/dryvist/ansible-proxmox-ai/commit/953ee7ef8a92f9762922563a58a3957abe091555))
+* **inventory:** enable the OpenHands router key ([#2333](https://github.com/dryvist/ansible-proxmox-ai/issues/2333)) ([de47d70](https://github.com/dryvist/ansible-proxmox-ai/commit/de47d709a55d8d73457e170fb6f7d84acc440a4c))
+* **llm_gpu:** publish declared serving slots and context per slot ([#2354](https://github.com/dryvist/ansible-proxmox-ai/issues/2354)) ([6a7380f](https://github.com/dryvist/ansible-proxmox-ai/commit/6a7380f438524426be449865318983c8b85b82bd))
+* **llm_model_trial:** serve a digest-pinned container candidate on a separate trial guest ([#2316](https://github.com/dryvist/ansible-proxmox-ai/issues/2316)) ([00e8583](https://github.com/dryvist/ansible-proxmox-ai/commit/00e858337433faa3d4e242442a6ca6c946fb847e))
+* **nvidia_container_toolkit:** add an opt-in GPU container runtime for trial guests ([#2317](https://github.com/dryvist/ansible-proxmox-ai/issues/2317)) ([8f675e2](https://github.com/dryvist/ansible-proxmox-ai/commit/8f675e276a45eb74230bb62fc2e809207c40643d))
+
+
+### Bug Fixes
+
+* **dify:** check unmapped placeholders and empty variables, protect run-minted accessors, reject null KV fields ([#2353](https://github.com/dryvist/ansible-proxmox-ai/issues/2353)) ([c39bc74](https://github.com/dryvist/ansible-proxmox-ai/commit/c39bc747156ce8b35c288ae8f74a07a5a74589ed))
+* **hermes:** copy the llm-wiki skill from the Hermes optional-skills path ([#2328](https://github.com/dryvist/ansible-proxmox-ai/issues/2328)) ([dbc31e5](https://github.com/dryvist/ansible-proxmox-ai/commit/dbc31e5e231b675142abeaadb32ff7057cabee23))
+* **hermes:** keep Donna failure notices off her main channel ([#2332](https://github.com/dryvist/ansible-proxmox-ai/issues/2332)) ([8ae1a75](https://github.com/dryvist/ansible-proxmox-ai/commit/8ae1a75e4f0d75c733b49cbe8e7be21e237d79f5))
+* **hermes:** place profile script-job scripts and restart on a version change ([#2337](https://github.com/dryvist/ansible-proxmox-ai/issues/2337)) ([b587ed7](https://github.com/dryvist/ansible-proxmox-ai/commit/b587ed7b8a98819a44766aa7d1e838337858cc86))
+* **hermes:** refuse a Donna cron job that targets her main channel ([#2338](https://github.com/dryvist/ansible-proxmox-ai/issues/2338)) ([cf7e7b6](https://github.com/dryvist/ansible-proxmox-ai/commit/cf7e7b62c946c2df762593a8f32d38b1cdb651f5))
+* **hermes:** run agentic crons on the medium role ([#2335](https://github.com/dryvist/ansible-proxmox-ai/issues/2335)) ([0c337d6](https://github.com/dryvist/ansible-proxmox-ai/commit/0c337d6334e0a330bf96fe7be7be0cb6ad55cdac))
+* **hermes:** stop installing the zammad-review cron job ([#2361](https://github.com/dryvist/ansible-proxmox-ai/issues/2361)) ([5f31b46](https://github.com/dryvist/ansible-proxmox-ai/commit/5f31b460761920c5406f0f4185558267513cfbb4))
+* **hermes:** turn off Slack gateway lifecycle notices ([#2336](https://github.com/dryvist/ansible-proxmox-ai/issues/2336)) ([1d387fe](https://github.com/dryvist/ansible-proxmox-ai/commit/1d387fefe021b39a0b380d1826c0d4581c91da64))
+* **inventory:** declare the live vLLM profile and select the campaign target by lane ([#2343](https://github.com/dryvist/ansible-proxmox-ai/issues/2343)) ([102ae9d](https://github.com/dryvist/ansible-proxmox-ai/commit/102ae9dd705922a402b121ebd540d85d321353b6))
+* **laya_systemone:** pick the CUDA torch backend from the host driver ([#2341](https://github.com/dryvist/ansible-proxmox-ai/issues/2341)) ([a9f8590](https://github.com/dryvist/ansible-proxmox-ai/commit/a9f8590142c68c9bca99ecefac7c52b4e34f85e3))
+* **laya_systemone:** require an explicit fine-tune action ([#2334](https://github.com/dryvist/ansible-proxmox-ai/issues/2334)) ([088e11f](https://github.com/dryvist/ansible-proxmox-ai/commit/088e11ff24ac1141dccd633ceb3453a7c0b38d33))
+* **llm_model_trial:** accept one inventory host name as the trial target ([#2322](https://github.com/dryvist/ansible-proxmox-ai/issues/2322)) ([653e8f3](https://github.com/dryvist/ansible-proxmox-ai/commit/653e8f3f42178f1d45cdf410bc342d464fb31039))
+* **llm_model_trial:** download container candidate files before the baseline stops ([#2319](https://github.com/dryvist/ansible-proxmox-ai/issues/2319)) ([112b016](https://github.com/dryvist/ansible-proxmox-ai/commit/112b01645b6871924d7f183c00eb9728885cc9d2))
+* **llm_model_trial:** name the baseline GPU guest by group or one host ([#2329](https://github.com/dryvist/ansible-proxmox-ai/issues/2329)) ([d43bc49](https://github.com/dryvist/ansible-proxmox-ai/commit/d43bc49a0d8a863c4871646377d098bf7f9b2e3e))
+* **llm_router:** declare the Studio direct model on the keys that use it ([#2344](https://github.com/dryvist/ansible-proxmox-ai/issues/2344)) ([8adc534](https://github.com/dryvist/ansible-proxmox-ai/commit/8adc534c97f7ce3f91f7f4b468a5a99748171a8a))
+* **llm-router:** classify numbers and booleans in untrusted requests as text and log the unsupported category ([#2331](https://github.com/dryvist/ansible-proxmox-ai/issues/2331)) ([f6163c7](https://github.com/dryvist/ansible-proxmox-ai/commit/f6163c704f811012697c9a4c2702d925ad6b3826))
+* **nvidia_container_toolkit:** install Docker through the artifact cache proxy on trial guests ([#2325](https://github.com/dryvist/ansible-proxmox-ai/issues/2325)) ([5ffe3ef](https://github.com/dryvist/ansible-proxmox-ai/commit/5ffe3efeb44ff7727fdef31fe05d96a0171baaf9))
+* **nvidia_container_toolkit:** install the toolkit from NVIDIA's CUDA apt repository ([#2326](https://github.com/dryvist/ansible-proxmox-ai/issues/2326)) ([471bfe1](https://github.com/dryvist/ansible-proxmox-ai/commit/471bfe155b08cf5a536ed05f6a5c361c3d49f7fb))
+* **nvidia_container_toolkit:** load the inventory before the container trial play ([#2320](https://github.com/dryvist/ansible-proxmox-ai/issues/2320)) ([8c7c317](https://github.com/dryvist/ansible-proxmox-ai/commit/8c7c317126cb1c0bbaef7e481e07263f33889486))
+* replace private names with role words ([#2327](https://github.com/dryvist/ansible-proxmox-ai/issues/2327)) ([a7d7224](https://github.com/dryvist/ansible-proxmox-ai/commit/a7d722419513085972c460a98eca70009776fa85))
+
+
+### Performance
+
+* **hermes:** fetch only the cron domains on a hermes_crons-only run ([#2340](https://github.com/dryvist/ansible-proxmox-ai/issues/2340)) ([b7c576f](https://github.com/dryvist/ansible-proxmox-ai/commit/b7c576fe43eb9eb2835674d082b802fca6440848))
+
 ## [2.41.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.40.0...v2.41.0) (2026-11-09)
 
 

@@ -225,9 +225,9 @@ def test_specialist_eval_sim_play_is_isolated() -> None:
 
 
 def test_inventory_maps_only_the_sim_eval_tag_to_its_own_group() -> None:
-    inventory = (ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml").read_text(encoding="utf-8")
+    group_template = (ROOT / "inventory/load_tofu/add_lxc_host_groups.yml.j2").read_text(encoding="utf-8")
 
     # Rendered tag-to-group coverage: tests/specialist_eval/test_eval_targeting.py.
-    assert "intersect(['sim-eval'])" in inventory
-    assert "map('regex_replace', '-eval$', '_eval_group')" in inventory
-    assert "sim_group" not in inventory
+    assert "intersect(['sim-eval'])" in group_template
+    assert "map('regex_replace', '-eval$', '_eval_group')" in group_template
+    assert "sim_group" not in group_template

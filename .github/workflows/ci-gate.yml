@@ -104,11 +104,13 @@ jobs:
           - 'tests/llm_model_campaign/**'
           - 'tests/llm_model_trial/**'
           - 'tests/test_contract_scope_selector.py'
+          - 'tests/test_contract_scope_router_selector.py'
           - 'tests/test_contract_scope_mapping.py'
           - 'tests/test_ci_workflow_policy.py'
           - 'tests/test_ci_gate_dispatch.py'
           - 'roles/fabric_watchdog/**'
           - 'roles/dify_docker/**'
+          - 'roles/crawl4ai_docker/**'
           - 'roles/langflow_docker/**'
           - 'roles/clickhouse_docker/**'
           - 'roles/langfuse_docker/**'
@@ -118,6 +120,7 @@ jobs:
           - 'roles/nvidia_gpu_guest/**'
           - 'tests/agent_concurrency/**'
           - 'tests/dify_docker/**'
+          - 'tests/crawl4ai_docker/**'
           - 'tests/clickhouse_docker/**'
           - 'tests/langfuse_docker/**'
           - 'tests/llamacpp_release/**'
@@ -168,6 +171,16 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up Python for YAML selection
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
+      - name: Install the pinned selector YAML parser
+        run: |
+          python -m pip install --disable-pip-version-check \
+          --requirement <(sed -n '/^pyyaml==/p' .github/requirements-ci.txt)
       - name: Select focused contract checks
         id: select
         env:
@@ -203,6 +216,8 @@ jobs:
           git diff --name-only "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"
           python .github/scripts/select-contract-scope.py \
             --paths-file "$RUNNER_TEMP/changed-paths" \
+            --base-ref "$BASE_SHA" \
+            --head-ref "$HEAD_SHA" \
             --output "$GITHUB_OUTPUT"
       - name: Report the selected contract scope
         if: ${{ always() }}
@@ -211,17 +226,7 @@ jobs:
           GITHUB_REF: ${{ github.ref }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           SELECT_RESULT: ${{ steps.select.outcome }}
-        run: |
-          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
-             [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop ]] ||
-             [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
-            selection=full
-          elif [[ "$SELECT_RESULT" != success ]]; then
-            selection=failed-unmapped
-          else
-            selection=focused
-          fi
-          printf 'Data Contract selection: %s\n' "$selection" >> "$GITHUB_STEP_SUMMARY"
+        run: python .github/scripts/select-contract-scope.py --report
 
   # Pushes run full contract validation; pull requests use focused selection.
   data-contract:
