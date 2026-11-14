@@ -24,6 +24,7 @@ if __name__ == "__main__" and sys.argv[1:] == ["--report"]:
         summary.write(f"Data Contract selection: {scope}\n")
     raise SystemExit(0)
 
+from contract_scope_campaign import campaign_scope_applies, campaign_selection
 from router_shards import (
     RouterShard,
     load_router_contracts,
@@ -162,6 +163,8 @@ def full_selection() -> Selection:
 
 
 def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selection:
+    if campaign_scope_applies(paths):
+        return campaign_selection()
     pytest_targets: set[str] = set()
     ansible_tests: set[str] = set()
     router_tests: set[str] = set()
