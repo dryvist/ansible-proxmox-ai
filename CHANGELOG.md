@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.47.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.47.0...v2.47.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **dify_docker:** skip a catalog app whose variables are not declared ([#2464](https://github.com/dryvist/ansible-proxmox-ai/issues/2464)) ([bd31e50](https://github.com/dryvist/ansible-proxmox-ai/commit/bd31e505564e8c0ba90eb9cf61970f6e8dd9d26d))
+
 ## [2.47.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.46.0...v2.47.0) (2026-11-14)
 
 
