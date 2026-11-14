@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.45.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.44.2...v2.45.0) (2026-11-14)
+
+
+### Features
+
+* **agent:** zcode run j-e5c0482d698a0659 ([63842a6](https://github.com/dryvist/ansible-proxmox-ai/commit/63842a66df88c421b5b939a8fcd90e969d72bd3d))
+
+
+### Bug Fixes
+
+* **campaign:** create and collect cell results on the right host ([#2447](https://github.com/dryvist/ansible-proxmox-ai/issues/2447)) ([bc19bed](https://github.com/dryvist/ansible-proxmox-ai/commit/bc19bedc4430e199e5fa25ae47093af10bed28c8))
+* **campaign:** pass only options the result converter accepts ([#2451](https://github.com/dryvist/ansible-proxmox-ai/issues/2451)) ([19a8257](https://github.com/dryvist/ansible-proxmox-ai/commit/19a8257d3a409df10357f32b8294cde823cafda2))
+* **campaign:** run controller-side latency gate queries without privilege escalation ([#2445](https://github.com/dryvist/ansible-proxmox-ai/issues/2445)) ([3da2aa8](https://github.com/dryvist/ansible-proxmox-ai/commit/3da2aa88a02474ded8f17527161cfb138da2acf1))
+* **campaign:** run the recipe row executable with its arguments ([#2449](https://github.com/dryvist/ansible-proxmox-ai/issues/2449)) ([815e1e8](https://github.com/dryvist/ansible-proxmox-ai/commit/815e1e8faf038109de2ca6445d4cf07615a3e7fc))
+* **nvidia_gpu_guest:** install transformers with the lm-eval tool ([#2450](https://github.com/dryvist/ansible-proxmox-ai/issues/2450)) ([02a3f4b](https://github.com/dryvist/ansible-proxmox-ai/commit/02a3f4be7df2ba742af86327a6d0c94020390705))
+* **trials:** set facts before the task that reads them ([#2444](https://github.com/dryvist/ansible-proxmox-ai/issues/2444)) ([63842a6](https://github.com/dryvist/ansible-proxmox-ai/commit/63842a66df88c421b5b939a8fcd90e969d72bd3d))
+
 ## [2.44.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.44.1...v2.44.2) (2026-11-14)
 
 
