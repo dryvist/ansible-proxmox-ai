@@ -49,6 +49,15 @@ def test_paired_passes_share_one_lock_and_release_in_always() -> None:
     assert paired["always"][0]["block"][0]["ansible.builtin.include_role"]["tasks_from"] == "release.yml"
 
 
+def test_trial_role_includes_carry_privilege_in_apply() -> None:
+    paired = _paired_block()
+    includes = [paired["block"][0], paired["block"][2], paired["always"][0]["block"][0]]
+
+    for include in includes:
+        assert "become" not in include
+        assert include["ansible.builtin.include_role"]["apply"] == {"become": True}
+
+
 def test_campaign_output_dir_is_optional_and_scoped_by_pass() -> None:
     inputs = (PLAYBOOKS / "tasks/llm-model-campaign-paired-inputs.yml").read_text(encoding="utf-8")
     converter = (PLAYBOOKS / "tasks/llm-model-campaign-convert.yml").read_text(encoding="utf-8")
