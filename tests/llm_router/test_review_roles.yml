@@ -123,10 +123,58 @@
           OCR registry group {{ _optional_ocr_group }} is missing from the enabled
           virtual-key or review-role output.
 
+    - name: Confirm the OCR regression targets a non-resident GPU guest model
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _optional_ocr_role_entries[0].tier == 'vllm'
+          - llm_roles.roles.ocr.model not in
+            (llm_roles.hosts.server.resident + llm_roles.hosts.server.swap)
+
     - name: Assert the role-map OCR model while OCR is enabled
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: assert-llm-roles.yml
+
+    - name: Preserve the enabled OCR registry for the server-class negative case
+      ansible.builtin.set_fact:
+        _optional_ocr_enabled_registry: "{{ llm_router_model_registry }}"
+
+    - name: Change the non-resident OCR model to a server-class tier
+      ansible.builtin.set_fact:
+        llm_router_model_registry: >-
+          {%- set ns = namespace(entries=[]) -%}
+          {%- for model in llm_router_model_registry -%}
+          {%- if model.catalog_model_name | default('') == _optional_ocr_role_model_id -%}
+          {%- set ns.entries = ns.entries + [model | combine({'tier': 'local-large'})] -%}
+          {%- else -%}
+          {%- set ns.entries = ns.entries + [model] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.entries }}
+
+    - name: A non-GPU OCR entry outside server-class residency is refused
+      block:
+        - name: Run the role-map assert for the non-vllm OCR entry
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: assert-llm-roles.yml
+        - name: Fail if the non-vllm unresident entry passed the role-map assert
+          ansible.builtin.fail:
+            msg: a non-vllm role-map model outside server-class residency passed
+      rescue:
+        - name: The failure names the server-class extra OCR model
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - >-
+                'Server-class servable entries the server class does not serve:'
+                in ansible_failed_result.msg
+              - _optional_ocr_role_model_id in ansible_failed_result.msg
+      always:
+        - name: Restore the enabled OCR registry after the negative case
+          ansible.builtin.set_fact:
+            llm_router_model_registry: "{{ _optional_ocr_enabled_registry }}"
 
     - name: Enable every OCR entry for the role-map priority regression
       ansible.builtin.set_fact:
