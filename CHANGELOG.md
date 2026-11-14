@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.46.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.45.0...v2.46.0) (2026-11-14)
+
+
+### Features
+
+* **agent:** zcode run j-a94cb0ac99aa4ffc ([7e963bd](https://github.com/dryvist/ansible-proxmox-ai/commit/7e963bddf6e3fd071c4e000c1fdab6a36751de75))
+
+
+### Bug Fixes
+
+* **dify_docker:** leave built-in tool providers undeclared by default ([#2459](https://github.com/dryvist/ansible-proxmox-ai/issues/2459)) ([7e963bd](https://github.com/dryvist/ansible-proxmox-ai/commit/7e963bddf6e3fd071c4e000c1fdab6a36751de75))
+
 ## [2.45.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.44.2...v2.45.0) (2026-11-14)
 
 
