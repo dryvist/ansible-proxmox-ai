@@ -137,3 +137,18 @@ def test_run_row_facts_do_not_read_facts_set_by_the_same_task() -> None:
         facts = task.get("ansible.builtin.set_fact", {})
         for name in facts:
             assert not any(name in str(value) for other, value in facts.items() if other != name)
+
+
+def _walk(tasks: list[dict]):
+    for task in tasks or []:
+        yield task
+        for key in ("block", "rescue", "always"):
+            yield from _walk(task.get(key, []))
+
+
+def test_latency_gate_tasks_on_the_controller_never_escalate() -> None:
+    for name in ("llm-model-campaign-latency-gate-counts.yml", "llm-model-campaign-latency-gate-ratio.yml"):
+        delegated = [task for task in _walk(_tasks(PLAYBOOKS / "tasks" / name)) if task.get("delegate_to") == "localhost"]
+        assert delegated
+        for task in delegated:
+            assert task.get("vars", {}).get("ansible_become") is False, task["name"]
