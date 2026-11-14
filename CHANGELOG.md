@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.47.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.47.1...v2.47.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **dify_docker:** pin the agent catalog to ai-llm-prompts v1.114.2 ([#2469](https://github.com/dryvist/ansible-proxmox-ai/issues/2469)) ([774c6d7](https://github.com/dryvist/ansible-proxmox-ai/commit/774c6d7b20588a99395e48609eca429f2af158d3))
+
 ## [2.47.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.47.0...v2.47.1) (2026-11-14)
 
 
