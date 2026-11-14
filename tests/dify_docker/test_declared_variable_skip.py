@@ -29,10 +29,11 @@ def _when(expression, **context):
     return _env().from_string("{{ " + expression + " }}").render(**context).strip()
 
 
-def _decides(select, undeclared):
+def _decides(select, undeclared, private=False):
     expression = _flat(_task(_yaml(PRE), DECIDE)["ansible.builtin.set_fact"]["dify_docker_dsl_skip_import"])
     return _render(
         expression,
+        dify_docker_agent_dsl={"private": True} if private else {},
         dify_docker_agent_dsl_select=select,
         dify_docker_dsl_name="example-app",
         dify_docker_dsl_undeclared_empty=undeclared,
@@ -78,10 +79,19 @@ def test_an_import_all_run_skips_an_undeclared_app_and_still_imports_the_next_ap
 
 def test_naming_the_app_in_the_selection_keeps_the_assert_fatal():
     check = _task(_yaml(PRE), CHECK)
-    assert check["when"] == "dify_docker_dsl_name in dify_docker_agent_dsl_select"
+    named = {"dify_docker_dsl_name": "example-app", "dify_docker_agent_dsl": {}}
+    assert _when(_flat(check["when"]), dify_docker_agent_dsl_select=["example-app"], **named) == "True"
+    assert _when(_flat(check["when"]), dify_docker_agent_dsl_select=[], **named) == "False"
     assert not _passes(check["ansible.builtin.assert"]["that"],
                        dify_docker_dsl_undeclared_empty=["EXAMPLE_TOKEN"])
     assert _passes(check["ansible.builtin.assert"]["that"], dify_docker_dsl_undeclared_empty=[])
+
+
+def test_a_private_definition_keeps_the_assert_fatal_and_is_never_skipped():
+    check = _task(_yaml(PRE), CHECK)
+    assert _when(_flat(check["when"]), dify_docker_agent_dsl_select=[],
+                 dify_docker_dsl_name="example-app", dify_docker_agent_dsl={"private": True}) == "True"
+    assert _decides([], ["EXAMPLE_TOKEN"], private=True) is False
 
 
 def test_a_fully_declared_app_is_imported_as_before():

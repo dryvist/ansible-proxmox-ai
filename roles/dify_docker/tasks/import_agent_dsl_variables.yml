@@ -211,12 +211,14 @@
 # An import-all run (the app not named in dify_docker_agent_dsl_select) skips such an
 # app instead of failing on it: it is not imported or overwritten, the run continues
 # with the next app, and the end-of-run summary names it and its missing variables.
-# Naming the app in dify_docker_agent_dsl_select keeps the hard failure.
+# Naming the app in dify_docker_agent_dsl_select keeps the hard failure, and so does a
+# private definition, which the deployment supplied itself.
 - name: Decide whether an app with undeclared variables is skipped by this run
   ansible.builtin.set_fact:
     dify_docker_dsl_skip_import: >-
       {{ (dify_docker_dsl_undeclared_empty | length > 0)
-         and (dify_docker_dsl_name not in dify_docker_agent_dsl_select) }}
+         and (dify_docker_dsl_name not in dify_docker_agent_dsl_select)
+         and not (dify_docker_agent_dsl.private | default(false) | bool) }}
   no_log: true
 
 - name: Assert every environment variable of the app definition with an empty value has an entry
@@ -226,7 +228,9 @@
     fail_msg: >-
       {{ dify_docker_dsl_name }}: environment variables with an empty value and no entry:
       {{ dify_docker_dsl_undeclared_empty | join(', ') or 'none' }}.
-  when: dify_docker_dsl_name in dify_docker_agent_dsl_select
+  when: >-
+    dify_docker_dsl_name in dify_docker_agent_dsl_select
+    or (dify_docker_agent_dsl.private | default(false) | bool)
 
 - name: Record the app skipped for its undeclared variables
   ansible.builtin.set_fact:
