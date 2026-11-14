@@ -1,0 +1,306 @@
+---
+# Covers optional OCR route rendering and role-map capability selection.
+# Run from the repo root: ansible-playbook tests/llm_router/test_review_roles_ocr.yml -i localhost, -c local
+- name: Verify optional OCR route projections and capability selection
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - policy_fixture.yml
+    - ../../inventory/group_vars/all/02-gpu-accelerator.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      github_actions_llm_router_key: sk-fixture-gha
+      github_actions_oss_llm_router_key: sk-fixture-gha-oss
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: "http://otel.example.test:4318"
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+    hermes_goal_judge_model: "{{ llm_router_small_model }}"
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-or-fixture
+      OPENROUTER_HERMES_KEY: sk-orh-fixture
+      OPENAI_API_KEY: sk-oa-fixture
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    # include_vars loads the role default (false) as a host fact, which
+    # outranks a play var: model a logged-in node with a fact of the same rank.
+    - name: Model a node that holds a ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Model a ready vLLM endpoint for the OCR render cases
+      ansible.builtin.set_fact:
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_router_llm_vllm_base_url: http://localhost:10434/v1
+
+    - name: Refresh cached router projections after fixture input changes [review-roles-1]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Preserve the registry for the optional OCR render cases
+      ansible.builtin.set_fact:
+        _optional_ocr_original_registry: "{{ llm_router_model_registry }}"
+        _optional_ocr_registry_entries: >-
+          {{ llm_router_model_registry | selectattr('serving_role', 'defined')
+             | selectattr('serving_role', 'equalto', 'ocr') | list }}
+        _optional_ocr_role_model_id: >-
+          {{ llm_roles.models[llm_roles.roles.ocr.model].id }}
+        _optional_ocr_role_entries: >-
+          {{ llm_router_model_registry | selectattr('serving_role', 'defined')
+             | selectattr('serving_role', 'equalto', 'ocr')
+             | selectattr('catalog_model_name', 'defined')
+             | selectattr('catalog_model_name', 'equalto',
+                         llm_roles.models[llm_roles.roles.ocr.model].id) | list }}
+        _optional_ocr_alternate_entries: >-
+          {{ llm_router_model_registry | selectattr('serving_role', 'defined')
+             | selectattr('serving_role', 'equalto', 'ocr')
+             | selectattr('catalog_model_name', 'defined')
+             | rejectattr('catalog_model_name', 'equalto',
+                         llm_roles.models[llm_roles.roles.ocr.model].id) | list }}
+
+    - name: Require one registry entry for the OCR render cases
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _optional_ocr_role_entries | length == 1
+          - _optional_ocr_alternate_entries | length > 0
+
+    - name: Enable the role-map OCR entry for its present-capability render
+      ansible.builtin.set_fact:
+        llm_router_model_registry: >-
+          {%- set ns = namespace(entries=[]) -%}
+          {%- for model in _optional_ocr_original_registry -%}
+          {%- if model.serving_role | default('') == 'ocr' -%}
+          {%- if model.catalog_model_name == _optional_ocr_role_model_id -%}
+          {%- set ns.entries = ns.entries + [model | combine({'enabled': true})] -%}
+          {%- else -%}
+          {%- set ns.entries = ns.entries + [model | combine({'enabled': false})] -%}
+          {%- endif -%}
+          {%- else -%}
+          {%- set ns.entries = ns.entries + [model] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.entries }}
+
+    - name: Refresh cached router projections with OCR enabled
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Capture virtual-key and review-role outputs with OCR enabled
+      ansible.builtin.set_fact:
+        _optional_ocr_group: "{{ _optional_ocr_role_entries[0].route_group }}"
+        _optional_ocr_rendered_models: >-
+          {{ (lookup('template', _role_dir ~ '/templates/model-list.yaml.j2') | from_yaml).model_list }}
+        _optional_ocr_enabled_key_models: >-
+          {{ (llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local') | first).models }}
+        _optional_ocr_enabled_review_groups: "{{ llm_router_cross_modality_fail_fast_names }}"
+
+    - name: OCR appears in virtual-key and review-role outputs when enabled
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_ocr_model == _optional_ocr_group
+          - _optional_ocr_group in _optional_ocr_enabled_key_models
+          - _optional_ocr_group in _optional_ocr_enabled_review_groups
+          - _optional_ocr_group in llm_router_capability_names
+          - >-
+            _optional_ocr_rendered_models
+            | selectattr('model_name', 'equalto', _optional_ocr_group)
+            | list | length == llm_router_priority_tiers | length
+        fail_msg: >-
+          OCR registry group {{ _optional_ocr_group }} is missing from the enabled
+          virtual-key or review-role output.
+
+    - name: Confirm the OCR regression targets a non-resident GPU guest model
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _optional_ocr_role_entries[0].tier == 'vllm'
+          - llm_roles.roles.ocr.model not in
+            (llm_roles.hosts.server.resident + llm_roles.hosts.server.swap)
+
+    - name: Assert the role-map OCR model while OCR is enabled
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assert-llm-roles.yml
+
+    - name: Preserve the enabled OCR registry for the server-class negative case
+      ansible.builtin.set_fact:
+        _optional_ocr_enabled_registry: "{{ llm_router_model_registry }}"
+
+    - name: Change the non-resident OCR model to a server-class tier
+      ansible.builtin.set_fact:
+        llm_router_model_registry: >-
+          {%- set ns = namespace(entries=[]) -%}
+          {%- for model in llm_router_model_registry -%}
+          {%- if model.catalog_model_name | default('') == _optional_ocr_role_model_id -%}
+          {%- set ns.entries = ns.entries + [model | combine({'tier': 'local-large'})] -%}
+          {%- else -%}
+          {%- set ns.entries = ns.entries + [model] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.entries }}
+
+    - name: A non-GPU OCR entry outside server-class residency is refused
+      block:
+        - name: Run the role-map assert for the non-vllm OCR entry
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: assert-llm-roles.yml
+        - name: Fail if the non-vllm unresident entry passed the role-map assert
+          ansible.builtin.fail:
+            msg: a non-vllm role-map model outside server-class residency passed
+      rescue:
+        - name: The failure names the server-class extra OCR model
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - >-
+                'Server-class servable entries the server class does not serve:'
+                in ansible_failed_result.msg
+              - _optional_ocr_role_model_id in ansible_failed_result.msg
+      always:
+        - name: Restore the enabled OCR registry after the negative case
+          ansible.builtin.set_fact:
+            llm_router_model_registry: "{{ _optional_ocr_enabled_registry }}"
+
+    - name: Enable every OCR entry for the role-map priority regression
+      ansible.builtin.set_fact:
+        # The alternate OCR entry is local-large; model its serving gate as
+        # ready for these cases so both enabled entries are active capabilities.
+        llm_router_studio_precheck_passed: true
+        llm_router_model_registry: >-
+          {%- set ns = namespace(entries=[]) -%}
+          {%- for model in _optional_ocr_original_registry -%}
+          {%- if model.serving_role | default('') == 'ocr' -%}
+          {%- set ns.entries = ns.entries + [model | combine({'enabled': true})] -%}
+          {%- else -%}
+          {%- set ns.entries = ns.entries + [model] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.entries }}
+
+    - name: Refresh cached router projections with every OCR entry enabled
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Assert the role-map OCR entry wins when both OCR entries are enabled
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            (llm_router_registry_enabled | selectattr('serving_role', 'defined')
+             | selectattr('serving_role', 'equalto', 'ocr') | list | length)
+            == (_optional_ocr_registry_entries | length)
+          - llm_router_ocr_model == _optional_ocr_group
+
+    - name: Disable the role-map OCR entry and leave the other OCR entry enabled
+      ansible.builtin.set_fact:
+        llm_router_model_registry: >-
+          {%- set ns = namespace(entries=[]) -%}
+          {%- for model in _optional_ocr_original_registry -%}
+          {%- if model.serving_role | default('') == 'ocr' -%}
+          {%- if model.catalog_model_name == _optional_ocr_role_model_id -%}
+          {%- set ns.entries = ns.entries + [model | combine({'enabled': false})] -%}
+          {%- else -%}
+          {%- set ns.entries = ns.entries + [model | combine({'enabled': true})] -%}
+          {%- endif -%}
+          {%- else -%}
+          {%- set ns.entries = ns.entries + [model] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.entries }}
+
+    - name: Refresh cached router projections with the role-map OCR entry disabled
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Capture the enabled alternate OCR route
+      ansible.builtin.set_fact:
+        _optional_ocr_fallback_route: "{{ llm_router_ocr_model }}"
+        _optional_ocr_expected_fallback_group: >-
+          {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
+              | selectattr('serving_role', 'equalto', 'ocr')
+              | rejectattr('catalog_model_name', 'equalto', _optional_ocr_role_model_id)
+              | first).route_group }}
+
+    - name: Fall back to the other enabled OCR entry when the role-map entry is disabled
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _optional_ocr_fallback_route == _optional_ocr_expected_fallback_group
+          - _optional_ocr_fallback_route != _optional_ocr_group
+
+    - name: Disable every registry entry with the OCR serving role
+      ansible.builtin.set_fact:
+        llm_router_model_registry: >-
+          {%- set ns = namespace(entries=[]) -%}
+          {%- for model in _optional_ocr_original_registry -%}
+          {%- if model.serving_role | default('') == 'ocr' -%}
+          {%- set ns.entries = ns.entries + [model | combine({'enabled': false})] -%}
+          {%- else -%}
+          {%- set ns.entries = ns.entries + [model] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.entries }}
+
+    - name: Refresh cached router projections with OCR disabled
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Capture virtual-key and review-role outputs with OCR absent
+      ansible.builtin.set_fact:
+        _optional_ocr_disabled_route: "{{ llm_router_ocr_model }}"
+        _optional_ocr_disabled_capabilities: "{{ llm_router_capability_names }}"
+        _optional_ocr_disabled_key_models: >-
+          {{ llm_router_virtual_keys | map(attribute='models') | flatten | list }}
+        _optional_ocr_disabled_review_groups: "{{ llm_router_cross_modality_fail_fast_names }}"
+
+    - name: Empty OCR capability leaves no empty or undefined list members
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _optional_ocr_disabled_route == ''
+          - _optional_ocr_group not in _optional_ocr_disabled_capabilities
+          - _optional_ocr_disabled_key_models | select('equalto', '') | list | length == 0
+          - _optional_ocr_disabled_key_models | select('undefined') | list | length == 0
+          - _optional_ocr_disabled_review_groups | select('equalto', '') | list | length == 0
+          - _optional_ocr_disabled_review_groups | select('undefined') | list | length == 0
+        fail_msg: >-
+          An absent OCR capability rendered route={{ _optional_ocr_disabled_route }},
+          key models={{ _optional_ocr_disabled_key_models }},
+          review roles={{ _optional_ocr_disabled_review_groups }}.
+
+    - name: Assert role-map validation accepts the absent optional OCR model
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assert-llm-roles.yml
+
+    - name: Restore the original registry after the optional OCR render cases
+      ansible.builtin.set_fact:
+        llm_router_model_registry: "{{ _optional_ocr_original_registry }}"
+        llm_router_studio_precheck_passed: false
+
+    - name: Refresh cached router projections after restoring the original registry
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml

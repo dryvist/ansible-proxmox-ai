@@ -118,12 +118,12 @@
       ansible.builtin.set_fact:
         _config: "{{ _rendered_config | from_yaml }}"
 
-    - name: The disabled GPU tier leaves the CPU small route in place
+    - name: The active GPU tier leaves the CPU small route available
       ansible.builtin.assert:
         quiet: true
         that:
-          - not llm_router_llm_vllm_enabled | bool
-          - llm_router_vllm_models | length == 0
+          - llm_router_llm_vllm_enabled | bool
+          - llm_router_vllm_models | length > 0
           - llm_router_small_model == llm_router_small_capability_name
           - _small_members | length == llm_router_priority_tiers | length
           - _small_members | map(attribute='litellm_params.order') | map('int') | unique | list == [3]
@@ -132,26 +132,20 @@
           - llm_router_model_group_aliases.cheap == llm_router_small_model
           - llm_router_model_group_aliases['goal-judge'] == llm_router_small_model
         fail_msg: >-
-          The disabled GPU tier must retain the registry-backed CPU small member
-          and its stable aliases; members={{ _small_members }}.
+          The active GPU tier must leave the registry-backed CPU small member
+          and its stable aliases available; members={{ _small_members }}.
       vars:
         _small_members: >-
           {{ _config.model_list
              | selectattr('model_name', 'equalto', llm_router_small_model) | list }}
 
-    - name: Select the 4080 capability deployments
+    - name: Select the active vLLM capability deployments
       ansible.builtin.set_fact:
         _gpu_deployments: >-
           {{ _config.model_list
              | selectattr('litellm_params.api_base', 'defined')
              | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url)
              | list }}
-      when: llm_router_vllm_models | length > 0
-
-    - name: Set the GPU deployment list empty when vLLM is disabled
-      ansible.builtin.set_fact:
-        _gpu_deployments: []
-      when: llm_router_vllm_models | length == 0
 
     - name: The rendered GPU rung matches the enabled registry selection
       ansible.builtin.assert:
@@ -161,18 +155,6 @@
         fail_msg: >-
           The rendered GPU deployments do not match the enabled vLLM registry
           selection.
-      when: llm_router_vllm_models | length > 0
-
-    - name: A disabled vLLM tier leaves no guest model preset
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - not llm_router_llm_vllm_enabled | bool
-          - llm_router_vllm_models | length == 0
-          - llama_cpp_catalog_lookup_names | length == 0
-          - llama_cpp_models | length == 0
-        success_msg: The disabled vLLM tier has no guest model preset.
-      when: llm_router_vllm_models | length == 0
 
     - name: The vLLM backend URL follows the inventory guest name
       ansible.builtin.assert:
@@ -183,7 +165,6 @@
             == 'http://' ~ groups['llm_vllm_group'][0] ~ '.' ~ llm_router_apex_domain
             ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
         success_msg: The vLLM endpoint follows its inventory member and the configured API port.
-      when: llm_router_vllm_models | length > 0
 
     - name: Every GPU-rung deployment's max_parallel_requests equals the serving process value
       ansible.builtin.assert:

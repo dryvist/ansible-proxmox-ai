@@ -64,6 +64,12 @@ GGUF filename, and each section carries its own ctx-size and
 chat/embeddings/rerank flags, so mixing model kinds on one guest still gets
 the right flags for each.
 
+The Vulkan guest's group config declares a 9B text model and an image-text
+model for dense-layout image text. The image-text preset uses a 16,384-token
+context, and the group caps resident models at two with two serving slots.
+An entry may set `mmproj_file`; the preset then renders its `mmproj` path, and
+entries without the field omit that setting.
+
 A `llama_cpp_models` entry can also set `rerank: true` (a reranking model —
 `embeddings = true` + `rerank = true` + `pooling = rank`) and `pooling:
 <mean|cls|last|none>` (overrides the embeddings branch's default of `mean`
