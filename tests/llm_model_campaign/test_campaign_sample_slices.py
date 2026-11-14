@@ -106,7 +106,10 @@ def test_sample_slice_index_is_part_of_the_cell_result_path() -> None:
 
 def test_cell_loop_uses_the_cartesian_product_of_all_campaign_axes() -> None:
     run_tasks = _load(TASKS / "llm-model-campaign-run.yml")
-    axes = _named(run_tasks, "Resolve the surveyed axes for this recipe row")["ansible.builtin.set_fact"]
+    axes = {
+        **_named(run_tasks, "Count the sample slices for this recipe row")["ansible.builtin.set_fact"],
+        **_named(run_tasks, "Resolve the surveyed axes for this recipe row")["ansible.builtin.set_fact"],
+    }
     loop = _named(
         run_tasks,
         "Run the row for each requested context, concurrency, sample slice, and repetition",

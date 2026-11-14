@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.44.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.44.1...v2.44.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **campaign:** count the sample slices in a task of their own ([#2439](https://github.com/dryvist/ansible-proxmox-ai/issues/2439)) ([592db9b](https://github.com/dryvist/ansible-proxmox-ai/commit/592db9bc0d81c8ce461e72b23f2f06d4a61ac52d))
+
 ## [2.44.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.44.0...v2.44.1) (2026-11-14)
 
 
