@@ -43,6 +43,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
+    _llm_router_test_catalog_request_timeout_seconds: 123
     hermes_brain_model: medium
     hermes_goal_judge_model: judge
     hindsight_retain_model: qwen3-4b
@@ -71,6 +72,20 @@
         llm_router_llm_fast_enabled: true
         llm_router_llm_large_standby_base_url: http://localhost:12434/v1
         llm_active_profile: medium-a
+
+    - name: Give the primary fixture model a catalog request timeout
+      ansible.builtin.set_fact:
+        llm_router_studio_shared_models: >-
+          {%- set ns = namespace(models=[]) -%}
+          {%- for model in llm_router_studio_shared_models -%}
+          {%- if model.route_group == llm_router_primary_model -%}
+          {%- set ns.models = ns.models + [model | combine({
+                'request_timeout': _llm_router_test_catalog_request_timeout_seconds})] -%}
+          {%- else -%}
+          {%- set ns.models = ns.models + [model] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.models }}
 
     - name: Refresh projections for the complete fixture
       ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
@@ -149,7 +164,10 @@
           {%- for d in _members -%}
           {%- set p = d.litellm_params -%}
           {%- if p.extra_body.priority != item.priority or p.extra_body.priority == 0
-                or (item.tier == 2 and (p.timeout != llm_router_tier_2_timeout_seconds
+                or (item.tier == 2 and (p.timeout != (
+                    _llm_router_test_catalog_request_timeout_seconds
+                    if d.model_name == llm_router_primary_model
+                    else llm_router_tier_2_timeout_seconds)
                     or p.stream_timeout != llm_router_tier_2_timeout_seconds
                     or p.keepalive_seconds != llm_router_tier_2_keepalive_seconds))
                 or (item.tier != 2 and (p.timeout > llm_router_local_request_timeout_seconds
@@ -159,6 +177,26 @@
           {%- endif -%}
           {%- endfor -%}
           {{ out }}
+
+    - name: Tier two honors the primary model catalog request timeout
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _catalog_timeout_routes | length == 1
+          - >-
+            _catalog_timeout_routes | map(attribute='litellm_params.timeout') | list
+            == [_llm_router_test_catalog_request_timeout_seconds]
+        fail_msg: >-
+          Tier-two deployments for {{ llm_router_primary_model }} must use its
+          catalog request_timeout of {{ _llm_router_test_catalog_request_timeout_seconds }} seconds.
+        success_msg: >-
+          Tier two uses the catalog request_timeout of
+          {{ _llm_router_test_catalog_request_timeout_seconds }} seconds.
+      vars:
+        _catalog_timeout_routes: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', llm_router_primary_model)
+             | selectattr('litellm_params.tags', 'contains', 'tier-2') | list }}
 
     - name: Cloud entries admit tiers 0 and 1 only
       ansible.builtin.assert:
