@@ -278,6 +278,7 @@ def test_lm_eval_is_installed_for_selected_vllm_campaign_targets():
     assert role_tasks[1]["ansible.builtin.command"]["argv"][-1] == (
         "lm-eval[api]=={{ nvidia_gpu_guest_lm_eval_version }}"
     )
+    assert role_tasks[1]["ansible.builtin.command"]["argv"][-3:-1] == ["--with", "transformers"]
     assert role_tasks[1]["environment"] == "{{ nvidia_gpu_guest_uv_environment }}"
     assert role_tasks[2]["ansible.builtin.file"]["src"] == (
         "{{ nvidia_gpu_guest_uv_tool_bin_dir }}/lm_eval"
