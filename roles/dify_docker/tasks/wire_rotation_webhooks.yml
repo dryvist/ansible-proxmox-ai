@@ -133,7 +133,8 @@
     dify_docker_dsl_skipped_apps: >-
       {{ dify_docker_dsl_skipped_apps | default([])
          + [{'name': dify_docker_rotation_agent_skip_name,
-            'variables': ['rotation webhook pair (app absent)']}] }}
+            'variables': ['rotation webhook pair (app absent)'],
+            'tool_providers': []}] }}
   loop: "{{ dify_docker_rotation_agent_skip_names }}"
   loop_control:
     loop_var: dify_docker_rotation_agent_skip_name
@@ -267,17 +268,20 @@
     - dify_docker_rotation_schedule_triggers[0].status | default('') != 'enabled'
   no_log: true
 
-# One summary for the run: apps skipped at import name their missing variables,
-# rotation pairs skipped for an absent app name the pair. Names only.
+# One summary for the run: apps skipped at import name their missing variables and
+# their unresolved tool providers, rotation pairs skipped for an absent app name the
+# pair. Each app reads name: missing variables: unresolved tool providers. Names only.
 - name: Report the catalog apps skipped in this run
   ansible.builtin.debug:
     msg: >-
-      Skipped catalog apps and their missing variable names (declare the variables
-      in dify_docker_agent_app_variables to import an app):
+      Skipped catalog apps, each as name: missing variables: unresolved tool providers
+      (declare the variables in dify_docker_agent_app_variables to import an app):
       {{ dify_docker_dsl_skipped_apps | default([])
          | map(attribute='name')
          | zip(dify_docker_dsl_skipped_apps | default([])
-               | map(attribute='variables') | map('join', ', '))
+               | map(attribute='variables') | map('join', ', ') | map('default', 'none', true),
+               dify_docker_dsl_skipped_apps | default([])
+               | map(attribute='tool_providers') | map('join', ', ') | map('default', 'none', true))
          | map('join', ': ') | join('; ') }}.
   when: (dify_docker_dsl_skipped_apps | default([])) | length > 0
   changed_when: false

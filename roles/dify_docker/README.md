@@ -155,8 +155,10 @@ Draft environment variables for catalog apps (`dify_docker_agent_app_variables`)
 provider placeholders (`dify_docker_agent_tool_providers`) and the per-app leaf option are
 documented in [declared-app-variables.md](declared-app-variables.md). In an import-all run
 (empty `dify_docker_agent_dsl_select`), a catalog app whose empty-value variables are not all
-declared is skipped, not imported or overwritten, and named with its missing variable names in
-the end-of-run summary; naming the app in the selection keeps the check fatal. AppRole secret
+declared, or whose declared tool provider does not name exactly one workspace provider, is
+skipped, not imported or overwritten, and named with its missing variable names and unresolved
+tool provider names in the end-of-run summary; naming the app in the selection keeps the check
+fatal. AppRole secret
 ids are minted and read with the issuer AppRole named by `dify_docker_agent_issuer_env_names`
 and logged in through `dify_docker_agent_issuer_auth_mount`, never with the converge writer token.
 
