@@ -155,6 +155,9 @@ def test_power_guard_and_result_writer_use_the_live_enforced_limit_fixture():
         _load_tasks(TASKS / "llm-model-campaign-convert.yml"),
         "Convert the supported tool output to its versioned result envelope",
     )
+    convert_argv = convert["ansible.builtin.command"]["argv"]
+    assert "--hostname" not in convert_argv
+    assert "--serving-port" not in convert_argv
     power_env = convert["environment"]["MLX_BENCH_POWER_LIMIT_W"]
     assert "_llm_campaign_gpu_metadata[3]" in power_env
     assert "power_cap_w" not in power_env
