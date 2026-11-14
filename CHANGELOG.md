@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.44.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.44.0...v2.44.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **campaign:** apply privilege inside the trial role includes ([#2435](https://github.com/dryvist/ansible-proxmox-ai/issues/2435)) ([b0fb8c0](https://github.com/dryvist/ansible-proxmox-ai/commit/b0fb8c0946ba8cec9a5dccee4e564cc228fecb99))
+
 ## [2.44.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.43.0...v2.44.0) (2026-11-14)
 
 
