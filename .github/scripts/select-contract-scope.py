@@ -11,7 +11,7 @@ from os import environ
 from pathlib import Path
 from typing import TypedDict
 
-# runpy needs sibling imports.
+# runpy needs sibling imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 if __name__ == "__main__" and sys.argv[1:] == ["--report"]:
@@ -58,7 +58,7 @@ ANSIBLE_TESTS = {
 }
 
 
-# Removed tests have no contract; their registry cleanup is in the same diff.
+# Removed tests have no contract
 RETIRED_TESTS = {"tests/langfuse_docker/test_code_eval_dispatcher.yml"}
 
 PYTEST_PATH_TARGETS = {
@@ -73,14 +73,14 @@ PYTEST_PATH_TARGETS = {
 }
 
 
-# Select the OTEL test only when the checkout contains it.
+# Select OTEL test only when checkout contains it
 OTEL_CONSUMER_TEST = "tests/hermes_agent/test_otel_endpoint_consumers.py"
 OTEL_CONSUMER_ROLES = {
     "llm_router", "agent_exec", "dify_docker", "langgraph_docker", "hindsight_docker",
     "hermes_agent", "open_webui", "agentgateway_docker",
 }
 
-# Shared GPU roles use the same contract families.
+# Shared GPU roles share contract families
 GPU_PYTEST = {
     "tests/nvidia_gpu_guest/", "tests/llm_gpu_engine_roles/",
     "tests/llm_gpu_legacy/", "tests/llm_gpu_serving/",
@@ -184,8 +184,7 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
         if role in {"llamacpp_serving", "vllm_serving", "strata_serving", "nvidia_gpu_guest", "llm_gpu_serving"}:
             ansible_tests.update(GPU_ANSIBLE)
         if role == "llm_router":
-            # hermes_agent tests read the router role defaults (alias and role
-            # contract), so any router change selects them too.
+            # hermes_agent tests read router defaults, so router changes select them
             pytest_targets.update({"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"})
             if include_router_contracts:
                 router_tests.update(" ".join(entry) for entry in matrix)
@@ -225,8 +224,7 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
                     ansible_tests.update(test for test in ANSIBLE_TESTS if test.startswith(f"tests/{owner}/"))
                 continue
             if removed:
-                # Nothing is left to run. The owner scope above, or the manifest
-                # edit that dropped the file, selects what the removal affects.
+                # Nothing left to run; owner scope selects what the removal affects
                 continue
             if path.startswith("tests/llm_router/") and path.endswith((".yml", ".yaml")):
                 if path in matrix_by_test:
@@ -277,7 +275,7 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
             run_selector_checks = True
         elif path.startswith("molecule/") and Path(path).parts[1] in {
                 directory.name for directory in Path("molecule").iterdir() if directory.is_dir()}:
-            # The shared scenario selector owns this path's Molecule execution.
+            # Shared scenario selector owns Molecule execution
             run_selector_checks = True
         elif path == "scripts/generate_servable_aliases.py":
             role_scope("llm_router")
@@ -289,7 +287,7 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
         elif path == "renovate.json":
             run_selector_checks = True
         elif path.startswith("inventory/group_vars/hermes_agent_group/"):
-            # Hermes-only vars: the role, the inventory load, and every test that loads the file.
+            # Hermes-only vars: role, inventory load, and tests loading the file
             role_scope("hermes_agent")
             run_inventory = True
             for reader in sorted(test.as_posix() for test in Path("tests").rglob("*")
@@ -311,8 +309,7 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
             role_scope("llm_router")
             run_selector_checks = True
         elif path == ".github/router-contracts.yml":
-            # Registry edits affect the workflow matrix, so run the router
-            # workflow's registry validator against every current entry.
+            # Registry edits affect the workflow matrix
             router_tests.update(" ".join(entry) for entry in matrix)
             pytest_targets.update({
                 "tests/test_contract_scope_selector.py",
