@@ -52,6 +52,7 @@ BASELINE = [
     "Select the verified in-memory or file-backed agent DSL",
     "Parse the verified DSL document and app name",
     "Remove the fetched agent DSL copy",
+    "Reset the per-app import skip decision",
     "Report a DSL that failed its pin or fetch",
     "Resolve the exact existing Dify app for this catalog entry",
     "Reject duplicate Dify apps with the same catalog name",

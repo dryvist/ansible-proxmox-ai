@@ -14,7 +14,9 @@ def test_check_mode_previews_catalog_without_importing_or_provisioning_keys():
     assert "not ansible_check_mode" in import_task["when"]
     assert "not ansible_check_mode" in confirm_task["when"]
     assert "not ansible_check_mode" in key_task["when"]
-    assert "not (dify_docker_dsl_import_needed | bool)" in key_task["when"][-1]
+    assert any(
+        "not (dify_docker_dsl_import_needed | bool)" in condition for condition in key_task["when"]
+    )
     assert "ansible_check_mode" in preview_task["when"]
     assert "not ansible_check_mode" in publish_task["when"]
     assert preview_task["changed_when"] is True
