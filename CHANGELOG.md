@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.47.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.46.0...v2.47.0) (2026-11-14)
+
+
+### Features
+
+* **agent:** zcode run j-6e94a3f484545cc5 ([f480a58](https://github.com/dryvist/ansible-proxmox-ai/commit/f480a581088f96c9c1275a0604a190eb8c8b7d80))
+
+
+### Bug Fixes
+
+* **renovate:** hold ansible-core to the series the pinned ansible accepts ([#2462](https://github.com/dryvist/ansible-proxmox-ai/issues/2462)) ([f480a58](https://github.com/dryvist/ansible-proxmox-ai/commit/f480a581088f96c9c1275a0604a190eb8c8b7d80))
+
 ## [2.46.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.45.0...v2.46.0) (2026-11-14)
 
 

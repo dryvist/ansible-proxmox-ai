@@ -3,6 +3,13 @@
 - name: Fetch and verify the agent DSL source
   ansible.builtin.include_tasks: import_agent_dsl_fetch.yml
 
+# Facts persist across loop iterations: every app starts unskipped, and only the
+# declared-variable check below may mark this app skipped.
+- name: Reset the per-app import skip decision
+  ansible.builtin.set_fact:
+    dify_docker_dsl_skip_import: false
+  no_log: true
+
 # Leaf entries are facts, which persist across apps: each app starts with none, so an app whose
 # leaf is not read (no content) never inherits the previous app's declarations.
 - name: Reset the per-app leaf declarations before this app
@@ -33,11 +40,16 @@
     - dify_docker_dsl_content | length > 0
   no_log: true
 
+# A skipped app reaches nothing here: no import, no publish, no version record,
+# no API key. Its name and missing variables are in dify_docker_dsl_skipped_apps
+# for the end-of-run summary.
 - name: Reconcile the catalog app and publish its workflow
   ansible.builtin.include_tasks: import_agent_dsl_reconcile.yml
+  when: not dify_docker_dsl_skip_import | bool
 
 - name: Record the published catalog app version
   ansible.builtin.include_tasks: import_agent_dsl_record.yml
+  when: not dify_docker_dsl_skip_import | bool
 
 - name: Agent DSL import result
   ansible.builtin.debug:
@@ -58,6 +70,7 @@
       not (dify_docker_dsl_import_needed | bool)
       or (dify_docker_dsl_confirm.json | default(dify_docker_dsl_import.json | default({})))
          .status | default('') in ['completed', 'completed-with-warnings']
+    - not dify_docker_dsl_skip_import | bool
   no_log: true
 
 # Facts persist across loop iterations: drop the declared values, minted secret ids and
