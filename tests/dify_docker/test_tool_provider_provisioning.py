@@ -12,6 +12,22 @@ from _defaults import load_defaults
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "roles/dify_docker/tasks/main.yml"
 TASKS = ROOT / "roles/dify_docker/tasks/tool_provider_one.yml"
+DEFAULTS = ROOT / "roles/dify_docker/defaults/main/20-agent-apps.yml"
+
+# The explicit declaration the provider-task tests render with; the role
+# default is empty and the defaults file carries this entry as a commented
+# example a deployment copies into its own inventory.
+GITHUB_PROVIDER = {
+    "plugin_id": "langgenius/github",
+    "plugin_version": "0.3.11",
+    "provider_id": "langgenius/github/github",
+    "provider_name": "GitHub",
+    "credential_name": "github-read-only",
+    "credential_type": "api-key",
+    "credential_visibility": "all_team_members",
+    "openbao_path": "{{ dify_docker_openbao_path }}",
+    "openbao_field": "GITHUB_READ_ONLY_TOKEN",
+}
 
 
 def _yaml(path):
@@ -20,6 +36,20 @@ def _yaml(path):
 
 def _task(tasks, name):
     return next(task for task in tasks if task.get("name") == name)
+
+
+def _commented_example_providers():
+    lines = DEFAULTS.read_text(encoding="utf-8").splitlines()
+    start = next(
+        index for index, line in enumerate(lines)
+        if line.startswith("#   dify_docker_agent_tool_provider_plugins:")
+    )
+    commented = []
+    for line in lines[start:]:
+        if not line.startswith("# "):
+            break
+        commented.append(line[2:])
+    return yaml.safe_load("\n".join(commented))["dify_docker_agent_tool_provider_plugins"]
 
 
 def _provider_loop(expression, selected, app_providers, config_from_leaf=False):
@@ -34,9 +64,7 @@ def _provider_loop(expression, selected, app_providers, config_from_leaf=False):
         isinstance(value, str) and value.lower() in {"true", "yes", "1"}
     )
     rendered = environment.from_string(expression).render(
-        dify_docker_agent_tool_provider_plugins=load_defaults()[
-            "dify_docker_agent_tool_provider_plugins"
-        ],
+        dify_docker_agent_tool_provider_plugins=[GITHUB_PROVIDER],
         dify_docker_agent_dsl_select=selected,
         dify_docker_agent_tool_providers=app_providers,
         dify_docker_agent_app_config_from_leaf=config_from_leaf,
@@ -44,20 +72,14 @@ def _provider_loop(expression, selected, app_providers, config_from_leaf=False):
     return ast.literal_eval(rendered)
 
 
-def test_github_provider_pin_and_read_only_credential_source_are_declared():
-    provider, = load_defaults()["dify_docker_agent_tool_provider_plugins"]
+def test_the_builtin_tool_provider_list_is_empty_by_default():
+    assert load_defaults()["dify_docker_agent_tool_provider_plugins"] == []
 
-    assert provider == {
-        "plugin_id": "langgenius/github",
-        "plugin_version": "0.3.11",
-        "provider_id": "langgenius/github/github",
-        "provider_name": "GitHub",
-        "credential_name": "github-read-only",
-        "credential_type": "api-key",
-        "credential_visibility": "all_team_members",
-        "openbao_path": "{{ dify_docker_openbao_path }}",
-        "openbao_field": "GITHUB_READ_ONLY_TOKEN",
-    }
+
+def test_github_provider_example_keeps_the_pin_and_read_only_credential_source():
+    provider, = _commented_example_providers()
+
+    assert provider == GITHUB_PROVIDER
 
 
 def test_provider_reconciliation_runs_after_the_session_backed_model_plugin():
@@ -86,14 +108,12 @@ def test_selecting_only_pr_keeper_runs_no_provider_task_but_empty_select_keeps_f
     }
 
     assert _provider_loop(include["loop"], ["pr-keeper"], app_providers) == []
-    assert _provider_loop(include["loop"], [], app_providers) == load_defaults()[
-        "dify_docker_agent_tool_provider_plugins"
-    ]
+    assert _provider_loop(include["loop"], [], app_providers) == [GITHUB_PROVIDER]
 
 
 def test_leaf_config_keeps_every_provider_for_selected_pr_keeper():
     include = _task(_yaml(MAIN), "Install and credential declared built-in tool providers")
-    providers = load_defaults()["dify_docker_agent_tool_provider_plugins"]
+    providers = [GITHUB_PROVIDER]
 
     assert _provider_loop(
         include["loop"], ["pr-keeper"], {"pr-keeper": {}}, config_from_leaf=True
