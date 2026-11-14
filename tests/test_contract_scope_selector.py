@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -140,3 +141,37 @@ def test_changed_python_test_selects_only_that_file() -> None:
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
     assert selection["pytest_targets"] == ["tests/test_contract_scope_selector.py"]
+
+
+def test_campaign_only_change_set_selects_the_campaign_suite() -> None:
+    result = run_selector(
+        "playbooks/tasks/llm-model-campaign-paired-passes.yml",
+        "tests/llm_model_campaign/test_paired_campaign.py",
+    )
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert selection["pytest_targets"] == ["tests/llm_model_campaign/"]
+    assert selection["ansible_tests"] == []
+    assert selection["llm_router_playbooks"] == []
+    assert not selection["run_inventory"]
+    assert not selection["run_selector_checks"]
+
+
+def test_campaign_file_another_suite_reads_keeps_today_scope() -> None:
+    result = run_selector("playbooks/tasks/llm-model-campaign-run-pass.yml")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["pytest_targets"] == ["tests/"]
+
+
+def test_report_mode_runs_as_ci_invokes_it(tmp_path: Path) -> None:
+    summary = tmp_path / "step-summary"
+    result = subprocess.run(
+        [sys.executable, str(SELECTOR), "--report"],
+        check=False, capture_output=True, text=True,
+        env=os.environ | {"GITHUB_STEP_SUMMARY": str(summary)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Data Contract selection:" in summary.read_text()

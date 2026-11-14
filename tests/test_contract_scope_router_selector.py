@@ -264,3 +264,26 @@ def test_changed_python_router_selector_test_selects_only_itself() -> None:
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["pytest_targets"] == [path]
+
+
+def test_campaign_change_with_a_router_role_edit_keeps_the_matrix() -> None:
+    result = run_selector(
+        "playbooks/tasks/llm-model-campaign-paired-passes.yml",
+        "roles/llm_router/tasks/main.yml",
+    )
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    full = json.loads(run_selector("--full").stdout)
+    assert selection["pytest_targets"] == ["tests/"]
+    assert selection["llm_router_playbooks"] == full["llm_router_playbooks"]
+
+
+def test_campaign_file_a_router_test_reads_keeps_the_matrix() -> None:
+    result = run_selector("playbooks/tasks/llm-model-campaign-endpoint-policy.yml")
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    full = json.loads(run_selector("--full").stdout)
+    assert selection["pytest_targets"] == ["tests/"]
+    assert selection["llm_router_playbooks"] == full["llm_router_playbooks"]
