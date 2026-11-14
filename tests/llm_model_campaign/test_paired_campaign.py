@@ -130,3 +130,10 @@ def test_paired_inputs_resolve_the_baseline_by_group_or_one_host() -> None:
     assert hosts(groups, "llm_gpu_group") == "['gpu-live', 'gpu-other']"
     assert hosts(groups, "missing") == "[]"
     assert "_llm_paired_baseline_hosts | length == 1" in check["ansible.builtin.assert"]["that"]
+
+
+def test_run_row_facts_do_not_read_facts_set_by_the_same_task() -> None:
+    for task in _tasks(PLAYBOOKS / "tasks/llm-model-campaign-run.yml"):
+        facts = task.get("ansible.builtin.set_fact", {})
+        for name in facts:
+            assert not any(name in str(value) for other, value in facts.items() if other != name)
