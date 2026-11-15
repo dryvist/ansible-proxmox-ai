@@ -39,8 +39,13 @@ model:
 {{ context_limits.top_level(hermes_agent_context_limits) }}
 
 {% set _pepper = hermes_agent_id | default('hermes') == 'pepper' %}
+{% set _pepper_research = _pepper and (hermes_agent_pepper_research_enabled | default(false) | bool) %}
 memory:
-{% if _pepper %}
+{% if _pepper_research %}
+  # Built-in file memory only; no external memory provider for this identity.
+  memory_enabled: true
+  user_profile_enabled: true
+{% elif _pepper %}
   memory_enabled: false
   user_profile_enabled: false
 {% else %}
@@ -68,7 +73,8 @@ agent:
   # regardless of any per-platform or per-job allowlist (upstream layers this
   # on top — see defaults/main.yml for the policy rationale).
   # v0.23.0 toolsets.py CLIENT_SURFACE_TOOLSETS: project, desktop_ui, catalog.
-  disabled_toolsets: {{ (hermes_agent_disabled_toolsets + (['terminal', 'code_execution', 'web', 'search', 'browser', 'file', 'memory', 'skills', 'delegation', 'project', 'desktop_ui', 'catalog'] if _pepper else [])) | to_json }}
+{% set _pepper_denied = ['terminal', 'code_execution', 'web', 'search', 'browser', 'file', 'memory', 'skills', 'delegation', 'project', 'desktop_ui', 'catalog'] %}
+  disabled_toolsets: {{ (hermes_agent_disabled_toolsets + ((_pepper_denied | reject('in', ['web', 'search', 'file', 'memory', 'skills'] if _pepper_research else []) | list) if _pepper else [])) | to_json }}
 {{ context_limits.tool_output_tools_delegation(hermes_agent_context_limits) }}
 
 # Local execution backend (the LXC is the blast-radius boundary).
@@ -164,7 +170,12 @@ cron:
 # semantics. Policy rationale and the per-platform exclusions live in
 # defaults/main.yml.
 platform_toolsets:
-{% if _pepper %}
+{% if _pepper_research %}
+  cli: [kanban]
+  cron: {{ hermes_agent_pepper_research_toolsets | to_json }}
+  api_server: [kanban]
+  slack: {{ hermes_agent_pepper_research_toolsets | to_json }}
+{% elif _pepper %}
   cli: [kanban]
   cron: [kanban]
   api_server: [kanban]

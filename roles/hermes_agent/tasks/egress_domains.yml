@@ -5,14 +5,29 @@
 
 - name: Validate and project each Pepper hostname
   vars:
+    _hermes_agent_egress_research: &pepper_egress_research >-
+      {{ (hermes_agent_egress_inventory | default({})).hermes_agent_pepper_research_enabled
+         | default(hermes_agent_pepper_research_enabled | default(false)) }}
     _hermes_agent_egress_host: >-
       {{ hermes_agent_egress_host_overrides[item]
          if item in (hermes_agent_egress_host_overrides | default({}))
          else (hermes_agent_egress_inventory | default({}))[item]
               | default(lookup('ansible.builtin.vars', item)) }}
-  loop:
-    - hermes_agent_pepper_router_host
-    - hermes_agent_pepper_youtrack_host
-    - hermes_agent_pepper_openbao_host
-    - hermes_agent_pepper_vault_host
+  # The research posture has no client endpoints, so their hostnames are not projected.
+  loop: >-
+    {{ ['hermes_agent_pepper_router_host', 'hermes_agent_pepper_youtrack_host',
+        'hermes_agent_pepper_openbao_host', 'hermes_agent_pepper_vault_host']
+       | reject('in', ['hermes_agent_pepper_youtrack_host', 'hermes_agent_pepper_vault_host']
+                      if _hermes_agent_egress_research | bool else [])
+       | list }}
+  ansible.builtin.include_tasks: egress_host.yml
+
+- name: Validate and project each research-posture hostname
+  vars:
+    _hermes_agent_egress_research: *pepper_egress_research
+    _hermes_agent_egress_host: "{{ item }}"
+  loop: >-
+    {{ ((hermes_agent_egress_inventory | default({})).hermes_agent_pepper_research_egress_hosts
+        | default(hermes_agent_pepper_research_egress_hosts | default([])))
+       if _hermes_agent_egress_research | bool else [] }}
   ansible.builtin.include_tasks: egress_host.yml

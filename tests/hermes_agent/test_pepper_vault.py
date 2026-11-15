@@ -46,8 +46,9 @@ def test_vault_defaults_use_the_pepper_identity_and_runtime_approle_inputs():
     assert defaults['hermes_agent_pepper_vault_github_token_mount'] == 'github-pepper'
     assert defaults['hermes_agent_pepper_vault_github_token_set'] == 'pepper-vault-read'
     for identity in ['pepper', 'hermes', 'hermes-private', 'donna']:
+        # The vault belongs to the client posture; the research posture turns it off.
         context = dict(
-            hermes_agent_id=identity,
+            hermes_agent_id=identity, hermes_agent_pepper_research_enabled=False,
             hermes_agent_bao={'PEPPER_VAULT_REPO_URL': 'own'},
             environment={'PEPPER_VAULT_ROLE_ID': 'own-role',
                          'PEPPER_VAULT_SECRET_ID': 'own-secret'},
@@ -72,7 +73,8 @@ def test_vault_defaults_use_the_pepper_identity_and_runtime_approle_inputs():
         (' ', 'https://bao.invalid', 'role', 'secret', False),
     ]:
         value = resolve('hermes_agent_pepper_vault_enabled', dict(
-            hermes_agent_id='pepper', hermes_agent_pepper_vault_repo_url=url,
+            hermes_agent_id='pepper', hermes_agent_pepper_research_enabled=False,
+            hermes_agent_pepper_vault_repo_url=url,
             hermes_agent_pepper_vault_bao_addr=addr,
             hermes_agent_pepper_vault_role_id=role_id,
             hermes_agent_pepper_vault_secret_id=secret_id))
