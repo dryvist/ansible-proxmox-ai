@@ -13,7 +13,7 @@ The `conformance` job in `.github/workflows/ci-gate.yml` calls the shared `dryvi
 `agent-platform-conformance.yml` (pinned SHA), whose single job runs the shared pre-commit template on every tracked file:
 
 - no prompt files (`prompt*.md`, `*.prompt`, `system_prompt*`) under `roles/`;
-- no `gpu-fill`/`fill-worker` in paths or in file contents;
+- no banned capability-name tokens in paths or file contents (the pygrep patterns live in the shared template cloned below);
 - every `roles/**/*.yml` validates against the agent-platform schema: a `prompt` or `system_prompt`
   string value spans at most five lines.
 
