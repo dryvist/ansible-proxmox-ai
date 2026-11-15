@@ -134,9 +134,9 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
     inventory.write_text(yaml.safe_dump(dict(all=dict(children=dict(
         hermes_agent_group=dict(hosts={
             'fixture-pepper': dict(hermes_agent_identity='pepper',
-                                   container_reserved_ip='fixture-pepper-address', ansible_connection='local', **endpoints),
+                                   container_mac='00:00:5e:00:53:01', ansible_connection='local', **endpoints),
             'fixture-ordinary': dict(hermes_agent_identity='hermes',
-                                     container_reserved_ip='fixture-ordinary-address')}),
+                                     container_mac='00:00:5e:00:53:02')}),
         ai_agent_pool_group=dict(hosts={'fixture-pepper': {}, 'fixture-ordinary': {}}),
         squid_group=dict(hosts={'proxy-fixture': dict(ansible_connection='local')}),
     )))))
@@ -161,8 +161,9 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
                      + "') }}",
             _npm="{{ lookup('template', '" + str(ROOT / 'roles/agent_guest/templates/proxy/npmrc.j2') + "') }}")}),
         dict(name='Check the identity boundary and shared environment', **{'ansible.builtin.assert': {'that': [
-            "'acl pepper_clients src fixture-pepper-address' in _squid",
-            "'acl pepper_clients src fixture-ordinary-address' not in _squid",
+            "'acl pepper_clients arp 00:00:5e:00:53:01' in _squid",
+            "'00:00:5e:00:53:02' not in _squid.split('acl pepper_clients arp ')[1].splitlines()[0]",
+            "'00:00:5e:00:53:02' in _squid.split('acl ai_proxied_clients arp ')[1].splitlines()[0]",
             "_squid.index('http_access deny pepper_clients') < _squid.index('http_access allow ai_proxied_clients')",
             "'http_access deny all' in _squid",
             "'fixture-password' not in _squid",
