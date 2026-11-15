@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.48.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.48.0...v2.48.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **herdr:** use the NixOS interpreter and deploy before any guest module runs ([#2477](https://github.com/dryvist/ansible-proxmox-ai/issues/2477)) ([6529dd8](https://github.com/dryvist/ansible-proxmox-ai/commit/6529dd82a703a03cc7383a694ad70de5a7604bbb))
+
 ## [2.48.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.47.2...v2.48.0) (2026-11-14)
 
 
