@@ -14,7 +14,7 @@ triggers:
 `ci-gate.yml` job `conformance` calls `dryvist/.github` `agent-platform-conformance.yml`, job
 "Agent platform conformance". It checks out `dryvist/.github` at the pinned commit and runs
 `pre-commit run --config .agent-platform/precommit/templates/agent-platform.yaml --all-files`:
-prompt-file filename bans, banned path names and identifiers (`gpu-fill`/`fill-worker`), and
+prompt-file filename bans, banned path names and identifiers, and
 `check-jsonschema` against `agent-platform.schema.json` for `roles/**/*.yml`.
 
 ## Reproduce locally
