@@ -218,6 +218,23 @@
           - hostvars['fixture-pepper'].hermes_agent_identity == 'pepper'
           - "'fixture-pepper' in groups['hermes_agent_group']"
 
+    - name: Add a synthetic GPU guest that declares its lane
+      ansible.builtin.set_fact:
+        tofu_data: >-
+          {{ tofu_data | combine({'containers': tofu_data.containers | combine({
+               'fixture-gpu-lane': tofu_data.containers['hermes-agent']
+                 | combine({'tags': ['llm-gpu'], 'llm_gpu_accelerator': 'gpu-primary'})})}) }}
+
+    - name: Project the GPU lane fixture into inventory
+      ansible.builtin.import_tasks: ../../inventory/load_tofu/add_lxc_host_inventory.yml
+
+    - name: A declared GPU lane outranks the legacy group's label
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'fixture-gpu-lane' in groups['llm_gpu_legacy_group']"
+          - hostvars['fixture-gpu-lane'].llm_gpu_accelerator == 'gpu-primary'
+
     - name: Reject conflicting Pepper identity markers
       block:
         - name: Pollute Pepper with a second identity marker

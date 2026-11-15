@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.52.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.51.1...v2.52.0) (2026-11-15)
+
+
+### Features
+
+* **inventory:** pass a declared GPU lane label through as a host variable ([#2511](https://github.com/dryvist/ansible-proxmox-ai/issues/2511)) ([7c50914](https://github.com/dryvist/ansible-proxmox-ai/commit/7c509145558651fd5b8754e3a52de9a258343cc1))
+
+
+### Bug Fixes
+
+* **agents:** point Hermes guests at the internal apt caches ([#2507](https://github.com/dryvist/ansible-proxmox-ai/issues/2507)) ([74b37ad](https://github.com/dryvist/ansible-proxmox-ai/commit/74b37ad2402f774442a0a46718f330ec3303a728))
+
 ## [2.51.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.51.0...v2.51.1) (2026-11-15)
 
 
