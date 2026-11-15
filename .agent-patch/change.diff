@@ -1,0 +1,281 @@
+diff --git a/.github/workflows/ci-gate.yml b/.github/workflows/ci-gate.yml
+index 99f8231e..03a7bc1a 100644
+--- a/.github/workflows/ci-gate.yml
++++ b/.github/workflows/ci-gate.yml
+@@ -9,12 +9,14 @@ on:
+   pull_request:
+     branches: [develop, main]
+     types: [opened, synchronize, reopened]
++  merge_group:
+   push:
+     branches: [main, develop]
+ 
+ concurrency:
+   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+-  cancel-in-progress: true
++  # A merge queue entry runs to the end; pull request and push runs cancel.
++  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+ 
+ permissions:
+   contents: read
+@@ -187,13 +189,12 @@ jobs:
+           EVENT_NAME: ${{ github.event_name }}
+           GITHUB_REF: ${{ github.ref }}
+           BASE_REF: ${{ github.event.pull_request.base.ref }}
+-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
++          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
++          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+           PUSH_BEFORE: ${{ github.event.before }}
+           PUSH_HEAD: ${{ github.sha }}
+         run: |
+-          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
+-             [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop ]]; then
++          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+             echo 'full_suite=true' >> "$GITHUB_OUTPUT"
+             python .github/scripts/select-contract-scope.py --full --output "$GITHUB_OUTPUT"
+             exit 0
+@@ -228,10 +229,11 @@ jobs:
+           SELECT_RESULT: ${{ steps.select.outcome }}
+         run: python .github/scripts/select-contract-scope.py --report
+ 
+-  # Pushes run full contract validation; pull requests use focused selection.
++  # Pushes to main run full contract validation. Pull requests and merge queue
++  # entries use focused selection, and the lane decides whether it runs.
+   data-contract:
+     name: Data Contract
+-    needs: contract-scope
++    needs: [contract-scope, lane]
+     if: >-
+       always() &&
+       needs.contract-scope.result == 'success' &&
+@@ -239,6 +241,12 @@ jobs:
+         needs.contract-scope.outputs.full_suite == 'true' ||
+         (
+           github.event_name != 'push' &&
++          needs.lane.outputs.heavy_jobs != 'false' &&
++          (
++            needs.lane.outputs.tier != 'hot' ||
++            github.event_name != 'pull_request' ||
++            contains(github.event.pull_request.labels.*.name, 'preflight')
++          ) &&
+           (
+             needs.contract-scope.outputs.pytest_targets != '[]' ||
+             needs.contract-scope.outputs.ansible_tests != '[]' ||
+@@ -262,6 +270,19 @@ jobs:
+         github.event.pull_request.head.ref == 'develop' &&
+         github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
+ 
++  # One lane decision for the heavy jobs below: Data Contract and Molecule.
++  lane:
++    permissions:
++      contents: read
++      pull-requests: read
++    uses: JacobPEvans/.github/.github/workflows/_lane.yml@v1
++    with:
++      guarded_paths: "\
++        .github/**,**/*secret*,**/*credential*,**/*token*,**/vault/**,\
++        *.sops.*,.sops.yaml"
++    secrets:
++      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
++
+   # Lane alias names are exported and checked by a local reusable workflow.
+   lane-alias-parity:
+     name: Lane alias parity
+@@ -269,17 +290,21 @@ jobs:
+ 
+   molecule-select:
+     name: Select Molecule runner groups
+-    needs: changes
++    needs: [changes, lane]
+     if: >-
+-      needs.changes.outputs.tiny != 'true' &&
+-      github.event_name == 'pull_request' &&
++      github.event_name != 'push' &&
+       (
+         github.event.pull_request.base.ref == 'main' ||
+-        needs.changes.outputs.molecule == 'true'
+-      ) &&
+-      (
+-        github.event.pull_request.base.ref == 'main' ||
+-        needs.changes.outputs.molecule_scenarios != '[]'
++        (
++          needs.lane.outputs.heavy_jobs != 'false' &&
++          (
++            needs.lane.outputs.tier != 'hot' ||
++            github.event_name != 'pull_request' ||
++            contains(github.event.pull_request.labels.*.name, 'preflight')
++          ) &&
++          needs.changes.outputs.molecule == 'true' &&
++          needs.changes.outputs.molecule_scenarios != '[]'
++        )
+       )
+     uses: ./.github/workflows/_molecule-select.yml
+     with:
+@@ -355,6 +380,7 @@ jobs:
+       - changes
+       - contract-scope
+       - data-contract
++      - lane
+       - lane-alias-parity
+       - molecule-select
+       - molecule-hosted
+@@ -384,6 +410,7 @@ jobs:
+           CI_GATE_ALLOWED_SKIPS: >-
+             ${{ ((github.event_name == 'pull_request' &&
+             github.event.pull_request.base.ref != 'main') ||
++            github.event_name == 'merge_group' ||
+             github.event_name == 'push') &&
+             'data-contract, molecule-select, molecule-hosted, molecule-hermes-ui' || '' }}
+         run: node .gh-shared/scripts/ci-gate-aggregate.mts
+diff --git a/.github/workflows/post-merge.yml b/.github/workflows/post-merge.yml
+new file mode 100644
+index 00000000..3f23ec40
+--- /dev/null
++++ b/.github/workflows/post-merge.yml
+@@ -0,0 +1,22 @@
++# Settles deferred checks and moves the green pointer after each merge to develop.
++name: Post Merge
++
++on:
++  push:
++    branches: [develop]
++
++permissions: {}
++
++jobs:
++  post-merge:
++    permissions:
++      contents: write
++      pull-requests: write
++      checks: read
++      actions: read
++    uses: JacobPEvans/.github/.github/workflows/_post-merge.yml@v1
++    with:
++      profile: ansible
++    secrets:
++      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
++      slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+diff --git a/tests/test_ci_gate_dispatch.py b/tests/test_ci_gate_dispatch.py
+index 34260b61..a3cb1e58 100644
+--- a/tests/test_ci_gate_dispatch.py
++++ b/tests/test_ci_gate_dispatch.py
+@@ -40,17 +40,16 @@ def router_paths(shards: list[dict[str, str]]) -> list[str]:
+     return [path for shard in shards for path in shard["playbooks"].split()]
+ 
+ 
+-def test_full_suite_covers_main_and_develop_pushes_and_promotion_prs() -> None:
++def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
+     workflow = CI_GATE.read_text()
+ 
+     assert 'EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main' in workflow
+-    assert 'EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop' in workflow
+     assert 'BASE_SHA="$PUSH_BEFORE"' in workflow
+     assert 'HEAD_SHA="$PUSH_HEAD"' in workflow
+     jobs = yaml.safe_load(workflow)["jobs"]
+     molecule_select = jobs["molecule-select"]
+     assert "github.event.pull_request.base.ref == 'main'" in molecule_select["with"]["full_suite"]
+-    assert molecule_select["if"].count("github.event.pull_request.base.ref == 'main'") == 2
++    assert molecule_select["if"].count("github.event.pull_request.base.ref == 'main'") == 1
+     selector_workflow = (CI_GATE.parents[0] / "_molecule-select.yml").read_text()
+     assert "inputs.full_suite" in selector_workflow
+     assert ".github/scripts/discover-molecule-scenarios.sh" in selector_workflow
+@@ -66,11 +65,21 @@ def test_full_suite_covers_main_and_develop_pushes_and_promotion_prs() -> None:
+     assert "tests/test_contract_scope_selector.py" in workflow
+ 
+ 
++def test_gate_runs_on_merge_queue_entries_and_lets_them_finish() -> None:
++    workflow_yaml = yaml.safe_load(CI_GATE.read_text())
++    # A bare `on:` key parses as the YAML 1.1 boolean tag.
++    assert "merge_group" in workflow_yaml[True]
++    assert workflow_yaml["concurrency"]["cancel-in-progress"] == (
++        "${{ github.event_name != 'merge_group' }}"
++    )
++
++
+ @pytest.mark.parametrize(("event", "ref", "base", "expected_full"), [
+     ("pull_request", "refs/pull/1/merge", "main", True),
+     ("pull_request", "refs/pull/1/merge", "develop", False),
+     ("push", "refs/heads/main", "", True),
+-    ("push", "refs/heads/develop", "", True),
++    ("push", "refs/heads/develop", "", False),
++    ("merge_group", "refs/heads/develop", "", False),
+ ])
+ def test_actual_scope_step_dispatches_full_or_focused(
+     tmp_path: Path, event: str, ref: str, base: str, expected_full: bool,
+@@ -101,33 +110,44 @@ def test_actual_scope_step_dispatches_full_or_focused(
+     assert all(set(shard) == {"name", "playbooks"} for shard in shards)
+ 
+ 
+-def test_data_contract_starts_beside_lint_on_contract_scope_alone() -> None:
++def test_data_contract_starts_on_full_suite_or_lane_approved_focused_scope() -> None:
+     job = yaml.safe_load(CI_GATE.read_text())["jobs"]["data-contract"]
+-    assert job["needs"] == "contract-scope"
++    assert job["needs"] == ["contract-scope", "lane"]
+     for condition in [
+         "always()",
+         "needs.contract-scope.result == 'success'",
+         "needs.contract-scope.outputs.full_suite == 'true'",
+         "github.event_name != 'push'",
++        "needs.lane.outputs.heavy_jobs != 'false'",
++        "needs.lane.outputs.tier != 'hot'",
++        "github.event_name != 'pull_request'",
++        "contains(github.event.pull_request.labels.*.name, 'preflight')",
+     ]:
+         assert condition in job["if"]
+ 
+ 
+ @pytest.mark.parametrize(("job_name", "preserved_conditions"), [
+     ("molecule-select", [
+-        "github.event_name == 'pull_request'",
+         "github.event.pull_request.base.ref == 'main'",
+         "needs.changes.outputs.molecule == 'true'",
+         "needs.changes.outputs.molecule_scenarios != '[]'",
+     ]),
+ ])
+-def test_tiny_shared_output_gates_local_heavy_jobs_without_dropping_existing_conditions(
++def test_lane_output_gates_local_heavy_jobs_without_dropping_existing_conditions(
+     job_name: str, preserved_conditions: list[str],
+ ) -> None:
+     job = yaml.safe_load(CI_GATE.read_text())["jobs"][job_name]
+     needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
+     assert "changes" in needs
+-    assert "needs.changes.outputs.tiny != 'true'" in job["if"]
++    assert "lane" in needs
++    for condition in [
++        "github.event_name != 'push'",
++        "needs.lane.outputs.heavy_jobs != 'false'",
++        "needs.lane.outputs.tier != 'hot'",
++        "github.event_name != 'pull_request'",
++        "contains(github.event.pull_request.labels.*.name, 'preflight')",
++    ]:
++        assert condition in job["if"]
+     for condition in preserved_conditions:
+         assert condition in job["if"]
+     assert "needs.changes.outputs.molecule_scenarios" in job["with"]["scenarios"]
+@@ -143,10 +163,11 @@ def test_changes_reuses_ci_filter_maps_by_yaml_alias() -> None:
+ @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
+     ("pull_request", "refs/pull/1/merge", "main", False),
+     ("pull_request", "refs/pull/1/merge", "develop", True),
++    ("merge_group", "refs/heads/develop", "", True),
+     ("push", "refs/heads/main", "", True),
+     ("push", "refs/heads/develop", "", True),
+ ])
+-def test_actual_gate_policy_allows_skips_only_for_focused_and_push_runs(
++def test_actual_gate_policy_allows_skips_only_for_focused_merge_queue_and_push_runs(
+     event: str, ref: str, base: str, allows_skips: bool,
+ ) -> None:
+     gate = yaml.safe_load(CI_GATE.read_text())["jobs"]["gate"]
+diff --git a/tests/test_ci_workflow_policy.py b/tests/test_ci_workflow_policy.py
+index 81d8254d..b0f8fa22 100644
+--- a/tests/test_ci_workflow_policy.py
++++ b/tests/test_ci_workflow_policy.py
+@@ -71,7 +71,7 @@ def test_ci_gate_header_names_the_contract_scope_gate() -> None:
+ 
+ @pytest.mark.parametrize(("job", "guard"), [
+     ("data-contract", "github.event_name != 'push'"),
+-    ("molecule-select", "github.event_name == 'pull_request'"),
++    ("molecule-select", "github.event_name != 'push'"),
+ ])
+ def test_push_events_skip_focused_contract_and_molecule_jobs(job: str, guard: str) -> None:
+     condition = yaml.safe_load(CI_GATE.read_text())["jobs"][job]["if"]
