@@ -118,9 +118,10 @@ def test_identity_mapping_and_conflicting_tag_rejection():
 
 
 def test_both_profile_loaders_exclude_pepper():
-    for path in ['roles/hermes_agent/tasks/main.yml', 'playbooks/tasks/load_hermes_profiles.yml']:
-        src = (ROOT / path).read_text()
-        assert "in ['hermes-private', 'pepper']" in src
+    for path, guard in [
+            ('roles/hermes_agent/tasks/main.yml', "== 'hermes-private'\n    or (hermes_agent_isolated\n        | default("),
+            ('playbooks/tasks/load_hermes_profiles.yml', "in ['hermes-private', 'pepper']")]:
+        assert guard in (ROOT / path).read_text()
     for path in ['playbooks/agents.yml', 'playbooks/recover-hermes-queue.yml']:
         assert 'codex_runner' not in (ROOT / path).read_text()
 

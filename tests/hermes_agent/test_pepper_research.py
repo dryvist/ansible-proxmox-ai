@@ -124,7 +124,8 @@ def test_proxy_play_reads_no_client_endpoint_in_the_research_posture():
 def test_the_play_refuses_research_with_any_client_wiring():
     tasks = yaml.safe_load((ROLE / 'tasks/assert_brain_and_bridge.yml').read_text())
     guard = next(t for t in tasks if t['name'] == 'Assert the Pepper research posture and the client wiring never coexist')
-    assert guard['when'] == "hermes_agent_id == 'pepper' and hermes_agent_pepper_research_enabled | bool"
+    assert guard['when'] == ["(hermes_agent_isolated | default(hermes_agent_id == 'pepper') | bool)",
+                             'hermes_agent_pepper_research_enabled | bool']
     conditions = guard['ansible.builtin.assert']['that']
     for name in ['hermes_agent_pepper_vault_enabled', 'hermes_agent_youtrack_mcp_enabled',
                  'hermes_agent_youtrack_mcp_url', 'hermes_agent_youtrack_mcp_token',

@@ -101,7 +101,7 @@ def test_mcp_gate_requires_pepper_repo_url_and_vault_feature_flag():
 def test_refresh_is_pepper_only_and_cannot_replace_its_parent():
     main = yaml.safe_load((ROLE / 'tasks/main.yml').read_text())
     include = next(t for t in main if t.get('ansible.builtin.import_tasks') == 'pepper_vault.yml')
-    assert include['when'] == "hermes_agent_id == 'pepper'"
+    assert include['when'] == "(hermes_agent_isolated | default(hermes_agent_id == 'pepper') | bool)"
     tasks = yaml.safe_load((ROLE / 'tasks/pepper_vault.yml').read_text())
     block = next(t for t in tasks if 'block' in t)
     assert block['become'] is True and block['become_user'] == 'root'
