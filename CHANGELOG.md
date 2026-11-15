@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.51.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.51.0...v2.51.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **squid:** match egress clients by MAC address ([#2502](https://github.com/dryvist/ansible-proxmox-ai/issues/2502)) ([c45ac87](https://github.com/dryvist/ansible-proxmox-ai/commit/c45ac875f950605e0bcbe0a8f4922a8c614c7a26))
+
 ## [2.51.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.50.0...v2.51.0) (2026-11-15)
 
 
