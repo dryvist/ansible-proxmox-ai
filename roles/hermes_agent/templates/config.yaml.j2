@@ -12,26 +12,15 @@ model:
   base_url: '{{ hermes_agent_model_base_url }}'
   api_mode: {{ hermes_agent_model_api_mode }}
   # Custom/vLLM-style providers have no context-window catalog Hermes can
-  # probe. Without this, Hermes' own auto-detect logs "Could not detect
-  # context length ... defaulting to 256,000 (probe-down)" before falling
-  # back to a hardcoded catalog guess. We declare it explicitly — and
-  # deliberately BELOW the model's native window — to bound per-turn prefill
-  # time and break the stale-stream kill spiral (see the value's rationale in
-  # defaults/main.yml). model.context_length is read at agent_init.py as the
-  # highest-precedence override in get_model_context_length (verified against
-  # the installed Hermes 0.18.0 source, not just --help/docs).
+  # probe, so declare the window explicitly — deliberately BELOW the model's
+  # native window — to bound per-turn prefill time (rationale in
+  # defaults/main.yml). model.context_length is the highest-precedence
+  # override in get_model_context_length (agent_init.py).
   context_length: {{ hermes_agent_model_context_length }}
-  # ROOT CAUSE of the "Context length exceeded (18/19 tokens). Cannot
-  # compress further." death loop: the router/backend hard-caps a single
-  # response to 8192 output tokens ("max_tokens exceeds server limit
-  # (8192)" — confirmed in ~/.hermes/logs/agent.log), but the `custom`
-  # provider profile's built-in default_max_tokens is 65536. Hermes'
-  # error_classifier misclassifies that 400 as a context overflow (its
-  # pattern list matches the literal substring "max_tokens" in ANY error),
-  # so it tries to compress a 1-message conversation with nothing left to
-  # compress instead of just lowering the output request. Capping
-  # model.max_tokens at the server's real limit means the oversized
-  # request is never sent, so the misclassification never triggers.
+  # The router hard-caps one response to 8192 output tokens, but the
+  # `custom` provider profile defaults to 65536; Hermes' error_classifier
+  # then misclassifies the resulting 400 as context overflow. Capping here
+  # at the server's real limit means the oversized request is never sent.
   max_tokens: {{ hermes_agent_model_max_tokens }}
   # Resolved from .env at runtime (the LiteLLM router master key).
   api_key: '${HERMES_AGENT_MODEL_API_KEY}'
@@ -76,16 +65,14 @@ terminal:
   backend: local
   timeout: 180
 
-# Web research backend, pinned so the auto-detect cascade can never silently
-# fall back to a keyless firecrawl default that fails every call (the state
-# this deployment was in until 2026-07-31). ddgs = keyless DuckDuckGo,
-# search-only, installed into the venv by tasks/browser.yml.
+# Web research backend, pinned so auto-detect can never fall back to a keyless
+# firecrawl default that fails every call (this deployment's state until
+# 2026-07-31). ddgs = keyless DuckDuckGo, search-only, installed into the
+# venv by tasks/browser.yml.
 #
-# SEARCH and EXTRACT are separate backends and stay that way. ddgs finds pages
-# and cannot read one; extraction now points at the self-hosted Firecrawl
-# service, which reads a page and returns markdown. Prompts that told the agent
-# to curl raw HTML — the workaround while extraction had no backend at all —
-# are obsolete; web_extract is the supported path.
+# SEARCH and EXTRACT are separate backends and stay that way: ddgs finds pages
+# but cannot read one; extraction now points at the self-hosted Firecrawl
+# service, which returns markdown. web_extract is the supported path.
 web:
   backend: ddgs
 {{ context_limits.web(hermes_agent_context_limits) }}
@@ -117,10 +104,8 @@ security:
   tirith_enabled: true
   allow_private_urls: false
 
-# Auto-shrink long autonomous sessions. summary_model MUST be a model our router
-# serves — the upstream default (google/gemini-3-flash-preview) is unreachable
-# here (no external egress/key), which would make compression fail mid-session.
-# It must also serve a >=64K window (Hermes hard minimum); the router alias
+# Auto-shrink long autonomous sessions. summary_model MUST be a model our
+# router serves with a >=64K window (Hermes hard minimum); the alias
 # selected by hermes_agent_compression_model carries that contract.
 compression:
   enabled: {{ hermes_agent_context_compression_enabled | to_json }}
@@ -160,9 +145,8 @@ cron:
 
 # H-17 per-platform tool policy, enforced by the runner's toolset resolution
 # (never the prompt). Each list is the NATIVE-toolset envelope for that
-# platform; enabled MCP servers are layered on by upstream's platform-tools
-# semantics. Policy rationale and the per-platform exclusions live in
-# defaults/main.yml.
+# platform; enabled MCP servers are layered on upstream. Rationale and
+# per-platform exclusions live in defaults/main.yml.
 platform_toolsets:
 {% if _pepper %}
   cli: [kanban]
@@ -194,10 +178,11 @@ a2a_agents:
 {% if _slack_on or _webhook_on %}
 platforms:
 {% if _slack_on %}
-  # Slack delivery behavior: replies and cron continuations go in threads (see
-  # hermes_agent_slack_reply_in_thread for why the two knobs move together).
-  # These are bridged from platforms.<p> by gateway/config.py; Slack enablement
-  # still comes from the SLACK_* tokens in .env, so this block only tunes behavior.
+  # Slack delivery behavior: replies and cron continuations go in threads
+  # (see hermes_agent_slack_reply_in_thread for why the knobs move
+  # together). Bridged from platforms.<p> by gateway/config.py; Slack
+  # enablement still comes from the SLACK_* tokens in .env, so this block
+  # only tunes behavior.
   slack:
     reply_in_thread: {{ hermes_agent_slack_reply_in_thread | to_json }}
     cron_continuable_surface: {{ hermes_agent_slack_cron_continuable_surface }}
@@ -213,10 +198,9 @@ platforms:
 {% set _mcp_youtrack = (hermes_agent_id | default('hermes') == 'pepper') and (hermes_agent_youtrack_mcp_enabled | default(false) | bool) and (hermes_agent_youtrack_mcp_url | length > 0) and (hermes_agent_youtrack_mcp_token | length > 0) %}
 {% set _mcp_vault = (hermes_agent_id | default('hermes') == 'pepper') and (hermes_agent_pepper_vault_enabled | default(false) | bool) and (hermes_agent_pepper_vault_repo_url | default('') | trim | length > 0) %}
 {% set _mcp_splunk = (hermes_agent_splunk_access | bool) and (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
-{# Context7's hosted MCP serves unauthenticated requests (verified: keyless
-   `initialize` returns 200); a key only raises the shared rate limit. So this
-   entry renders whenever enabled — the API-key header is added only when a key
-   is actually set, below. #}
+{# Context7's hosted MCP is keyless (verified: `initialize` returns 200); a
+   key only raises the shared rate limit, so the API-key header is added
+   only when a key is set, below. #}
 {% set _mcp_context7 = (hermes_agent_context7_mcp_enabled | bool) %}
 {% set _mcp_docs = (hermes_agent_docs_mcp_enabled | bool) %}
 {% set _mcp_grep = (hermes_agent_grep_mcp_enabled | bool) %}
@@ -278,25 +262,24 @@ mcp_servers:
 {% endif %}
 {% endif %}
 {% if _mcp_docs %}
-  # Docs RAG search — read-only search_docs tool over the homelab_docs Qdrant
+  # Docs RAG search — read-only search_docs over the homelab_docs Qdrant
   # collection, via the shared agentgateway MCP plane (keyless for the
-  # caller; the gateway's mcp-docs sidecar holds the router credential — see
-  # defaults).
+  # caller; the mcp-docs sidecar holds the router credential).
   docs:
     timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
     url: "{{ hermes_agent_docs_mcp_url }}"
 {% endif %}
 {% if _mcp_grep %}
-  # grep.app — literal code search across public GitHub (searchGitHub). Keyless
-  # and dialed upstream directly rather than through the gateway MCP plane; see
-  # defaults for why.
+  # grep.app — literal code search across public GitHub (searchGitHub).
+  # Keyless and dialed upstream directly rather than through the gateway
+  # MCP plane; see defaults for why.
   grep:
     timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
     url: "{{ hermes_agent_grep_mcp_url }}"
 {% endif %}
 {% if _mcp_vikunja %}
   # Vikunja task board — read-only task/project/label tools via the shared
-  # agentgateway /vikunja route (keyless; the gateway sidecar holds the read
+  # agentgateway /vikunja route (keyless; the sidecar holds the read
   # token — see agentgateway_docker defaults).
   vikunja:
     timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
