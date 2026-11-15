@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.49.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.48.1...v2.49.0) (2026-11-15)
+
+
+### Features
+
+* **llm_router:** add the workstation proxy aliases to priority tier 0 ([#2483](https://github.com/dryvist/ansible-proxmox-ai/issues/2483)) ([9404092](https://github.com/dryvist/ansible-proxmox-ai/commit/940409237a4bab829d5e467bb83aac5744df8cec))
+
 ## [2.48.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.48.0...v2.48.1) (2026-11-15)
 
 
