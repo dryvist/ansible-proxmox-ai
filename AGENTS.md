@@ -329,3 +329,11 @@ aggregated by `Merge Gate`.
 Public pull-request CI stays on GitHub-hosted runners.
 
 See the canonical policy in the `JacobPEvans/.github` README, “Ansible CI policy.”
+
+## CI checks
+
+Per-check OpenHands skills for the `ci-gate.yml` jobs live in `.agents/skills/ci-*/SKILL.md`:
+`ci-ansible-lint`; `ci-conformance`; `ci-renovate-config`; `ci-token-limits`; `ci-detect-changes`;
+`ci-contract-scope`; `ci-syntax-check`; `ci-role-self-checks`; `ci-llm-router-contract`;
+`ci-inventory-load`; `ci-lane-alias-parity`; `ci-molecule-select`; `ci-molecule`; `ci-installer-sha`;
+`ci-merge-gate` (covers `Merge Gate` and `Result Validation`).
