@@ -216,6 +216,53 @@ binds:
             mcp:
               host: "http://mcp-vikunja-clerk:{{ agentgateway_docker_vikunja_clerk_port }}/mcp"
 {% endif %}
+{% if agentgateway_docker_crawl4ai_mcp_enabled | bool
+      and agentgateway_docker_crawl4ai_mcp_url | trim | length > 0
+      and agentgateway_docker_crawl4ai_api_token | trim | length > 0 %}
+{# Crawl4AI page-reader MCP (capability route /crawl4ai) — the Crawl4AI
+   server's own MCP SSE endpoint (roles/crawl4ai_docker), dialed by URL; the
+   sse host-as-URI form carries the /mcp/sse path and selects TLS from the
+   scheme (types/local.rs McpBackendHost::process). The target backendAuth
+   holds the upstream bearer token, and requestHeaderModifier strips caller
+   credentials first, so a caller never reaches Crawl4AI with its own
+   credential. mcpAuthorization admits the single `md` tool: tools/list
+   filters down to `md` and other tool calls are denied here. #}
+{% set crawl4ai_rules = [] %}
+{% for caller in agentgateway_docker_crawl4ai_allowed_callers %}
+{% set _ = crawl4ai_rules.append({'allow': "apiKey.agent == '" ~ caller ~ "'"}) %}
+{% endfor %}
+    - matches:
+      - path:
+          exact: /crawl4ai
+      policies:
+        apiKey:
+          mode: {{ agentgateway_docker_mcp_route_auth_mode }}
+          location:
+            header:
+              name: X-Agent-Key
+{{ agentgateway_docker_api_key_block }}
+        authorization:
+          rules: {{ crawl4ai_rules | to_json }}
+        mcpAuthorization:
+          rules:
+            - allow: {{ 'mcp.tool.name == "md"' | to_json }}
+        requestHeaderModifier:
+          remove: {{ agentgateway_docker_caller_credential_headers | to_json }}
+      backends:
+      - mcp:
+          targets:
+          - name: crawl4ai
+            sse:
+              host: {{ agentgateway_docker_crawl4ai_mcp_url | to_json }}
+            policies:
+              backendAuth:
+                key:
+                  value: {{ agentgateway_docker_crawl4ai_api_token | to_json }}
+                  location:
+                    header:
+                      name: authorization
+                      prefix: "Bearer "
+{% endif %}
 {% if agentgateway_docker_nautobot_openapi_enabled | bool
       and agentgateway_docker_nautobot_read_token | length > 0 %}
 {# Read-only Nautobot REST tools from the reviewed OpenAPI schema projection. #}
