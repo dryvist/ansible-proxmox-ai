@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.51.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.50.0...v2.51.0) (2026-11-15)
+
+
+### Features
+
+* **hermes_agent:** add a research posture for the pepper identity ([#2490](https://github.com/dryvist/ansible-proxmox-ai/issues/2490)) ([dacee77](https://github.com/dryvist/ansible-proxmox-ai/commit/dacee77d458b75200b2e5f83875d621dc42467e7))
+* **hermes_agent:** add the hourly AI news job for the pepper identity ([#2496](https://github.com/dryvist/ansible-proxmox-ai/issues/2496)) ([1cd80e6](https://github.com/dryvist/ansible-proxmox-ai/commit/1cd80e6d7809ff93c0049e8f06503bd0a74d5db0))
+
 ## [2.50.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.49.0...v2.50.0) (2026-11-15)
 
 
