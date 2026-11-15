@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.50.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.49.0...v2.50.0) (2026-11-15)
+
+
+### Features
+
+* **crawl4ai_docker:** default the API token from the apps domain ([#2487](https://github.com/dryvist/ansible-proxmox-ai/issues/2487)) ([f11d292](https://github.com/dryvist/ansible-proxmox-ai/commit/f11d292284760b857111e422bcad6338b06d0519))
+
 ## [2.49.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.48.1...v2.49.0) (2026-11-15)
 
 

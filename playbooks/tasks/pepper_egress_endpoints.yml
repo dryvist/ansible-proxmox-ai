@@ -1,5 +1,15 @@
 ---
+# In the research posture Pepper has no client endpoints: nothing is read from its
+# identity domain here and the proxy policy is built from inventory hostnames only.
 - name: Resolve the client endpoints for the Pepper proxy policy
+  when: not (_pepper_egress_research | bool)
+  vars: &pepper_egress_research_vars
+    _pepper_egress_research: >-
+      {{ groups['hermes_agent_group'] | default([]) | map('extract', hostvars)
+         | selectattr('hermes_agent_identity', 'defined')
+         | selectattr('hermes_agent_identity', 'equalto', 'pepper')
+         | map(attribute='hermes_agent_pepper_research_enabled', default=false)
+         | map('bool') | select | list | length > 0 }}
   block:
     - name: Fetch Pepper's identity domain through its own AppRole
       ansible.builtin.include_role:
@@ -58,3 +68,9 @@
         msg: >-
           Pepper proxy requires both client endpoint URLs from Pepper's identity domain;
           check the Pepper AppRole lookup. Refusing to render the allowlist.
+
+- name: Skip the client endpoints in the research posture
+  ansible.builtin.set_fact:
+    squid_pepper_endpoint_hosts: {}
+  when: _pepper_egress_research | bool
+  vars: *pepper_egress_research_vars
