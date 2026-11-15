@@ -1,0 +1,48 @@
+---
+# The opt-in public subagent alias: the local medium capability first, one
+# QwenCloud route group when the local group cannot answer. Off by default —
+# with llm_router_subagent_public_enabled false, nothing below contributes a
+# pair, an override, or a key grant, and the rendered proxy config is
+# unchanged byte for byte (tests/llm_router/test_subagent_public_alias.yml).
+#
+# The alias name is declared here rather than as a registry stable_alias
+# because a stable alias on an enabled, servable entry renders unconditionally
+# and would defeat the default-off gate. Everything it POINTS AT stays
+# registry-owned: the local target is the primary route group, and the
+# fallback group is projected from the declared dashscope entries, never
+# re-typed.
+llm_router_subagent_public_enabled: false
+llm_router_subagent_public_name: subagent-public
+
+# The local route group hermes-default points at, with the same retarget the
+# alias projection applies when that group is not rendered
+# (50-direct-routes.yml).
+_llm_router_subagent_public_local_target: >-
+  {{ llm_router_primary_model
+     if llm_router_primary_model in llm_router_rendered_capability_names
+     else llm_router_primary_large_model }}
+llm_router_subagent_public_alias_pairs: >-
+  {{ [[_llm_router_subagent_public_local_target, llm_router_subagent_public_name]]
+     if llm_router_subagent_public_enabled | bool else [] }}
+
+# The fallback rung: the general-purpose (routine) QwenCloud route group among
+# the declared hermes-cloud dashscope entries that are not benchmark-only.
+# Several general-purpose candidates are ordered by their declared
+# context_window (an entry without one carries 0), so the widest declared
+# window wins; the registry, not this expression, decides the model.
+llm_router_subagent_public_fallback_group: >-
+  {%- set ns = namespace(group='', window=-1) -%}
+  {%- set _candidates = (llm_router_model_registry
+       | selectattr('tier', 'equalto', 'hermes-cloud')
+       | selectattr('provider', 'equalto', 'dashscope')
+       | rejectattr('benchmark_only', 'defined') | list) -%}
+  {%- set _general = _candidates
+       | selectattr('route_group', 'match', '.*-routine$') | list -%}
+  {%- for _entry in (_general if _general | length > 0 else _candidates) -%}
+  {%- set _window = _entry.context_window | default(0) | int -%}
+  {%- if _window > ns.window -%}
+  {%- set ns.group = _entry.route_group -%}
+  {%- set ns.window = _window -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.group }}

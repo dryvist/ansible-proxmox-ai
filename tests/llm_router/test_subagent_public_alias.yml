@@ -1,0 +1,205 @@
+---
+# The opt-in public subagent alias (51-subagent-public.yml): the local medium
+# capability first, exactly one declared QwenCloud route group when the local
+# group cannot answer, granted to the sandbox agent router key only.
+#
+# (a) Flag off (as shipped), the rendered config carries no subagent-public
+#     anywhere — the change is invisible byte for byte.
+# (b) Flag on, the alias resolves to the local medium group and its fallbacks
+#     entry is exactly the projected QwenCloud rung.
+# (c) Flag on, no key whose tag list carries &zdr may call the alias: neither
+#     its name nor its fallback rung appears in any such key's model scope,
+#     and the sandbox agent key is the only declared grant.
+#
+# Run (from the REPO ROOT):
+#   PROXMOX_SUBDOMAIN=pve.example.com ansible-playbook \
+#     tests/llm_router/test_subagent_public_alias.yml -i localhost, -c local
+- name: Verify the public subagent alias contract
+  hosts: localhost
+  vars_files:
+    - ../../inventory/group_vars/all/02-gpu-accelerator.yml
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: medium
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    # (a) The flag ships false; the credentialed render runs the role's own
+    # render-time asserts with the defaults exactly as they ship.
+    - name: Produce the fully credentialed render with the alias off
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: Capture the alias-off render and the sandbox key's declared scope
+      ansible.builtin.set_fact:
+        _config_off_raw: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+        _sandbox_models_off: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'equalto', 'sandbox-agent')
+             | map(attribute='models') | first }}
+
+    - name: The alias-off render carries no subagent-public anywhere
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_subagent_public_enabled is sameas false
+          # Anti-vacuity: the sandbox scope under test is a real list.
+          - _sandbox_models_off | length > 0
+          - llm_router_subagent_public_name not in _config_off_raw
+          - llm_router_subagent_public_name not in llm_router_model_group_aliases
+          - llm_router_subagent_public_name not in llm_router_entry_point_fallback_overrides
+          - llm_router_subagent_public_name not in _sandbox_models_off
+          - llm_router_subagent_public_fallback_group not in _sandbox_models_off
+        fail_msg: >-
+          With llm_router_subagent_public_enabled false the alias leaked into
+          the render: model_group_aliases={{ llm_router_subagent_public_name in llm_router_model_group_aliases }},
+          overrides={{ llm_router_subagent_public_name in llm_router_entry_point_fallback_overrides }},
+          sandbox scope={{ llm_router_subagent_public_name in _sandbox_models_off }}.
+        success_msg: The alias-off render is free of the alias, its rung, and the key grant.
+
+    # (b) Flip the flag, then re-render the real template from the flipped
+    # state. The derived inputs are cached under _llm_router_m_ facts during
+    # the credentialed render (tasks/assertion-roots.yml), so a re-render
+    # without re-materialization would read the flag-off caches; the
+    # materialization task file is the sanctioned recompute path.
+    - name: Enable the alias
+      ansible.builtin.set_fact:
+        llm_router_subagent_public_enabled: true
+
+    - name: Re-materialize the cached projections from the flipped flag
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assertion-inputs.yml"
+
+    - name: Re-render the proxy config and the sandbox key's declared scope
+      ansible.builtin.set_fact:
+        _config_on: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _sandbox_models_on: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'equalto', 'sandbox-agent')
+             | map(attribute='models') | first }}
+
+    - name: The alias resolves to the local medium group hermes-default points at
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_subagent_public_name in (_config_on.router_settings.model_group_alias | default({}))
+          - >-
+            _config_on.router_settings.model_group_alias[llm_router_subagent_public_name]
+            == llm_router_primary_model
+          # The brief pins the first group to the local medium route group —
+          # the one hermes-default points at, which the inventory spells as
+          # hermes_brain_model.
+          - llm_router_primary_model == hermes_brain_model
+          # A QwenCloud rung was actually resolved, not an empty projection.
+          - llm_router_subagent_public_fallback_group | length > 0
+        fail_msg: >-
+          The alias must map to the local medium route group. Rendered alias
+          map entry: {{ _config_on.router_settings.model_group_alias.get(llm_router_subagent_public_name, '(absent)') }};
+          resolved fallback group: {{ llm_router_subagent_public_fallback_group or '(none)' }}.
+        success_msg: >-
+          The alias maps to {{ llm_router_primary_model }} with fallback rung
+          {{ llm_router_subagent_public_fallback_group }}.
+
+    - name: The alias's fallback list is exactly the projected QwenCloud rung
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_subagent_public_name in _fallbacks_by_key
+          - _fallbacks_by_key[llm_router_subagent_public_name]
+            == [llm_router_subagent_public_fallback_group]
+          # The rung is a declared, non-benchmark-only QwenCloud group, and the
+          # general-purpose (routine) slice is where it came from.
+          - llm_router_subagent_public_fallback_group in _qualifying_groups
+          - llm_router_subagent_public_fallback_group not in llm_router_benchmark_only_model_names
+          - _qualifying_groups | length > 0
+          - _general_qualifying_groups | length > 0
+          - llm_router_subagent_public_fallback_group in _general_qualifying_groups
+        fail_msg: >-
+          The alias's fallback entry must be exactly the chosen QwenCloud rung.
+          Rendered chain: {{ _fallbacks_by_key.get(llm_router_subagent_public_name, '(absent)') }};
+          qualifying groups: {{ _qualifying_groups }}.
+        success_msg: >-
+          The alias falls back to exactly {{ llm_router_subagent_public_fallback_group }},
+          a declared non-benchmark-only QwenCloud group.
+      vars:
+        _fallbacks_by_key: >-
+          {{ dict(_config_on.router_settings.fallbacks
+                  | map('dict2items') | flatten
+                  | map(attribute='key')
+                  | zip(_config_on.router_settings.fallbacks
+                        | map('dict2items') | flatten
+                        | map(attribute='value'))) }}
+        _qualifying_groups: >-
+          {{ llm_router_model_registry
+             | selectattr('tier', 'equalto', 'hermes-cloud')
+             | selectattr('provider', 'equalto', 'dashscope')
+             | rejectattr('benchmark_only', 'defined')
+             | map(attribute='route_group') | unique | list }}
+        _general_qualifying_groups: >-
+          {{ _qualifying_groups
+             | select('match', '.*-routine$') | list }}
+
+    # (c) Key scope: the sandbox agent key is the only grant; no &zdr key may
+    # call the alias, and every such key must also lack the fallback rung the
+    # alias's chain walks (enforce_fallback_model_access checks each hop).
+    - name: Only the sandbox agent key grants the alias, and no ZDR key reaches it
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # Anti-vacuity: the &zdr population under test is non-empty.
+          - _zdr_key_aliases | length > 0
+          - _zdr_keys_with_alias | length == 0
+          - _zdr_keys_with_rung | length == 0
+          - llm_router_subagent_public_name in _sandbox_models_on
+          - llm_router_subagent_public_fallback_group in _sandbox_models_on
+          # Exactly one declared key carries the alias: the sandbox agent key.
+          - _keys_with_alias | length == 1
+          - _keys_with_alias | first == 'sandbox-agent'
+        fail_msg: >-
+          The alias grant escaped the sandbox agent key. Keys carrying the
+          alias: {{ _keys_with_alias }}; ZDR-tagged keys carrying the alias:
+          {{ _zdr_keys_with_alias }}; ZDR-tagged keys carrying its rung:
+          {{ _zdr_keys_with_rung }}.
+        success_msg: >-
+          The alias and its rung are granted to the sandbox agent key only;
+          all {{ _zdr_key_aliases | length }} ZDR-tagged keys lack both.
+      vars:
+        _zdr_key_aliases: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('tags', 'defined')
+             | selectattr('tags', 'contains', '&zdr')
+             | map(attribute='alias') | list }}
+        _zdr_keys_with_alias: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('tags', 'defined')
+             | selectattr('tags', 'contains', '&zdr')
+             | selectattr('models', 'contains', llm_router_subagent_public_name)
+             | map(attribute='alias') | list }}
+        _zdr_keys_with_rung: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('tags', 'defined')
+             | selectattr('tags', 'contains', '&zdr')
+             | selectattr('models', 'contains', llm_router_subagent_public_fallback_group)
+             | map(attribute='alias') | list }}
+        _keys_with_alias: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('models', 'contains', llm_router_subagent_public_name)
+             | map(attribute='alias') | sort | list }}
