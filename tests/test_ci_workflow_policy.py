@@ -71,7 +71,7 @@ def test_ci_gate_header_names_the_contract_scope_gate() -> None:
 
 @pytest.mark.parametrize(("job", "guard"), [
     ("data-contract", "github.event_name != 'push'"),
-    ("molecule-select", "github.event_name == 'pull_request'"),
+    ("molecule-select", "github.event_name != 'push'"),
 ])
 def test_push_events_skip_focused_contract_and_molecule_jobs(job: str, guard: str) -> None:
     condition = yaml.safe_load(CI_GATE.read_text())["jobs"][job]["if"]

@@ -40,17 +40,16 @@ def router_paths(shards: list[dict[str, str]]) -> list[str]:
     return [path for shard in shards for path in shard["playbooks"].split()]
 
 
-def test_full_suite_covers_main_and_develop_pushes_and_promotion_prs() -> None:
+def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
     workflow = CI_GATE.read_text()
 
     assert 'EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main' in workflow
-    assert 'EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop' in workflow
     assert 'BASE_SHA="$PUSH_BEFORE"' in workflow
     assert 'HEAD_SHA="$PUSH_HEAD"' in workflow
     jobs = yaml.safe_load(workflow)["jobs"]
     molecule_select = jobs["molecule-select"]
     assert "github.event.pull_request.base.ref == 'main'" in molecule_select["with"]["full_suite"]
-    assert molecule_select["if"].count("github.event.pull_request.base.ref == 'main'") == 2
+    assert molecule_select["if"].count("github.event.pull_request.base.ref == 'main'") == 1
     selector_workflow = (CI_GATE.parents[0] / "_molecule-select.yml").read_text()
     assert "inputs.full_suite" in selector_workflow
     assert ".github/scripts/discover-molecule-scenarios.sh" in selector_workflow
@@ -66,11 +65,21 @@ def test_full_suite_covers_main_and_develop_pushes_and_promotion_prs() -> None:
     assert "tests/test_contract_scope_selector.py" in workflow
 
 
+def test_gate_runs_on_merge_queue_entries_and_lets_them_finish() -> None:
+    workflow_yaml = yaml.safe_load(CI_GATE.read_text())
+    # A bare `on:` key parses as the YAML 1.1 boolean tag.
+    assert "merge_group" in workflow_yaml[True]
+    assert workflow_yaml["concurrency"]["cancel-in-progress"] == (
+        "${{ github.event_name != 'merge_group' }}"
+    )
+
+
 @pytest.mark.parametrize(("event", "ref", "base", "expected_full"), [
     ("pull_request", "refs/pull/1/merge", "main", True),
     ("pull_request", "refs/pull/1/merge", "develop", False),
     ("push", "refs/heads/main", "", True),
-    ("push", "refs/heads/develop", "", True),
+    ("push", "refs/heads/develop", "", False),
+    ("merge_group", "refs/heads/develop", "", False),
 ])
 def test_actual_scope_step_dispatches_full_or_focused(
     tmp_path: Path, event: str, ref: str, base: str, expected_full: bool,
@@ -101,33 +110,44 @@ def test_actual_scope_step_dispatches_full_or_focused(
     assert all(set(shard) == {"name", "playbooks"} for shard in shards)
 
 
-def test_data_contract_starts_beside_lint_on_contract_scope_alone() -> None:
+def test_data_contract_starts_on_full_suite_or_lane_approved_focused_scope() -> None:
     job = yaml.safe_load(CI_GATE.read_text())["jobs"]["data-contract"]
-    assert job["needs"] == "contract-scope"
+    assert job["needs"] == ["contract-scope", "lane"]
     for condition in [
         "always()",
         "needs.contract-scope.result == 'success'",
         "needs.contract-scope.outputs.full_suite == 'true'",
         "github.event_name != 'push'",
+        "needs.lane.outputs.heavy_jobs != 'false'",
+        "needs.lane.outputs.tier != 'hot'",
+        "github.event_name != 'pull_request'",
+        "contains(github.event.pull_request.labels.*.name, 'preflight')",
     ]:
         assert condition in job["if"]
 
 
 @pytest.mark.parametrize(("job_name", "preserved_conditions"), [
     ("molecule-select", [
-        "github.event_name == 'pull_request'",
         "github.event.pull_request.base.ref == 'main'",
         "needs.changes.outputs.molecule == 'true'",
         "needs.changes.outputs.molecule_scenarios != '[]'",
     ]),
 ])
-def test_tiny_shared_output_gates_local_heavy_jobs_without_dropping_existing_conditions(
+def test_lane_output_gates_local_heavy_jobs_without_dropping_existing_conditions(
     job_name: str, preserved_conditions: list[str],
 ) -> None:
     job = yaml.safe_load(CI_GATE.read_text())["jobs"][job_name]
     needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
     assert "changes" in needs
-    assert "needs.changes.outputs.tiny != 'true'" in job["if"]
+    assert "lane" in needs
+    for condition in [
+        "github.event_name != 'push'",
+        "needs.lane.outputs.heavy_jobs != 'false'",
+        "needs.lane.outputs.tier != 'hot'",
+        "github.event_name != 'pull_request'",
+        "contains(github.event.pull_request.labels.*.name, 'preflight')",
+    ]:
+        assert condition in job["if"]
     for condition in preserved_conditions:
         assert condition in job["if"]
     assert "needs.changes.outputs.molecule_scenarios" in job["with"]["scenarios"]
@@ -143,10 +163,11 @@ def test_changes_reuses_ci_filter_maps_by_yaml_alias() -> None:
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
     ("pull_request", "refs/pull/1/merge", "main", False),
     ("pull_request", "refs/pull/1/merge", "develop", True),
+    ("merge_group", "refs/heads/develop", "", True),
     ("push", "refs/heads/main", "", True),
     ("push", "refs/heads/develop", "", True),
 ])
-def test_actual_gate_policy_allows_skips_only_for_focused_and_push_runs(
+def test_actual_gate_policy_allows_skips_only_for_focused_merge_queue_and_push_runs(
     event: str, ref: str, base: str, allows_skips: bool,
 ) -> None:
     gate = yaml.safe_load(CI_GATE.read_text())["jobs"]["gate"]

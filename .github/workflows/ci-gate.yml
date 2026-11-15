@@ -9,12 +9,14 @@ on:
   pull_request:
     branches: [develop, main]
     types: [opened, synchronize, reopened]
+  merge_group:
   push:
     branches: [main, develop]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A merge queue entry runs to the end; pull request and push runs cancel.
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
@@ -187,13 +189,12 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF: ${{ github.ref }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_HEAD: ${{ github.sha }}
         run: |
-          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
-             [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop ]]; then
+          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
             echo 'full_suite=true' >> "$GITHUB_OUTPUT"
             python .github/scripts/select-contract-scope.py --full --output "$GITHUB_OUTPUT"
             exit 0
@@ -228,10 +229,11 @@ jobs:
           SELECT_RESULT: ${{ steps.select.outcome }}
         run: python .github/scripts/select-contract-scope.py --report
 
-  # Pushes run full contract validation; pull requests use focused selection.
+  # Pushes to main run full contract validation. Pull requests and merge queue
+  # entries use focused selection, and the lane decides whether it runs.
   data-contract:
     name: Data Contract
-    needs: contract-scope
+    needs: [contract-scope, lane]
     if: >-
       always() &&
       needs.contract-scope.result == 'success' &&
@@ -239,6 +241,12 @@ jobs:
         needs.contract-scope.outputs.full_suite == 'true' ||
         (
           github.event_name != 'push' &&
+          needs.lane.outputs.heavy_jobs != 'false' &&
+          (
+            needs.lane.outputs.tier != 'hot' ||
+            github.event_name != 'pull_request' ||
+            contains(github.event.pull_request.labels.*.name, 'preflight')
+          ) &&
           (
             needs.contract-scope.outputs.pytest_targets != '[]' ||
             needs.contract-scope.outputs.ansible_tests != '[]' ||
@@ -262,6 +270,19 @@ jobs:
         github.event.pull_request.head.ref == 'develop' &&
         github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}
 
+  # One lane decision for the heavy jobs below: Data Contract and Molecule.
+  lane:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: JacobPEvans/.github/.github/workflows/_lane.yml@v1
+    with:
+      guarded_paths: "\
+        .github/**,**/*secret*,**/*credential*,**/*token*,**/vault/**,\
+        *.sops.*,.sops.yaml"
+    secrets:
+      AUTOMATION_APP_PRIVATE_KEY: ${{ secrets.GH_ACTION_RELEASE_PLEASE_PRIVATE_KEY }}
+
   # Lane alias names are exported and checked by a local reusable workflow.
   lane-alias-parity:
     name: Lane alias parity
@@ -269,17 +290,21 @@ jobs:
 
   molecule-select:
     name: Select Molecule runner groups
-    needs: changes
+    needs: [changes, lane]
     if: >-
-      needs.changes.outputs.tiny != 'true' &&
-      github.event_name == 'pull_request' &&
+      github.event_name != 'push' &&
       (
         github.event.pull_request.base.ref == 'main' ||
-        needs.changes.outputs.molecule == 'true'
-      ) &&
-      (
-        github.event.pull_request.base.ref == 'main' ||
-        needs.changes.outputs.molecule_scenarios != '[]'
+        (
+          needs.lane.outputs.heavy_jobs != 'false' &&
+          (
+            needs.lane.outputs.tier != 'hot' ||
+            github.event_name != 'pull_request' ||
+            contains(github.event.pull_request.labels.*.name, 'preflight')
+          ) &&
+          needs.changes.outputs.molecule == 'true' &&
+          needs.changes.outputs.molecule_scenarios != '[]'
+        )
       )
     uses: ./.github/workflows/_molecule-select.yml
     with:
@@ -355,6 +380,7 @@ jobs:
       - changes
       - contract-scope
       - data-contract
+      - lane
       - lane-alias-parity
       - molecule-select
       - molecule-hosted
@@ -384,6 +410,7 @@ jobs:
           CI_GATE_ALLOWED_SKIPS: >-
             ${{ ((github.event_name == 'pull_request' &&
             github.event.pull_request.base.ref != 'main') ||
+            github.event_name == 'merge_group' ||
             github.event_name == 'push') &&
             'data-contract, molecule-select, molecule-hosted, molecule-hermes-ui' || '' }}
         run: node .gh-shared/scripts/ci-gate-aggregate.mts
