@@ -7,16 +7,16 @@ triggers:
   - llm-router-contract
 ---
 
+# ci-llm-router-contract
+
 ## What it checks
 
 The Data Contract workflow (`_data-contract.yml`) calls the local `.github/workflows/_llm-router-contract.yml`, three job families:
 
-- **Router contract dependencies** — proves every selected playbook is registered in `.github/router-contracts.yml`;
-  the router lockfile resolves for the router's Python 3.13.
+- **Router contract dependencies** — proves every selected playbook is registered in `.github/router-contracts.yml` and the router lockfile resolves.
 - **Router contract: shards** — each shard runs its registered playbooks via `ansible-playbook -i localhost, -c local`
   with static placeholder env values.
-- **Registry single-source contract** — `python -m pytest tests/llm_router/ -q`, the registry rule's teeth:
-  a model id, alias, tier, or secret key re-typed outside the root `llm-models.d/` registry fails here.
+- **Registry single-source contract** — `pytest tests/llm_router/ -q`: an id, alias, tier, or secret key re-typed outside `llm-models.d/` fails here.
 
 ## Reproduce locally
 

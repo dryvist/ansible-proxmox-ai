@@ -7,6 +7,8 @@ triggers:
   - check-installer-sha
 ---
 
+# ci-installer-sha
+
 ## What it checks
 
 The `installer-sha` job ("Installer checksums") in `.github/workflows/ci-gate.yml` runs `.github/scripts/check-installer-sha.sh`
@@ -15,8 +17,7 @@ on every pull request, recomputing each checksum-verified pin against the role d
 - the hermes-agent installer script sha256 and the hindsight plugin archive sha256 in `roles/hermes_agent/defaults/main/`;
 - the pinned llama.cpp release tag and its declared release-asset digests in `roles/llamacpp_release/defaults/main/00-release.yml`.
 
-Renovate bumps versions but cannot compute checksums, so a version bump beside a stale sha is the expected
-failure.
+Renovate bumps versions but cannot compute checksums, so a version bump beside a stale sha is the expected failure.
 
 ## Reproduce locally
 
@@ -38,8 +39,7 @@ Review the diff afterwards: only the pinned digest lines may change, never the v
 
 ## Never
 
-- Hand-edit a digest to a guessed value instead of letting `--fix` compute it.
-- Delete a pin row, comment out a check, or bump a version without its matching digest.
+- Hand-edit a digest to a guessed value instead of letting `--fix` compute it, delete a pin row, or bump a version without its matching digest.
 - Add `# noqa`, `# nosec`, `skip_ansible_lint`, `tflint-ignore`, or any lint disable; delete, skip, or weaken
   a test or assertion; add a script; hard-code a value that belongs in a variable.
 

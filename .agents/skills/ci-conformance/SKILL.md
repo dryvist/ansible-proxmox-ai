@@ -7,6 +7,8 @@ triggers:
   - check-jsonschema
 ---
 
+# ci-conformance
+
 ## What it checks
 
 The `conformance` job in `.github/workflows/ci-gate.yml` calls the shared `dryvist/.github` workflow
@@ -14,8 +16,7 @@ The `conformance` job in `.github/workflows/ci-gate.yml` calls the shared `dryvi
 
 - no prompt files (`prompt*.md`, `*.prompt`, `system_prompt*`) under `roles/`;
 - no banned capability-name tokens in paths or file contents (the pygrep patterns live in the shared template cloned below);
-- every `roles/**/*.yml` validates against the agent-platform schema: a `prompt` or `system_prompt`
-  string value spans at most five lines.
+- every `roles/**/*.yml` validates against the agent-platform schema: a `prompt` or `system_prompt` string value spans at most five lines.
 
 ## Reproduce locally
 
@@ -27,8 +28,7 @@ cp .agent-platform/precommit/configs/agent-platform.schema.json precommit/config
 pre-commit run --config .agent-platform/precommit/templates/agent-platform.yaml --all-files
 ```
 
-CI checks out that repository at the SHA pinned in `ci-gate.yml`; a default-branch clone is close enough
-to triage.
+CI checks out that repository at the SHA pinned in `ci-gate.yml`; a default-branch clone is close enough to triage.
 
 ## Cheapest fix first
 

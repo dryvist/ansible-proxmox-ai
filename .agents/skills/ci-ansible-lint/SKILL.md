@@ -8,6 +8,8 @@ triggers:
   - Renovate Config Validate
 ---
 
+# ci-ansible-lint
+
 ## What it checks
 
 The `ci` job in `.github/workflows/ci-gate.yml` calls the shared `JacobPEvans/.github` workflow
@@ -27,8 +29,7 @@ ansible-galaxy install -r requirements.yml --force
 ansible-lint
 ```
 
-CI lints the whole repo; the pre-commit `ansible-lint` hook checks staged files only, so a locally clean
-commit can still fail here.
+CI lints the whole repo; the pre-commit `ansible-lint` hook checks staged files only, so a locally clean commit can still fail here.
 
 ## Cheapest fix first
 

@@ -6,12 +6,13 @@ triggers:
   - Data Contract Scope
 ---
 
+# ci-selection-jobs
+
 ## What it checks
 
 Two `ci-gate.yml` jobs select what runs; neither asserts repo content.
 
-- **Detect Changes** (the `changes` job, and the same-named job inside the `ci` job) — `dorny/paths-filter`
-  over the `molecule_scenario_filters` and `molecule_contract_filters` blocks in `ci-gate.yml`.
+- **Detect Changes** (the `changes` job, and the same-named job inside the `ci` job) — `dorny/paths-filter` over the filter blocks in `ci-gate.yml`.
 - **Data Contract Scope** (the `contract-scope` job) — `python .github/scripts/select-contract-scope.py`
   maps changed paths to pytest targets, Ansible contract tests, router playbooks, and inventory.
 
@@ -27,8 +28,7 @@ python .github/scripts/select-contract-scope.py \
 cat /tmp/selection.out
 ```
 
-Detect Changes needs the PR diff from the GitHub API; triage it by validating the two filter blocks in
-`ci-gate.yml` as YAML and re-reading the mapping entries the log names.
+Detect Changes needs the PR diff from the GitHub API; triage by validating the two filter blocks in `ci-gate.yml` as YAML.
 
 ## Cheapest fix first
 

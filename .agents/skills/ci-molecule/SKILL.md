@@ -9,6 +9,8 @@ triggers:
   - Select Molecule runner groups
 ---
 
+# ci-molecule
+
 ## What it checks
 
 Three `ci-gate.yml` jobs run Molecule on pull requests:

@@ -6,6 +6,8 @@ triggers:
   - Result Validation
 ---
 
+# ci-merge-gate
+
 ## What it checks
 
 The `gate` job ("Merge Gate") in `.github/workflows/ci-gate.yml` aggregates

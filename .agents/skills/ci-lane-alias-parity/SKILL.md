@@ -8,6 +8,8 @@ triggers:
   - lane-alias-parity
 ---
 
+# ci-lane-alias-parity
+
 ## What it checks
 
 The `lane-alias-parity` job in `.github/workflows/ci-gate.yml` calls the local

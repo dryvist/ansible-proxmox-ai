@@ -7,13 +7,14 @@ triggers:
   - Verify Inventory Load
 ---
 
+# ci-data-contract
+
 ## What it checks
 
 The `data-contract` job in `.github/workflows/ci-gate.yml` calls the local `.github/workflows/_data-contract.yml`.
 The Data Contract Scope job chooses which steps run on a PR into develop; PRs into main and pushes run all of them.
 
-- **Syntax Check** — `ansible-playbook --syntax-check` over every `playbooks/*.yml` with static placeholder
-  env values (not real secrets).
+- **Syntax Check** — `ansible-playbook --syntax-check` over every `playbooks/*.yml` with static placeholder env values (not real secrets).
 - **Role Self-Checks** — `python -m pytest` over the selected targets under `tests/`, excluding
   `tests/llm_router` (own job) and `tests/qdrant_llamaindex` (needs live services).
 - **Verify Inventory Load** — the `.github/actions/inventory-load-contract` action proves the published tofu inventory maps onto this repo's groups.
@@ -38,8 +39,7 @@ inventory-load playbook above — and fix the smallest thing the failure names.
 
 ## Never
 
-- Add `# noqa`, `# nosec`, `skip_ansible_lint`, `tflint-ignore`, or any lint disable; delete, skip, or weaken
-  a test or assertion, including xfailing or deselecting a pytest test.
+- Add `# noqa`, `# nosec`, `skip_ansible_lint`, `tflint-ignore`, or any lint disable; delete, skip, weaken, xfail, or deselect a test or assertion.
 - Replace the static placeholder env values with real credentials.
 - Add a script; hard-code a value that belongs in a variable.
 
