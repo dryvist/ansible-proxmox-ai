@@ -1,0 +1,71 @@
+diff --git a/.github/workflows/ci-gate.yml b/.github/workflows/ci-gate.yml
+index 99f8231e..d1ab3be7 100644
+--- a/.github/workflows/ci-gate.yml
++++ b/.github/workflows/ci-gate.yml
+@@ -9,12 +9,13 @@ on:
+   pull_request:
+     branches: [develop, main]
+     types: [opened, synchronize, reopened]
+-  push:
+-    branches: [main, develop]
++  # Merge queue entries report this gate on the queued merge commit; pushes
++  # to develop are settled by post-merge.yml instead.
++  merge_group:
+ 
+ concurrency:
+   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+-  cancel-in-progress: true
++  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+ 
+ permissions:
+   contents: read
+@@ -187,8 +188,8 @@ jobs:
+           EVENT_NAME: ${{ github.event_name }}
+           GITHUB_REF: ${{ github.ref }}
+           BASE_REF: ${{ github.event.pull_request.base.ref }}
+-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
++          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
++          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+           PUSH_BEFORE: ${{ github.event.before }}
+           PUSH_HEAD: ${{ github.sha }}
+         run: |
+@@ -384,6 +385,7 @@ jobs:
+           CI_GATE_ALLOWED_SKIPS: >-
+             ${{ ((github.event_name == 'pull_request' &&
+             github.event.pull_request.base.ref != 'main') ||
+-            github.event_name == 'push') &&
++            github.event_name == 'push' ||
++            github.event_name == 'merge_group') &&
+             'data-contract, molecule-select, molecule-hosted, molecule-hermes-ui' || '' }}
+         run: node .gh-shared/scripts/ci-gate-aggregate.mts
+diff --git a/.github/workflows/post-merge.yml b/.github/workflows/post-merge.yml
+new file mode 100644
+index 00000000..c0f66eeb
+--- /dev/null
++++ b/.github/workflows/post-merge.yml
+@@ -0,0 +1,24 @@
++---
++# Post-merge settlement for the hot merge tier: the shared workflow re-runs
++# the gate on HEAD over the commits the green ref has not settled,
++# fast-forwards green when everything is verified, and reverts deferred pull
++# requests whose post-merge checks went red. Queue and pull request runs
++# report through ci-gate.yml; this workflow owns the develop-branch pushes.
++name: Post Merge
++on:
++  push:
++    branches: [develop]
++permissions: {}
++jobs:
++  post-merge:
++    permissions:
++      contents: write    # green ref moves, post-merge-red dispatches
++      pull-requests: write
++      checks: read       # AI Merge Gate verdicts on the head commits
++      actions: read      # the gate's run report reads this run's jobs
++    uses: JacobPEvans/.github/.github/workflows/_post-merge.yml@v1
++    with:
++      profile: ansible   # the caller's gate stack, forwarded verbatim
++    secrets:
++      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
++      slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
