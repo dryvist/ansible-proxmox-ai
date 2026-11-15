@@ -74,10 +74,10 @@ http_access allow ai_proxied_clients ai_proxied_domains
 
 followed by a single `http_access deny all`. Two consequences worth knowing:
 
-- **Client addresses are never written here.** They come from
-  `container_reserved_ip` on each member of the profile's inventory group, so
-  adding a pool guest is a tofu change and a re-publish, not an edit to this
-  role.
+- **Clients are never written here.** They are matched by MAC address
+  (`acl ... arp`), from `container_mac` on each member of the profile's
+  inventory group (the tofu inventory's `mac`), so adding a pool guest is a
+  tofu change and a re-publish, not an edit to this role.
 - **A profile with no members emits no rule**, and its clients fall through to
   the deny. An empty group is a silent no-egress, not a silent allow.
 
