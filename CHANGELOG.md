@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.52.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.52.0...v2.52.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **hermes_agent:** refresh the package index before installing prerequisites ([#2516](https://github.com/dryvist/ansible-proxmox-ai/issues/2516)) ([1d2de21](https://github.com/dryvist/ansible-proxmox-ai/commit/1d2de21c4103d5091dd1e3b32e103feac173c10c))
+
 ## [2.52.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.51.1...v2.52.0) (2026-11-15)
 
 
