@@ -92,3 +92,4 @@ def test_runtime_install_fetches_through_the_isolated_guest_proxy():
     install = next(t for t in tasks if t.get('name') == 'Install the pinned Hermes runtime')
     assert install['environment'] == (
         '{{ hermes_agent_proxy_environment if hermes_agent_is_isolated else {} }}')
+    assert install['vars']['hermes_runtime_installer_skip_browser'] == '{{ hermes_agent_is_isolated }}'
