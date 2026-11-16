@@ -329,3 +329,12 @@ aggregated by `Merge Gate`.
 Public pull-request CI stays on GitHub-hosted runners.
 
 See the canonical policy in the `JacobPEvans/.github` README, “Ansible CI policy.”
+
+## CI checks
+
+- Ansible Lint, Token Limits, Renovate Config Validate: `ci-ansible-lint`
+- Agent platform conformance: `ci-conformance`
+- Detect Changes, Data Contract Scope: `ci-selection-jobs`; Merge Gate, Result Validation: `ci-merge-gate`
+- Data Contract jobs: `ci-data-contract`; Router contract jobs: `ci-llm-router-contract`
+- Lane alias parity: `ci-lane-alias-parity`; Installer checksums: `ci-installer-sha`
+- Molecule (scenario selection and per-scenario jobs): `ci-molecule`
