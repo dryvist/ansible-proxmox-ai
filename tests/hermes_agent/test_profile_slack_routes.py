@@ -149,8 +149,12 @@ def _declared_direct_jobs() -> list[dict]:
 def test_every_profile_homed_slack_cron_uses_its_gateway_route() -> None:
     defaults = role_defaults(ROLE_ROOT)
     jobs = _declared_direct_jobs()
-    channels = {**CHANNELS, "github-maint": "C0EXAMPLE3", "orchestrator": "C0EXAMPLE4"}
+    channels = {
+        **CHANNELS, "github-maint": "C0EXAMPLE3", "orchestrator": "C0EXAMPLE4",
+        "tracker-reporter": ["C0EXAMPLE5", "C0EXAMPLE6"],
+    }
     context = {
+        "hermes_agent_tracker_report_channels": channels["tracker-reporter"],
         "hermes_agent_hermes_home": "/srv/hermes-home",
         "hermes_agent_kanban_orchestrator_profile": defaults.get(
             "hermes_agent_kanban_orchestrator_profile", "orchestrator"
@@ -185,9 +189,10 @@ def test_every_profile_homed_slack_cron_uses_its_gateway_route() -> None:
         if str(target).startswith("slack:"):
             assert re.fullmatch(r"slack:[^,]+", str(target)), job["name"]
             assert profile in channels, f"{job['name']} has no gateway Slack route for {profile!r}"
-            assert _resolve_deliver(expanded, channels, "C0TEST00") == (
-                f"slack:{channels[profile]}"
-            ), job["name"]
+            routed = channels[profile] if isinstance(channels[profile], list) else [channels[profile]]
+            assert _resolve_deliver(expanded, channels, "C0TEST00") in {
+                f"slack:{channel}" for channel in routed
+            }, job["name"]
             raw_deliver = str(job.get("deliver", ""))
             if (
                 "hermes_agent_slack_profile_deliver_targets" in raw_deliver
