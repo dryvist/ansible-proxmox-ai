@@ -34,9 +34,21 @@ CI lints the whole repo; the pre-commit `ansible-lint` hook checks staged files 
 ## Cheapest fix first
 
 1. `ansible-lint --fix` rewrites formatting-only findings (yaml, line length); re-run and fix the rest by hand.
-2. Token Limits: split the flagged file into smaller well-named files; a budget exists so an agent reads one
-   thing, not six.
+2. Token Limits: a size failure is fixed by moving, not by removing. The total content after the change equals
+   the content before; only its place changes. Split the flagged file into smaller well-named files (a budget
+   exists so an agent reads one thing, not six), then run every check the moved content feeds, such as the
+   role's `python -m pytest` tests and `ansible-lint`.
 3. Renovate Config Validate: fix the JSON property the validator names.
+
+## Worked example: Token Limits
+
+`roles/hermes_agent/templates/config.yaml.j2` was over the 4000-token `*.j2` budget.
+
+- Wrong (seen 11-15): rewriting the template shorter (-50/+33 lines). The rendered config changed and the
+  Role Self-Checks asserts on its defaults failed.
+- Right: move one self-contained section, unchanged, into its own partial next to the template, for example
+  `templates/config/gateway.yaml.j2`, and put `{% include 'config/gateway.yaml.j2' %}` at the same place and
+  indentation. The rendered output is byte-identical, so the role's pytest still passes, and each file is under budget.
 
 ## Never
 
@@ -46,4 +58,4 @@ CI lints the whole repo; the pre-commit `ansible-lint` hook checks staged files 
 
 ## Known causes
 
-none recorded yet
+- 2026-11-15, run 43700947427: a template was rewritten shorter instead of split; Role Self-Checks failed after.
