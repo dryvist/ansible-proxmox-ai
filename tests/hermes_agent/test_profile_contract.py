@@ -49,8 +49,6 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_docs_mcp_enabled": True,
     "hermes_agent_grep_mcp_enabled": True,
     "hermes_agent_vikunja_mcp_enabled": True,
-    "hermes_agent_router_zammad_mcp_enabled": True,
-    "hermes_agent_router_zammad_mcp_url": "https://llm.example.com/mcp",
     "hermes_agent_nautobot_mcp_enabled": False,
     "hermes_agent_timezone": "UTC",
 }
