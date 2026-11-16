@@ -4,7 +4,7 @@ This section used to propose cadence changes. They have since been decided and
 applied; it now records what was settled and why, so the same ground is not
 re-litigated.
 
-- **Throughput throttle (2026-07-24, Zammad #17143).** The fleet was heavier
+- **Throughput throttle (2026-07-24).** The fleet was heavier
   than the single shared serving deployment could carry. 16 of 18 cards were
   paused via `hermes_agent_kanban_paused_jobs`, leaving `splunk-triage` and
   `homelab-ai-fabric-status` plus the script-fed digests. Lift it one card at a
