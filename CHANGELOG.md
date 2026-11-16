@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.54.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.53.0...v2.54.0) (2026-11-16)
+
+
+### Features
+
+* **dify_docker:** add an import-only tag ([#2522](https://github.com/dryvist/ansible-proxmox-ai/issues/2522)) ([5759af2](https://github.com/dryvist/ansible-proxmox-ai/commit/5759af2e33d7cfe05a4e3fb4e9feece204056806))
+* **hermes_agent:** allow several report channels per profile and a run tail ([#2524](https://github.com/dryvist/ansible-proxmox-ai/issues/2524)) ([9d1a4da](https://github.com/dryvist/ansible-proxmox-ai/commit/9d1a4da3db5a23a8f78248bf452edef1f346212b))
+* **openbao_secrets:** declare the gated usage key path for the local-llm domain ([#2520](https://github.com/dryvist/ansible-proxmox-ai/issues/2520)) ([d4fe7a2](https://github.com/dryvist/ansible-proxmox-ai/commit/d4fe7a287263c353bee5fd0798ffaae1a40d3671))
+
+
+### Bug Fixes
+
+* **hermes_agent:** keep the home automation platform adapter off in profiles ([#2528](https://github.com/dryvist/ansible-proxmox-ai/issues/2528)) ([0d5e9e8](https://github.com/dryvist/ansible-proxmox-ai/commit/0d5e9e8ec23ea179aaf4b14c016c908c9bf5e999))
+* **hermes_agent:** run the runtime install through the isolated guest proxy ([#2525](https://github.com/dryvist/ansible-proxmox-ai/issues/2525)) ([29aec9c](https://github.com/dryvist/ansible-proxmox-ai/commit/29aec9cc1c4b2f232ec21876520b52f93eca4541))
+* **llm_router:** admit each vllm lane on its own load-and-serve result ([#2527](https://github.com/dryvist/ansible-proxmox-ai/issues/2527)) ([e49831b](https://github.com/dryvist/ansible-proxmox-ai/commit/e49831b88e1a439a2a5979ce0fb65bd17821ee43))
+
 ## [2.53.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.52.1...v2.53.0) (2026-11-16)
 
 
