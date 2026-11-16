@@ -67,6 +67,17 @@ def role_defaults(role_root: Path) -> dict:
     return merged
 
 
+def resolve_isolated(context: dict) -> dict:
+    """Evaluate the role's own hermes_agent_is_isolated default against a test context."""
+    from jinja2.nativetypes import NativeEnvironment
+
+    env = NativeEnvironment()
+    env.filters["bool"] = bool
+    expression = role_defaults(Path(__file__).resolve().parents[2] / "roles/hermes_agent")["hermes_agent_is_isolated"]
+    context["hermes_agent_is_isolated"] = env.from_string(expression).render(**context)
+    return context
+
+
 def role_default_subset(role_root: Path, *keys: str) -> dict:
     defaults = role_defaults(role_root)
     return {key: defaults[key] for key in keys}
@@ -106,6 +117,7 @@ def render_hermes_runtime_unit(consumer_role: Path, template_name: str, **overri
     context = role_defaults(consumer_role)
     context.update(hermes_agent_uid=1001, hermes_agent_dashboard_port=8080)
     context.update(overrides)
+    resolve_isolated(context)
     env = NativeEnvironment(autoescape=False, undefined=StrictUndefined)
     env.filters['dict2items'] = dict_to_list_of_dict_key_value_elements
     for key in (
