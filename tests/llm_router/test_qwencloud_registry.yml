@@ -226,12 +226,20 @@
           - item.route_group not in _llm_router_key_scope_all
           - >-
             item.client_model_id not in
-            (_llm_router_declared_virtual_keys | map(attribute='models') | flatten)
+            (_llm_router_declared_virtual_keys
+             | rejectattr('alias', 'equalto', 'sandbox-agent')
+             | map(attribute='models') | flatten)
           - >-
             item.route_group not in
-            (_llm_router_declared_virtual_keys | map(attribute='models') | flatten)
-          - item.client_model_id not in (llm_router_virtual_keys | map(attribute='models') | flatten)
-          - item.route_group not in (llm_router_virtual_keys | map(attribute='models') | flatten)
+            (_llm_router_declared_virtual_keys
+             | rejectattr('alias', 'equalto', 'sandbox-agent')
+             | map(attribute='models') | flatten)
+          - item.client_model_id not in (llm_router_virtual_keys
+              | rejectattr('alias', 'equalto', 'sandbox-agent')
+              | map(attribute='models') | flatten)
+          - item.route_group not in (llm_router_virtual_keys
+              | rejectattr('alias', 'equalto', 'sandbox-agent')
+              | map(attribute='models') | flatten)
         fail_msg: "A benchmark-only route entered a shared ladder or partner key scope."
       loop: >-
         {{ _qwen_benchmark_test_entries
@@ -239,3 +247,21 @@
            | selectattr('benchmark_only', 'equalto', true) | list }}
       loop_control:
         label: "{{ item.client_model_id }}"
+
+    - name: Assert only the public sandbox key reaches a benchmark-only model, and only one tagged sandbox-only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _sandbox_key.models | intersect(llm_router_benchmark_only_model_names) | sort
+            == (llm_router_benchmark_only_model_names | intersect(llm_router_sandbox_only_model_ids) | sort)
+          - "'qwen4-max-preview' in _sandbox_key.models"
+          - (_sandbox_key.sensitivity_tag | default('')) == '&sensitivity:public'
+          - "'&zdr' not in (_sandbox_key.tags | default([]))"
+        fail_msg: "The sandbox key must reach exactly the benchmark-only models tagged sandbox-only."
+      vars:
+        # The key is enabled only when its secret field is present, so the scope is resolved here with a fixture value.
+        bao_apps_secrets:
+          sandbox_agent_router_llm_router_key: fixture-sandbox-agent
+        _sandbox_key: >-
+          {{ _llm_router_virtual_keys_source
+             | selectattr('alias', 'equalto', 'sandbox-agent') | first }}

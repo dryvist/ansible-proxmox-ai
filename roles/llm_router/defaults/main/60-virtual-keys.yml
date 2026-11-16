@@ -75,6 +75,11 @@ _llm_router_virtual_keys_source: >-
   {%- set _classes = _key.allowed_classes | default([]) -%}
   {%- set _sensitivity_tag = _key.sensitivity_tag | default('&sensitivity:sensitive') -%}
   {%- set _zdr_only = _sensitivity_tag != '&sensitivity:public' or '&zdr' in (_key.tags | default([])) -%}
+  {# The public sandbox key alone may call a benchmark-only model that is also tagged sandbox-only. #}
+  {%- set _benchmark_denied = (llm_router_benchmark_only_model_names
+        | difference(llm_router_sandbox_only_model_ids))
+        if (_key.alias == 'sandbox-agent' and not _zdr_only)
+        else llm_router_benchmark_only_model_names -%}
   {%- set _rungs = namespace(models=[]) -%}
   {%- for _class in (_classes if not (_key.models_authoritative | default(false) | bool) else []) -%}
   {%- set _class_rungs = (_zdr_rungs_by_class[_class]
@@ -108,7 +113,7 @@ _llm_router_virtual_keys_source: >-
              or _name not in _llm_router_agent_excluded_groups)
         and (_key.alias == 'github-actions' or _name not in _ci_only_groups)
         and (_key.alias == 'sandbox-agent' or _name not in llm_router_sandbox_only_model_ids)
-        and _name not in llm_router_benchmark_only_model_names
+        and _name not in _benchmark_denied
         and (not _zdr_only or _name not in _zdr_unasserted) -%}
   {%- set _discard = _filtered.append(_name) -%}
   {%- endif -%}
@@ -123,7 +128,7 @@ _llm_router_virtual_keys_source: >-
   {%- set ns.models = ns.models | reject('in', _stripped) | list -%}
   {%- endif -%}
   {%- set ns.models = ns.models
-        | reject('in', llm_router_benchmark_only_model_names) | list -%}
+        | reject('in', _benchmark_denied) | list -%}
   {%- set _purpose = (_key.metadata | default({})).get(
         'purpose', 'benchmark' if _key.alias == 'inference-direct-only' else 'live') -%}
   {%- set _permissions = _key.object_permission
