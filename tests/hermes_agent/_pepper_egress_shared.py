@@ -181,7 +181,10 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
         ]}}, vars=dict(
             _pepper_domains="{{ (_squid.split('acl pepper_domains dstdomain ')[1].split('\n')[0]).split() }}",
             _expected_domains=['.slack.com', '{{ squid_npm_registry_domain }}', 'llm.pve.example.test',
-                               'issues.example.test', 'secrets.example.test', 'evidence.example.test'])),
+                               'issues.example.test', 'secrets.example.test', 'evidence.example.test',
+                               'github.com', 'raw.githubusercontent.com', 'objects.githubusercontent.com',
+                               'release-assets.githubusercontent.com', 'pypi.org', 'files.pythonhosted.org',
+                               'hermes-assets.nousresearch.com', 'nodejs.org'])),
     ]
     playbook = tmp_path / 'verify.yml'
     playbook.write_text(yaml.safe_dump([

@@ -1,0 +1,28 @@
+---
+# --- Tracker reporter: grouped, change-only summaries ------------------------
+# Two jobs on the tracker-reporter profile, one prompt file. The jobs differ only in prompt_tail, which
+# renders last, so both prompts share one identical opening. Hourly from 12:00 to 23:00 UTC and every four
+# hours otherwise; the second job runs one minute after the first so the shared opening is still cached.
+hermes_agent_tracker_report_prompt_file: hermes-tracker-report.md
+hermes_agent_tracker_report_channels: >-
+  {%- set _lists = hermes_agent_slack_profile_channel_lists | default({}) -%}
+  {{ (_lists if _lists is mapping else {}).get('tracker-reporter', []) }}
+hermes_agent_tracker_report_enabled: >-
+  {{ hermes_agent_slack_bot_token | length > 0
+     and hermes_agent_slack_app_token | length > 0
+     and hermes_agent_tracker_report_channels | length == 2 }}
+hermes_agent_direct_cron_jobs_tracker_report:
+  - name: tracker-report-tasks
+    schedule: "35 0,4,8,12-23 * * *"
+    prompt_file: "{{ hermes_agent_tracker_report_prompt_file }}"
+    prompt_tail: "REPORT: tracker=vikunja kind=tasks memory_key=tracker-report-last-tasks"
+    deliver: "slack:{{ (hermes_agent_tracker_report_channels + ['', ''])[0] }}"
+    hermes_home: "{{ hermes_agent_hermes_home }}/profiles/tracker-reporter"
+    enabled: "{{ hermes_agent_tracker_report_enabled }}"
+  - name: tracker-report-incidents
+    schedule: "36 0,4,8,12-23 * * *"
+    prompt_file: "{{ hermes_agent_tracker_report_prompt_file }}"
+    prompt_tail: "REPORT: tracker=zammad kind=incidents memory_key=tracker-report-last-incidents"
+    deliver: "slack:{{ (hermes_agent_tracker_report_channels + ['', ''])[1] }}"
+    hermes_home: "{{ hermes_agent_hermes_home }}/profiles/tracker-reporter"
+    enabled: "{{ hermes_agent_tracker_report_enabled }}"

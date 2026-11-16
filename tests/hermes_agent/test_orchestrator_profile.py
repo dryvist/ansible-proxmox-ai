@@ -17,12 +17,13 @@ def test_orchestrator_is_the_only_profile_with_vikunja_and_has_a_bounded_soul() 
     orchestrator = next(profile for profile in profiles if profile["name"] == "orchestrator")
 
     assert orchestrator["description"] == (
-        "Kanban decomposition and assignment owner; the only profile that reads the Vikunja backlog"
+        "Kanban decomposition and assignment owner; reads the Vikunja backlog to assign work"
     )
     assert orchestrator["mcp"] == ["vikunja", "docs"]
     assert orchestrator["env"] == []
     assert orchestrator["skills"] == ["hermes_agent/github-issues-api"]
-    assert all("vikunja" not in profile["mcp"] for profile in profiles if profile is not orchestrator)
+    readers = {profile["name"] for profile in profiles if "vikunja" in profile["mcp"]}
+    assert readers == {"orchestrator", "tracker-reporter"}
     assert defaults["hermes_agent_kanban_orchestrator_profile"] == "orchestrator"
     assert defaults["hermes_agent_kanban_eligible_label"] == "hermes-eligible"
 
