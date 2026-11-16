@@ -334,3 +334,24 @@
           studio: {status: 200, json: {choices: [{index: 0}]}}
           small: {status: 200, json: {choices: [{index: 0}]}}
           expected: [vllm]
+
+    - name: Plan a second small-tier lane that never answers
+      ansible.builtin.set_fact:
+        llm_router_probe_prechecks:
+          - {tier: local-large, model: fixture-studio, route_name: fixture-medium}
+          - {tier: vllm, model: fixture-small, route_name: fixture-small}
+          - {tier: vllm, model: fixture-ocr, route_name: fixture-ocr}
+
+    - name: Admit the answering small lane while its sibling is absent
+      ansible.builtin.include_tasks: tasks/serving_precheck_case.yml
+      vars:
+        probe_case:
+          studio: {status: 200, json: {choices: [{index: 0}]}}
+          small: {status: 200, json: {choices: [{index: 0}]}}
+          expected: [local-large, vllm]
+
+    - name: Confirm only the silent small-tier lane is held out
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_vllm_precheck_held_models == ['fixture-ocr']

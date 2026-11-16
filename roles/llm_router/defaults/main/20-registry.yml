@@ -159,7 +159,8 @@ llm_router_cpu_9b_models: >-
 # Empty while llm_router_llm_vllm_enabled is false (10-network.yml): the tier
 # then renders no deployment and contributes no fallback rung.
 llm_router_vllm_models: >-
-  {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list)
+  {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm')
+      | rejectattr('upstream_model_id', 'in', llm_router_vllm_precheck_held_models | default([])) | list)
      if llm_router_llm_vllm_enabled | bool
         and (llm_router_vllm_precheck_passed | default(false) | bool) else [] }}
 # hermes-local: a Hermes-fallback-chain rung over a tier's backend that is
@@ -251,7 +252,9 @@ llm_router_registry_enabled_route_names: >-
   {%- for m in llm_router_registry_enabled -%}
   {%- if m.tier not in llm_router_local_registry_tiers
         or (m.route_group is defined
-            and (m.tier != 'vllm' or llm_router_vllm_precheck_passed | default(false) | bool)
+            and (m.tier != 'vllm'
+                 or ((llm_router_vllm_precheck_passed | default(false) | bool)
+                     and m.upstream_model_id not in llm_router_vllm_precheck_held_models | default([])))
             and (m.tier != 'local-large' or m in llm_router_studio_shared_models)) -%}
   {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
   {%- endif -%}
