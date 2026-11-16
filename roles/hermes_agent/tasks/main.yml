@@ -35,13 +35,20 @@
 - name: Keep operational profiles off the private identity
   ansible.builtin.set_fact:
     hermes_agent_profiles: []
-  when: (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) in ['hermes-private', 'pepper']
+  # Reads hermes_agent_identity, which may be set before hermes_agent_id; keeps its own fallback.
+  when: >-
+    (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) == 'hermes-private'
+    or (hermes_agent_isolated
+        | default((hermes_agent_identity | default(hermes_agent_id | default('hermes'))) == 'pepper') | bool)
   # Profiles guard: probe, install, config, cron, and content readers all consume the empty override.
   tags: always
 
 - name: Reject inherited Pepper profile homes before any runtime changes
   ansible.builtin.import_tasks: pepper_profiles.yml
-  when: (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) == 'pepper'
+  # Reads hermes_agent_identity, which may be set before hermes_agent_id; keeps its own fallback.
+  when: >-
+    (hermes_agent_isolated
+     | default((hermes_agent_identity | default(hermes_agent_id | default('hermes'))) == 'pepper') | bool)
   # Identity guard: must precede any component's first guest change.
   tags: always
 
@@ -147,7 +154,7 @@
 
 - name: Prepare Pepper read-only evidence before enabling its MCP server
   ansible.builtin.import_tasks: pepper_vault.yml
-  when: hermes_agent_id == 'pepper'
+  when: (hermes_agent_is_isolated | bool)
   tags: hermes_profiles_env
 
 - name: Deploy secrets, config.yaml, persona content, and Hindsight provider config
@@ -256,9 +263,9 @@
           {'name': 'HERMES_GITHUB_APP_SLUG', 'value': hermes_agent_github_app_slug},
           {'name': 'HERMES_TRUST_BOUNDARY', 'value': hermes_agent_github_trust_boundary_default},
           {'name': 'HERMES_CRON_GOAL_JOBS',
-           'value': (hermes_agent_cron_goal_mode_jobs if hermes_agent_id != 'pepper' else []) | join(',')},
+           'value': (hermes_agent_cron_goal_mode_jobs if not hermes_agent_is_isolated else []) | join(',')},
           {'name': 'HERMES_CRON_GOAL_MAX_TURNS', 'value': hermes_agent_kanban_goal_max_turns}
-         ] + ((hermes_agent_proxy_environment if hermes_agent_id == 'pepper' else {})
+         ] + ((hermes_agent_proxy_environment if hermes_agent_is_isolated else {})
               | dict2items(key_name='name', value_name='value')) }}
     # The dashboard resolves its config from the sticky active profile when one is
     # set, and the profile config.yaml carries no dashboard block. The OIDC

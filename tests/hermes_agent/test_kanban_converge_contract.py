@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment
 
-from _role_files import role_defaults
+from _role_files import role_defaults, resolve_isolated
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
@@ -34,7 +34,7 @@ def _conditions_pass(conditions: list[str] | str, context: dict) -> bool:
 
 
 def _task_runs(task: dict, context: dict) -> bool:
-    return _conditions_pass(task.get("when", []), context)
+    return _conditions_pass(task.get("when", []), resolve_isolated(dict(context)))
 
 
 def _direct_job_wanted(job: dict, identity: str) -> bool:

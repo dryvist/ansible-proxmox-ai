@@ -40,6 +40,15 @@ def test_vault_rendering(identity, url, enabled):
     assert 'terminal' in config['agent']['disabled_toolsets']
 
 
+@pytest.mark.parametrize('identity,isolated', [('hermes', True), ('pepper', False)])
+def test_the_isolated_flag_overrides_the_identity_name(identity, isolated):
+    _, config = _render('config.yaml.j2', {}, hermes_agent_id=identity, hermes_agent_isolated=isolated,
+                        hermes_agent_pepper_vault_repo_url='fixture-url',
+                        hermes_agent_pepper_vault_enabled=True,
+                        hermes_agent_pepper_vault_path='/var/lib/pepper-evidence/vault')
+    assert ('vault' in config.get('mcp_servers', {})) is isolated
+
+
 def test_vault_defaults_use_the_pepper_identity_and_runtime_approle_inputs():
     assert role_defaults(ROLE)['hermes_agent_pepper_vault_path'] == '/var/lib/pepper-evidence/vault'
     defaults = role_defaults(ROLE)
@@ -101,7 +110,7 @@ def test_mcp_gate_requires_pepper_repo_url_and_vault_feature_flag():
 def test_refresh_is_pepper_only_and_cannot_replace_its_parent():
     main = yaml.safe_load((ROLE / 'tasks/main.yml').read_text())
     include = next(t for t in main if t.get('ansible.builtin.import_tasks') == 'pepper_vault.yml')
-    assert include['when'] == "hermes_agent_id == 'pepper'"
+    assert include['when'] == "(hermes_agent_is_isolated | bool)"
     tasks = yaml.safe_load((ROLE / 'tasks/pepper_vault.yml').read_text())
     block = next(t for t in tasks if 'block' in t)
     assert block['become'] is True and block['become_user'] == 'root'
