@@ -41,6 +41,8 @@ ENV = jinja2.Environment(
 )
 ENV.filters.update(FilterModule().filters())
 ENV.tests.update(AnsibleTestModule().tests())
+# Mirror Ansible's undef(hint) global: rendering the result raises with the hint.
+ENV.globals["undef"] = lambda hint="": jinja2.StrictUndefined(hint=hint)
 INVENTORY_VARS = load_group_vars_all()
 FACADE_DEFAULTS = yaml.safe_load((DEFAULTS_DIR / "40-facade.yml").read_text())
 ROLE_DEFAULTS: dict[str, Any] = {}
@@ -65,7 +67,9 @@ def _render_callers(roster: dict[str, Any], registry: dict[str, Any] | None = No
 
 def _render_key_fields(roster: dict[str, Any], registry: dict[str, Any] | None = None) -> dict[str, Any]:
     return _render_map(
-        INVENTORY_VARS["ai_agent_gateway_key_fields"], ai_callers=_render_callers(roster, registry)
+        INVENTORY_VARS["ai_agent_gateway_key_fields"],
+        ai_callers=_render_callers(roster, registry),
+        agent_callers_registry=registry or {},
     )
 
 

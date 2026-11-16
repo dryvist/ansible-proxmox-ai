@@ -52,7 +52,9 @@ def _domains(play, run_tags, skip_tags=(), pepper_selected=False):
         openbao_secrets_pepper_paths=[],
         hermes_agent_pepper_runtime_selected=pepper_selected,
         ai_agents=AGENTS, ai_agent_owner={"github": "mcp-owner"},
-        ai_callers={name: {} for name in AGENTS},
+        ai_agent_gateway_key_fields={
+            name: f"{name.replace('-', '_')}_agentgateway_key" for name in AGENTS
+        },
         ansible_play_hosts_all=[host for host, _, _ in play], hostvars=hostvars, groups=groups,
         ansible_run_tags=list(run_tags), ansible_skip_tags=list(skip_tags),
     )
