@@ -68,6 +68,8 @@ def _render_env(price_map_url: str) -> str:
         "llm_router_mcp_slack_enabled": False,
         "llm_router_master_key": "sk-placeholder",
         "llm_router_llm_large_bearer": "sk-placeholder",
+        "llm_router_agent_quota_reader_token_env": "AGENT_QUOTA_READER_TOKEN",
+        "llm_router_agent_quota_reader_token": "reader-placeholder",
         "llm_router_hermes_identity_bearers": {},
         "llm_router_llm_large_standby_base_url": "",
         "llm_router_retry_max_delay_seconds": 60,
@@ -113,6 +115,13 @@ def test_configured_price_map_url_is_rendered():
     url = "https://prices.example/model_prices.json"
     rendered = _render_env(url)
     assert f"LITELLM_MODEL_COST_MAP_URL={url}" in rendered
+
+
+def test_quota_reader_token_is_rendered_from_its_declared_environment_name():
+    defaults = _defaults()
+    assert defaults["llm_router_agent_quota_reader_token_env"] == "AGENT_QUOTA_READER_TOKEN"
+    rendered = _render_env("")
+    assert f"{defaults['llm_router_agent_quota_reader_token_env']}=reader-placeholder" in rendered
 
 
 def test_schedule_status_is_read_before_schedule_post():
