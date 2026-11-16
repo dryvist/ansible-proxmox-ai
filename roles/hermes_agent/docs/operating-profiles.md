@@ -61,7 +61,11 @@ treated as private to it.
 | `homelab-admin` | Incidents + fabric health | Docs MCP, `zammad-incidents` skill | Splunk, Vikunja, GitHub, other MCP/skills |
 | `github-maint` | Read-only repo review + proposals | Docs MCP, `github-issues` skill, read-only token | GitHub writes, `docs-pr`, Splunk, Zammad, other |
 | `orchestrator` | Kanban decomposition and assignment | Vikunja + Docs MCP; follow-up card creation | Operational MCP servers and credentials |
+| `tracker-reporter` | Change-only task and incident summaries | Vikunja + router incident MCP; own bank | Kanban, env, skills, other MCP |
 | `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |
+
+The `tracker-reporter` profile and its two report jobs exist only while
+`llm_router_hermes_tracker_reporter_key_enabled` is on.
 
 `github-maint` is the one profile whose headline constraint is enforced by a
 **credential** rather than by tool availability. It renders the read-only
