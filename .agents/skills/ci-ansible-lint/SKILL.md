@@ -59,3 +59,10 @@ A role template `templates/<name>.yaml.j2` is over the `*.j2` budget.
 ## Known causes
 
 - A template rewritten shorter instead of split: the role's tests fail after the fix.
+- The lint install step failing with `Timeout of 60000ms hit` (all 3 `ansible-galaxy`
+  retries) is a transient GitHub-hosted network flake in the shared
+  `JacobPEvans/.github/_ansible-ci.yml@v1`, not a repo defect: a clean re-run
+  passes. Confirm by running `ansible-lint` locally with dependencies
+  installed — if it reports `Passed: 0 failure(s)`, there is no source change to
+  make; do not edit requirements, add lint disables, or bump pins to force it
+  green. (Observed on the v5.69.0 homelab-contracts Renovate bump, 2026-11-16.)
