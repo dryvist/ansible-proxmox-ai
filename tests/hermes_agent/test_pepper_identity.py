@@ -7,7 +7,7 @@ from jinja2 import Environment, StrictUndefined
 from jinja2.nativetypes import NativeEnvironment
 
 from _pepper_identity_shared import ROOT, ROLE, resolve
-from _role_files import role_defaults
+from _role_files import role_defaults, resolve_isolated
 from test_context_limits import _render
 
 def test_pepper_bundle_is_release_and_commit_pinned():
@@ -53,7 +53,7 @@ def test_youtrack_rendering_is_pepper_only_and_uses_environment_substitution():
                    hermes_agent_youtrack_mcp_tools=['get_issue', 'add_issue_comment'],
                    hermes_agent_mcp_tool_timeout_seconds=180)
     for identity in ['pepper', 'hermes', 'donna']:
-        rendered = env.from_string(src).render(context, hermes_agent_id=identity)
+        rendered = env.from_string(src).render(resolve_isolated({**context, 'hermes_agent_id': identity}))
         servers = (yaml.safe_load(rendered) or {}).get('mcp_servers', {})
         assert set(servers) == ({'youtrack', 'youtrack_intake'} if identity == 'pepper' else set())
         assert 'fixture-token' not in rendered
@@ -65,7 +65,7 @@ def test_youtrack_rendering_is_pepper_only_and_uses_environment_substitution():
             assert servers['youtrack_intake']['resources'] is False
             assert servers['youtrack_intake']['prompts'] is False
     context['hermes_agent_youtrack_mcp_token'] = ''
-    assert not yaml.safe_load(env.from_string(src).render(context, hermes_agent_id='pepper'))
+    assert not yaml.safe_load(env.from_string(src).render(resolve_isolated({**context, 'hermes_agent_id': 'pepper'})))
 
 
 def test_pepper_router_policy_and_profile_exclusion():
@@ -118,9 +118,10 @@ def test_identity_mapping_and_conflicting_tag_rejection():
 
 
 def test_both_profile_loaders_exclude_pepper():
-    for path in ['roles/hermes_agent/tasks/main.yml', 'playbooks/tasks/load_hermes_profiles.yml']:
-        src = (ROOT / path).read_text()
-        assert "in ['hermes-private', 'pepper']" in src
+    for path, guard in [
+            ('roles/hermes_agent/tasks/main.yml', "== 'hermes-private'\n    or (hermes_agent_isolated\n        | default("),
+            ('playbooks/tasks/load_hermes_profiles.yml', "in ['hermes-private', 'pepper']")]:
+        assert guard in (ROOT / path).read_text()
     for path in ['playbooks/agents.yml', 'playbooks/recover-hermes-queue.yml']:
         assert 'codex_runner' not in (ROOT / path).read_text()
 
@@ -228,10 +229,10 @@ def test_pepper_router_key_does_not_add_the_goal_judge_route():
     from ansible.plugins.filter.core import dict_to_list_of_dict_key_value_elements
     env.filters['dict2items'] = dict_to_list_of_dict_key_value_elements
     for identity in ['pepper', 'hermes', 'hermes-private', 'donna']:
-        entries = env.from_string(environment).render(
+        entries = env.from_string(environment).render(resolve_isolated(dict(
             hermes_agent_id=identity, hermes_agent_cron_goal_mode_jobs=['fixture-job'],
             hermes_agent_github_app_slug='fixture', hermes_agent_github_trust_boundary_default='fixture',
-            hermes_agent_kanban_goal_max_turns=8, hermes_agent_proxy_environment={})
+            hermes_agent_kanban_goal_max_turns=8, hermes_agent_proxy_environment={})))
         jobs = next(entry['value'] for entry in entries if entry['name'] == 'HERMES_CRON_GOAL_JOBS')
         assert jobs == ('' if identity == 'pepper' else 'fixture-job')
 

@@ -6,7 +6,7 @@ from typing import Any
 import yaml
 from jinja2 import Environment, FileSystemLoader
 
-from _role_files import role_defaults, role_tasks
+from _role_files import role_defaults, role_tasks, resolve_isolated
 from test_profile_contract import _RENDER_CONTEXT, _group_vars_all
 
 
@@ -79,6 +79,7 @@ def _render(template: str, limits: dict[str, Any], **overrides: Any) -> tuple[st
         "hermes_agent_pepper_vault_enabled": False,
     })
     context.update(overrides)
+    resolve_isolated(context)
     rendered = env.get_template(template).render(**context)
     parsed = yaml.load(rendered, Loader=UniqueKeyLoader)
     return rendered, parsed
