@@ -141,6 +141,13 @@ fails the run before any catalog DSL fetch. Naming an app also keeps its
 undeclared-variables check fatal. A sliced run wires the rotation only
 when its selection names the rotation app, so the last slice imports it.
 
+The tag `dify_agent_import` runs only the phases the agent import needs: the
+model registry load, console login, MCP tool providers, the agent import,
+rotation wiring and MCP publishing. It assumes the stack is already deployed
+and fails when the admin credentials do not resolve from the secret store.
+Combine it with `dify_docker_agent_dsl_select` to import a named set in one
+run.
+
 `dify_docker_private_agent_dsls` (default `[]`) adds private sources alongside
 the public catalog entries, each as `name`, `url` and `sha256`. The list and
 `dify_docker_private_agent_dsl_token` (default empty) are supplied at converge time
