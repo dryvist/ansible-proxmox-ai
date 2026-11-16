@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.55.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.54.0...v2.55.0) (2026-11-16)
+
+
+### Features
+
+* **hermes_agent:** admit the runtime install hosts and skip the browser download for the isolated guest ([#2533](https://github.com/dryvist/ansible-proxmox-ai/issues/2533)) ([2a0c6a1](https://github.com/dryvist/ansible-proxmox-ai/commit/2a0c6a15d823d0b67fc8078e97363d4f208c64fd))
+
 ## [2.54.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.53.0...v2.54.0) (2026-11-16)
 
 
