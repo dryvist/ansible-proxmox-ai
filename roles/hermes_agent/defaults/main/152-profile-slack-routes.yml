@@ -16,12 +16,23 @@ hermes_agent_slack_profile_channels: >-
                | default(lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_PROFILE_CHANNELS'), true)
                | default('{}', true) | from_json, true) }}
 
-# The one deliver-target projection used by profile-homed cron jobs.
+# Every report channel per profile, as a list. A map value is one channel id
+# or a list of them; the first is the profile's default report channel.
+hermes_agent_slack_profile_channel_lists: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- for profile, value in (hermes_agent_slack_profile_channels
+       if hermes_agent_slack_profile_channels is mapping else {}).items() -%}
+  {%-   set _ = ns.out.update({profile: ([value] if value is string else (value | list))}) -%}
+  {%- endfor -%}
+  {{ ns.out }}
+
+# The one deliver-target projection used by profile-homed cron jobs. A map
+# value is one channel id or a list of them; the target is the profile's
+# first (default) report channel.
 hermes_agent_slack_profile_deliver_targets: >-
-  {{ dict(
-       hermes_agent_slack_profile_channels.keys()
-       | zip(
-           hermes_agent_slack_profile_channels.values()
-           | map('regex_replace', '^', 'slack:')
-         )
-     ) }}
+  {%- set ns = namespace(out={}) -%}
+  {%- for profile, value in (hermes_agent_slack_profile_channels
+       if hermes_agent_slack_profile_channels is mapping else {}).items() -%}
+  {%-   set _ = ns.out.update({profile: 'slack:' ~ (value if value is string else value[0])}) -%}
+  {%- endfor -%}
+  {{ ns.out }}
