@@ -59,7 +59,9 @@ def _domain_names(ai_agents):
         _openbao_secrets_static_domains=[],
         ai_agents=ai_agents,
         ai_agent_owner={},
-        ai_callers={name: {} for name in ai_agents},
+        ai_agent_gateway_key_fields={
+            name: f"{name.replace('-', '_')}_agentgateway_key" for name in ai_agents
+        },
     )
     return [domain["name"] for domain in domains]
 
