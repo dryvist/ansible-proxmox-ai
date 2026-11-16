@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.56.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.55.0...v2.56.0) (2026-11-16)
+
+
+### Features
+
+* **agent-roster:** skip gateway keys for registry callers that declare none ([#2542](https://github.com/dryvist/ansible-proxmox-ai/issues/2542)) ([9e64fd6](https://github.com/dryvist/ansible-proxmox-ai/commit/9e64fd6c93ec0e467dfc5dd37fa48501b31cbca8))
+* **hermes_agent:** add the read-only tracker reporter profile and its report jobs ([#2532](https://github.com/dryvist/ansible-proxmox-ai/issues/2532)) ([c97b75e](https://github.com/dryvist/ansible-proxmox-ai/commit/c97b75ed284b27db6bed45b885e775fb1287bb8c))
+* **llm_serving_declared_metrics:** publish a declared maximum generation rate ([#2539](https://github.com/dryvist/ansible-proxmox-ai/issues/2539)) ([bf5e3f4](https://github.com/dryvist/ansible-proxmox-ai/commit/bf5e3f4c654046fd6daf8462551e1ec7b67426a3))
+
 ## [2.55.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.54.0...v2.55.0) (2026-11-16)
 
 
