@@ -146,3 +146,14 @@ def test_homeassistant_plugin_is_pinned_to_the_reviewed_commit() -> None:
     assert plugin["archive_subdir"].endswith("/homeassistant")
     assert len(plugin["archive_sha256"]) == 64
     assert all("==" in requirement for requirement in plugin["requirements"])
+
+
+def test_the_platform_adapter_is_off_wherever_the_plugin_is_on_and_the_tools_remain() -> None:
+    template = _jinja_env().get_template("config-profile.yaml.j2")
+    for gate in (False, True):
+        for profile in _profiles():
+            parsed = yaml.safe_load(template.render(hermes_agent_profile=profile, **_profile_context(gate)))
+            plugin_on = gate and profile["name"] == PROFILE
+            assert ("homeassistant" in parsed["plugins"]["enabled"]) is plugin_on, (profile["name"], gate)
+            assert parsed.get("platforms") == ({"homeassistant": {"enabled": False}} if plugin_on else None)
+            assert ("homeassistant" not in parsed["agent"]["disabled_toolsets"]) is plugin_on
