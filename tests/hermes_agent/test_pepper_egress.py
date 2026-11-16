@@ -85,3 +85,10 @@ def test_install_tasks_and_runtime_units_use_different_proxy_settings():
         hermes_agent_pepper_vault_refresh_script_path='/fixture/refresh')
     assert f'EnvironmentFile={proxy_file}' in evidence
     assert 'EnvironmentFile=/fixture/vault.env' in evidence
+
+
+def test_runtime_install_fetches_through_the_isolated_guest_proxy():
+    tasks = yaml.safe_load((ROOT / 'roles/hermes_agent/tasks/main.yml').read_text())
+    install = next(t for t in tasks if t.get('name') == 'Install the pinned Hermes runtime')
+    assert install['environment'] == (
+        '{{ hermes_agent_proxy_environment if hermes_agent_is_isolated else {} }}')

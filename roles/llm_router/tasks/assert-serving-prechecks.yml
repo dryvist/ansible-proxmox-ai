@@ -1,14 +1,9 @@
 ---
 - name: Classify local load-and-serve results
   ansible.builtin.set_fact:
-    _llm_router_serving_precheck_passed_tiers: >-
-      {%- set ns = namespace(tiers=[]) -%}
-      {%- for tier in llm_router_probe_prechecks | map(attribute='tier') | unique -%}
-      {%- set expected = llm_router_probe_prechecks | selectattr('tier', 'equalto', tier)
-           | map(attribute='model') | unique | list -%}
-      {%- set passed = namespace(models=[]) -%}
-      {%- for result in _llm_router_completion_precheck_responses.results | default([])
-           | selectattr('item.tier', 'equalto', tier) -%}
+    _llm_router_serving_precheck_passed_items: >-
+      {%- set ns = namespace(passed=[]) -%}
+      {%- for result in _llm_router_completion_precheck_responses.results | default([]) -%}
       {%- if result.status | default(0) | int == 200
             and result.json | default(none) is mapping
             and (result.json | default({}, true)).get('choices', []) is sequence
@@ -16,15 +11,35 @@
             and (result.json | default({}, true)).get('choices', []) is not mapping
             and (result.json | default({}, true)).get('choices', []) | length > 0
             and result.json.choices[0] is mapping -%}
-      {%- set passed.models = passed.models + [result.item.model] -%}
+      {%- set ns.passed = ns.passed + [{'tier': result.item.tier, 'model': result.item.model}] -%}
       {%- endif -%}
       {%- endfor -%}
-      {%- if expected | length > 0 and expected | difference(passed.models) | length == 0 -%}
+      {{ ns.passed }}
+  no_log: true
+
+# A tier is admitted when every planned model passed. The vllm tier is admitted
+# when any of its lanes passed; each vllm lane that did not pass is held by model.
+- name: Derive admitted tiers and held vllm lanes
+  ansible.builtin.set_fact:
+    _llm_router_serving_precheck_passed_tiers: >-
+      {%- set ns = namespace(tiers=[]) -%}
+      {%- for tier in llm_router_probe_prechecks | map(attribute='tier') | unique -%}
+      {%- set expected = llm_router_probe_prechecks | selectattr('tier', 'equalto', tier)
+           | map(attribute='model') | unique | list -%}
+      {%- set passed = _llm_router_serving_precheck_passed_items
+           | selectattr('tier', 'equalto', tier) | map(attribute='model') | list -%}
+      {%- if expected | length > 0
+            and (expected | difference(passed) | length == 0
+                 or (tier == 'vllm' and passed | length > 0)) -%}
       {%- set ns.tiers = ns.tiers + [tier] -%}
       {%- endif -%}
       {%- endfor -%}
       {{ ns.tiers }}
-  no_log: true
+    llm_router_vllm_precheck_held_models: >-
+      {{ llm_router_probe_prechecks | selectattr('tier', 'equalto', 'vllm')
+         | map(attribute='model') | unique | list
+         | difference(_llm_router_serving_precheck_passed_items
+                      | selectattr('tier', 'equalto', 'vllm') | map(attribute='model') | list) }}
 
 - name: Apply local load-and-serve admission gates
   ansible.builtin.set_fact:
@@ -35,7 +50,9 @@
   ansible.builtin.debug:
     msg: >-
       {{ item.route_name }} ({{ item.tier }}):
-      {{ 'eligible after load-and-serve probe' if item.tier in _llm_router_serving_precheck_passed_tiers
+      {{ 'eligible after load-and-serve probe'
+         if item.tier in _llm_router_serving_precheck_passed_tiers
+            and item.model not in llm_router_vllm_precheck_held_models
          else 'excluded: model listing or load-and-serve probe failed or unreachable' }}
   loop: "{{ llm_router_probe_prechecks }}"
   loop_control:
