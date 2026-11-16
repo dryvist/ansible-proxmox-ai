@@ -1,6 +1,8 @@
 ---
-# Caller keys are bounded by the registry's trust tiers. Its declared default
-# tier is the fail-closed case; every other declared tier retains its grants.
+# Every declared non-default tier lifts the ZDR clamp and the untrusted-classify
+# check, including `public`; the key keeps only its own declared scope. Lifted
+# does not mean trusted. Trusted-only grants must test `trust_tier == 'trusted'`
+# directly (or use an explicit gateway-key grant), never rely on this set.
 _llm_router_trusted_caller_tiers: >-
   {{ (agent_callers_tiers | default([])
       | difference([agent_callers_default_tier]))
@@ -66,11 +68,14 @@ _llm_router_route_local_key_aliases: >-
   {%- endif -%}
   {{ ns.aliases }}
 
-# The trust marker the untrusted_classify callback reads, per caller-scoped key
-# alias. Written on create and reconciled on every converge, so a live key
-# carries it without a rebuild. A tier outside the trusted set is "untrusted".
-# route_local is written for every caller key, true or false, so a reconcile
-# clears a stale true when a key stops being local-only.
+# Per caller-scoped alias, this metadata carries the declared non-default tier
+# that lifts the ZDR clamp and the untrusted-classify check, including `public`;
+# `public` keeps only its declared key scope and is not trusted. Trusted-only
+# grants must test `trust_tier == 'trusted'` directly (or use an explicit
+# gateway-key grant), never rely on this set.
+# The untrusted_classify callback examines only `untrusted`. Metadata is written
+# on create and reconciled on every converge, so live keys need no rebuild.
+# route_local is always written true or false to clear a stale true marker.
 _llm_router_key_trust_metadata: >-
   {%- set ns = namespace(out={}) -%}
   {%- set _route_local = _llm_router_route_local_key_aliases -%}
