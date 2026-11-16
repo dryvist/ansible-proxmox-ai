@@ -142,11 +142,16 @@ def _render_publish(role_root: Path, activation: str, context: dict) -> tuple[st
     )
 
 
-def _expected(accelerator: str, profile: str, engine: str, slots, context) -> str:
+def _expected(accelerator: str, profile: str, engine: str, slots, context, max_rate=None) -> str:
     labels = f'{{accelerator="{accelerator}",profile="{profile}",engine="{engine}"}}'
+    rate = (
+        f"llm_serving_declared_max_generation_tokens_per_second{labels} {max_rate}\n"
+        if max_rate is not None else ""
+    )
     return (
         f"llm_serving_declared_slots{labels} {slots}\n"
         f"llm_serving_declared_context_tokens_per_slot{labels} {context}\n"
+        f"{rate}"
     )
 
 

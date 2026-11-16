@@ -6,6 +6,10 @@ guest's declared capacity: `llm_serving_declared_slots` (the profile's
 `max_model_len`), labelled with the guest's `llm_gpu_accelerator`, the profile and
 the engine.
 
+A profile that sets `max_generation_tokens_per_second` also publishes
+`llm_serving_declared_max_generation_tokens_per_second` with the same labels. It is the
+one declared maximum that utilization rules and reports divide by.
+
 ## Installation
 
 Nothing to install. The serving roles `llm_gpu_serving`, `vllm_serving`,
