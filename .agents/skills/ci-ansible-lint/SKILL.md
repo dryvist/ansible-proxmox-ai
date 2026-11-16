@@ -18,7 +18,8 @@ The `ci` job in `.github/workflows/ci-gate.yml` calls the shared `JacobPEvans/.g
 - **Ansible Lint** — whole-repo `ansible-lint` with this repo's `.ansible-lint` and `.yamllint`, after
   installing the `requirements.yml` Galaxy content.
 - **Token Limits** — the shared `check-token-limits.py` counts the PR's own changed files with tiktoken
-  against the budgets in `.token-limits.yaml`.
+  against the budgets in `.token-limits.yaml`. Its log names each file over budget with its count; the PR author
+  or the CI-fix agent reads it and splits that file.
 - **Renovate Config Validate** — when a Renovate config file changed: `renovate-config-validator --strict`
   on `renovate.json` at a pinned Renovate version.
 
@@ -42,12 +43,11 @@ CI lints the whole repo; the pre-commit `ansible-lint` hook checks staged files 
 
 ## Worked example: Token Limits
 
-`roles/hermes_agent/templates/config.yaml.j2` was over the 4000-token `*.j2` budget.
+A role template `templates/<name>.yaml.j2` is over the `*.j2` budget.
 
-- Wrong (seen 11-15): rewriting the template shorter (-50/+33 lines). The rendered config changed and the
-  Role Self-Checks asserts on its defaults failed.
+- Wrong: rewriting the template shorter. The rendered output changes and the role's tests that assert on it fail.
 - Right: move one self-contained section, unchanged, into its own partial next to the template, for example
-  `templates/config/gateway.yaml.j2`, and put `{% include 'config/gateway.yaml.j2' %}` at the same place and
+  `templates/<name>/<section>.yaml.j2`, and put `{% include '<name>/<section>.yaml.j2' %}` at the same place and
   indentation. The rendered output is byte-identical, so the role's pytest still passes, and each file is under budget.
 
 ## Never
@@ -58,4 +58,4 @@ CI lints the whole repo; the pre-commit `ansible-lint` hook checks staged files 
 
 ## Known causes
 
-- 2026-11-15, run 43700947427: a template was rewritten shorter instead of split; Role Self-Checks failed after.
+- A template rewritten shorter instead of split: the role's tests fail after the fix.
