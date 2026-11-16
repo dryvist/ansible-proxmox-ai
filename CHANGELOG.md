@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.53.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.52.1...v2.53.0) (2026-11-16)
+
+
+### Features
+
+* **llm_router:** add an optional plan-usage pass-through route ([#2519](https://github.com/dryvist/ansible-proxmox-ai/issues/2519)) ([361dc53](https://github.com/dryvist/ansible-proxmox-ai/commit/361dc5374d526fd73ffdc57e192e3bceaade9409))
+
 ## [2.52.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.52.0...v2.52.1) (2026-11-16)
 
 
