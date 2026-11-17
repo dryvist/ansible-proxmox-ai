@@ -1,7 +1,8 @@
 ---
 # The read-tier create probe and its always-run cleanup, imported by verify-app-agent-probe.yml.
+# The write tier has no delete action, so cleanup closes an unexpected task instead.
 # Check mode skips it because the probe mutates Vikunja.
-- name: Probe read-tier task creation and always remove an unexpected task
+- name: Probe read-tier task creation and always close an unexpected task
   # The create probe mutates Vikunja, so check mode skips it.
   when:
     - not ansible_check_mode
@@ -24,7 +25,7 @@
             subcommand: create
             projectId: "{{ _llm_router_app_probe_read_projects[0].id }}"
             title: "{{ _llm_router_app_probe_task_title }}"
-            description: Delete in the always path if the read tier can create tasks.
+            description: Closed in the always path if the read tier can create tasks.
         status_code: [200, 400, 401, 403, 404, 422, 500]
         return_content: true
         timeout: 20
@@ -106,7 +107,7 @@
       when: _llm_router_app_probe_create is defined
       no_log: true
 
-    - name: Delete any task created by the read-tier probe with the write-tier token
+    - name: Close any task created by the read-tier probe with the write-tier token
       ansible.builtin.uri:
         url: "{{ _llm_router_app_probe_url }}"
         method: POST
@@ -118,8 +119,9 @@
           server_id: vikunja_write
           name: vikunja_tasks
           arguments:
-            subcommand: delete
+            subcommand: update
             id: "{{ item }}"
+            done: true
         status_code: [200, 204]
         return_content: true
         timeout: 20
@@ -154,22 +156,23 @@
       when: _llm_router_app_probe_create is defined
       no_log: true
 
-    - name: Require the probe task to be absent after cleanup
+    - name: Require the probe task to be closed after cleanup
       ansible.builtin.assert:
         quiet: true
         that:
           - _remaining_probe_tasks | length == 0
-        fail_msg: The read-tier authorization probe left its task behind after cleanup.
+        fail_msg: The read-tier authorization probe left its task open after cleanup.
       vars:
         _search: "{{ _llm_router_app_probe_cleanup_verify.json.content[0].text | from_json }}"
         _data: "{{ _search.data | default({}, true) }}"
         _tasks: "{{ _data.tasks | default(_data, true) }}"
         _remaining_probe_tasks: >-
-          {{ _tasks | selectattr('title', 'equalto', _llm_router_app_probe_task_title) | list }}
+          {{ _tasks | selectattr('title', 'equalto', _llm_router_app_probe_task_title)
+             | rejectattr('done', 'true') | list }}
       when: _llm_router_app_probe_create is defined
       no_log: true
 
-    - name: Fail if an unexpectedly created task has no ID that can be deleted
+    - name: Fail if an unexpectedly created task has no ID that can be closed
       ansible.builtin.fail:
         msg: >-
           The read-tier create probe succeeded but its unique task could not be
