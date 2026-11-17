@@ -13,6 +13,7 @@
         bao_apps_secrets: >-
           {{ (bao_apps_secrets | default({})) | combine({
             'claude_llm_router_key': 'fixture-claude-llm',
+            'claude_homelab_llm_router_key': 'fixture-claude-homelab',
             'claude_ocg_router_key': 'fixture-claude-ocg'}) }}
       no_log: true
 
@@ -21,8 +22,8 @@
 
     - name: Include the new target keys in this contract check
       ansible.builtin.set_fact:
-        _target_aliases: "{{ _target_aliases + ['claude-llm', 'claude-ocg', 'sandbox-agent'] }}"
-        _enabled_target_aliases: "{{ _enabled_target_aliases + ['claude-llm', 'claude-ocg'] }}"
+        _target_aliases: "{{ _target_aliases + ['claude-homelab', 'claude-llm', 'claude-ocg', 'sandbox-agent'] }}"
+        _enabled_target_aliases: "{{ _enabled_target_aliases + ['claude-homelab', 'claude-llm', 'claude-ocg'] }}"
 
     - name: Every consumer is declared once with its table class scope
       ansible.builtin.assert:
@@ -63,7 +64,7 @@
           {%- set ns = namespace(rows=[]) -%}
           {%- for _key in _llm_router_declared_virtual_keys
                 if _key.alias in _target_aliases -%}
-          {%- set _want = _standard if _key.alias in ['claude-code', 'codex', 'agy']
+          {%- set _want = _standard if _key.alias in ['claude-code', 'claude-homelab', 'codex', 'agy']
                 else _zdr if _key.alias == 'claude-llm'
                 else ['sub'] if _key.alias == 'claude-ocg'
                 else ['local'] if _key.alias in [_recorder, 'opencode', 'qwen-code', 'donna', 'pepper']
@@ -75,6 +76,10 @@
           {%- endfor -%}
           {{ ns.rows }}
         _target_model_mismatches: >-
+          {%- set _claude_code = _llm_router_declared_virtual_keys
+                | selectattr('alias', 'equalto', 'claude-code') | first -%}
+          {%- set _claude_homelab = _llm_router_declared_virtual_keys
+                | selectattr('alias', 'equalto', 'claude-homelab') | first -%}
           {%- set _claude_llm = _llm_router_declared_virtual_keys
                 | selectattr('alias', 'equalto', 'claude-llm') | first -%}
           {%- set _claude_ocg_effective = llm_router_virtual_keys
@@ -98,7 +103,19 @@
                 + llm_router_training_tier_group_names
                 + llm_router_sandbox_only_model_ids)
                 | unique | list -%}
-          {{ (['claude-llm'] if _claude_llm.models | unique | sort !=
+          {{ (['claude-homelab'] if _claude_homelab.models | unique | sort !=
+                _claude_code.models | unique | sort
+                or _claude_homelab.allowed_classes != _claude_code.allowed_classes
+                or _claude_homelab.models_authoritative != _claude_code.models_authoritative
+                or (_claude_homelab.router_settings | default({}))
+                   != (_claude_code.router_settings | default({}))
+                or _claude_homelab.owner_filter != _claude_code.owner_filter
+                or _claude_homelab.object_permission != _claude_code.object_permission
+                or _claude_homelab.daily_budget != _claude_code.daily_budget
+                or _claude_homelab.trust_caller != 'claude-code'
+                or _llm_router_trust_scoped_key_caller_ids.get('claude-homelab') != 'claude-code'
+                else [])
+             + (['claude-llm'] if _claude_llm.models | unique | sort !=
                 ([llm_router_small_model, llm_router_primary_model, llm_router_large_model]
                  + llm_router_d1_zdr_key_groups) | unique | sort else [])
              + (['claude-ocg'] if _opencode_zdr_groups | length == 0
@@ -124,6 +141,7 @@
           {%- set ns.rows = ns.rows + ['claude-ocg'] -%}
           {%- endif -%}
           {{ ns.rows }}
+
         _class_model_mismatches: >-
           {%- set ns = namespace(rows=[]) -%}
           {%- for _key in _active_virtual_keys
@@ -136,6 +154,12 @@
           {%- endfor -%}
           {%- endfor -%}
           {{ ns.rows }}
+
+    - name: The homelab Claude key uses the interactive priority tier
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_priority_key_tiers['claude-homelab'] | int == 0
 
     - name: Keep sandbox-only models in registry order at the end of the sandbox key
       ansible.builtin.assert:
