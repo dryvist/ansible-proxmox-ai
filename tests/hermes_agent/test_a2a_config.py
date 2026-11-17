@@ -281,3 +281,38 @@ def test_enabled_inbound_without_token_fails_the_role_assert() -> None:
     assert "inbound token is empty" in output
     assert "Set HERMES_A2A_TOKEN" in output
     assert "fixture-inbound-token" not in output
+
+
+A2A_GATEWAY = {
+    "hermes_agent_api_server_key": "",
+    "hermes_agent_a2a_inbound_enabled": True,
+    "hermes_agent_a2a_inbound_port": 9901,
+    "hermes_agent_api_max_concurrent_runs": 8,
+}
+
+
+def _a2a_extra(profiles: list[dict]) -> dict:
+    gateway = yaml.safe_load(_gateway_fragment(**A2A_GATEWAY, hermes_agent_profiles=profiles))["gateway"]
+    return gateway["platforms"]["a2a"]["extra"]
+
+
+def test_profiles_that_declare_a2a_render_as_served_agents() -> None:
+    extra = _a2a_extra([
+        {"name": "tasks", "description": "Task expert", "a2a": {"advertised_toolsets": ["vikunja_write"]}},
+        {"name": "siem", "description": "Read-only SIEM"},
+        {"name": "named", "description": "Profile text", "a2a": {"name": "Named agent", "description": "Card text"}},
+    ])
+    assert extra["port"] == 9901
+    assert extra["agents"] == {
+        "tasks": {
+            "profile": "tasks",
+            "name": "Hermes tasks",
+            "description": "Task expert",
+            "advertised_toolsets": ["vikunja_write"],
+        },
+        "named": {"profile": "named", "name": "Named agent", "description": "Card text", "advertised_toolsets": []},
+    }
+
+
+def test_no_a2a_profile_renders_no_served_agents() -> None:
+    assert _a2a_extra([{"name": "siem", "description": "Read-only SIEM"}]) == {"port": 9901}
