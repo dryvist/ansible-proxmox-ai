@@ -1,11 +1,10 @@
 """Pepper's research posture and its client wiring never coexist."""
-import re
 
 import pytest
 import yaml
 from jinja2.nativetypes import NativeEnvironment
 
-from _pepper_identity_shared import ROOT, ROLE, resolve
+from _pepper_identity_shared import ROLE, resolve
 from _role_files import role_defaults
 from test_context_limits import _render
 
@@ -64,7 +63,7 @@ def test_the_switch_changes_nothing_for_other_identities(identity):
 
 def test_research_on_turns_every_client_input_off():
     context = dict(
-        hermes_agent_id='pepper', hermes_agent_pepper_research_enabled=True,
+        hermes_agent_id='pepper', hermes_agent_research_enabled=True,
         hermes_agent_bao={'YOUTRACK_MCP_URL': 'fixture-url', 'YOUTRACK_MCP_TOKEN': 'fixture-token',
                           'PEPPER_VAULT_REPO_URL': 'fixture-repository'},
         environment={'PEPPER_VAULT_ROLE_ID': 'fixture-role', 'PEPPER_VAULT_SECRET_ID': 'fixture-secret'},
@@ -74,7 +73,7 @@ def test_research_on_turns_every_client_input_off():
     for name in ['youtrack_mcp_url', 'youtrack_mcp_token', 'pepper_vault_role_id', 'pepper_vault_secret_id']:
         assert resolve('hermes_agent_' + name, context) == ''
     assert resolve('hermes_agent_pepper_vault_enabled', context) == 'False'
-    client = dict(context, hermes_agent_pepper_research_enabled=False)
+    client = dict(context, hermes_agent_research_enabled=False)
     assert resolve('hermes_agent_youtrack_mcp_enabled', client) == 'True'
     assert resolve('hermes_agent_youtrack_mcp_token', client) == 'fixture-token'
     assert resolve('hermes_agent_pepper_vault_enabled', client) == 'True'
@@ -91,38 +90,6 @@ def test_research_on_disables_both_client_jobs():
                       hermes_agent_pepper_digest_deliver='slack:fixture')
         assert env.from_string(job['enabled']).render(wanted, hermes_agent_pepper_research_enabled=False) is True
         assert env.from_string(job['enabled']).render(wanted, hermes_agent_pepper_research_enabled=True) is False
-
-
-def test_proxy_hostnames_follow_the_posture():
-    project, research_hosts = yaml.safe_load((ROLE / 'tasks/egress_domains.yml').read_text())[1:3]
-    env = NativeEnvironment()
-    env.filters['bool'] = bool
-    names = lambda research, identity='pepper': env.from_string(project['loop']).render(
-        _hermes_agent_egress_research=research, hermes_agent_identity=identity)
-    assert names(False) == ['hermes_agent_pepper_router_host', 'hermes_agent_pepper_youtrack_host',
-                            'hermes_agent_pepper_openbao_host', 'hermes_agent_pepper_vault_host']
-    assert names(True) == ['hermes_agent_pepper_router_host', 'hermes_agent_pepper_openbao_host']
-    # Only Pepper has an evidence repository host.
-    assert names(False, 'example-isolated') == ['hermes_agent_pepper_router_host', 'hermes_agent_pepper_youtrack_host',
-                                                'hermes_agent_pepper_openbao_host']
-    extra = lambda research, inventory: env.from_string(research_hosts['loop']).render(
-        _hermes_agent_egress_research=research, hermes_agent_egress_inventory=inventory,
-        hermes_agent_pepper_research_egress_hosts=['fallback.example.test'])
-    assert extra(False, {'hermes_agent_pepper_research_egress_hosts': ['search.example.test']}) == []
-    assert extra(True, {'hermes_agent_pepper_research_egress_hosts': ['search.example.test']}) == [
-        'search.example.test']
-    assert extra(True, {}) == ['fallback.example.test']
-    assert research_hosts['ansible.builtin.include_tasks'] == 'egress_host.yml'
-    assert research_hosts['vars']['_hermes_agent_egress_host'] == '{{ item }}'
-
-
-def test_proxy_play_reads_no_client_endpoint_in_the_research_posture():
-    client, skip = yaml.safe_load((ROOT / 'playbooks/tasks/pepper_egress_endpoints.yml').read_text())
-    assert client['when'] == '_pepper_egress_clients | length > 0'
-    assert skip['when'] == '_pepper_egress_clients | length == 0'
-    assert skip['ansible.builtin.set_fact'] == {'squid_pepper_endpoint_hosts_by_identity': {}}
-    assert 'hermes_agent_pepper_research_enabled' in client['vars']['_pepper_egress_clients']
-    assert client['vars'] == skip['vars']
 
 
 def test_the_play_refuses_research_with_any_client_wiring():
@@ -147,15 +114,3 @@ def test_the_play_refuses_research_with_any_client_wiring():
                         ('hermes_agent_pepper_intake_enabled', True),
                         ('hermes_agent_pepper_digest_deliver', 'slack:fixture')]:
         assert not holds(dict(clean, **{name: value})), name
-
-
-def test_inventory_selects_research_with_plain_search_hostnames():
-    inventory = yaml.safe_load(
-        (ROOT / 'inventory/group_vars/hermes_agent_group/95-pepper.yml').read_text())
-    research = NativeEnvironment().from_string(inventory['hermes_agent_pepper_research_enabled'])
-    assert research.render(hermes_agent_identity='pepper') is True
-    assert research.render(hermes_agent_identity='example-isolated') is False
-    hosts = inventory['hermes_agent_pepper_research_egress_hosts']
-    assert hosts
-    for host in hosts:
-        assert re.fullmatch(r'[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+', host)

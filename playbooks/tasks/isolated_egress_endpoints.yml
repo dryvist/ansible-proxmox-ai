@@ -3,12 +3,12 @@
 # that identity's own AppRole. An identity in the research posture has no client
 # endpoints: nothing is read for it and its proxy policy uses inventory hostnames only.
 - name: Resolve the client endpoints for the isolated identities' proxy policies
-  when: _pepper_egress_clients | length > 0
-  vars: &pepper_egress_client_vars
-    _pepper_egress_clients: >-
+  when: _isolated_egress_clients | length > 0
+  vars: &isolated_egress_client_vars
+    _isolated_egress_clients: >-
       {%- set identities = [] -%}
       {%- for host in hermes_agent_isolated_hosts -%}
-        {%- if not (hostvars[host].hermes_agent_pepper_research_enabled | default(false) | bool) -%}
+        {%- if not (hostvars[host].hermes_agent_research_enabled | default(false) | bool) -%}
           {%- set _ = identities.append(hostvars[host].hermes_agent_identity) -%}
         {%- endif -%}
       {%- endfor -%}
@@ -24,24 +24,24 @@
           run_once: true
       vars:
         ansible_become: false
-        # Pepper keeps its own paths; any other identity reads the roster leaf its runtime
-        # reads (ai/<identity>, inventory/group_vars/all/openbao_secrets/11-roster-domains.yml).
+        # Each identity reads the roster leaf its runtime reads
+        # (ai/<identity>, inventory/group_vars/all/openbao_secrets/11-roster-domains.yml).
         openbao_secrets_domains: >-
           {%- set domains = [] -%}
-          {%- for identity in _pepper_egress_clients -%}
+          {%- for identity in _isolated_egress_clients -%}
             {%- set env_name = 'OPENBAO_APPROLE_' ~ (identity | upper | replace('-', '_')) -%}
             {%- set _ = domains.append({
                   'name': identity,
                   'role_id_env': env_name ~ '_ROLE_ID',
                   'secret_id_env': env_name ~ '_SECRET_ID',
-                  'paths': openbao_secrets_pepper_paths if identity == 'pepper' else ['ai/' ~ identity],
+                  'paths': ['ai/' ~ identity],
                   'required': true}) -%}
           {%- endfor -%}
           {{ domains }}
         # The squid play has no Hermes hosts in ansible_play_hosts_all. Activate each
         # identity's own roster groups so the shared role's domain filter keeps its entry.
         openbao_secrets_active_groups: >-
-          {{ _pepper_egress_clients | map('extract', openbao_secrets_domain_groups)
+          {{ _isolated_egress_clients | map('extract', openbao_secrets_domain_groups)
              | select('defined') | flatten | unique | list }}
         # This endpoint read must never fall back to the broader operator identity.
         openbao_secrets_operator_domains: []
@@ -49,28 +49,23 @@
 
     - name: Project only each identity's client endpoint hostnames
       ansible.builtin.set_fact:
-        squid_pepper_endpoint_hosts_by_identity: >-
+        squid_isolated_endpoint_hosts_by_identity: >-
           {%- set by_identity = {} -%}
-          {%- for identity in _pepper_egress_clients -%}
-            {%- set domain = _pepper_egress_domains.get(identity, {}) -%}
-            {%- set hosts = {'hermes_agent_pepper_youtrack_host':
-                  domain.get('YOUTRACK_MCP_URL', '') | ansible.builtin.urlsplit('hostname')} -%}
-            {%- if identity == 'pepper' -%}
-              {%- set _ = hosts.update({'hermes_agent_pepper_vault_host':
-                    domain.get('PEPPER_VAULT_REPO_URL', '') | ansible.builtin.urlsplit('hostname')}) -%}
-            {%- endif -%}
-            {%- set _ = by_identity.update({identity: hosts}) -%}
+          {%- for identity in _isolated_egress_clients -%}
+            {%- set domain = _isolated_egress_domains.get(identity, {}) -%}
+            {%- set _ = by_identity.update({identity: {'hermes_agent_isolated_youtrack_host':
+                  domain.get('YOUTRACK_MCP_URL', '') | ansible.builtin.urlsplit('hostname')}}) -%}
           {%- endfor -%}
           {{ by_identity }}
       vars:
-        _pepper_egress_domains: "{{ hostvars['localhost'].openbao_secrets_by_domain | default({}, true) }}"
+        _isolated_egress_domains: "{{ hostvars['localhost'].openbao_secrets_by_domain | default({}, true) }}"
       no_log: true
 
     - name: Require every client endpoint hostname
       ansible.builtin.assert:
         that:
           - >-
-            squid_pepper_endpoint_hosts_by_identity.values() | map('dict2items') | flatten
+            squid_isolated_endpoint_hosts_by_identity.values() | map('dict2items') | flatten
             | rejectattr('value') | list | length == 0
         fail_msg: >-
           An isolated identity's proxy requires its client endpoint URLs from its own identity domain;
@@ -86,6 +81,6 @@
 
 - name: Skip the client endpoints when every isolated identity is in the research posture
   ansible.builtin.set_fact:
-    squid_pepper_endpoint_hosts_by_identity: {}
-  when: _pepper_egress_clients | length == 0
-  vars: *pepper_egress_client_vars
+    squid_isolated_endpoint_hosts_by_identity: {}
+  when: _isolated_egress_clients | length == 0
+  vars: *isolated_egress_client_vars

@@ -50,21 +50,20 @@ a domain allowlist. The template turns each entry into one ACL pair:
 The `isolated` profile is per host. Every Hermes guest in
 `hermes_agent_isolated_hosts` gets its own ACL pair, named
 `isolated_<host>_clients` and `isolated_<host>_domains`. A guest is isolated
-when it sets `hermes_agent_isolated` (the `hermes-isolated` container tag), and
-Pepper is isolated by default. Each allowlist holds the router, OpenBao, Slack,
-the npm registry, and that identity's own YouTrack host. Pepper also gets its
-evidence repository host. Allowlists are never merged across hosts. All service
+when it sets `hermes_agent_isolated` (the `hermes-isolated` container tag). Each
+allowlist holds the router, OpenBao, Slack and the npm registry. A guest tagged
+`youtrack-client` also gets its own YouTrack host; every other isolated guest gets
+the research-posture hosts instead. Allowlists are never merged across hosts. All service
 hostnames are required. Each isolated host's deny line comes before any shared
 profile can grant access.
 
 The Squid play resolves service hosts from each identity's inventory and the
 shared Hermes role defaults, including during Squid-only limited runs.
-`hermes_agent_pepper_router_host` projects the router
-endpoint; `hermes_agent_pepper_openbao_host` projects `SECRET_STORE_ADDR` or
-`BAO_ADDR`. The play resolves each identity's YouTrack hostname (and Pepper's
-evidence hostname) on the controller through that identity's own AppRole, then
-passes only those hostnames to the shared projection. Pepper reads its own paths;
-any other identity reads its roster leaf `ai/<identity>`. Empty values,
+`hermes_agent_isolated_router_host` projects the router
+endpoint; `hermes_agent_isolated_openbao_host` projects `SECRET_STORE_ADDR` or
+`BAO_ADDR`. The play resolves each identity's YouTrack hostname on the controller
+through that identity's own AppRole, then passes only those hostnames to the shared
+projection. Each identity reads its roster leaf `ai/<identity>`. Empty values,
 addresses, and wildcards fail before the proxy config renders.
 
 `playbooks/agent-egress.yml` prepares each isolated guest's service proxy
