@@ -137,7 +137,9 @@ def test_pepper_receives_no_github_approle_inputs_from_polluted_environment():
     group = yaml.safe_load((ROOT / 'inventory/group_vars/hermes_agent_group/90-github-identity.yml').read_text())
     env = Environment(undefined=StrictUndefined)
     env.globals['lookup'] = lambda *args: 'poison'
-    context = dict(hermes_agent_identity='pepper', hermes_agent_github_vault_env_prefix='HERMES_')
+    env.filters['bool'] = bool
+    context = dict(hermes_agent_identity='pepper', hermes_agent_isolated=True,
+                   hermes_agent_github_vault_env_prefix='HERMES_')
     for boundary in group['hermes_agent_github_identity_approles'].values():
         for expression in boundary.values():
             assert env.from_string(expression).render(context) == ''

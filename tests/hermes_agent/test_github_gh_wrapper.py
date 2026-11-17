@@ -83,9 +83,13 @@ def test_identity_set_mappings_and_rendered_token_sets():
     group_vars = yaml.safe_load(
         (ROLE.parents[1] / "inventory/group_vars/hermes_agent_group/90-github-identity.yml").read_text()
     )
-    expression = NativeEnvironment().from_string(group_vars["hermes_agent_github_identity_sets"])
-    assert expression.render(hermes_agent_identity="hermes") == {"review": {"public": "hermes-review-public"}}
-    private_sets = expression.render(hermes_agent_identity="hermes-private")
+    sets_env = NativeEnvironment()
+    sets_env.filters["bool"] = bool
+    expression = sets_env.from_string(group_vars["hermes_agent_github_identity_sets"])
+    assert expression.render(hermes_agent_identity="hermes", hermes_agent_isolated=False) == {
+        "review": {"public": "hermes-review-public"}}
+    assert expression.render(hermes_agent_identity="iso-agent", hermes_agent_isolated=True) == {}
+    private_sets = expression.render(hermes_agent_identity="hermes-private", hermes_agent_isolated=False)
     assert private_sets == {"review": {"public": "hermes-read-public", "private": "hermes-review-private"}}
     environment = NativeEnvironment()
     environment.filters["comment"] = lambda value: "# " + value
