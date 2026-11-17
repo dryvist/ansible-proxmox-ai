@@ -154,6 +154,24 @@ def test_an_older_state_schema_is_treated_as_no_baseline():
     assert "ESCALATING" not in text and "NEW" not in text
 
 
+def test_a_signature_back_in_the_window_the_same_day_is_steady_not_new():
+    """TOP_N truncation drops a mid-band signature out of one run's baseline;
+    the per-day seen map keeps its return from reading as NEW."""
+    both = rows({RAFT: {"openbao-02": 400}, OTLP: {"open-webui": 90}})
+    _, state = TRIAGE.build_report(both, at(1), None)
+    _, state = TRIAGE.build_report(rows({RAFT: {"openbao-02": 400}}), at(2), state)
+    assert TRIAGE.sig_key(OTLP) in state["seen"], "the seen map outlives the window"
+    text, _ = TRIAGE.build_report(both, at(3), state)
+    assert "*NEW*" not in text
+
+
+def test_the_seen_map_is_pruned_by_age_and_size():
+    seen = {"old": "2026-07-10", "kept": "2026-07-20", "today": "2026-07-24"}
+    assert TRIAGE.prune_seen(seen, "2026-07-24") == {"kept": "2026-07-20", "today": "2026-07-24"}
+    many = {f"k{i}": f"2026-07-{i + 18:02d}" for i in range(7)}
+    assert list(TRIAGE.prune_seen(many, "2026-07-24", max_keys=2)) == ["k5", "k6"]
+
+
 def test_delivered_text_never_contains_tool_call_markup():
     """Belt and braces: the script's own output must pass the delivery guard."""
     text, _ = TRIAGE.build_report(rows({RAFT: {"openbao-02": 400}}), at(1), None)
