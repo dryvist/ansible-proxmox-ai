@@ -27,13 +27,20 @@ def test_pepper_proxy_policy_is_exclusive_and_uses_endpoint_hosts(
     _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid,
                                ['squid'], 'squid_group,localhost', expected_error=expected_error)
 
+@pytest.mark.parametrize('tags,limit,prepared', [(['squid'], 'squid_group,localhost', False), ([], '', True)])
+def test_each_isolated_identity_gets_its_own_allowlist(tmp_path, endpoint_store, tags, limit, prepared):
+    _verify_pepper_proxy_policy(tmp_path, endpoint_store, 'https://evidence.example.test/repository.git',
+                               'https://issues.example.test/mcp', True, tags, limit, prepared=prepared,
+                               second='https://tracker.example.test/mcp')
+
+
 def test_proxy_precedes_runtime_and_uses_the_shared_guest_role():
     site = yaml.safe_load((ROOT / 'playbooks/site.yml').read_text())
     imports = [p.get('import_playbook') for p in site]
     assert imports.index('agent-egress.yml') < imports.index('agents.yml') < imports.index('agent-runners.yml')
     plays = yaml.safe_load((ROOT / 'playbooks/agent-egress.yml').read_text())
     assert [p['hosts'] for p in plays] == ['hermes_agent_group', 'squid_group']
-    assert plays[0]['tasks'][0]['when'] == "hermes_agent_identity | default('') == 'pepper'"
+    assert plays[0]['tasks'][0]['when'] == 'inventory_hostname in hermes_agent_isolated_hosts'
     egress = yaml.safe_load((ROOT / 'roles/hermes_agent/tasks/egress.yml').read_text())
     wiring = egress[-1]
     assert wiring['vars']['agent_guest_no_proxy'] == '{{ agent_guest_loopback_no_proxy }}'

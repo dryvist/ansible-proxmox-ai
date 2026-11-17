@@ -46,28 +46,32 @@ def test_unavailable_client_endpoint_refuses_the_proxy_render(tmp_path, endpoint
     assert read['ansible.builtin.include_role']['apply']['become'] is False
     assert 'delegate_to' not in read and 'become' not in read
     assert read['vars']['ansible_become'] is False
-    domains = read['vars']['openbao_secrets_domains']
-    assert domains == [{
-        'name': 'pepper',
-        'role_id_env': 'OPENBAO_APPROLE_PEPPER_ROLE_ID',
-        'secret_id_env': 'OPENBAO_APPROLE_PEPPER_SECRET_ID',
-        'paths': '{{ openbao_secrets_pepper_paths }}',
-        'required': True,
-    }]
-    assert NativeEnvironment().from_string(domains[0]['paths']).render(
-        openbao_secrets_pepper_paths=pepper_paths) == pepper_paths
-    assert read['vars']['openbao_secrets_active_groups'] == (
-        "{{ openbao_secrets_domain_groups.get('pepper', []) }}")
+    # Each isolated identity logs in with its own AppRole; Pepper keeps its paths and any
+    # other identity reads only its roster leaf.
+    domains = NativeEnvironment().from_string(read['vars']['openbao_secrets_domains']).render(
+        _pepper_egress_clients=['pepper', 'example-isolated'], openbao_secrets_pepper_paths=pepper_paths)
+    assert domains == [
+        {'name': 'pepper', 'role_id_env': 'OPENBAO_APPROLE_PEPPER_ROLE_ID',
+         'secret_id_env': 'OPENBAO_APPROLE_PEPPER_SECRET_ID', 'paths': pepper_paths, 'required': True},
+        {'name': 'example-isolated', 'role_id_env': 'OPENBAO_APPROLE_EXAMPLE_ISOLATED_ROLE_ID',
+         'secret_id_env': 'OPENBAO_APPROLE_EXAMPLE_ISOLATED_SECRET_ID', 'paths': ['ai/example-isolated'],
+         'required': True},
+    ]
+    assert 'openbao_secrets_domain_groups' in read['vars']['openbao_secrets_active_groups']
     assert read['vars']['openbao_secrets_operator_domains'] == []
     assert 'BAO_TOKEN' not in task_file.read_text()
+    inventory = tmp_path / 'inventory.yml'
+    inventory.write_text(yaml.safe_dump(dict(all=dict(children=dict(hermes_agent_group=dict(hosts={
+        'localhost': dict(hermes_agent_identity='pepper', ansible_connection='local')}))))))
     playbook = tmp_path / 'verify.yml'
     playbook.write_text(yaml.safe_dump([dict(
         name='Verify unavailable Pepper endpoints', hosts='localhost', gather_facts=False,
-        vars=dict(openbao_secrets_pepper_paths=pepper_paths),
+        vars=dict(openbao_secrets_pepper_paths=pepper_paths, hermes_agent_isolated_hosts=['localhost'],
+                  openbao_secrets_domain_groups={'pepper': ['llm_router_group', 'hermes_agent_group']}),
         tasks=[dict(name='Resolve production endpoint hosts',
                     **{'ansible.builtin.include_tasks': str(task_file)})])]))
     result = subprocess.run(
-        ['ansible-playbook', str(playbook), '-i', 'localhost,', '-c', 'local'],
+        ['ansible-playbook', str(playbook), '-i', str(inventory), '-c', 'local'],
         env=dict(os.environ, ANSIBLE_LOCAL_TEMP=str(tmp_path / 'local'),
                  SECRET_STORE_ADDR=address, SECRET_STORE_PEPPER_ROLE_ID='',
                  SECRET_STORE_PEPPER_SECRET_ID='',

@@ -1,5 +1,5 @@
 ---
-- name: Prepare the Pepper egress profile
+- name: Prepare the isolated Hermes egress profile
   hosts: hermes_agent_group
   become: true
   gather_facts: false
@@ -12,17 +12,18 @@
     - ai
     - llm
   pre_tasks:
-    - name: Resolve Pepper preparation endpoints on the controller
+    - name: Resolve isolated identity preparation endpoints on the controller
       ansible.builtin.include_tasks: tasks/pepper_egress_endpoints.yml
-      when: hermes_agent_identity | default('') == 'pepper'
+      when: inventory_hostname in hermes_agent_isolated_hosts
   tasks:
     - name: Prepare the identity-scoped proxy inputs and guest environment
       ansible.builtin.include_role:
         name: hermes_agent
         tasks_from: egress
       vars:
-        hermes_agent_egress_host_overrides: "{{ squid_pepper_endpoint_hosts }}"
-      when: hermes_agent_identity | default('') == 'pepper'
+        hermes_agent_egress_host_overrides: >-
+          {{ squid_pepper_endpoint_hosts_by_identity.get(hermes_agent_identity, {}) }}
+      when: inventory_hostname in hermes_agent_isolated_hosts
 
 - name: Configure the agent-plane egress proxy
   hosts: squid_group
@@ -38,12 +39,9 @@
   tasks:
     - name: Converge squid (isolated — failure does not abort downstream plays)
       block:
-        - name: Resolve Pepper proxy endpoints on the controller
+        - name: Resolve isolated identity proxy endpoints on the controller
           ansible.builtin.include_tasks: tasks/pepper_egress_endpoints.yml
-          when: >-
-            groups['hermes_agent_group'] | default([]) | map('extract', hostvars)
-            | selectattr('hermes_agent_identity', 'defined')
-            | selectattr('hermes_agent_identity', 'equalto', 'pepper') | list | length > 0
+          when: hermes_agent_isolated_hosts | length > 0
         - name: Gather facts
           ansible.builtin.include_tasks: tasks/gather_facts.yml
         - name: Include squid role

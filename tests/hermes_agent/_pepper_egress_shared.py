@@ -14,13 +14,15 @@ from jinja2.nativetypes import NativeEnvironment
 from _role_files import role_defaults
 
 ROOT = Path(__file__).resolve().parents[2]
-MISSING_ENDPOINT_ERROR = "Pepper proxy requires both client endpoint URLs from Pepper's identity domain"
+MISSING_ENDPOINT_ERROR = "An isolated identity's proxy requires its client endpoint URLs from its own identity domain"
 INVALID_HOST_ERROR = 'Pepper egress requires a DNS hostname'
 PEPPER_SECRET_PATHS = {
     '/v1/secrets-external/data/slack/pepper/rw': ('SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'),
     '/v1/secret/data/youtrack/pepper/rw': ('YOUTRACK_MCP_URL', 'YOUTRACK_MCP_TOKEN'),
     '/v1/secret/data/apps/pepper': ('pepper_llm_router_key', 'PEPPER_VAULT_REPO_URL'),
 }
+# A second isolated identity reads only its roster leaf, served from its own fixture field.
+SECOND_SECRET_PATH = '/v1/secret/data/ai/example-isolated'
 
 
 def pepper_roster():
@@ -53,6 +55,10 @@ def endpoint_store():
                 assert self.headers.get('X-Vault-Token') == 'fixture-approle-token'
                 values = {field: state['data'][field]
                           for field in PEPPER_SECRET_PATHS[path] if field in state['data']}
+                status, data = state['status'], {'data': {'data': values, 'metadata': {}}}
+            elif path == SECOND_SECRET_PATH:
+                state['read_tokens'].append(self.headers.get('X-Vault-Token'))
+                values = {'YOUTRACK_MCP_URL': state['data']['SECOND_YOUTRACK_MCP_URL']}
                 status, data = state['status'], {'data': {'data': values, 'metadata': {}}}
             else:
                 status, data = 404, {'errors': ['Unexpected fixture path']}
@@ -97,9 +103,10 @@ def endpoint_store():
         server.server_close()
 
 def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid, tags, limit,
-                                prepared=False, rendered=True, expected_error=None):
+                                prepared=False, rendered=True, expected_error=None, second=None):
     address, store = endpoint_store
     store['data'] = dict(
+        SECOND_YOUTRACK_MCP_URL=second or '',
         PEPPER_VAULT_REPO_URL=vault,
         YOUTRACK_MCP_URL=youtrack,
         YOUTRACK_MCP_TOKEN='fixture-private-token',
@@ -109,6 +116,8 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
     )
     defaults = role_defaults(ROOT / 'roles/agent_guest')
     defaults.update(yaml.safe_load((ROOT / 'roles/squid/defaults/main.yml').read_text()))
+    defaults['hermes_agent_isolated_hosts'] = yaml.safe_load(
+        (ROOT / 'inventory/group_vars/all/01-agent-roster.yml').read_text())['hermes_agent_isolated_hosts']
     endpoints = dict(
         # No agent facts, secrets or client hostname inventory are available.
         hermes_agent_bao="{{ undef('The proxy cannot use the agent play secret view') }}",
@@ -118,7 +127,8 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
     seed_vars = yaml.safe_load((ROOT / 'inventory/group_vars/all/openbao_secrets/00-seed-vars.yml').read_text())
     domain_groups = NativeEnvironment().from_string(
         roster['openbao_secrets_domain_groups']
-    ).render(ai_agents={'pepper': {'container': 'fixture-pepper'}})
+    ).render(ai_agents={'pepper': {'container': 'fixture-pepper'},
+                        'example-isolated': {'container': 'fixture-isolated'}})
     assert domain_groups['pepper'] == ['llm_router_group', 'hermes_agent_group']
     defaults.update(
         agent_guest_proxy_host='proxy.example.test', agent_guest_proxy_port=3128,
@@ -136,7 +146,10 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
             'fixture-pepper': dict(hermes_agent_identity='pepper',
                                    container_mac='00:00:5e:00:53:01', ansible_connection='local', **endpoints),
             'fixture-ordinary': dict(hermes_agent_identity='hermes',
-                                     container_mac='00:00:5e:00:53:02')}),
+                                     container_mac='00:00:5e:00:53:02'),
+            **({'fixture-isolated': dict(hermes_agent_identity='example-isolated', hermes_agent_isolated=True,
+                                         container_mac='00:00:5e:00:53:03', ansible_connection='local',
+                                         **endpoints)} if second else {})}),
         ai_agent_pool_group=dict(hosts={'fixture-pepper': {}, 'fixture-ordinary': {}}),
         squid_group=dict(hosts={'proxy-fixture': dict(ansible_connection='local')}),
     )))))
@@ -161,11 +174,20 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
                      + "') }}",
             _npm="{{ lookup('template', '" + str(ROOT / 'roles/agent_guest/templates/proxy/npmrc.j2') + "') }}")}),
         dict(name='Check the identity boundary and shared environment', **{'ansible.builtin.assert': {'that': [
-            "'acl pepper_clients arp 00:00:5e:00:53:01' in _squid",
-            "'00:00:5e:00:53:02' not in _squid.split('acl pepper_clients arp ')[1].splitlines()[0]",
+            "'acl isolated_fixture_pepper_clients arp 00:00:5e:00:53:01' in _squid",
+            "'00:00:5e:00:53:02' not in _squid.split('acl isolated_fixture_pepper_clients arp ')[1].splitlines()[0]",
             "'00:00:5e:00:53:02' in _squid.split('acl ai_proxied_clients arp ')[1].splitlines()[0]",
-            "_squid.index('http_access deny pepper_clients') < _squid.index('http_access allow ai_proxied_clients')",
+            "_squid.index('http_access deny isolated_fixture_pepper_clients')"
+            " < _squid.index('http_access allow ai_proxied_clients')",
             "'http_access deny all' in _squid",
+        ] + ([
+            "'acl isolated_fixture_isolated_clients arp 00:00:5e:00:53:03' in _squid",
+            "_squid.index('http_access deny isolated_fixture_isolated_clients')"
+            " < _squid.index('http_access allow ai_proxied_clients')",
+            "_second_domains | sort == (_expected_domains | difference(['issues.example.test',"
+            " 'evidence.example.test']) + ['tracker.example.test']) | sort",
+            "'tracker.example.test' not in _pepper_domains",
+        ] if second else []) + [
             "'fixture-password' not in _squid",
             "'fixture-query' not in _squid",
             "'fixture-private-token' not in _squid",
@@ -179,7 +201,9 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
             "agent_guest_loopback_no_proxy in _manager",
             "('noproxy=' ~ agent_guest_loopback_no_proxy) in _npm",
         ]}}, vars=dict(
-            _pepper_domains="{{ (_squid.split('acl pepper_domains dstdomain ')[1].split('\n')[0]).split() }}",
+            _pepper_domains="{{ (_squid.split('acl isolated_fixture_pepper_domains dstdomain ')[1].split('\n')[0]).split() }}",
+            _second_domains=("{{ (_squid.split('acl isolated_fixture_isolated_domains dstdomain ')[1].split('\n')[0])"
+                             ".split() }}" if second else ''),
             _expected_domains=['.slack.com', '{{ squid_npm_registry_domain }}', 'llm.pve.example.test',
                                'issues.example.test', 'secrets.example.test', 'evidence.example.test',
                                'github.com', 'raw.githubusercontent.com', 'objects.githubusercontent.com',
@@ -200,6 +224,8 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
                  SECRET_STORE_PEPPER_SECRET_ID='',
                  OPENBAO_APPROLE_PEPPER_ROLE_ID='fixture-role-id',
                  OPENBAO_APPROLE_PEPPER_SECRET_ID='fixture-secret-id',
+                 OPENBAO_APPROLE_EXAMPLE_ISOLATED_ROLE_ID='fixture-second-role-id',
+                 OPENBAO_APPROLE_EXAMPLE_ISOLATED_SECRET_ID='fixture-second-secret-id',
                  BAO_TOKEN='fixture-converge-token',
                  ANSIBLE_OPENTELEMETRY_ENABLED='true',
                  ANSIBLE_OPENTELEMETRY_STORE_SPANS_IN_FILE='/dev/null'),
@@ -209,20 +235,20 @@ def _verify_pepper_proxy_policy(tmp_path, endpoint_store, vault, youtrack, valid
         + f"\nOpenBao request paths: {[urlsplit(path).path for path in store['requests']]}"
     )
     expected_fetches = int(prepared) + int(rendered)
-    expected_reads = expected_fetches * len(PEPPER_SECRET_PATHS)
-    actual_reads = sum(urlsplit(path).path in PEPPER_SECRET_PATHS for path in store['requests'])
+    expected_reads = expected_fetches * (len(PEPPER_SECRET_PATHS) + int(bool(second)))
+    actual_reads = sum(urlsplit(path).path in {*PEPPER_SECRET_PATHS, SECOND_SECRET_PATH}
+                       for path in store['requests'])
     assert actual_reads == expected_reads, result.stdout + result.stderr
-    assert len(store['role_logins']) == expected_fetches
-    assert store['role_logins'] == [
-        {'role_id': 'fixture-role-id', 'secret_id': 'fixture-secret-id'}
-    ] * expected_fetches
+    logins = [{'role_id': 'fixture-role-id', 'secret_id': 'fixture-secret-id'}] + (
+        [{'role_id': 'fixture-second-role-id', 'secret_id': 'fixture-second-secret-id'}] if second else [])
+    assert sorted(store['role_logins'], key=str) == sorted(logins * expected_fetches, key=str)
     assert store['read_tokens'] == ['fixture-approle-token'] * expected_reads
     if valid:
         assert ('Check the identity boundary and shared environment' in result.stdout) is rendered
         preparation = result.stdout.split('PLAY [Verify Pepper egress]')[0]
         assert ('Validate and project each Pepper hostname' in preparation) is prepared
     assert all(urlsplit(path).path in {
-        '/v1/sys/health', '/v1/auth/approle/login', *PEPPER_SECRET_PATHS,
+        '/v1/sys/health', '/v1/auth/approle/login', *PEPPER_SECRET_PATHS, SECOND_SECRET_PATH,
         '/v1/auth/token/lookup-self',
     } for path in store['requests'])
     assert 'fixture-password' not in result.stdout + result.stderr

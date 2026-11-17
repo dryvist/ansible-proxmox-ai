@@ -1,17 +1,20 @@
 ---
-# In the research posture Pepper has no client endpoints: nothing is read from its
-# identity domain here and the proxy policy is built from inventory hostnames only.
-- name: Resolve the client endpoints for the Pepper proxy policy
-  when: not (_pepper_egress_research | bool)
-  vars: &pepper_egress_research_vars
-    _pepper_egress_research: >-
-      {{ groups['hermes_agent_group'] | default([]) | map('extract', hostvars)
-         | selectattr('hermes_agent_identity', 'defined')
-         | selectattr('hermes_agent_identity', 'equalto', 'pepper')
-         | map(attribute='hermes_agent_pepper_research_enabled', default=false)
-         | map('bool') | select | list | length > 0 }}
+# Resolves the client endpoint hostnames of every isolated Hermes identity, each through
+# that identity's own AppRole. An identity in the research posture has no client
+# endpoints: nothing is read for it and its proxy policy uses inventory hostnames only.
+- name: Resolve the client endpoints for the isolated identities' proxy policies
+  when: _pepper_egress_clients | length > 0
+  vars: &pepper_egress_client_vars
+    _pepper_egress_clients: >-
+      {%- set identities = [] -%}
+      {%- for host in hermes_agent_isolated_hosts -%}
+        {%- if not (hostvars[host].hermes_agent_pepper_research_enabled | default(false) | bool) -%}
+          {%- set _ = identities.append(hostvars[host].hermes_agent_identity) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ identities | unique | list }}
   block:
-    - name: Fetch Pepper's identity domain through its own AppRole
+    - name: Fetch each isolated identity's domain through its own AppRole
       ansible.builtin.include_role:
         name: dryvist.homelab.openbao_secrets
         apply:
@@ -21,44 +24,56 @@
           run_once: true
       vars:
         ansible_become: false
-        openbao_secrets_domains:
-          - name: pepper
-            role_id_env: OPENBAO_APPROLE_PEPPER_ROLE_ID
-            secret_id_env: OPENBAO_APPROLE_PEPPER_SECRET_ID
-            paths: "{{ openbao_secrets_pepper_paths }}"
-            required: true
-        # The squid play has no Hermes hosts in ansible_play_hosts_all. Activate
-        # Pepper's own roster groups for this one-domain lookup so the shared
-        # role's domain filter keeps the AppRole entry.
-        openbao_secrets_active_groups: "{{ openbao_secrets_domain_groups.get('pepper', []) }}"
+        # Pepper keeps its own paths; any other identity reads the roster leaf its runtime
+        # reads (ai/<identity>, inventory/group_vars/all/openbao_secrets/11-roster-domains.yml).
+        openbao_secrets_domains: >-
+          {%- set domains = [] -%}
+          {%- for identity in _pepper_egress_clients -%}
+            {%- set env_name = 'OPENBAO_APPROLE_' ~ (identity | upper | replace('-', '_')) -%}
+            {%- set _ = domains.append({
+                  'name': identity,
+                  'role_id_env': env_name ~ '_ROLE_ID',
+                  'secret_id_env': env_name ~ '_SECRET_ID',
+                  'paths': openbao_secrets_pepper_paths if identity == 'pepper' else ['ai/' ~ identity],
+                  'required': true}) -%}
+          {%- endfor -%}
+          {{ domains }}
+        # The squid play has no Hermes hosts in ansible_play_hosts_all. Activate each
+        # identity's own roster groups so the shared role's domain filter keeps its entry.
+        openbao_secrets_active_groups: >-
+          {{ _pepper_egress_clients | map('extract', openbao_secrets_domain_groups)
+             | select('defined') | flatten | unique | list }}
         # This endpoint read must never fall back to the broader operator identity.
         openbao_secrets_operator_domains: []
       run_once: true
 
-    - name: Project only Pepper's client endpoint hostnames
+    - name: Project only each identity's client endpoint hostnames
       ansible.builtin.set_fact:
-        squid_pepper_endpoint_hosts: >-
-          {{ dict(
-               hermes_agent_pepper_youtrack_host=(
-                 _pepper_domain.get('YOUTRACK_MCP_URL', '')
-                 | ansible.builtin.urlsplit('hostname')),
-               hermes_agent_pepper_vault_host=(
-                 _pepper_domain.get('PEPPER_VAULT_REPO_URL', '')
-                 | ansible.builtin.urlsplit('hostname'))
-             ) }}
+        squid_pepper_endpoint_hosts_by_identity: >-
+          {%- set by_identity = {} -%}
+          {%- for identity in _pepper_egress_clients -%}
+            {%- set domain = _pepper_egress_domains.get(identity, {}) -%}
+            {%- set hosts = {'hermes_agent_pepper_youtrack_host':
+                  domain.get('YOUTRACK_MCP_URL', '') | ansible.builtin.urlsplit('hostname')} -%}
+            {%- if identity == 'pepper' -%}
+              {%- set _ = hosts.update({'hermes_agent_pepper_vault_host':
+                    domain.get('PEPPER_VAULT_REPO_URL', '') | ansible.builtin.urlsplit('hostname')}) -%}
+            {%- endif -%}
+            {%- set _ = by_identity.update({identity: hosts}) -%}
+          {%- endfor -%}
+          {{ by_identity }}
       vars:
-        _pepper_domain: >-
-          {{ (hostvars['localhost'].openbao_secrets_by_domain | default({}, true))
-             .get('pepper', {}) }}
+        _pepper_egress_domains: "{{ hostvars['localhost'].openbao_secrets_by_domain | default({}, true) }}"
       no_log: true
 
-    - name: Require both Pepper client endpoint hostnames
+    - name: Require every client endpoint hostname
       ansible.builtin.assert:
         that:
-          - squid_pepper_endpoint_hosts.hermes_agent_pepper_youtrack_host | default('', true) | length > 0
-          - squid_pepper_endpoint_hosts.hermes_agent_pepper_vault_host | default('', true) | length > 0
+          - >-
+            squid_pepper_endpoint_hosts_by_identity.values() | map('dict2items') | flatten
+            | rejectattr('value') | list | length == 0
         fail_msg: >-
-          Pepper proxy requires both client endpoint URLs from Pepper's identity domain;
+          An isolated identity's proxy requires its client endpoint URLs from its own identity domain;
           refusing to render the allowlist.
         quiet: true
       no_log: true
@@ -66,11 +81,11 @@
     - name: Refuse a proxy render without the client endpoints
       ansible.builtin.fail:
         msg: >-
-          Pepper proxy requires both client endpoint URLs from Pepper's identity domain;
-          check the Pepper AppRole lookup. Refusing to render the allowlist.
+          An isolated identity's proxy requires its client endpoint URLs from its own identity domain;
+          check that identity's AppRole lookup. Refusing to render the allowlist.
 
-- name: Skip the client endpoints in the research posture
+- name: Skip the client endpoints when every isolated identity is in the research posture
   ansible.builtin.set_fact:
-    squid_pepper_endpoint_hosts: {}
-  when: _pepper_egress_research | bool
-  vars: *pepper_egress_research_vars
+    squid_pepper_endpoint_hosts_by_identity: {}
+  when: _pepper_egress_clients | length == 0
+  vars: *pepper_egress_client_vars
