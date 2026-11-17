@@ -89,6 +89,12 @@ orchestrator keeps its role-local addendum. Scope each profile by what it must
 **not** reach, not by what it might someday need — a new capability is a new
 profile decision made in the PR that adds the work, not a widened existing one.
 
+**Serving a profile over A2A**: a profile entry with an `a2a` mapping is served
+on the gateway's A2A listener under `/<profile>`, while
+`hermes_agent_a2a_inbound_enabled` is on. Optional keys: `name` (default
+`Hermes <profile>`), `description` (default the profile's `description`) and
+`advertised_toolsets`.
+
 **Concurrency**: `hermes_agent_kanban_max_in_progress` is the SUM cap across
 every profile combined. It takes the shared `ai_agent_default_concurrency`
 (`inventory/group_vars/all/`), the same cap the API uses, and that value does
