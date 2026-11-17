@@ -60,6 +60,9 @@ def test_hermes_owned_keys_come_back_and_role_owned_keys_do_not(tmp_path):
     rendered = _run(tmp_path, LIVE)
     for key in ("_config_version", "_left_core_installed", "known_plugin_toolsets"):
         assert rendered[key] == LIVE[key], key
+    assert isinstance(rendered["_left_core_installed"], list)
+    assert isinstance(rendered["known_plugin_toolsets"], dict)
+    assert isinstance(rendered["known_plugin_toolsets"]["cron"], list)
     assert rendered["monitoring"]["install_id"] == LIVE["monitoring"]["install_id"]
     assert "model" not in rendered and "mcp_servers" not in rendered
 
