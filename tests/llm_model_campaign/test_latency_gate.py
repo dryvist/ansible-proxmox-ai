@@ -133,6 +133,46 @@ def test_gate_runs_before_campaign_work_and_between_cells():
     assert cells[0]["ansible.builtin.import_tasks"] == "llm-model-campaign-latency-gate.yml"
 
 
+def test_busy_lane_at_the_first_gate_ends_the_run_as_a_clean_skip():
+    campaign = yaml.safe_load(CAMPAIGN.read_text(encoding="utf-8"))[0]
+    gate = _named(campaign["tasks"], "Gate the campaign on interactive request latency")
+    assert gate["vars"] == {"llm_campaign_latency_skip_when_busy": True}
+    # A trip between cells keeps failing closed, inside the trial lock's block.
+    assert "vars" not in yaml.safe_load(CELL.read_text(encoding="utf-8"))[0]
+
+    report_tasks = yaml.safe_load(REPORT.read_text(encoding="utf-8"))
+    busy = _named(report_tasks, "Assemble interactive latency gate report values")[
+        "ansible.builtin.set_fact"
+    ]["_llm_campaign_lane_busy"]
+    for reason, skip, expected in (
+        ("ratio over max", True, "True"),
+        ("ratio over max", None, "False"),
+        ("NaN", True, "False"),
+        ("pass", True, "False"),
+    ):
+        context = {"_llm_campaign_latency_reason": reason}
+        if skip is not None:
+            context["llm_campaign_latency_skip_when_busy"] = skip
+        assert Environment().from_string(busy).render(**context).strip() == expected, reason
+
+    guard = _named(report_tasks, "Fail closed on interactive latency gate failures")
+    assert guard["when"] == "not (_llm_campaign_lane_busy | bool)"
+    skip_report = _named(report_tasks, "Report the busy interactive lane skip")
+    message = skip_report["ansible.builtin.debug"]["msg"]
+    assert message.startswith("Interactive latency gate skipped: lane busy;")
+    for value in ("ratio=", "max=", "window=", "baseline p95=", "samples="):
+        assert value in message
+    assert skip_report["when"] == "_llm_campaign_lane_busy | bool"
+    end = _named(report_tasks, "End the campaign before any work while the interactive lane is busy")
+    assert end["ansible.builtin.meta"] == "end_play"
+    assert end["when"] == "_llm_campaign_lane_busy | bool"
+    assert report_tasks.index(skip_report) < report_tasks.index(end)
+
+    target_first = yaml.safe_load(TARGET.read_text(encoding="utf-8"))[0]["pre_tasks"][0]
+    assert target_first["ansible.builtin.meta"] == "end_play"
+    assert target_first["when"] == "hostvars['localhost']._llm_campaign_lane_busy | default(false) | bool"
+
+
 def test_scalar_samples_require_typed_non_negative_values():
     tasks = yaml.safe_load(CLASSIFY.read_text(encoding="utf-8"))
     capture = _named(tasks, "Capture the interactive Prometheus scalar response")
