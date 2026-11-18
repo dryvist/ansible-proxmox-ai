@@ -171,15 +171,21 @@ hermes_agent_profiles:
 hermes_agent_seeded_cron_names: >-
   {{ [hermes_agent_splunk_status_digest_cron_name] }}
 
-# Every brain-dependent cron, derived rather than hand-maintained. The watchdog
-# pauses and resumes this exact set when local serving is unavailable.
+# Every brain-dependent cron THIS identity owns, derived rather than
+# hand-maintained. The watchdog pauses and resumes this exact set when local
+# serving is unavailable, and counts a name missing from the guest's board as a
+# failure, so another identity's job must never appear here.
 #
 # Only `enabled` direct jobs are included: the disabled ones are already
 # paused and never reconciled, so naming them would just add no-op
-# `cron pause` calls.
+# `cron pause` calls. The seeded status digest is a `system: splunk` job
+# (tasks/cron_reconcile.yml) and follows the same owner rule.
 hermes_agent_brain_dependent_cron_names: >-
-  {{ hermes_agent_seeded_cron_names
-     + (hermes_agent_direct_cron_jobs
+  {%- set splunk_owner = (ai_agent_owner | default({})).get('splunk', '') -%}
+  {{ (hermes_agent_seeded_cron_names
+      if hermes_agent_id in ([splunk_owner] if splunk_owner else hermes_agent_job_identities_default)
+      else [])
+     + (hermes_agent_direct_cron_jobs_owned
         | selectattr('enabled', 'defined') | selectattr('enabled')
         | map(attribute='name') | list) }}
 
