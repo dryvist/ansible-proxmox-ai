@@ -42,7 +42,7 @@ members run in deployment order (local GPU first, then the local fallbacks, then
 the capability's own cloud tail). A request too large for the advertised window
 escapes through `context_window_fallbacks`
 (`defaults/main/37-fallback-entry-points.yml`) rather than walking the ordinary
-chain. Only `judge` and `recorder` are seeded as database roles
+chain. Only `judge`, `recorder` and `fast-subagent` are seeded as database roles
 (`defaults/main/55-roles.yml`), and they copy the first member of their
 capability.
 
