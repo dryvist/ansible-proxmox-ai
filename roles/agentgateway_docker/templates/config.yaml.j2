@@ -88,6 +88,47 @@ binds:
                 insecure: true
 {% endif %}
 {% endfor %}
+{# Proxied remote MCP servers: one fixed caller (its bearer is matched by hash and
+   stripped), a tool allow-list, and a gateway-held backend credential read from
+   a root-owned file. Assertions in tasks/proxied_mcp.yml run before render. #}
+{% for target in agentgateway_docker_proxied_mcp_targets | default([]) %}
+    - matches:
+      - path:
+          exact: /{{ target.name }}
+      policies:
+        apiKey:
+          mode: strict
+          location:
+            header:
+              name: authorization
+              prefix: "Bearer "
+          keys:
+            - keyHash: {{ ('sha256:' ~ (target.inbound_token | hash('sha256'))) | to_json }}
+              metadata:
+                caller: {{ target.name | to_json }}
+        requestHeaderModifier:
+          remove: {{ agentgateway_docker_caller_credential_headers | to_json }}
+        mcpAuthorization:
+          rules:
+{% for tool in target.allowed_tools %}
+            - allow: {{ ('mcp.tool.name == "' ~ tool ~ '"') | to_json }}
+{% endfor %}
+      backends:
+      - mcp:
+          targets:
+          - name: {{ target.name }}
+            mcp:
+              host: {{ target.host | to_json }}
+            policies:
+              backendAuth:
+                key:
+                  value:
+                    file: {{ (agentgateway_docker_proxied_mcp_secrets_path ~ '/' ~ target.name) | to_json }}
+                  location:
+                    header:
+                      name: authorization
+                      prefix: {{ target.get('backend_token_prefix', 'Bearer ') | to_json }}
+{% endfor %}
 {% if (agentgateway_docker_qdrant_mcp_enabled | bool
        and agentgateway_docker_qdrant_memory_mcp_api_key | length > 0)
       or (agentgateway_docker_docs_mcp_enabled | bool
