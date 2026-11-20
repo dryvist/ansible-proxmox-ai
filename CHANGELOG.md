@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.58.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.58.0...v2.58.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **llm_router:** send env-marker router settings as resolved values ([#2598](https://github.com/dryvist/ansible-proxmox-ai/issues/2598)) ([37bb86a](https://github.com/dryvist/ansible-proxmox-ai/commit/37bb86ac29e87dab7c2bc615b478e4f668b76781))
+
 ## [2.58.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.57.0...v2.58.0) (2026-11-20)
 
 
