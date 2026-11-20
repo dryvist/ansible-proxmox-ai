@@ -7,3 +7,34 @@
 # the gateway container itself carries restart: unless-stopped in compose.
 systemd_restart_policy_services:
   - docker
+
+# Proxied remote MCP servers, from the AGENTGATEWAY_PROXIED_MCP_TARGETS
+# env-doc key: a JSON list whose items name the route, the backend URL, the
+# allowed tools and the two secret fields that hold the credentials, for example
+#   [{"name": "example-mcp", "host": "https://mcp.example.com/mcp",
+#     "allowed_tools": ["search"],
+#     "backend_token_field": "EXAMPLE_MCP_BACKEND_TOKEN",
+#     "inbound_token_field": "EXAMPLE_MCP_INBOUND_TOKEN"}]
+# Each field resolves bao-first from bao_local_llm_secrets, then the controller
+# environment. An item whose credentials resolve empty is omitted until seeded.
+agentgateway_docker_proxied_mcp_targets: >-
+  {%- set targets = [] -%}
+  {%- set secrets = bao_local_llm_secrets | default({}) -%}
+  {%- for item in lookup('env', 'AGENTGATEWAY_PROXIED_MCP_TARGETS') | default('[]', true) | from_json -%}
+    {%- set backend_field = item.get('backend_token_field', '') -%}
+    {%- set inbound_field = item.get('inbound_token_field', '') -%}
+    {%- set backend_env = lookup('env', backend_field) if backend_field else '' -%}
+    {%- set inbound_env = lookup('env', inbound_field) if inbound_field else '' -%}
+    {%- set backend = secrets.get(backend_field, '') | default(backend_env, true) | trim -%}
+    {%- set inbound = secrets.get(inbound_field, '') | default(inbound_env, true) | trim -%}
+    {%- if backend | length > 0 and inbound | length > 0 -%}
+      {%- set target = {'name': item.get('name'), 'host': item.get('host'),
+                        'allowed_tools': item.get('allowed_tools', []),
+                        'backend_token': backend, 'inbound_token': inbound} -%}
+      {%- if item.backend_token_prefix is defined -%}
+        {%- set _ = target.update({'backend_token_prefix': item.backend_token_prefix}) -%}
+      {%- endif -%}
+      {%- set _ = targets.append(target) -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {{ targets }}
