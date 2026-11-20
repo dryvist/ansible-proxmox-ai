@@ -53,6 +53,7 @@ REGISTRY_PROJECTIONS = {
     "agentgateway_docker_roster_keys": {},
     "agentgateway_docker_hindsight_roster_tiers": {},
     "agentgateway_docker_hindsight_agent_banks": {},
+    "agentgateway_docker_a2a_targets": [],
 }
 
 
