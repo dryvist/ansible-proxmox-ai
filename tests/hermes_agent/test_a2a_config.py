@@ -143,10 +143,10 @@ def test_explicitly_disabling_a2a_keeps_existing_gateway_and_slack_config() -> N
         )
         assert slack_config == LEGACY_SLACK_CONFIG
 
-    # Slack inherits the base Cron list, which no longer includes Kanban.
+    # Slack inherits the API list plus clarify; neither includes Kanban.
     toolsets = defaults["hermes_agent_slack_toolsets"]
     rendered_toolsets = _environment().from_string(str(toolsets)).render(
-        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"],
+        hermes_agent_api_server_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_a2a_peers=[],
     )
     expected_slack_toolsets = defaults["hermes_agent_api_server_toolsets"] + ["clarify"]
@@ -209,7 +209,7 @@ def test_enabled_a2a_renders_authenticated_inbound_peer_and_slack_config() -> No
     slack_toolsets_expression = _environment().from_string(
         str(defaults["hermes_agent_slack_toolsets"])
     ).render(
-        hermes_agent_cron_toolsets=defaults["hermes_agent_api_server_toolsets"],
+        hermes_agent_api_server_toolsets=defaults["hermes_agent_api_server_toolsets"],
         hermes_agent_a2a_peers=peers,
     )
     slack_toolsets = yaml.safe_load(slack_toolsets_expression)
