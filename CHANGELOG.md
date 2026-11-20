@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.60.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.60.2...v2.60.3) (2026-11-20)
+
+
+### Bug Fixes
+
+* **llm-router:** disable the service's startup schema update ([#2627](https://github.com/dryvist/ansible-proxmox-ai/issues/2627)) ([fc909f8](https://github.com/dryvist/ansible-proxmox-ai/commit/fc909f82e1e08d3e4d03ac0ed3924411b3d25d17))
+
 ## [2.60.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.60.1...v2.60.2) (2026-11-20)
 
 

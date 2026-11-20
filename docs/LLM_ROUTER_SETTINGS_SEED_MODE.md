@@ -63,27 +63,22 @@ Scope is deliberately narrow, and the reasoning is in
   converge in `ansible-proxmox-apps` uses to create the role, so the two ends
   cannot drift.
 
-## Schema updates: reconcile before startup, then fail closed
+## Schema updates: the role migrates, the service never does
 
-`main.yml` runs `prisma db push` as the service user after generating the
-client for the installed schema. It does not pass `--accept-data-loss`. On
-startup, the pinned LiteLLM release uses Prisma migrations and its migration check is
-enabled by default; `litellm.env.j2` sets
-`ENFORCE_PRISMA_MIGRATION_CHECK=True` explicitly. Do not set
-`DISABLE_SCHEMA_UPDATE` or turn off the migration check.
-
-This router's existing database was managed by `db push` and has no
-`_prisma_migrations` ledger. The pinned release's v2 resolver handles that case
-only after verifying that the current database schema matches the installed
-Prisma model; if the diff is non-empty or setup fails, startup exits. The
-resolver's baseline records packaged migrations only after that schema check;
-it does not apply old data backfills. This keeps an uncertain schema from
-serving silently.
+`tasks/schema-push.yml` runs `prisma migrate deploy` against the installed
+`litellm_proxy_extras` schema as the service user, after generating the client
+and before the restart. It skips that step when the pinned release is older than
+the running one. `litellm.env.j2` sets `DISABLE_SCHEMA_UPDATE=True`, so the
+service never migrates at startup: not on an upgrade, a downgrade or an
+unplanned restart. With it set, startup only logs any schema diff. This follows
+the vendor's guidance to keep schema updates disabled on serving instances and
+on any rollback image
+(<https://docs.litellm.ai/docs/proxy/database_migrations>).
 
 For an existing database upgraded from a release before the Prisma migration
 change, the release notes require two SpendLogs indexes to be created concurrently before the
 rollout. The migration package's entries for these indexes are no-ops,
-so the schema push and startup baseline do not create them. Use the exact SQL
+so the role's migrate step does not create them. Use the exact SQL
 and one-member-first rollout below.
 
 ### LiteLLM release and rollout
