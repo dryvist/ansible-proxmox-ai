@@ -90,7 +90,7 @@ def test_roster_agent_gets_its_paths_and_owned_mcp_paths():
         {
             "name": "splunk-heimdall",
             "paths": [
-                "ai/splunk-heimdall",
+                {"path": "ai/splunk-heimdall", "optional": True},
                 "apps/splunk-heimdall",
                 {"path": "apps/splunk-heimdall-gw", "optional": True},
                 "ai/mcp/splunk",
