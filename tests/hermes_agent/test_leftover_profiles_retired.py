@@ -38,7 +38,8 @@ def test_leftover_profiles_move_and_are_never_deleted():
     assert move["when"] == "hermes_agent_profiles_forced_off | bool"
     argv = move["ansible.builtin.command"]["argv"]
     assert argv[:3] == ["mv", "--no-target-directory", "{{ item.path }}"]
-    assert argv[3].startswith("{{ hermes_agent_retired_profiles_dir }}/")
+    assert argv[3].startswith("{{ hermes_agent_retired_profiles_dir }}/{{ item.path | basename }}-")
+    assert "now(utc=true" in argv[3]
     assert move["ansible.builtin.command"]["removes"] == "{{ item.path }}"
     assert DEFAULTS["hermes_agent_retired_profiles_dir"] == "{{ hermes_agent_hermes_home }}/retired-profiles"
     assert not any(
