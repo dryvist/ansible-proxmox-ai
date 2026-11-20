@@ -51,6 +51,25 @@
       (hermes_agent_slack_extra_probe.rc | default(1)) != 0
       or (hermes_agent_install.changed | default(false) | bool)
 
+# The MCP client (tools/mcp_tool*.py) imports the SDK from the optional ``mcp``
+# extra, which the base install omits. Its three member packages are installed by
+# name at the tagged pyproject's pins, the same way as the Slack extra.
+- name: Install the MCP client extra into the Hermes venv
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_venv_python }}
+      mcp=={{ hermes_agent_mcp_version }}
+      httpx2=={{ hermes_agent_mcp_httpx2_version }}
+      starlette=={{ hermes_agent_mcp_starlette_version }}
+  register: hermes_agent_mcp_extra_install
+  changed_when: >-
+    not ansible_check_mode and (
+      'Installed' in hermes_agent_mcp_extra_install.stderr
+      or 'Uninstalled' in hermes_agent_mcp_extra_install.stderr
+    )
+  notify: Restart hermes-gateway
+
 # Upstream's OTLP export (monitoring.export.otlp, gateway_health_export) imports
 # the OpenTelemetry SDK and the OTLP/HTTP exporter and refuses to start without
 # them: the gateway logs "No module named 'opentelemetry.exporter'" at every
