@@ -22,13 +22,13 @@ def _task(tasks, name: str):
 
 def test_vikunja_mcp_provider_is_declared_and_resolves_the_dsl_placeholder():
     group_vars = _yaml(GROUP_VARS)
-    provider, = group_vars["dify_docker_agent_mcp_providers"]
+    provider, = group_vars["dify_public_agent_mcp_providers"]
 
     assert provider["name"] == "vikunja"
     assert provider["server_identifier"] == "vikunja"
     assert provider["openbao_field"] == "VIKUNJA_MCP_HTTP_TOKEN_VIKUNJA_CLERK"
     assert provider["tool_name"] == "vikunja_tasks"
-    assert group_vars["dify_docker_agent_tool_providers"]["vikunja-clerk"] == {
+    assert group_vars["dify_public_agent_tool_providers"]["vikunja-clerk"] == {
         "VIKUNJA_MCP_PROVIDER_ID": "vikunja"
     }
 

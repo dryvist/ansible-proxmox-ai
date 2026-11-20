@@ -58,7 +58,10 @@ def test_the_publish_is_included_after_the_rotation_with_three_conditions():
         "or dify_docker_agent_dsl.name in dify_docker_publish_agent_mcp_apps",
     ]
     # The loop walks the built list, so dify_docker_agent_dsl_select slices this step too.
-    assert include["loop"] == "{{ dify_docker_agent_dsls | default([]) }}"
+    assert _flat(include["loop"]) == (
+        "{{ dify_docker_agent_dsls | default([]) + (dify_docker_private_agent_dsls "
+        "if dify_docker_private_agent_dsl_token | length > 0 else []) }}"
+    )
     assert include["loop_control"]["loop_var"] == "dify_docker_agent_dsl"
     assert include["vars"]["dify_docker_dsl_name"] == "{{ dify_docker_agent_dsl.name }}"
     assert include["no_log"] is True
@@ -330,4 +333,4 @@ def test_the_dify_group_publishes_only_the_clerk():
     group = yaml.safe_load((ROOT / "inventory/group_vars/dify_group.yml").read_text())
 
     assert group["dify_docker_publish_agent_mcp"] is True
-    assert group["dify_docker_publish_agent_mcp_apps"] == ["vikunja-clerk"]
+    assert group["dify_public_publish_agent_mcp_apps"] == ["vikunja-clerk"]
