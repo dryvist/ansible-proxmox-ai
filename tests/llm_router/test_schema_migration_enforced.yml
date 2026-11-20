@@ -1,14 +1,13 @@
 ---
-# Pins ENFORCE_PRISMA_MIGRATION_CHECK=True in the DATABASE_URL block of
-# roles/llm_router/templates/litellm.env.j2. The role reconciles the current
-# schema before startup; LiteLLM 1.104 verifies migration setup and must stop
-# rather than serve against a schema it could not validate. The startup check
-# is never disabled.
+# Pins DISABLE_SCHEMA_UPDATE=True in the DATABASE_URL block of
+# roles/llm_router/templates/litellm.env.j2. The role's own step
+# (tasks/schema-push.yml) is the one owner of the schema, so the service never
+# migrates at startup, on an upgrade, a downgrade or an unplanned restart.
 #
 # Run (from the REPO ROOT — self-contained):
 #   ansible-playbook tests/llm_router/test_schema_migration_enforced.yml -i localhost, -c local
 
-- name: Verify the fail-closed migration check renders with a database
+- name: Verify the startup schema update is disabled with a database
   hosts: localhost
   gather_facts: false
   vars_files:
@@ -56,19 +55,16 @@
       ansible.builtin.set_fact:
         _env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
 
-    - name: The db-backed env carries the explicit fail-closed migration check
+    - name: The db-backed env disables the service's startup schema update
       ansible.builtin.assert:
         quiet: true
         that:
           - _env is search('(?m)^DATABASE_URL=')
-          - _env is search('(?m)^ENFORCE_PRISMA_MIGRATION_CHECK=True$')
-          - _env is not search('(?m)^DISABLE_SCHEMA_UPDATE=')
+          - _env is search('(?m)^DISABLE_SCHEMA_UPDATE=True$')
+          - _env is not search('(?m)^ENFORCE_PRISMA_MIGRATION_CHECK=')
         fail_msg: >-
-          Expected DATABASE_URL with ENFORCE_PRISMA_MIGRATION_CHECK=True and no
-          disabled schema update. Real render:\n{{ _env }}
-        success_msg: >-
-          The role reconciles the schema before startup and leaves LiteLLM's
-          migration check enabled and fail-closed.
+          Expected DATABASE_URL with DISABLE_SCHEMA_UPDATE=True. Real render:\n{{ _env }}
+        success_msg: The role owns the schema; the service never migrates at startup.
 
 - name: Verify migration environment is absent with no database
   hosts: localhost
