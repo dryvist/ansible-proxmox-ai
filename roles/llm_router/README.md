@@ -270,6 +270,7 @@ endpoint contract, and the serving-share metric:
 | `llm_router_large_port` | `service_ports.ollama_api` | llm-large backend port |
 | `llm_router_routing_strategy` | `simple-shuffle` | load-balancing across same-name deployments |
 | `llm_router_seed_mode` | `initial` | `initial` seeds `router_settings`/roles once then leaves Admin UI edits alone; `rebuild` = DR full overwrite of both |
+| `llm_router_rebuild_roles` | `[]` | `initial` mode: recreate these live roles from Git |
 | `llm_router_master_key` | `env LLM_ROUTER_MASTER_KEY` (mandatory) | proxy master key |
 | `llm_router_llm_large_bearer` | `env LLM_LARGE_BEARER_TOKEN` (mandatory) | llm-large bearer |
 
