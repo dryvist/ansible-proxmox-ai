@@ -1,10 +1,10 @@
 ---
 # Included from main.yml only when the router stores models in the database.
-# Reconcile the package schema before startup. LiteLLM 1.104.0 then runs its
-# Prisma migration resolver with the fail-closed check enabled; on the legacy
-# db-push schema it adopts migration history only after verifying that this
-# schema matches the installed package. Keep the push non-destructive (no
-# --accept-data-loss) and do not disable LiteLLM's startup migration check.
+# Apply the migrations the installed litellm-proxy-extras ships before startup,
+# forward-only, the way LiteLLM migrates at start: `prisma migrate deploy` never
+# drops a table or column the migration history does not, and ignores applied
+# migrations newer than the ones shipped, so an older proxy keeps the newer
+# schema. Do not disable LiteLLM's startup migration check.
 
 # The service-user environment both Prisma commands run under, DATABASE_URL
 # included, so it is set once and never logged.
@@ -33,9 +33,8 @@
   ansible.builtin.command:
     argv: >-
       {{ llm_router_prisma_prefix + [
-        llm_router_venv ~ '/bin/prisma', 'db', 'push',
-        '--schema', llm_router_site_packages ~ '/litellm/proxy/schema.prisma',
-        '--skip-generate'] }}
+        llm_router_venv ~ '/bin/prisma', 'migrate', 'deploy',
+        '--schema', llm_router_site_packages ~ '/litellm_proxy_extras/schema.prisma'] }}
     chdir: /tmp
   register: llm_router_schema_push
   # The failure is raised by the next task so its output can be shown redacted;
@@ -44,14 +43,14 @@
   changed_when: >-
     not ansible_check_mode
     and llm_router_schema_push.rc == 0
-    and 'already in sync' not in llm_router_schema_push.stdout
+    and 'No pending migrations to apply' not in llm_router_schema_push.stdout
   no_log: true
   notify: Restart litellm
 
 - name: Stop on a failed schema push, showing the redacted output
   ansible.builtin.include_tasks: fail-schema-push.yml
   vars:
-    failed_step: prisma db push
+    failed_step: prisma migrate deploy
     failed_result: "{{ llm_router_schema_push }}"
   when:
     - not ansible_check_mode

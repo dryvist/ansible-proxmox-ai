@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.60.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.60.1...v2.60.2) (2026-11-20)
+
+
+### Bug Fixes
+
+* **llm_router:** migrate the schema forward with prisma migrate deploy ([#2620](https://github.com/dryvist/ansible-proxmox-ai/issues/2620)) ([cddd07f](https://github.com/dryvist/ansible-proxmox-ai/commit/cddd07fb963872d9b0341420e22a46b3d5a30faa))
+
 ## [2.60.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.60.0...v2.60.1) (2026-11-20)
 
 
