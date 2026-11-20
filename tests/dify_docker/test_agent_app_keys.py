@@ -111,7 +111,7 @@ def test_seed_rescue_reads_leaf_before_deleting_created_key():
     assert "dify_docker_agent_leaf_seed_fields[0].value" in delete["when"]
     assert delete["no_log"] is True
     assert fail["ansible.builtin.fail"]["msg"] == (
-        "The agent app leaf could not be stored in OpenBao."
+        "The Dify leaf could not be stored in OpenBao."
     )
     assert fail["no_log"] is True
 
