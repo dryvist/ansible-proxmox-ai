@@ -1,0 +1,60 @@
+---
+# The role's schema push runs only when the pinned LiteLLM is not lower than the
+# running one (a downgrade never changes the schema), and a process running
+# another version than the pin is restarted onto it. Pinned here:
+#   - downgrade (pinned lower): push skipped, restart notified;
+#   - upgrade (pinned higher): push runs, restart notified;
+#   - same version: push runs, no restart;
+#   - unread running version: push runs, no forced restart;
+#   - the read comes before the venv install, and the push include is gated.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_litellm_version_direction.yml -i localhost, -c local
+- name: LiteLLM version direction gates the schema push and the restart
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_pip_packages: ["litellm[proxy]==1.106.9", "prisma==0.15.0"]
+    _tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/install-runtime.yml') | from_yaml }}"
+    _names: "{{ _tasks | map(attribute='name') | list }}"
+    _read: Read the LiteLLM version this router is running before the schema push
+    _restart: Restart onto the pinned LiteLLM when the running process is another version
+    _push: "{{ _tasks | selectattr('name', 'equalto', 'Sync the proxy schema into the database') | first }}"
+    _cases:
+      - {running: "1.108.13", downgrade: true, differs: true}
+      - {running: "1.106.8", downgrade: false, differs: true}
+      - {running: "1.106.9", downgrade: false, differs: false}
+      - {running: null, downgrade: false, differs: false}
+  tasks:
+    - name: Load the version-direction defaults
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/48-litellm-version-direction.yml"
+
+    - name: Each direction decides the push and the restart
+      ansible.builtin.assert:
+        that:
+          - (llm_router_litellm_downgrade | bool) == item.downgrade
+          - (llm_router_litellm_version_differs | bool) == item.differs
+          - llm_router_pinned_litellm_version == '1.106.9'
+        fail_msg: >-
+          running {{ item.running }}: {{ llm_router_litellm_downgrade }}
+          / {{ llm_router_litellm_version_differs }}
+        quiet: true
+      vars:
+        llm_router_running_litellm_version_before_push: >-
+          {{ {'status': 200, 'json': {'litellm_version': item.running}}
+             if item.running else {'status': -1, 'msg': 'connection refused'} }}
+      loop: "{{ _cases }}"
+
+    - name: The read runs before the venv changes, and the push include is gated
+      ansible.builtin.assert:
+        that:
+          - _names.index(_read) < _names.index('Create the venv and install hash-locked LiteLLM requirements')
+          - _names.index(_restart) == _names.index(_read) + 1
+          - (_tasks[_names.index(_read)]).no_log is true
+          - (_tasks[_names.index(_read)]).failed_when is false
+          - (_tasks[_names.index(_restart)]).notify == 'Restart litellm'
+          - "'not (llm_router_litellm_downgrade | bool)' in _push.when"
+          - "'llm_router_store_model_in_db | bool' in _push.when"
+        quiet: true

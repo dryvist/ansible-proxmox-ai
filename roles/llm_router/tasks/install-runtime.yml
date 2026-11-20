@@ -44,6 +44,29 @@
     group: "{{ llm_router_group }}"
     mode: "0640"
 
+# Before the venv changes: the version the running process loaded decides
+# whether the schema push below runs (defaults/main/48-litellm-version-direction.yml).
+- name: Read the LiteLLM version this router is running before the schema push
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}{{ llm_router_readiness_path }}/details"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_running_litellm_version_before_push
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Restart onto the pinned LiteLLM when the running process is another version
+  ansible.builtin.debug:
+    msg: >-
+      running {{ llm_router_running_litellm_version }},
+      pinned {{ llm_router_pinned_litellm_version }}
+  changed_when: llm_router_litellm_version_differs | bool
+  notify: Restart litellm
+
 # virtualenv_command builds the venv with stdlib `venv` (no `virtualenv` pip
 # package on a minimal LXC), then pip installs the full compiled lock. Hash
 # checking is all-or-nothing, so every direct and transitive requirement is
@@ -198,6 +221,18 @@
   when: llm_router_store_model_in_db | bool and llm_router_prisma_client_fresh.rc != 0
   notify: Restart litellm
 
+# A downgrade never changes the schema: the newer one is forward-only.
+- name: Report a schema push skipped for a LiteLLM downgrade
+  ansible.builtin.debug:
+    msg: >-
+      Schema push skipped: pinned {{ llm_router_pinned_litellm_version }} is lower
+      than running {{ llm_router_running_litellm_version }}.
+  when:
+    - llm_router_store_model_in_db | bool
+    - llm_router_litellm_downgrade | bool
+
 - name: Sync the proxy schema into the database
   ansible.builtin.include_tasks: schema-push.yml
-  when: llm_router_store_model_in_db | bool
+  when:
+    - llm_router_store_model_in_db | bool
+    - not (llm_router_litellm_downgrade | bool)
