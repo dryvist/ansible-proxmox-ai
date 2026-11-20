@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.60.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.59.1...v2.60.0) (2026-11-20)
+
+
+### Features
+
+* **agentgateway:** proxy remote MCP servers with a gateway-held credential and tool allow-list ([#2605](https://github.com/dryvist/ansible-proxmox-ai/issues/2605)) ([0c9d236](https://github.com/dryvist/ansible-proxmox-ai/commit/0c9d236edc36706308141d868d24a57e915ebdb6))
+* **dify:** take private agent apps from converge-time env-doc keys ([#2604](https://github.com/dryvist/ansible-proxmox-ai/issues/2604)) ([62552c2](https://github.com/dryvist/ansible-proxmox-ai/commit/62552c2c66d57d7667bff0d0caf14f4311882c4b))
+
+
+### Bug Fixes
+
+* **agentgateway:** Dify MCP OpenBao reads run in check mode ([#2609](https://github.com/dryvist/ansible-proxmox-ai/issues/2609)) ([199fe95](https://github.com/dryvist/ansible-proxmox-ai/commit/199fe95898354b7ec03766e4734ee0b5df26993e))
+* **dify_docker:** pin the agent DSL catalog to ai-llm-prompts v1.127.1 ([#2611](https://github.com/dryvist/ansible-proxmox-ai/issues/2611)) ([3f202ea](https://github.com/dryvist/ansible-proxmox-ai/commit/3f202eac758dd34731aa50d543ba7e74e39e2f65))
+
 ## [2.59.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.59.0...v2.59.1) (2026-11-20)
 
 
