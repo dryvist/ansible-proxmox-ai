@@ -1,0 +1,22 @@
+---
+# The LiteLLM version this router is running, read from its readiness details
+# before the schema push (tasks/install-runtime.yml), against the pinned one.
+# Empty when the read failed or the service is down.
+llm_router_running_litellm_version: >-
+  {{ (llm_router_running_litellm_version_before_push.json | default({})).litellm_version
+     | default('', true) | string | trim }}
+llm_router_pinned_litellm_version: >-
+  {{ llm_router_pip_packages | select('match', '^litellm.proxy.==') | first | split('==') | last }}
+
+# A downgrade never changes the database schema: the newer schema is forward-only
+# and the older proxy runs on it, so the role's schema push is skipped. An unread
+# running version is not a downgrade, and the push runs as before.
+llm_router_litellm_downgrade: >-
+  {{ llm_router_running_litellm_version | length > 0
+     and llm_router_pinned_litellm_version is version(llm_router_running_litellm_version, '<') }}
+
+# A process running another version than the pin restarts onto it, even when the
+# venv already matched the pin on this run (a run that stopped before its restart).
+llm_router_litellm_version_differs: >-
+  {{ llm_router_running_litellm_version | length > 0
+     and llm_router_pinned_litellm_version != llm_router_running_litellm_version }}
