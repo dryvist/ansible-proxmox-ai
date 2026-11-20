@@ -76,17 +76,20 @@ def test_a_sliced_import_wires_the_rotation_only_with_the_rotation_app():
 def test_a_publish_allowlist_name_missing_from_the_manifest_fails():
     check = _task(
         _yaml(IMPORT_LOOP),
-        "Fail when a catalog entry named for MCP publishing is not in the manifest",
+        "Fail when an app named for MCP publishing is in neither the manifest nor the private DSLs",
     )
     manifest = json.dumps([{"name": "vikunja-clerk"}, {"name": "pr-keeper"}])
 
-    def passes(apps):
+    def passes(apps, private=()):
         return _render(
             check["ansible.builtin.assert"]["that"][0],
             dify_docker_publish_agent_mcp_apps=apps,
             dify_docker_agent_dsl_manifest_content=manifest,
+            dify_docker_private_agent_dsls=[{"name": name} for name in private],
         ) == "True"
 
     assert passes(["vikunja-clerk"])
     assert not passes(["vikunja-clerk", "vikunja-clrek"])
+    assert passes(["vikunja-clerk", "example-private"], private=["example-private"])
+    assert not passes(["example-private"])
     assert "dify_docker_publish_agent_mcp_apps | length > 0" in check["when"]
