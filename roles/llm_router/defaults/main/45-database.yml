@@ -231,8 +231,17 @@ _llm_router_router_settings_may_seed: >-
 # persisted row cannot shadow the rendered file. Derived from the rendered
 # config rather than a hand-listed key set, minus the credential (never sent
 # through the update endpoint) and with the retired routing group forced empty.
+# An os.environ/ marker is sent as its resolved value (the drift check's map in
+# 76-drift.yml): the proxy compares a config-owned key against its resolved
+# runtime value and refuses the whole update with a 400 when they differ.
 _llm_router_settings_payload: >-
-  {{ (llm_router_rendered_config.content | b64decode | from_yaml).router_settings
-     | default({}, true)
-     | dict2items | rejectattr('key', 'equalto', 'redis_password') | items2dict
-     | combine({'routing_groups': []}) }}
+  {%- set ns = namespace(settings={}) -%}
+  {%- for setting in (llm_router_rendered_config.content | b64decode | from_yaml).router_settings
+        | default({}, true) | dict2items if setting.key != 'redis_password' -%}
+  {%- set value = setting.value -%}
+  {%- if value is string and value is match('^os\\.environ/.+') -%}
+  {%- set value = llm_router_drift_env_marker_values.get(value | regex_replace('^os\\.environ/', ''), value) -%}
+  {%- endif -%}
+  {%- set ns.settings = ns.settings | combine({setting.key: value}) -%}
+  {%- endfor -%}
+  {{ ns.settings | combine({'routing_groups': []}) }}
