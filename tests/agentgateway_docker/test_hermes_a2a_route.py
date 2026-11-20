@@ -1,30 +1,62 @@
-"""Hermes A2A route rendering through agentgateway."""
+"""A2A routes derived from the roster and rendered through agentgateway."""
 
 from __future__ import annotations
 
 from typing import Any
+
+import jinja2
+import pytest
+import yaml
 from cel_subset import authorize
-from test_authz_render import ROLE_DEFAULTS, _render, _routes
+from test_authz_render import ENV, ROLE_DEFAULTS, _render, _routes
+
+ROSTER: dict[str, Any] = {
+    "brain": {"trust_tier": "trusted", "a2a_url": "http://brain.example.test:9901/"},
+    "graph": {"a2a_url": "http://graph.example.test:5000/a2a/"},
+    "plain": {"trust_tier": "trusted"},
+}
 
 
-def test_hermes_a2a_target_uses_the_published_container_and_port_contract() -> None:
-    targets = ROLE_DEFAULTS["agentgateway_docker_a2a_targets"]
-    assert [target["name"] for target in targets] == ["hermes", "langgraph"]
-    hermes = targets[0]
-    assert hermes["path_prefix"] == "/a2a/hermes/"
-    assert "tofu_data']['containers']['hermes-agent']['ip" in hermes["host"]
-    assert "tofu_data']['constants']['service_ports']['hermes_a2a" in hermes["host"]
-    assert hermes["bearer_token"] == "{{ agentgateway_docker_hermes_a2a_token }}"
-    assert "HERMES_A2A_TOKEN" in ROLE_DEFAULTS["agentgateway_docker_hermes_a2a_token"]
-    assert "hermes_a2a_token" in ROLE_DEFAULTS["agentgateway_docker_hermes_a2a_token"]
+def _targets(roster: dict[str, Any], env: dict[str, str] | None = None, secrets: dict[str, str] | None = None) -> Any:
+    rendered = ENV.from_string(ROLE_DEFAULTS["agentgateway_docker_a2a_targets"]).render(
+        ai_agents=roster,
+        bao_apps_secrets=secrets or {},
+        lookup=lambda _plugin, key: (env or {}).get(key, ""),
+    )
+    return yaml.safe_load(rendered)
+
+
+def test_every_roster_agent_that_declares_a2a_gets_a_route() -> None:
+    targets = _targets(ROSTER, env={"BRAIN_A2A_TOKEN": "fixture-env-token"}, secrets={"graph_a2a_token": "fixture-kv"})
+    assert targets == [
+        {"name": "brain", "path_prefix": "/a2a/brain/", "host": "brain.example.test:9901",
+         "backend_path_prefix": "/", "bearer_token": "fixture-env-token"},
+        {"name": "graph", "path_prefix": "/a2a/graph/", "host": "graph.example.test:5000",
+         "backend_path_prefix": "/a2a/", "bearer_token": "fixture-kv"},
+    ]
+    routes = _routes(_render(extra={"agentgateway_docker_a2a_targets": targets}))
+    a2a_prefixes = {route["matches"][0]["path"]["pathPrefix"] for route in routes if "a2a" in route.get("policies", {})}
+    declared = {f"/a2a/{name}/" for name, agent in ROSTER.items() if "a2a_url" in agent}
+    assert a2a_prefixes == declared, f"roster agents with a2a_url but no route: {declared - a2a_prefixes}"
+
+
+def test_an_agent_without_a_token_gets_a_route_without_a_backend_credential() -> None:
+    assert "bearer_token" not in _targets({"graph": ROSTER["graph"]})[0]
+
+
+def test_a_url_without_http_fails_the_render() -> None:
+    with pytest.raises(jinja2.exceptions.UndefinedError, match="a2a_url must be an http:// URL"):
+        _targets({"brain": {"a2a_url": "https://brain.example.test/"}})
 
 
 def test_default_peer_roster_preserves_registered_a2a_callers() -> None:
-    agents = {
+    agents: dict[str, Any] = {
         "trusted-agent": {"trust_tier": "trusted"},
         "untrusted-agent": {"trust_tier": "untrusted"},
         "no-tier-agent": {},
     }
+    # langgraph declares its callers; hermes declares none and falls back to the trusted tier.
+    agents["langgraph"] = {"a2a_callers": [*agents, "claude-code", "unseeded"]}
     registry = {"claude-code": {"trust_tier": "trusted"}, "unseeded": {"trust_tier": "trusted"}}
     keys = {f"{name.replace('-', '_')}_agentgateway_key": f"fixture-{name}" for name in [*agents, "claude-code"]}
     routes = _routes(_render(agents=agents, keys=keys, registry=registry, extra={
@@ -34,7 +66,8 @@ def test_default_peer_roster_preserves_registered_a2a_callers() -> None:
         ],
     }))
     a2a_routes = [route for route in routes if "a2a" in route.get("policies", {})]
-    for route, allowed in zip(a2a_routes, ({"trusted-agent", "claude-code"}, {*agents, "claude-code"})):
+    keyed = {"trusted-agent", "untrusted-agent", "no-tier-agent", "claude-code"}
+    for route, allowed in zip(a2a_routes, ({"trusted-agent", "claude-code"}, keyed), strict=True):
         policies = route["policies"]
         assert policies["apiKey"]["mode"] == "strict"
         rules = policies["authorization"]["rules"]

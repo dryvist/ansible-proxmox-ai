@@ -219,9 +219,8 @@ def test_owned_route_requires_a_key_and_allows_only_its_owner(baseline: str) -> 
         if "a2a" in route.get("policies", {}):
             assert route["policies"]["apiKey"]["keys"] == splunk["policies"]["apiKey"]["keys"]
             route["policies"]["apiKey"]["keys"] = baseline_route["policies"]["apiKey"]["keys"]
-            assert route["policies"]["authorization"]["rules"] == [
-                {"allow": 'apiKey.agent in ["splunk-heimdall", "other-agent"]'}
-            ]
+            # The target declares no a2a_callers and no fixture agent is in the trusted tier.
+            assert route["policies"]["authorization"]["rules"] == [{"allow": "apiKey.agent in []"}]
             route["policies"]["authorization"] = baseline_route["policies"]["authorization"]
 
     assert {key: value for key, value in splunk.items() if key != "policies"} == baseline_splunk

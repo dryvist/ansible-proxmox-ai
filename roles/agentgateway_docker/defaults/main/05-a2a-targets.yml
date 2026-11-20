@@ -3,35 +3,36 @@
 # A2A targets — native Agent2Agent (JSON-RPC) endpoints the gateway fronts on
 # the same proxy port. Each gets a prefix-matched route marked `a2a: {}`, so the
 # gateway parses the JSON-RPC and rewrites the agent card's `url` to point back
-# at itself. Hermes and LangGraph are the A2A-native agents today.
+# at itself.
 #
-# host reaches the LangGraph CONTAINER directly on its API port.
-# tofu_data.containers.langgraph.ip is ALREADY the resolvable FQDN — the same
-# address Traefik uses as its own langgraph backend — so it hits the container
-# directly. Do NOT use langgraph.<sub> (the Traefik ingress alias on :443, a
-# needless double-hop). Bare host:port → HTTP, which is what `langgraph dev`
-# serves (no TLS), so no backendTLS policy. Hermes uses its published service
-# port and a gateway-held bearer token.
+# Derived from the published roster: every agent with an `a2a_url` gets
+# /a2a/<agent>/. The producer computes that URL from the guest's address and a
+# service port, so nothing here names an address. Its host:port is the backend
+# and its path is the backend path prefix. Only plain HTTP is accepted, which is
+# what the native listeners serve; any other scheme fails the render.
+# The backend bearer is the agent's own A2A token: env <AGENT>_A2A_TOKEN, then
+# bao_apps_secrets.<agent>_a2a_token (the hermes_agent role reads the same
+# names). An agent with no token gets a route with no backend credential.
 # =============================================================================
-# Match hermes_agent_a2a_inbound_token's env-first, OpenBao-second lookup for
-# the primary Hermes identity; agentgateway is a separate play from hermes_agent.
-agentgateway_docker_hermes_a2a_token: >-
-  {{ lookup('env', 'HERMES_A2A_TOKEN')
-     | default((bao_apps_secrets | default({})).get('hermes_a2a_token', ''), true)
-     or undef('HERMES_A2A_TOKEN or bao_apps_secrets.hermes_a2a_token is required') }}
-
-agentgateway_docker_a2a_targets:
-  - name: hermes
-    path_prefix: /a2a/hermes/
-    host: >-
-      {{ hostvars['localhost']['tofu_data']['containers']['hermes-agent']['ip'] }}:{{
-      hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_a2a']
-      | mandatory('tofu_data.constants.service_ports.hermes_a2a missing — regenerate tofu_inventory.json') }}
-    bearer_token: "{{ agentgateway_docker_hermes_a2a_token }}"
-  - name: langgraph
-    path_prefix: /a2a/langgraph/
-    backend_path_prefix: /a2a/
-    host: >-
-      {{ hostvars['localhost']['tofu_data']['containers']['langgraph']['ip'] }}:{{
-      hostvars['localhost']['tofu_data']['constants']['service_ports']['langgraph_api']
-      | mandatory('tofu_data.constants.service_ports.langgraph_api missing — regenerate tofu_inventory.json') }}
+agentgateway_docker_a2a_targets: >-
+  {%- set targets = [] -%}
+  {%- for name, agent in (ai_agents | default({})) | dictsort -%}
+    {%- if agent.a2a_url is defined -%}
+      {%- if agent.a2a_url is not match('^http://[^/\\s]+(/\\S*)?$') -%}
+        {{ undef('roster agent ' ~ name ~ ' a2a_url must be an http:// URL') }}
+      {%- endif -%}
+      {%- set key = name | replace('-', '_') -%}
+      {%- set token = lookup('env', (key | upper) ~ '_A2A_TOKEN')
+          | default((bao_apps_secrets | default({})).get(key ~ '_a2a_token', ''), true) -%}
+      {%- set target = {
+          'name': name,
+          'path_prefix': '/a2a/' ~ name ~ '/',
+          'host': agent.a2a_url | regex_replace('^http://([^/]+).*$', '\\1'),
+          'backend_path_prefix': agent.a2a_url | regex_replace('^http://[^/]+', '') or '/'} -%}
+      {%- if token | length > 0 -%}
+        {%- set _ = target.update({'bearer_token': token}) -%}
+      {%- endif -%}
+      {%- set _ = targets.append(target) -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {{ targets }}
