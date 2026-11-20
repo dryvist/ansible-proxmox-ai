@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.59.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.58.1...v2.59.0) (2026-11-20)
+
+
+### Features
+
+* **agentgateway:** enable the projects module on one task sidecar ([#2599](https://github.com/dryvist/ansible-proxmox-ai/issues/2599)) ([67b2b83](https://github.com/dryvist/ansible-proxmox-ai/commit/67b2b837915d073fbaf87d998bc59f7d76b4c4a9))
+
 ## [2.58.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.58.0...v2.58.1) (2026-11-20)
 
 
