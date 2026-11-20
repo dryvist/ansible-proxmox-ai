@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "next_ai_drawio_docker"
 
@@ -59,14 +61,20 @@ def test_inventory_prefetch_and_play_target_the_tagged_service() -> None:
     groups = (REPO_ROOT / "inventory/load_tofu/add_lxc_host_groups.yml.j2").read_text(encoding="utf-8")
     sites = (REPO_ROOT / "playbooks/site.yml").read_text(encoding="utf-8")
     orchestration = (REPO_ROOT / "playbooks/ai-orchestration.yml").read_text(encoding="utf-8")
-    domains = (REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains.yml").read_text(encoding="utf-8")
+    domains = yaml.safe_load(
+        (REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains.yml").read_text(encoding="utf-8")
+    )
+    apps = next(domain for domain in domains["_openbao_secrets_static_domains_fleet"] if domain["name"] == "apps")
+    drawio_paths = [path for path in apps["paths"] if isinstance(path, dict) and path["path"] == "apps/next-ai-drawio"]
 
     assert "['next_ai_drawio_group', 'ai_orchestration_group']" in groups
     assert "if 'next-ai-drawio' in (item.value.tags | default([]))" in groups
     assert "hosts: managed_secrets_group:clickhouse_group:crawl4ai_group:next_ai_drawio_group" in sites
     assert "hosts: next_ai_drawio_group" in orchestration
     assert "name: next_ai_drawio_docker" in orchestration
-    assert "path: apps/next-ai-drawio, optional: true" in domains
+    assert len(drawio_paths) == 1
+    assert drawio_paths[0]["optional"] is True
+    assert drawio_paths[0]["enabled"]
 
 
 def test_http_mcp_bridge_does_not_receive_the_router_key() -> None:
