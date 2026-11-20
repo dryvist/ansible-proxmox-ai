@@ -14,6 +14,9 @@ def test_hermes_0230_release_pins_match_the_tagged_runtime() -> None:
     assert defaults["hermes_agent_slack_bolt_version"] == "1.30.0"
     assert defaults["hermes_agent_slack_sdk_version"] == "3.45.0"
     assert defaults["hermes_agent_slack_aiohttp_version"] == "3.14.5"
+    assert defaults["hermes_agent_mcp_version"] == "2.3.0"
+    assert defaults["hermes_agent_mcp_httpx2_version"] == "2.15.1"
+    assert defaults["hermes_agent_mcp_starlette_version"] == "1.9.0"
     assert defaults["hermes_agent_otlp_sdk_version"] == "1.45.1"
     assert defaults["hermes_agent_firecrawl_py_version"] == "4.53.2"
 
