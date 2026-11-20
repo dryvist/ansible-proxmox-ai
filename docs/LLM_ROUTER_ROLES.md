@@ -10,12 +10,12 @@ Authority is split, and the split follows how often each half changes.
 | **Catalog** — which models exist, their cost, context, credentials | `llm-models.d/` → `config.yaml` | this role, per converge | rarely |
 | **Roles** — which model a caller-facing name resolves to, and its fallback order | the router database | the Admin UI | often |
 
-Callers name a capability — `small`, `medium`, `large`, `embed`, `ocr` — or a
-seeded role such as `judge` or `recorder`, never a physical model, so a routing
-change reaches every client at once with no client edit and no release. The first seed is declared in
+Callers name a capability (`small`, `medium`, `embed`, `ocr`) or a seeded role
+(`large`, `judge`, `recorder`), never a physical model. A routing change reaches
+every client without a client edit or release. The first seed is declared in
 `defaults/main/55-roles.yml`; `tasks/seed-roles.yml` writes a role only when the
 running proxy carries no deployment by that name, so **a converge never
-overwrites an edit made in the UI**. Change a role in the UI, not in git —
+overwrites an edit made in the UI**. Change a role in the UI, not in git;
 editing the seed affects only a proxy that has never carried the role before.
 
 Roles require the database (`llm_router_db_host`) and
@@ -42,9 +42,10 @@ members run in deployment order (local GPU first, then the local fallbacks, then
 the capability's own cloud tail). A request too large for the advertised window
 escapes through `context_window_fallbacks`
 (`defaults/main/37-fallback-entry-points.yml`) rather than walking the ordinary
-chain. Only `judge`, `recorder` and `fast-subagent` are seeded as database roles
-(`defaults/main/55-roles.yml`), and they copy the first member of their
-capability.
+chain. `large` is seeded as a database role: it targets
+`llm_router_primary_serving_model` and falls back to
+`llm_router_primary_model`. The other seeded roles are `judge`, `recorder`,
+`fast-subagent` and `recorder-medium` (`defaults/main/55-roles.yml`).
 
 ## Swap a role
 
