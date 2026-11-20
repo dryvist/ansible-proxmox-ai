@@ -50,15 +50,8 @@ and [daemon configuration](https://github.com/langgenius/dify-plugin-daemon/blob
 
 ## Installation
 
-This role ships in the `ansible-proxmox-ai` repository and is applied via
-`playbooks/site.yml`. No separate installation is required beyond cloning the
-repo and installing collection dependencies:
-
-```bash
-git clone https://github.com/dryvist/ansible-proxmox-ai.git
-cd ansible-proxmox-ai
-ansible-galaxy collection install -r requirements.yml --force
-```
+The role ships in the `ansible-proxmox-ai` repository and is applied via
+`playbooks/site.yml` after `ansible-galaxy collection install -r requirements.yml --force`.
 
 ## Prerequisites
 
