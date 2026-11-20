@@ -25,7 +25,7 @@ def catalog_files(pin, directory="auto-ai-agent"):
             for args in (
                 ["init", "--bare", str(checkout)],
                 ["-C", str(checkout), "-c", "credential.helper=", "fetch", "--depth=1",
-                 "https://github.com/dryvist/ai-llm-prompts.git", revision],
+                 "https://github.com/jpe-ai-agents/ai-llm-prompts.git", revision],
             ):
                 subprocess.run(["git", *args], check=True, capture_output=True, timeout=120)
             cache.write_bytes(subprocess.check_output(

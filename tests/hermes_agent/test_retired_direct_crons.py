@@ -196,7 +196,7 @@ def test_unmanaged_burst_is_not_paused_when_no_store_lists_exact_name():
 # straight through unmodified. Whether a converted job's own prompt text still
 # asks for a full report is therefore only checkable by reading that prompt,
 # which for catalog-sourced (prompt_file) jobs lives in the external
-# dryvist/ai-llm-prompts repo, not here.
+# jpe-ai-agents/ai-llm-prompts repo, not here.
 
 
 if __name__ == "__main__":
