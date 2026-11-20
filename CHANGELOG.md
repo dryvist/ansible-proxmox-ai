@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.58.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.57.0...v2.58.0) (2026-11-20)
+
+
+### Features
+
+* **dify_docker:** limit MCP publishing to named catalog apps ([#2591](https://github.com/dryvist/ansible-proxmox-ai/issues/2591)) ([f827a19](https://github.com/dryvist/ansible-proxmox-ai/commit/f827a199f61d7f503898b5386f4802dbe5223990))
+* **drawio:** deploy Next AI Draw.io with LiteLLM ([#2593](https://github.com/dryvist/ansible-proxmox-ai/issues/2593)) ([d6e8534](https://github.com/dryvist/ansible-proxmox-ai/commit/d6e85343e54e3cc9c9e21c901823b997ff0efbf5))
+* **hermes:** label each direct cron's router requests with its job name ([#2582](https://github.com/dryvist/ansible-proxmox-ai/issues/2582)) ([0ed05d5](https://github.com/dryvist/ansible-proxmox-ai/commit/0ed05d53ae685ee685491a80d9c5ba2301c3dc1c))
+* **llm_router:** rebuild named roles in initial mode ([#2586](https://github.com/dryvist/ansible-proxmox-ai/issues/2586)) ([ffb5ce2](https://github.com/dryvist/ansible-proxmox-ai/commit/ffb5ce287304947963ce9baaf539cd420db3fe0d))
+* **llm_router:** seed the fast-subagent role on the small capability ([#2587](https://github.com/dryvist/ansible-proxmox-ai/issues/2587)) ([a9bc427](https://github.com/dryvist/ansible-proxmox-ai/commit/a9bc4270ed4f28d06a4b553811cd047b6a4d6e24))
+* **router:** upgrade LiteLLM for MCP session persistence ([#2592](https://github.com/dryvist/ansible-proxmox-ai/issues/2592)) ([656e40e](https://github.com/dryvist/ansible-proxmox-ai/commit/656e40ec70938deba71e4438afedff5f3bfe2bad))
+
+
+### Bug Fixes
+
+* **hermes_agent:** add a UTC suffix to retired profile directories ([#2589](https://github.com/dryvist/ansible-proxmox-ai/issues/2589)) ([3cee357](https://github.com/dryvist/ansible-proxmox-ai/commit/3cee3579bb467a8a47369e1e323de4e78e8af210))
+* **hermes_agent:** move leftover profile directories off an identity that runs no profiles ([#2588](https://github.com/dryvist/ansible-proxmox-ai/issues/2588)) ([63a2f9c](https://github.com/dryvist/ansible-proxmox-ai/commit/63a2f9c4a273cdade95fc0c6dfa75e43b27bfb83))
+* **hermes_agent:** tag each profile log input with its profile name ([#2585](https://github.com/dryvist/ansible-proxmox-ai/issues/2585)) ([c26ca9f](https://github.com/dryvist/ansible-proxmox-ai/commit/c26ca9f1f5fca6e4e213cfe1495def660e366a9b))
+* **hermes_agent:** tag each profile's log input with its profile name ([c26ca9f](https://github.com/dryvist/ansible-proxmox-ai/commit/c26ca9f1f5fca6e4e213cfe1495def660e366a9b))
+* **llm_router:** allow each priority team the MCP servers its keys declare ([#2579](https://github.com/dryvist/ansible-proxmox-ai/issues/2579)) ([a9a05af](https://github.com/dryvist/ansible-proxmox-ai/commit/a9a05aff539722616da631238821d4a5a960cfc3))
+
 ## [2.57.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.56.0...v2.57.0) (2026-11-20)
 
 
