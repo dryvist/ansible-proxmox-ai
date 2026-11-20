@@ -5,16 +5,11 @@
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     _app_agent_read_allowlist_ids: [64]
-    tofu_data:
+    _tofu_fixture:
       constants:
         service_ports:
           llm_router_api: 4000
-    bao_local_llm_secrets:
-      ZAMMAD_MCP_URL: test-zammad-url
-      ZAMMAD_MCP_TOKEN: test-zammad-token
-      VIKUNJA_MCP_URL: fixture-vikunja-url
-      VIKUNJA_MCP_TOKEN_RW: fixture-vikunja-interactive-token
-      SLACK_BOT_TOKEN: test-slack-token
+          next_ai_drawio_mcp: 3071
     openbao_secrets_by_domain:
       app-agent-vikunja-read:
         VIKUNJA_AGENT_READ_TOKEN: fixture-vikunja-read-token
@@ -24,6 +19,26 @@
       app-agent-zammad-write:
         ZAMMAD_AGENT_WRITE_TOKEN: fixture-zammad-write-token
   tasks:
+    - name: Add the fixture guest selected by the production inventory tag
+      ansible.builtin.add_host:
+        name: next-ai-drawio-fixture
+        groups: next_ai_drawio_group
+        container_ip: 192.0.2.55
+
+    - name: Set isolated OpenBao fixtures for the server and app keys
+      ansible.builtin.set_fact:
+        tofu_data: "{{ _tofu_fixture }}"
+        llm_router_mcp_next_ai_drawio_port_ready: true
+        bao_apps_secrets:
+          next_ai_drawio_llm_router_key: fixture-next-ai-drawio-key
+        bao_local_llm_secrets:
+          ZAMMAD_MCP_URL: test-zammad-url
+          ZAMMAD_MCP_TOKEN: test-zammad-token
+          VIKUNJA_MCP_URL: fixture-vikunja-url
+          VIKUNJA_MCP_TOKEN_RW: fixture-vikunja-interactive-token
+          SLACK_BOT_TOKEN: test-slack-token
+      no_log: true
+
     - name: Load the router defaults
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
@@ -46,6 +61,20 @@
         _matrix_file: "{{ lookup('ansible.builtin.file', _role_dir ~ '/files/app-agents/MATRIX.md') }}"
       no_log: true
 
+    - name: Simulate an unavailable Draw.io listener
+      ansible.builtin.set_fact:
+        llm_router_mcp_next_ai_drawio_port_ready: false
+
+    - name: Render MCP servers with the optional Draw.io server disabled
+      ansible.builtin.set_fact:
+        _mcp_servers_disabled: >-
+          {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/mcp-servers.yaml.j2')
+             | from_yaml }}
+
+    - name: Restore Draw.io listener readiness for the remaining assertions
+      ansible.builtin.set_fact:
+        llm_router_mcp_next_ai_drawio_port_ready: true
+
     - name: Keep credentials in the OpenBao projection and root-only unit environment
       ansible.builtin.assert:
         quiet: true
@@ -56,10 +85,13 @@
           - "'LLM_ROUTER_ZAMMAD_URL=' in _environment_template"
           - "'LLM_ROUTER_ZAMMAD_HTTP_TOKEN=' in _environment_template"
           - "'LLM_ROUTER_SLACK_BOT_TOKEN=' in _environment_template"
+          - "'LLM_ROUTER_NEXT_AI_DRAWIO_MCP_API_KEY=' not in _environment_template"
           - "'LITELLM_ENABLE_MCP_STDIO=true' in _environment_template"
           - "'LITELLM_ENABLE_MCP_STDIO' not in _config_template"
           - "'test-zammad-token' not in (_mcp_servers | to_json)"
           - "'test-slack-token' not in (_mcp_servers | to_json)"
+          - "'fixture-next-ai-drawio-key' not in (_mcp_servers | to_json)"
+          - "'drawio' not in (_mcp_servers_disabled.mcp_servers | to_json)"
         fail_msg: The MCP credentials or stdio switch escaped their process environment boundary.
       no_log: true
 
@@ -86,6 +118,18 @@
           - _mcp_servers.mcp_servers.slack.env.SLACK_BOT_TOKEN == 'os.environ/LLM_ROUTER_SLACK_BOT_TOKEN'
           - _mcp_servers.mcp_servers.slack.env.SLACK_TEAM_ID == 'os.environ/LLM_ROUTER_SLACK_TEAM_ID'
           - _mcp_servers.mcp_servers.slack.args == ['--yes', '@modelcontextprotocol/server-slack@2025.4.25']
+          - _mcp_servers.mcp_servers.drawio.transport == 'http'
+          - _mcp_servers.mcp_servers.drawio.server_id == 'drawio'
+          - _mcp_servers.mcp_servers.drawio.url == 'http://192.0.2.55:3071/mcp'
+          - _mcp_servers.mcp_servers.drawio.auth_type == 'none'
+          - _mcp_servers.mcp_servers.drawio.auth_value is not defined
+          - _mcp_servers.mcp_servers.drawio.static_headers is not defined
+          - _mcp_servers.mcp_servers.drawio.allow_all_keys == false
+          - >-
+            _mcp_servers.mcp_servers.drawio.allowed_tools
+            == ['start_session', 'create_new_diagram', 'edit_diagram', 'get_diagram',
+                'get_drawing_guide', 'get_shape_library']
+          - "'stdio' != _mcp_servers.mcp_servers.drawio.transport"
         fail_msg: MCP server config did not match the pinned, read-only contract.
 
     - name: Assert app servers match the matrix
@@ -151,6 +195,16 @@
           - _slack_check.no_log == true
           - "'llm_router_mcp_slack_allowed_tools' in (_slack_check.until | to_json)"
           - "'json.tools' in (_slack_check.until | to_json)"
+          - _drawio_check['ansible.builtin.uri'].get('method', 'GET') == 'GET'
+          - "'/mcp-rest/tools/list?server_id=' in _drawio_check['ansible.builtin.uri'].url"
+          - "'llm_router_mcp_next_ai_drawio_server_id' in _drawio_check['ansible.builtin.uri'].url"
+          - _drawio_check.no_log == true
+          - "'llm_router_mcp_next_ai_drawio_allowed_tools' in (_drawio_check.until | to_json)"
+          - "'llm_router_next_ai_drawio_router_key' in (_required_key_task | to_json)"
+          - _required_key_task.no_log == true
+          - "'wait_for' in (_port_probe_task | to_json)"
+          - "'llm_router_mcp_next_ai_drawio_activation_enabled' in (_port_probe_task.when | to_json)"
+          - "'llm_router_mcp_next_ai_drawio_port_ready' in (_port_ready_task | to_json)"
         fail_msg: The restart-time MCP tools/list check stopped enforcing the exact read-only tool contract.
       vars:
         _zammad_check: >-
@@ -159,8 +213,21 @@
         _slack_check: >-
           {{ _verify_tasks | selectattr('name', 'equalto',
              'Verify the Slack MCP server exposes exactly its configured tools') | first }}
+        _drawio_check: >-
+          {{ _verify_tasks | selectattr('name', 'equalto',
+             'Verify the Next AI Draw.io MCP server exposes exactly its configured tools') | first }}
+        _required_key_task: >-
+          {{ _main_tasks | selectattr('name', 'equalto',
+             'Require the Draw.io router key before the app guest is served') | first }}
+        _port_probe_task: >-
+          {{ _main_tasks | selectattr('name', 'equalto',
+             'Probe the Draw.io MCP listener from the router network path') | first }}
+        _port_ready_task: >-
+          {{ _main_tasks | selectattr('name', 'equalto',
+             'Record Draw.io MCP listener readiness for registration') | first }}
 
-- name: Default-deny router keys and grant MCP access only to Hermes profiles
+
+- name: Default-deny router keys and grant Draw.io MCP access only to explicit callers
   hosts: localhost
   gather_facts: false
   vars_files:
@@ -172,15 +239,13 @@
       constants:
         service_ports:
           llm_router_api: 4000
+          next_ai_drawio_mcp: 3071
           llm_fast_api: 10434
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
-    bao_apps_secrets:
-      hermes_default_llm_router_key: sk-fixture-hermes-default
-      hermes_review_llm_router_key: sk-fixture-hermes-review
-    bao_local_llm_secrets:
-      SLACK_BOT_TOKEN: test-slack-token
+    llm_router_mcp_next_ai_drawio_activation_enabled: true
+    llm_router_mcp_next_ai_drawio_port_ready: true
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: ""
     llm_router_subdomain: ""
@@ -199,6 +264,19 @@
     _llm_router_key_scope_all: [small]
     _llm_router_directly_callable_ladder_names: []
   tasks:
+    - name: Set isolated OpenBao fixtures for router key projections
+      ansible.builtin.set_fact:
+        bao_apps_secrets:
+          hermes_default_llm_router_key: sk-fixture-hermes-default
+          hermes_review_llm_router_key: sk-fixture-hermes-review
+          next_ai_drawio_llm_router_key: fixture-next-ai-drawio-key
+          claude_code_llm_router_key: fixture-claude-code-key
+          codex_llm_router_key: fixture-codex-key
+          agy_llm_router_key: fixture-agy-key
+        bao_local_llm_secrets:
+          SLACK_BOT_TOKEN: test-slack-token
+      no_log: true
+
     - name: Load the role defaults including MCP and key projections
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
@@ -213,10 +291,21 @@
         _hermes_profile_keys: "{{ _llm_router_hermes_profile_keys }}"
       no_log: true
 
+    - name: Select only the caller keys explicitly granted Draw.io access
+      ansible.builtin.set_fact:
+        _drawio_caller_keys: >-
+          {{ _llm_router_target_virtual_keys
+             | selectattr('alias', 'in', ['claude-code', 'codex', 'agy']) | list }}
+        _drawio_app_key: >-
+          {{ _llm_router_static_virtual_keys
+             | selectattr('alias', 'equalto', 'next-ai-drawio') | list }}
+      no_log: true
+
     - name: Add a non-Hermes key to the production key-scope projection fixture
       ansible.builtin.set_fact:
         _llm_router_declared_virtual_keys: >-
-          {{ _hermes_profile_keys + [{'alias': 'non-mcp', 'value': '', 'models': ['small']}] }}
+          {{ _hermes_profile_keys + _drawio_caller_keys + _drawio_app_key
+             + [{'alias': 'non-mcp', 'value': '', 'models': ['small']}] }}
       no_log: true
 
     - name: Refresh cached router projections after fixture input changes [mcp-gateway-contract-1]
@@ -256,6 +345,33 @@
           Expected default deny for non-Hermes keys and server-only grants for
           Hermes profile keys.
 
+    - name: Assert only the three named workstation keys receive Draw.io MCP access
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_mcp_next_ai_drawio_enabled | bool
+          - >-
+            (_projected_keys | selectattr('alias', 'equalto', 'next-ai-drawio') | first)
+            .allowed_classes == _llm_router_consumer_classes_all
+          - >-
+            (_projected_keys | selectattr('alias', 'equalto', 'next-ai-drawio') | first)
+            .models_authoritative | bool
+          - >-
+            (_projected_keys | selectattr('alias', 'equalto', 'next-ai-drawio') | first)
+            .models == _llm_router_key_scope_chat_without_judge
+          - >-
+            _projected_keys | selectattr('alias', 'in', ['claude-code', 'codex', 'agy'])
+            | map(attribute='object_permission.mcp_servers') | map('intersect', ['drawio'])
+            | map('length') | list == [1, 1, 1]
+          - >-
+            (_projected_keys | selectattr('alias', 'equalto', 'non-mcp') | first)
+            .object_permission.mcp_servers == ['no-mcp-servers']
+          - >-
+            (_projected_keys | selectattr('alias', 'match', '^hermes-') | list
+             | map(attribute='object_permission.mcp_servers') | flatten
+             | select('equalto', 'drawio') | list | length) == 0
+        fail_msg: The Draw.io MCP grant escaped its three explicit workstation callers or its app key gained MCP access.
+
 - name: Compare MCP caller permissions as part of existing drift checks
   hosts: localhost
   gather_facts: false
@@ -290,3 +406,90 @@
           - _llm_router_drift_messages[0].item == 'key alias mcp-drift-key flags object_permission'
           - _llm_router_drift_messages[0].git_file == 'roles/llm_router/defaults/main/56-virtual-keys.yml'
         fail_msg: MCP permission drift did not use the standard sanitized key notification.
+
+- name: Verify the Draw.io app key spans chat classes and excludes non-chat identities
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _chat_class_fixtures:
+      - class: local
+        client_model_id: fixture-local
+        upstream_model_id: physical-local
+        route_group: fixture-local
+        tier: local-large
+        serving_role: primary
+      - class: sub
+        client_model_id: fixture-sub
+        upstream_model_id: physical-sub
+        route_group: fixture-sub
+        tier: opencode
+        subscription: true
+      - class: paid-zdr
+        client_model_id: fixture-paid-zdr
+        upstream_model_id: physical-paid-zdr
+        route_group: fixture-paid-zdr
+        tier: openrouter
+        zero_data_retention: true
+      - class: free
+        client_model_id: fixture-free
+        upstream_model_id: physical-free
+        route_group: fixture-free
+        tier: openrouter
+        in_free_route: true
+      - class: retains
+        client_model_id: fixture-retains
+        upstream_model_id: physical-retains
+        route_group: fixture-retains
+        tier: openrouter
+        zero_data_retention: false
+    _non_chat_fixtures:
+      - client_model_id: fixture-embedding
+        route_group: fixture-embed
+        tier: light
+        embedding: true
+        stable_aliases: [fixture-embedding-alias]
+      - client_model_id: fixture-reranker
+        route_group: fixture-reranker
+        tier: light
+        tags: [non-chat]
+    _fixture_chat_names: "{{ _chat_class_fixtures | map(attribute='route_group') | list }}"
+    _fixture_non_chat_names: [fixture-embedding, fixture-embed, fixture-embedding-alias, fixture-reranker]
+    _fixture_physical_names: [physical-local, physical-sub, physical-paid-zdr, physical-free, physical-retains]
+  tasks:
+    - name: Load the production router key definitions
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Install class and modality fixtures into the shared catalog projection
+      ansible.builtin.set_fact:
+        llm_router_registry_enabled: "{{ _chat_class_fixtures + _non_chat_fixtures }}"
+        llm_router_model_group_aliases:
+          fixture-embedding-alias: fixture-embed
+        _llm_router_key_scope_without_judge: >-
+          {{ _fixture_chat_names + _fixture_non_chat_names }}
+        bao_apps_secrets:
+          next_ai_drawio_llm_router_key: fixture-next-ai-drawio-key
+      no_log: true
+
+    - name: Resolve the production non-chat exclusion and app-key scope
+      ansible.builtin.set_fact:
+        _drawio_non_chat_names: "{{ _llm_router_non_chat_model_names }}"
+        _drawio_chat_scope: "{{ _llm_router_key_scope_chat_without_judge }}"
+        _drawio_key: >-
+          {{ _llm_router_static_virtual_keys
+             | selectattr('alias', 'equalto', 'next-ai-drawio') | first }}
+      no_log: true
+
+    - name: Keep every routed chat class while dropping embeddings, rerankers, and upstream ids
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (_chat_class_fixtures | map(attribute='class') | unique | list | length) >= 3
+          - _drawio_key.models_authoritative | bool
+          - _drawio_key.models == _drawio_chat_scope
+          - _fixture_chat_names | difference(_drawio_key.models) | length == 0
+          - _fixture_non_chat_names | intersect(_drawio_key.models) | length == 0
+          - _fixture_physical_names | intersect(_drawio_key.models) | length == 0
+          - _drawio_non_chat_names | intersect(_drawio_key.models) | length == 0
+        fail_msg: The Draw.io chat selector key widened beyond registry-backed chat models or omitted a router class.
