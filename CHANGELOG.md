@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.57.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.56.0...v2.57.0) (2026-11-20)
+
+
+### Features
+
+* **agent:** autonomous opencode-local run j-f0bc49813309d0f4 ([#2546](https://github.com/dryvist/ansible-proxmox-ai/issues/2546)) ([60a48d7](https://github.com/dryvist/ansible-proxmox-ai/commit/60a48d769d5f02cb56e1d0cf36b6d4b41a8eb21d))
+* **agent:** opencode-local run j-f0bc49813309d0f4 ([60a48d7](https://github.com/dryvist/ansible-proxmox-ai/commit/60a48d769d5f02cb56e1d0cf36b6d4b41a8eb21d))
+* **dify_docker:** create and store the workspace dataset API key ([#2570](https://github.com/dryvist/ansible-proxmox-ai/issues/2570)) ([7d9820f](https://github.com/dryvist/ansible-proxmox-ai/commit/7d9820f2786275b700676c1f0ea4642c7c579abe))
+* **hermes_agent:** add the vikunja-pm profile on the router Vikunja write tier ([#2551](https://github.com/dryvist/ansible-proxmox-ai/issues/2551)) ([e2b3a8b](https://github.com/dryvist/ansible-proxmox-ai/commit/e2b3a8b17b35c776ac3db26596eecac21eb47005))
+* **hermes_agent:** mark isolated Hermes identities by guest tag ([#2556](https://github.com/dryvist/ansible-proxmox-ai/issues/2556)) ([c6bcc52](https://github.com/dryvist/ansible-proxmox-ai/commit/c6bcc525cc2238280751ce1c78d867efc1d52d1d))
+* **hermes_agent:** serve profiles that declare a2a on the gateway A2A listener ([#2550](https://github.com/dryvist/ansible-proxmox-ai/issues/2550)) ([58738c8](https://github.com/dryvist/ansible-proxmox-ai/commit/58738c81ee9065a25903c734aa0594d717a34965))
+* **hermes_agent:** Splunk triage seen map, two signature rules and per-job top_n ([#2552](https://github.com/dryvist/ansible-proxmox-ai/issues/2552)) ([5533c50](https://github.com/dryvist/ansible-proxmox-ai/commit/5533c50caca74dedbabfd25bb4b4928fe268e3f5))
+* **llm_router:** cap the Qwen preview at 9 rpm with a local medium fallback ([#2568](https://github.com/dryvist/ansible-proxmox-ai/issues/2568)) ([6f493db](https://github.com/dryvist/ansible-proxmox-ai/commit/6f493db7ed112430c3baa1ee45660ae8bb62c99d))
+* **llm_router:** let the public sandbox key call the sandbox-only preview model ([#2541](https://github.com/dryvist/ansible-proxmox-ai/issues/2541)) ([a582b40](https://github.com/dryvist/ansible-proxmox-ai/commit/a582b40cce9a761d34a05c0b4c9fcd293ad7a377))
+* **llm_router:** log cached prompt tokens per request ([#2575](https://github.com/dryvist/ansible-proxmox-ai/issues/2575)) ([e7023fb](https://github.com/dryvist/ansible-proxmox-ai/commit/e7023fb75ce0c15ce1fc061eeb8249397890e004))
+* **squid:** give each isolated Hermes guest its own proxy allowlist ([#2560](https://github.com/dryvist/ansible-proxmox-ai/issues/2560)) ([bc2f5bc](https://github.com/dryvist/ansible-proxmox-ai/commit/bc2f5bc01774b2512ef9fd813a73be9d927e3452))
+* **vllm_serving:** return prompt token details in usage ([#2566](https://github.com/dryvist/ansible-proxmox-ai/issues/2566)) ([bae5b9c](https://github.com/dryvist/ansible-proxmox-ai/commit/bae5b9c4b07607f61c3550b09baf2ac003edf4d6))
+
+
+### Bug Fixes
+
+* **hermes_agent:** keep Hermes-owned config.yaml keys across converges ([#2554](https://github.com/dryvist/ansible-proxmox-ai/issues/2554)) ([4d8d4d1](https://github.com/dryvist/ansible-proxmox-ai/commit/4d8d4d179c0f914faf26357dbd3626ea68759fe5))
+* **hermes_agent:** pass the job name at a stale cron wall-clock call site ([#2565](https://github.com/dryvist/ansible-proxmox-ai/issues/2565)) ([4e52d37](https://github.com/dryvist/ansible-proxmox-ai/commit/4e52d370586926382168dce684a39af9668dbe1a))
+* **hermes_agent:** skip checkout-sourced skill copies in a check run that moves the checkout ([#2559](https://github.com/dryvist/ansible-proxmox-ai/issues/2559)) ([b160db7](https://github.com/dryvist/ansible-proxmox-ai/commit/b160db730be10b1e440f2fb700f2dc93e7f6d6e9))
+* **hermes_agent:** turn off hermes-studio MCP server injection into profile configs ([#2553](https://github.com/dryvist/ansible-proxmox-ai/issues/2553)) ([c201346](https://github.com/dryvist/ansible-proxmox-ai/commit/c201346e71b0f8ed3615481abfcb2059984e85f3))
+* **hermes_agent:** watch only the crons the identity owns ([#2562](https://github.com/dryvist/ansible-proxmox-ai/issues/2562)) ([349774a](https://github.com/dryvist/ansible-proxmox-ai/commit/349774a28a99e00a269a175000ee808e08a0c53a))
+* **hermes:** enable the tracker-reporter path, profile and jobs from one variable ([#2544](https://github.com/dryvist/ansible-proxmox-ai/issues/2544)) ([220907b](https://github.com/dryvist/ansible-proxmox-ai/commit/220907b028fec30d5cadefe9b6eed2845a73d4f1))
+* **hermes:** gate the tracker-reporter key path, profile and jobs on one switch ([220907b](https://github.com/dryvist/ansible-proxmox-ai/commit/220907b028fec30d5cadefe9b6eed2845a73d4f1))
+* **hermes:** install the pinned mcp extra into the Hermes venv ([#2578](https://github.com/dryvist/ansible-proxmox-ai/issues/2578)) ([eb2f247](https://github.com/dryvist/ansible-proxmox-ai/commit/eb2f247673638e8a6136e2162046d121f6053d6f))
+* **llm_gpu_serving:** return prompt token details in vLLM usage ([#2572](https://github.com/dryvist/ansible-proxmox-ai/issues/2572)) ([1c4e26d](https://github.com/dryvist/ansible-proxmox-ai/commit/1c4e26dc33929e53d7c67039accb1f5a83dfa7e2))
+* **llm_model_campaign:** end a lane-busy latency gate trip as a clean skip ([ae5e7e4](https://github.com/dryvist/ansible-proxmox-ai/commit/ae5e7e4ede00638e938c77d3e2abc3c3503ce85c))
+* **llm_router:** close the read-tier probe stray task instead of deleting it ([#2549](https://github.com/dryvist/ansible-proxmox-ai/issues/2549)) ([76f1a51](https://github.com/dryvist/ansible-proxmox-ai/commit/76f1a51aa88b69e4f93e28ab82e48498b77aa9f5))
+* **llm_router:** close the read-tier probe's stray task instead of deleting it ([76f1a51](https://github.com/dryvist/ansible-proxmox-ai/commit/76f1a51aa88b69e4f93e28ab82e48498b77aa9f5))
+* **llm_router:** drop the go-glm-5.2 registry entry ([#2574](https://github.com/dryvist/ansible-proxmox-ai/issues/2574)) ([73845f8](https://github.com/dryvist/ansible-proxmox-ai/commit/73845f8a8f841774f35b729e5a5f8444e84e6f36))
+* **nixos_deploy:** run the controller-side rebuild with the playbook's interpreter ([#2547](https://github.com/dryvist/ansible-proxmox-ai/issues/2547)) ([6f01054](https://github.com/dryvist/ansible-proxmox-ai/commit/6f01054c1342972291917fdc6a6c4b28746b0431))
+* **openbao_secrets:** read a roster agent's ai/&lt;agent&gt; leaf as optional ([#2573](https://github.com/dryvist/ansible-proxmox-ai/issues/2573)) ([df3503e](https://github.com/dryvist/ansible-proxmox-ai/commit/df3503e054c70a30aac79561b247fdc54c5bcbd8))
+
 ## [2.56.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.55.0...v2.56.0) (2026-11-16)
 
 
