@@ -1,0 +1,138 @@
+---
+# The small capability prefers the dedicated 16 GB deployment and falls back
+# to the primary GPU deployment. Both registry entries render into the same
+# LiteLLM group under `order`: the 16 GB deployment at order 1
+# (llm-models.d/30-local-gpu.yml) and the GPU deployment at order 2
+# (llm-models.d/60-gpu.yml), so the router reaches the 16 GB guest first and
+# retries onto the GPU guest when it is busy or cooling down.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_small_prefers_16gb_render.yml -i localhost, -c local
+- name: Verify the small capability prefers the 16 GB deployment over the GPU deployment
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - policy_fixture.yml
+    - ../../inventory/group_vars/all/02-gpu-accelerator.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets: {}
+    bao_local_llm_secrets: {}
+    llm_router_subdomain: "pve.example.test"
+    llm_large_serving_host: llm-large
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    llm_router_llm_gpu_base_url: "http://localhost:10434/v1"
+    ai_router_request_timeout_seconds: 2400
+    ai_router_retry_after_seconds: 2
+    hermes_goal_judge_model: judge
+    llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_light_base_url: "http://localhost:10434/v1"
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+    _pref_source: >-
+      {{ llm_router_vllm_models
+         | selectattr('client_model_id', 'equalto', 'qwen3.5-9b-4080') | first }}
+  tasks:
+    - name: Add a synthetic inventory GPU member
+      ansible.builtin.add_host:
+        name: llm-gpu-fixture
+        groups: llm_gpu_group
+        ansible_connection: local
+        llm_gpu_accelerator: "{{ llm_gpu_accelerator_primary }}"
+
+    - name: Load role defaults and registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Add a synthetic 16 GB small-lane member
+      ansible.builtin.add_host:
+        name: LLM-Vllm-Fixture-4080
+        groups: llm_vllm_group
+        ansible_connection: local
+        llama_cpp_parallel: 2
+
+    - name: Enable the 16 GB lane, its probe, and the primary GPU small profile
+      ansible.builtin.set_fact:
+        llm_router_4080_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_router_studio_precheck_passed: true
+        llm_router_gpu_profiles_enabled: true
+        llm_active_profile: small
+
+    - name: Load registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Refresh cached router projections after fixture input changes
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render the small capability with both of its local deployments
+      ansible.builtin.set_fact:
+        _small_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Both small deployments project into the same capability
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_small_model == 'small'
+          - _pref_source.route_group == llm_router_small_model
+          - _pref_source.order | int == 1
+          - llm_router_gpu_models | length == 1
+          - llm_router_gpu_models[0].profile == 'small'
+          - llm_router_gpu_models[0].route_group == llm_router_small_model
+          - llm_router_gpu_models[0].order | int == 2
+        fail_msg: >-
+          small capability projections vllm={{ _pref_source }}
+          gpu={{ llm_router_gpu_models }}
+
+    - name: The 16 GB deployment renders first and the GPU deployment as its fallback
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _small_members | length == 2 * llm_router_priority_tiers | length
+          - _small_models | list | sort == [_gpu_model, _pref_model] | sort
+          - _pref_deployments | length == llm_router_priority_tiers | length
+          - _pref_deployments | map(attribute='litellm_params.order') | unique | list == [1]
+          - _pref_base_deployments | length == 1
+          - _pref_base_deployments[0].litellm_params.api_base == llm_router_llm_vllm_base_url
+          - _pref_base_deployments[0].litellm_params.max_parallel_requests | int == 2
+          - _fallback_deployments | length == llm_router_priority_tiers | length
+          - _fallback_deployments | map(attribute='litellm_params.order') | unique | list == [2]
+          - _pref_deployments | map(attribute='litellm_params.order') | min
+            < _fallback_deployments | map(attribute='litellm_params.order') | min
+          - _small_members | map(attribute='litellm_params.order') | min | int == 1
+          - (_small_members | selectattr('litellm_params.order', 'gt', 1)
+             | map(attribute='litellm_params.order') | min | int) == 2
+        fail_msg: "small capability members={{ _small_members }}"
+      vars:
+        _small_members: >-
+          {{ _small_config.model_list
+             | selectattr('model_name', 'equalto', llm_router_small_model) | list }}
+        _small_models: >-
+          {{ _small_members | map(attribute='litellm_params.model') | unique }}
+        _pref_model: >-
+          {{ _pref_source.litellm_model_name
+             | default(_pref_source.provider ~ '/' ~ _pref_source.upstream_model_id) }}
+        _gpu_model: >-
+          {{ llm_router_gpu_models[0].litellm_model_name
+             | default(llm_router_gpu_models[0].provider
+                       ~ '/' ~ llm_router_gpu_models[0].upstream_model_id) }}
+        _pref_deployments: >-
+          {{ _small_members
+             | selectattr('litellm_params.model', 'equalto', _pref_model) | list }}
+        _pref_base_deployments: >-
+          {{ _pref_deployments | selectattr('litellm_params.tags', 'contains', 'default') | list }}
+        _fallback_deployments: >-
+          {{ _small_members
+             | selectattr('litellm_params.model', 'equalto', _gpu_model) | list }}
