@@ -54,6 +54,8 @@ def test_the_publish_is_included_after_the_rotation_with_three_conditions():
         "dify_docker_provision_model_provider | bool",
         "dify_docker_import_agent_dsls | bool",
         "dify_docker_publish_agent_mcp | bool",
+        "dify_docker_publish_agent_mcp_apps | length == 0 "
+        "or dify_docker_agent_dsl.name in dify_docker_publish_agent_mcp_apps",
     ]
     # The loop walks the built list, so dify_docker_agent_dsl_select slices this step too.
     assert include["loop"] == "{{ dify_docker_agent_dsls | default([]) }}"
@@ -66,6 +68,7 @@ def test_the_defaults_define_the_flag_and_the_leaf_path():
     defaults = load_defaults()
 
     assert defaults["dify_docker_publish_agent_mcp"] is False
+    assert defaults["dify_docker_publish_agent_mcp_apps"] == []
     assert defaults["dify_docker_agent_mcp_path"] == (
         "{{ dify_docker_openbao_path }}/agent-mcp/{{ dify_docker_dsl_name }}"
     )
@@ -307,3 +310,24 @@ def test_callers_share_the_helpers_and_mcp_access_log_is_off():
     # log any request to it.
     body = NGINX.read_text(encoding="utf-8").split("location /mcp {", 1)[1].split("\n    }", 1)[0]
     assert "access_log off;" in body
+
+
+def test_the_publish_allowlist_limits_the_apps_and_empty_publishes_all():
+    condition = _task(_yaml(MAIN), INCLUDE_NAME)["when"][3]
+
+    def publishes(name, apps):
+        return _render(
+            condition, dify_docker_agent_dsl={"name": name}, dify_docker_publish_agent_mcp_apps=apps
+        ) == "True"
+
+    assert publishes("vikunja-clerk", [])
+    assert publishes("pr-keeper", [])
+    assert publishes("vikunja-clerk", ["vikunja-clerk"])
+    assert not publishes("pr-keeper", ["vikunja-clerk"])
+
+
+def test_the_dify_group_publishes_only_the_clerk():
+    group = yaml.safe_load((ROOT / "inventory/group_vars/dify_group.yml").read_text())
+
+    assert group["dify_docker_publish_agent_mcp"] is True
+    assert group["dify_docker_publish_agent_mcp_apps"] == ["vikunja-clerk"]
