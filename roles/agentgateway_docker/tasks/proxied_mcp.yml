@@ -1,0 +1,86 @@
+---
+# Proxied remote MCP servers: validate every item, then keep one backend
+# credential file per target, owned by root and readable by the gateway group.
+# The route itself renders in config.yaml.j2.
+- name: Validate each proxied MCP target
+  ansible.builtin.assert:
+    that:
+      - item.name | default('') is string
+      - item.name | default('') is match('^[a-z0-9][a-z0-9_-]*$')
+      - item.name not in agentgateway_docker_proxied_reserved_names
+      - item.host | default('') is string
+      - item.host | default('') is match('^https?://[^\s]+$')
+      - item.backend_token | default('') | trim | length > 0
+      - item.inbound_token | default('') | trim | length >= 32
+      - item.allowed_tools | default([]) is sequence
+      - item.allowed_tools | default([]) is not string
+      - item.allowed_tools | default([]) | length > 0
+      - item.allowed_tools | select('match', '^[A-Za-z0-9_.-]+$') | list | length == item.allowed_tools | length
+    fail_msg: >-
+      Proxied MCP target '{{ item.name | default('(unnamed)') }}' needs a path-safe name that no other
+      route uses, an http(s) host, a backend credential, an inbound credential of at least 32 characters,
+      and a non-empty allowed_tools list of plain tool names.
+  loop: "{{ agentgateway_docker_proxied_mcp_targets }}"
+  loop_control:
+    label: "{{ item.name | default('(unnamed)') }}"
+  vars:
+    agentgateway_docker_proxied_reserved_names: >-
+      {{ (agentgateway_docker_mcp_targets | map(attribute='name') | list)
+         + ['memory', 'docs', 'vikunja', 'vikunja-clerk', 'nautobot', 'hindsight', 'a2a',
+            agentgateway_docker_facade_path | regex_replace('^/', '')] }}
+  # The failure message names the target only; no_log keeps the credentials out of the loop output.
+  no_log: true
+
+- name: Validate that proxied MCP target names are unique
+  ansible.builtin.assert:
+    that:
+      - agentgateway_docker_proxied_names | length == agentgateway_docker_proxied_names | unique | list | length
+    fail_msg: "Proxied MCP target names must be unique: {{ agentgateway_docker_proxied_names | join(', ') }}"
+  vars:
+    agentgateway_docker_proxied_names: "{{ agentgateway_docker_proxied_mcp_targets | map(attribute='name') | list }}"
+
+- name: Create the proxied MCP credential directory
+  ansible.builtin.file:
+    path: "{{ agentgateway_docker_proxied_mcp_secrets_dir }}"
+    state: directory
+    owner: root
+    # Readable by the gateway's nonroot group only, as config.yaml is in main.yml.
+    group: "{{ agentgateway_docker_container_gid }}"
+    mode: "0550"
+  when: agentgateway_docker_proxied_mcp_targets | length > 0
+
+- name: Deploy each proxied MCP backend credential file
+  ansible.builtin.copy:
+    content: "{{ item.backend_token }}"
+    dest: "{{ agentgateway_docker_proxied_mcp_secrets_dir }}/{{ item.name }}"
+    owner: root
+    group: "{{ agentgateway_docker_container_gid }}"
+    mode: "0440"
+  loop: "{{ agentgateway_docker_proxied_mcp_targets }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  notify: Restart agentgateway
+
+- name: Find proxied MCP credential files
+  ansible.builtin.find:
+    paths: "{{ agentgateway_docker_proxied_mcp_secrets_dir }}"
+    file_type: file
+  register: agentgateway_docker_proxied_mcp_files
+
+- name: Remove credential files of proxied MCP targets no longer listed
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ agentgateway_docker_proxied_mcp_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: item.path | basename not in (agentgateway_docker_proxied_mcp_targets | map(attribute='name') | list)
+  notify: Restart agentgateway
+
+- name: Remove the proxied MCP credential directory when no target is listed
+  ansible.builtin.file:
+    path: "{{ agentgateway_docker_proxied_mcp_secrets_dir }}"
+    state: absent
+  when: agentgateway_docker_proxied_mcp_targets | length == 0
+  notify: Restart agentgateway
