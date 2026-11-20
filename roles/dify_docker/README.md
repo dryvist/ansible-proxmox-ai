@@ -50,15 +50,8 @@ and [daemon configuration](https://github.com/langgenius/dify-plugin-daemon/blob
 
 ## Installation
 
-This role ships in the `ansible-proxmox-ai` repository and is applied via
-`playbooks/site.yml`. No separate installation is required beyond cloning the
-repo and installing collection dependencies:
-
-```bash
-git clone https://github.com/dryvist/ansible-proxmox-ai.git
-cd ansible-proxmox-ai
-ansible-galaxy collection install -r requirements.yml --force
-```
+The role ships in the `ansible-proxmox-ai` repository and is applied via
+`playbooks/site.yml` after `ansible-galaxy collection install -r requirements.yml --force`.
 
 ## Prerequisites
 
@@ -242,7 +235,9 @@ created only when the app has none, and a server Dify reports as not `active`
 is activated. The stored `url` is written through the shared `openbao_secrets`
 seed task only when it is missing or differs, so an unchanged app costs no
 write. A sliced run (`dify_docker_agent_dsl_select`) publishes only its
-selected apps. Check mode makes no POST, PUT or storage write and reports
+selected apps. A non-empty `dify_docker_publish_agent_mcp_apps` (default `[]`)
+limits publishing to the named catalog apps on every run, and each name must
+exist in the manifest. Check mode makes no POST, PUT or storage write and reports
 what a live run would change, by app name only.
 
 ## What in this stack needs protecting
