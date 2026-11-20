@@ -1,4 +1,4 @@
-"""Priority teams allow the MCP access groups their keys declare. Runs bare or under pytest."""
+"""Priority teams allow the MCP access groups and servers their keys declare. Runs bare or under pytest."""
 import ast
 from pathlib import Path
 
@@ -27,6 +27,18 @@ def test_team_groups_are_the_union_of_their_keys_groups():
     assert groups == {"tier-1": ["hub-homelab-read", "hub-public"], "tier-0": [], "tier-2": []}
 
 
+def test_team_servers_are_the_union_of_their_keys_servers():
+    keys = [
+        {"alias": "a", "team_id": "tier-1", "object_permission": {"mcp_servers": ["zammad"]}},
+        {"alias": "b", "team_id": "tier-1", "object_permission": {"mcp_servers": ["vikunja", "zammad"]}},
+        {"alias": "c", "team_id": "tier-0", "object_permission": {"mcp_servers": ["no-mcp-servers"]}},
+        {"alias": "d", "team_id": "tier-2", "object_permission": None},
+    ]
+    template = jinja2.Environment().from_string(DEFAULTS["llm_router_priority_team_mcp_servers"])
+    servers = ast.literal_eval(template.render(_llm_router_virtual_keys_without_values=keys).strip())
+    assert servers == {"tier-1": ["vikunja", "zammad"], "tier-0": ["no-mcp-servers"], "tier-2": []}
+
+
 def test_priority_team_writes_send_the_team_groups():
     create = _task("Create absent priority teams")["ansible.builtin.uri"]["body"]
     update_task = _task("Reconcile existing priority team tags")
@@ -35,9 +47,14 @@ def test_priority_team_writes_send_the_team_groups():
     assert update["object_permission"]["mcp_access_groups"] == "{{ _mcp_groups }}"
     assert "llm_router_priority_team_mcp_access_groups" in update_task["vars"]["_mcp_groups"]
     assert "_mcp_groups != _live_mcp_groups" in " ".join(update_task["when"])
+    assert "llm_router_priority_team_mcp_servers" in create["object_permission"]["mcp_servers"]
+    assert update["object_permission"]["mcp_servers"] == "{{ _mcp_servers }}"
+    assert "llm_router_priority_team_mcp_servers" in update_task["vars"]["_mcp_servers"]
+    assert "_mcp_servers != _live_mcp_servers" in " ".join(update_task["when"])
 
 
 if __name__ == "__main__":
     test_team_groups_are_the_union_of_their_keys_groups()
+    test_team_servers_are_the_union_of_their_keys_servers()
     test_priority_team_writes_send_the_team_groups()
     print("all checks passed")
