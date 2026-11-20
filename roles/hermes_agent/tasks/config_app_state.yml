@@ -1,0 +1,20 @@
+---
+# Read the Hermes-owned keys from the live config at hermes_agent_config_file
+# (see hermes_agent_config_app_owned_keys) for the next config template to
+# render back. A missing file yields none.
+- name: Read the live Hermes config for its own keys
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_config_file }}"
+  register: _hermes_agent_live_config
+  failed_when: false
+  no_log: true
+
+- name: Keep only the Hermes-owned keys
+  ansible.builtin.set_fact:
+    hermes_agent_config_app_state: >-
+      {{ _live | dict2items | selectattr('key', 'in', hermes_agent_config_app_owned_keys) | items2dict }}
+    hermes_agent_config_install_id: "{{ (_live.monitoring | default({}, true)).install_id | default('', true) }}"
+  vars:
+    _live: >-
+      {{ ((_hermes_agent_live_config.content | b64decode | from_yaml)
+          if _hermes_agent_live_config.content is defined else {}) | default({}, true) }}

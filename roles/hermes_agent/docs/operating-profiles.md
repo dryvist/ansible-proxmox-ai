@@ -61,7 +61,13 @@ treated as private to it.
 | `homelab-admin` | Incidents + fabric health | Docs MCP, `zammad-incidents` skill | Splunk, Vikunja, GitHub, other MCP/skills |
 | `github-maint` | Read-only repo review + proposals | Docs MCP, `github-issues` skill, read-only token | GitHub writes, `docs-pr`, Splunk, Zammad, other |
 | `orchestrator` | Kanban decomposition and assignment | Vikunja + Docs MCP; follow-up card creation | Operational MCP servers and credentials |
+| `tracker-reporter` | Change-only task and incident summaries | Vikunja + router incident MCP; own bank | Kanban, env, skills, other MCP |
+| `vikunja-pm` | Task filing, updates, labels, relations and comments | Router Vikunja write tier (no delete); own bank | Kanban, env, skills, other MCP |
 | `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |
+
+The `tracker-reporter` profile and its two report jobs exist only while
+`llm_router_hermes_tracker_reporter_key_enabled` is on. The `vikunja-pm`
+profile exists only while `llm_router_hermes_vikunja_pm_key_enabled` is on.
 
 `github-maint` is the one profile whose headline constraint is enforced by a
 **credential** rather than by tool availability. It renders the read-only
@@ -84,6 +90,12 @@ addenda ship in the pinned nix-hermes bundle under `soul/profiles/`; the
 orchestrator keeps its role-local addendum. Scope each profile by what it must
 **not** reach, not by what it might someday need — a new capability is a new
 profile decision made in the PR that adds the work, not a widened existing one.
+
+**Serving a profile over A2A**: a profile entry with an `a2a` mapping is served
+on the gateway's A2A listener under `/<profile>`, while
+`hermes_agent_a2a_inbound_enabled` is on. Optional keys: `name` (default
+`Hermes <profile>`), `description` (default the profile's `description`) and
+`advertised_toolsets`.
 
 **Concurrency**: `hermes_agent_kanban_max_in_progress` is the SUM cap across
 every profile combined. It takes the shared `ai_agent_default_concurrency`

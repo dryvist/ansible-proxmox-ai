@@ -218,6 +218,29 @@
           - hostvars['fixture-pepper'].hermes_agent_identity == 'pepper'
           - "'fixture-pepper' in groups['hermes_agent_group']"
 
+    - name: Add a synthetic isolated guest bound to a roster agent
+      ansible.builtin.set_fact:
+        tofu_data: >-
+          {{ tofu_data | combine({
+               'agents': tofu_data.agents | combine({'iso-agent': roster_fixture['roster-test']
+                 | combine({'container': 'fixture-isolated', 'hostname': 'iso-agent.example.com', 'owns': []})}),
+               'containers': tofu_data.containers | combine({
+                 'fixture-isolated': tofu_data.containers['hermes-agent']
+                   | combine({'tags': ['hermes-agent', 'hermes-isolated']})})}) }}
+
+    - name: Project the isolated fixture into inventory
+      ansible.builtin.import_tasks: ../../inventory/load_tofu/add_lxc_host_inventory.yml
+
+    - name: An isolated guest takes its roster identity and the isolated posture
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - hostvars['fixture-isolated'].hermes_agent_identity == 'iso-agent'
+          - hostvars['fixture-isolated'].hermes_agent_isolated | bool
+          - hostvars['fixture-pepper'].hermes_agent_isolated | bool
+          - not (hostvars['hermes-agent'].hermes_agent_isolated | bool)
+          - "'fixture-isolated' in groups['hermes_agent_group']"
+
     - name: Add a synthetic GPU guest that declares its lane
       ansible.builtin.set_fact:
         tofu_data: >-
@@ -234,6 +257,35 @@
         that:
           - "'fixture-gpu-lane' in groups['llm_gpu_legacy_group']"
           - hostvars['fixture-gpu-lane'].llm_gpu_accelerator == 'gpu-primary'
+
+    - name: Reject an isolated guest the roster does not name
+      block:
+        - name: Add an isolated guest with no roster agent
+          ansible.builtin.set_fact:
+            tofu_data: >-
+              {{ tofu_data | combine({'containers': tofu_data.containers | combine({
+                   'fixture-isolated-orphan': tofu_data.containers['hermes-agent']
+                     | combine({'tags': ['hermes-agent', 'hermes-isolated']})})}) }}
+        - name: Attempt the orphan projection
+          ansible.builtin.include_tasks: ../../inventory/load_tofu/add_lxc_host_inventory.yml
+        - name: Record an incorrectly accepted orphan
+          ansible.builtin.set_fact:
+            _isolated_orphan_accepted: true
+      rescue:
+        - name: Confirm the identity tag guard refused the orphan
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_task.name == 'Reject conflicting or unrecognized Hermes identity markers'
+        - name: Drop the orphan fixture
+          ansible.builtin.set_fact:
+            tofu_data: >-
+              {{ tofu_data | combine({'containers': tofu_data.containers | dict2items
+                 | rejectattr('key', 'equalto', 'fixture-isolated-orphan') | items2dict}, recursive=false) }}
+
+    - name: Confirm the orphan isolated guest was refused
+      ansible.builtin.assert:
+        that:
+          - not (_isolated_orphan_accepted | default(false))
 
     - name: Reject conflicting Pepper identity markers
       block:

@@ -19,3 +19,5 @@ def test_serving_templates_enable_native_request_timing():
     assert llamacpp_serving.count("--log-jsonl") == 1
     assert "--enable-request-id-headers" in vllm
     assert "--enable-per-request-metrics" in vllm
+    # The router counts cached prompt tokens per key only when the usage block carries them.
+    assert "--enable-prompt-tokens-details" in vllm

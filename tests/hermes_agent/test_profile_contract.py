@@ -223,7 +223,7 @@ def test_llm_wiki_skill_is_materializable_into_any_profile_that_opts_in() -> Non
     assert "Materialize the llm-wiki skill for profile" in profiles_tasks
     assert "{{ hermes_agent_install_dir }}/optional-skills/research/llm-wiki" in profiles_tasks
     assert (
-        "when: hermes_agent_wiki_enabled | bool and 'research/llm-wiki' in item.skills"
+        "- hermes_agent_wiki_enabled | bool and 'research/llm-wiki' in item.skills"
         in profiles_tasks
     )
 

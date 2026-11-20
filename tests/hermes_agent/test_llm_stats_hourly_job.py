@@ -210,7 +210,8 @@ def test_only_the_dedicated_profiles_set_a_bank_and_the_config_task_passes_it() 
     assert profiles["github-maint"]["memory_bank_id"] == "{{ hermes_agent_memory_bank_id ~ '-github-maint' }}"
     assert profiles["orchestrator"]["memory_bank_id"] == "{{ hermes_agent_memory_bank_id ~ '-orchestrator' }}"
     assert profiles["tracker-reporter"]["memory_bank_id"] == "{{ hermes_agent_memory_bank_id ~ '-tracker-reporter' }}"
-    dedicated = {"splunk-admin", "homelab-admin", "github-maint", "orchestrator", "tracker-reporter"}
+    assert profiles["vikunja-pm"]["memory_bank_id"] == "{{ hermes_agent_memory_bank_id ~ '-vikunja-pm' }}"
+    dedicated = {"splunk-admin", "homelab-admin", "github-maint", "orchestrator", "tracker-reporter", "vikunja-pm"}
     assert all("memory_bank_id" not in p for name, p in profiles.items() if name not in dedicated)
 
     tasks = yaml.safe_load((ROLE / "tasks" / "profiles.yml").read_text())

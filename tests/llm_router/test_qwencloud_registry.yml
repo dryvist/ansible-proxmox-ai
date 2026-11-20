@@ -37,7 +37,7 @@
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
     hermes_brain_model: medium
-    hindsight_retain_model: qwen3-4b
+    hindsight_retain_model: "{{ llm_router_small_model }}"
     hermes_goal_judge_model: judge
   tasks:
     - name: Render with synthetic Qwen credential fields
@@ -108,6 +108,32 @@
           - _qwen_entries | map(attribute='key_field') | unique | length == 1
           - _qwen_deployments | length == _qwen_entries | length
         fail_msg: "The registered Qwen entries or rendered deployments are missing or duplicated."
+
+    - name: Assert the preview deployment has a nine RPM ceiling and an ordinary local fallback
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _preview_rpm is integer
+          - _preview_rpm == 9
+          - >-
+            (_ordinary_pairs | selectattr('key', 'equalto', _preview.route_group)
+             | map(attribute='value') | list) == [[_medium]]
+          - >-
+            _config.model_list | selectattr('model_name', 'equalto', _medium)
+            | selectattr('litellm_params.tags', 'contains', 'local') | list | length > 0
+          - _preview.route_group not in llm_router_fallback_map
+          - _preview.route_group not in (_context_pairs | map(attribute='key') | list)
+          - _preview.route_group not in ((_ordinary_pairs + _context_pairs) | map(attribute='value') | flatten)
+          - _preview.route_group not in (_config.router_settings.default_fallbacks | default([]))
+      vars:
+        _preview: "{{ _qwen_entries | difference(_qwen_38_entries) | first }}"
+        _preview_rpm: >-
+          {{ (_qwen_deployments | selectattr('model_name', 'equalto', _preview.route_group)
+              | first).litellm_params.rpm }}
+        _medium: "{{ _llm_router_declared_primary.route_group }}"
+        _ordinary_pairs: "{{ _config.router_settings.fallbacks | map('dict2items') | flatten }}"
+        _context_pairs: >-
+          {{ _config.router_settings.context_window_fallbacks | default([]) | map('dict2items') | flatten }}
 
     - name: Assert each OpenAI-compatible chat entry resolves and projects registry metadata
       ansible.builtin.assert:
@@ -226,12 +252,20 @@
           - item.route_group not in _llm_router_key_scope_all
           - >-
             item.client_model_id not in
-            (_llm_router_declared_virtual_keys | map(attribute='models') | flatten)
+            (_llm_router_declared_virtual_keys
+             | rejectattr('alias', 'equalto', 'sandbox-agent')
+             | map(attribute='models') | flatten)
           - >-
             item.route_group not in
-            (_llm_router_declared_virtual_keys | map(attribute='models') | flatten)
-          - item.client_model_id not in (llm_router_virtual_keys | map(attribute='models') | flatten)
-          - item.route_group not in (llm_router_virtual_keys | map(attribute='models') | flatten)
+            (_llm_router_declared_virtual_keys
+             | rejectattr('alias', 'equalto', 'sandbox-agent')
+             | map(attribute='models') | flatten)
+          - item.client_model_id not in (llm_router_virtual_keys
+              | rejectattr('alias', 'equalto', 'sandbox-agent')
+              | map(attribute='models') | flatten)
+          - item.route_group not in (llm_router_virtual_keys
+              | rejectattr('alias', 'equalto', 'sandbox-agent')
+              | map(attribute='models') | flatten)
         fail_msg: "A benchmark-only route entered a shared ladder or partner key scope."
       loop: >-
         {{ _qwen_benchmark_test_entries
@@ -239,3 +273,27 @@
            | selectattr('benchmark_only', 'equalto', true) | list }}
       loop_control:
         label: "{{ item.client_model_id }}"
+
+    - name: Assert only the public sandbox key reaches a benchmark-only model, and only one tagged sandbox-only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _sandbox_key.models | intersect(llm_router_benchmark_only_model_names) | sort
+            == (llm_router_benchmark_only_model_names | intersect(llm_router_sandbox_only_model_ids) | sort)
+          - llm_router_benchmark_only_model_names | intersect(llm_router_sandbox_only_model_ids) | length > 0
+          - _llm_router_declared_primary.route_group in _sandbox_key.models
+          - (_sandbox_key.sensitivity_tag | default('')) == '&sensitivity:public'
+          - "'&zdr' not in (_sandbox_key.tags | default([]))"
+        fail_msg: "The sandbox key must reach exactly the benchmark-only models tagged sandbox-only."
+      vars:
+        # The key is enabled only when its secret field is present, so the scope is resolved here with a fixture value.
+        bao_apps_secrets:
+          sandbox_agent_router_llm_router_key: fixture-sandbox-agent
+        agent_callers_tiers: [trusted, public, untrusted]
+        agent_callers_default_tier: untrusted
+        ai_callers:
+          sandbox-agent:
+            trust_tier: public
+        _sandbox_key: >-
+          {{ _llm_router_virtual_keys_source
+             | selectattr('alias', 'equalto', 'sandbox-agent') | first }}

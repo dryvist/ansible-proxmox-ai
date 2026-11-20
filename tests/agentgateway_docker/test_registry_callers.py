@@ -1,13 +1,15 @@
-"""Registry harness callers get gateway keys and tier banks beside the roster agents.
+"""Gateway-enabled registry callers get keys and tier banks beside roster agents.
 
 `ai_callers` merges the released harness registry with the agent roster. A registry
-caller therefore gets a key field, a tier and a bank with no roster entry, a roster
-agent keeps its own tier, and an id owned by both sources fails the role assert.
+caller gets a key field, a tier and a bank by default, while one with
+`gateway_key: false` gets no gateway surfaces. A roster agent keeps its own tier,
+and an id owned by both sources fails the role assert.
 """
 
 from __future__ import annotations
 
 import jinja2
+import pytest
 import yaml
 from ansible.plugins.filter.mathstuff import FilterModule as MathFilters
 from hindsight_acl_support import (
@@ -19,7 +21,15 @@ from hindsight_acl_support import (
     _hindsight_context,
     _render_hindsight,
 )
-from test_authz_render import ENV, TASKS, _render_callers, _render_key_fields, _routes
+from test_authz_render import (
+    ENV,
+    ROLE_DEFAULTS,
+    TASKS,
+    _render_callers,
+    _render_key_fields,
+    _render_map,
+    _routes,
+)
 
 REGISTRY = {
     "example-harness-trusted": {"trust_tier": "trusted"},
@@ -58,6 +68,61 @@ def test_registry_caller_gets_a_key_field_a_tier_and_a_bank() -> None:
         "example-harness-untrusted": "example-harness-untrusted-untrusted",
         "example-roster-agent": "example-roster-agent-untrusted",
     }
+
+
+def test_registry_without_gateway_key_attribute_keeps_the_existing_key_fields() -> None:
+    # A registry without the gateway_key attribute keeps every caller's key.
+    assert _render_key_fields(ROSTER, REGISTRY) == {
+        "example-harness-trusted": "example_harness_trusted_agentgateway_key",
+        "example-harness-untrusted": "example_harness_untrusted_agentgateway_key",
+        "example-roster-agent": "example_roster_agent_agentgateway_key",
+    }
+
+
+def test_public_registry_caller_without_gateway_key_gets_no_gateway_objects() -> None:
+    registry = {"example-public": {"trust_tier": "public", "gateway_key": False}}
+    key_fields = _render_key_fields(ROSTER, registry)
+    supplied_keys = {"example_public_agentgateway_key": "example-public-key"}
+    roster_keys = _render_map(
+        ROLE_DEFAULTS["agentgateway_docker_roster_keys"],
+        ai_agent_gateway_key_fields=key_fields,
+        openbao_secrets_by_domain={"agentgateway-agent-keys": supplied_keys},
+    )
+
+    assert "example-public" not in key_fields
+    assert "example-public" not in roster_keys
+
+    context = _hindsight_context(agents=ROSTER, keys=supplied_keys, registry=registry)
+    assert "example-public" not in context["agentgateway_docker_hindsight_agent_banks"]
+
+    routes = _routes(_render_hindsight(agents=ROSTER, keys=supplied_keys, registry=registry))
+    a2a_routes = [
+        route for route in routes if route["matches"][0]["path"].get("pathPrefix", "").startswith("/a2a/")
+    ]
+    assert a2a_routes
+    assert all(
+        "example-public" not in route["policies"]["authorization"]["rules"][0]["allow"]
+        for route in a2a_routes
+    )
+
+
+def test_registry_gateway_key_true_or_absent_keeps_key_fields() -> None:
+    registry = {
+        "example-enabled": {"trust_tier": "trusted", "gateway_key": True},
+        "example-default": {"trust_tier": "trusted"},
+    }
+
+    assert _render_key_fields({}, registry) == {
+        "example-enabled": "example_enabled_agentgateway_key",
+        "example-default": "example_default_agentgateway_key",
+    }
+
+
+def test_registry_gateway_key_that_is_not_a_boolean_fails_closed() -> None:
+    registry = {"example-string": {"trust_tier": "public", "gateway_key": "false"}}
+
+    with pytest.raises(jinja2.exceptions.UndefinedError, match="gateway_key must be a boolean"):
+        _render_key_fields({}, registry)
 
 
 def test_registry_caller_without_a_key_gets_no_bank() -> None:

@@ -36,6 +36,26 @@
   when: _row.id in (ai_agents | default({}))
   no_log: true
 
+- name: Grant write and admin tier servers to Hermes profile keys only under a trusted identity
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - (ai_agents | default({})).get(hermes_agent_identity | default('hermes'), {}).get('trust_tier', '') == 'trusted'
+    fail_msg: >-
+      Hermes profile key {{ _key.alias }} holds a write or admin app-agent tier
+      server, but the Hermes identity's roster entry is not trust_tier trusted.
+  loop: "{{ _llm_router_hermes_profile_keys | selectattr('enabled') | list }}"
+  loop_control:
+    loop_var: _key
+    label: "{{ _key.alias }}"
+  when: _key.object_permission.mcp_servers | intersect(_trusted_servers) | length > 0
+  vars:
+    _trusted_servers: >-
+      {{ _llm_router_app_agent_matrix
+         | selectattr('tier', 'in', llm_router_app_agent_trusted_tiers)
+         | map(attribute='server_id') | list }}
+  no_log: true
+
 - name: Require the read-tier probe target and the published allowlist
   ansible.builtin.assert:
     quiet: true
