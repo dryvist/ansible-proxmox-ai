@@ -50,6 +50,11 @@
         name: llm_router
         tasks_from: registry.yml
 
+    - name: Load the Hermes job-tag projection the way the router role does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: load-hermes-cron-tags.yml
+
     # include_vars loads llm_router_redis_host as a host fact, which outranks a
     # task-level var, so the store toggle is a set_fact between two renders.
     - name: Render config.yaml.j2 without a spend store
@@ -79,8 +84,17 @@
           - >-
             _rendered[item].litellm_settings.custom_prometheus_metadata_labels
             == ['metadata.router_key_class', 'accelerator']
+          - >-
+            llm_router_hermes_job_tags
+            | difference(_rendered[item].litellm_settings.custom_prometheus_tags)
+            | length == 0
+          - >-
+            ['telemetry_job_other', 'telemetry_job_aux']
+            | difference(_rendered[item].litellm_settings.custom_prometheus_tags)
+            | length == 0
           - "'system_merge.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
           - "'request_metrics.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
+          - "'hermes_job_tags.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
           - "'ci_effort_pin.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
           - "'lane_header.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
           - "'untrusted_classify.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"

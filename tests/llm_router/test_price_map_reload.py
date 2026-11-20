@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from pathlib import Path
@@ -57,6 +58,7 @@ def _render_env(price_map_url: str) -> str:
             "comment": lambda value: "\n".join(f"# {line}" for line in str(value).splitlines()),
             "regex_replace": lambda value, pattern, replacement: re.sub(pattern, replacement, str(value)),
             "to_json": json.dumps,
+            "b64encode": lambda value: base64.b64encode(str(value).encode()).decode(),
             "urlencode": lambda value: quote(str(value), safe=""),
         }
     )
