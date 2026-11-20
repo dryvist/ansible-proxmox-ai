@@ -84,6 +84,38 @@ def test_aliases_are_declared_only_in_the_registry() -> None:
     assert alias_source_problems(REPO_ROOT) == []
 
 
+def test_routine_agent_roles_target_the_small_capability() -> None:
+    roles_path = REPO_ROOT / "roles/llm_router/defaults/main/55-roles.yml"
+    roles_doc = load_yaml_documents(roles_path)[0]
+    roles = {
+        role["role"]: role
+        for role in roles_doc["_llm_router_role_deployments_source"]
+        if role["role"] in {"fast-subagent", "local-default"}
+    }
+
+    registry_doc = load_yaml_documents(REPO_ROOT / "llm-models.d/30-local-gpu.yml")[0]
+    small_entries = [
+        entry
+        for values in registry_doc.values()
+        for entry in values
+        if entry.get("tier") == "vllm" and entry.get("route_group") == "small"
+    ]
+
+    assert set(roles) == {"fast-subagent", "local-default"}
+    assert len(small_entries) == 1
+    small_capability = small_entries[0]["route_group"]
+    assert small_capability == "small"
+    assert all(
+        role["model"] == "{{ llm_router_small_capability_name }}"
+        for role in roles.values()
+    )
+    assert all(
+        role["fallbacks"] == "{{ llm_router_d1_zdr_ladder_groups }}"
+        and role["litellm_params"] == {}
+        for role in roles.values()
+    )
+
+
 def _plant(tmp_path: Path, text: str) -> Path:
     planted = tmp_path / "roles/llm_router/defaults/main/99-planted.yml"
     planted.parent.mkdir(parents=True)

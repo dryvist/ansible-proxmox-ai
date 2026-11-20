@@ -48,7 +48,7 @@ Common edits:
 | Repoint the serving host | move `serving_role: primary` to another entry |
 | Add/remove a consumer alias | that entry's `stable_aliases` |
 | Add an OpenRouter model | one registry entry; reuse the provider credential |
-| Repoint a role (`subagent`, `lead`, ...) | the Admin UI — not this file |
+| Change a declared role's seed target or fallback | `defaults/main/55-roles.yml`; existing rows stay as edited in the Admin UI until `rebuild` |
 | Retire a model | `enabled: false` (or delete the entry) |
 
 ## Prompt management
@@ -168,18 +168,18 @@ live in the database instead. See below.
 
 ## Roles: what lives in git, what lives in the database
 
-Authority is split: the catalog (`llm-models.d/` → `config.yaml`) lives in
-git and changes rarely; roles (which model a caller-facing name resolves to,
-and its fallback order) live in the router database and the Admin UI owns
-them, changing often. The first seed is declared in
-`defaults/main/55-roles.yml`; `tasks/seed-roles.yml` writes a role only when
-the running proxy carries no deployment by that name, so an `initial`-mode
-converge never overwrites an edit made in the UI — `rebuild` (below) is the
-exception.
+The catalog (`llm-models.d/` → `config.yaml`) and declared role seeds live in
+git. `defaults/main/55-roles.yml` sets the target and fallback baseline for
+each tracked role. The live role rows and their current targets and fallback
+orders live in the router database and remain editable in the Admin UI.
+`tasks/seed-roles.yml` creates a declared role only when the proxy has no row
+by that name. In `initial` mode existing rows keep their current target and
+fallback order, while `tasks/drift-check.yml` reports differences from the
+declared seed; `rebuild` reapplies the source declarations.
 
-Full detail — the two rules a seeded fallback rung must satisfy, the
-seeded `judge` and `recorder` roles and how each is scoped, and how to swap a
-role by hand or through the Admin UI — moved to
+Full detail — the rules a seeded fallback rung must satisfy, the declared
+roles and how each is scoped, and how to swap a role by hand or through the
+Admin UI — moved to
 [`docs/LLM_ROUTER_ROLES.md`](../../docs/LLM_ROUTER_ROLES.md).
 
 ## Editing ladders in the UI (`llm_router_seed_mode`, Vikunja 3316)
@@ -269,7 +269,7 @@ endpoint contract, and the serving-share metric:
 | `llm_router_light_port` | `service_ports.llm_fast_api` | llm-fast / llm-light backend port |
 | `llm_router_large_port` | `service_ports.ollama_api` | llm-large backend port |
 | `llm_router_routing_strategy` | `simple-shuffle` | load-balancing across same-name deployments |
-| `llm_router_seed_mode` | `initial` | `initial` seeds `router_settings`/roles once then leaves Admin UI edits alone; `rebuild` = DR full overwrite of both |
+| `llm_router_seed_mode` | `initial` | `initial` seeds missing roles, preserves live rows and reports drift; `rebuild` reapplies declared roles/settings |
 | `llm_router_master_key` | `env LLM_ROUTER_MASTER_KEY` (mandatory) | proxy master key |
 | `llm_router_llm_large_bearer` | `env LLM_LARGE_BEARER_TOKEN` (mandatory) | llm-large bearer |
 

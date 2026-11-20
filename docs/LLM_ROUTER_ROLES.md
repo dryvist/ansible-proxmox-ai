@@ -8,15 +8,16 @@ Authority is split, and the split follows how often each half changes.
 | | Lives in | Owned by | Changes |
 | --- | --- | --- | --- |
 | **Catalog** — which models exist, their cost, context, credentials | `llm-models.d/` → `config.yaml` | this role, per converge | rarely |
-| **Roles** — which model a caller-facing name resolves to, and its fallback order | the router database | the Admin UI | often |
+| **Role seeds** — target and fallback baseline | `55-roles.yml` | this role seeds missing rows and reports drift | when changed |
+| **Live role rows** — target and fallback in use | router database | Admin UI; `rebuild` reapplies seeds | often |
 
 Callers name a capability — `small`, `medium`, `large`, `embed`, `ocr` — or a
-seeded role such as `judge` or `recorder`, never a physical model, so a routing
-change reaches every client at once with no client edit and no release. The first seed is declared in
-`defaults/main/55-roles.yml`; `tasks/seed-roles.yml` writes a role only when the
-running proxy carries no deployment by that name, so **a converge never
-overwrites an edit made in the UI**. Change a role in the UI, not in git —
-editing the seed affects only a proxy that has never carried the role before.
+declared role such as `judge`, `recorder`, `fast-subagent`, or `local-default`,
+never a physical model. `defaults/main/55-roles.yml` declares the seed target
+and fallback order. `tasks/seed-roles.yml` creates a declared role only when
+the running proxy has no row by that name. In `initial` mode, an existing row
+keeps its current target and fallback order; `tasks/drift-check.yml` reports a
+row that differs from its seed. `rebuild` reapplies the declared values.
 
 Roles require the database (`llm_router_db_host`) and
 `llm_router_store_model_in_db`; with neither, config-rendered aliases still work
@@ -42,9 +43,10 @@ members run in deployment order (local GPU first, then the local fallbacks, then
 the capability's own cloud tail). A request too large for the advertised window
 escapes through `context_window_fallbacks`
 (`defaults/main/37-fallback-entry-points.yml`) rather than walking the ordinary
-chain. Only `judge` and `recorder` are seeded as database roles
-(`defaults/main/55-roles.yml`), and they copy the first member of their
-capability.
+chain. The declared database roles are `judge`, `recorder`, `recorder-medium`,
+`fast-subagent`, and `local-default` (`defaults/main/55-roles.yml`). Their
+seeded role parameters copy the first rendered member of their target
+capability, with any per-role overrides declared alongside the role.
 
 ## Swap a role
 

@@ -1,12 +1,10 @@
 ---
 # FIRST SEED ONLY in llm_router_seed_mode: initial (default,
-# defaults/main/45-database.yml). Creates a role deployment when the running
-# proxy has none by that name, and does nothing at all to one that already
-# exists. That asymmetry is the whole contract: role targets and fallback
-# order are edited in the Admin UI, and a converge that re-asserted them
-# would silently undo every such edit the next time it ran — which is
-# exactly the "no git change per swap" property this design exists to
-# provide (defaults/main/55-roles.yml).
+# defaults/main/45-database.yml). defaults/main/55-roles.yml declares the
+# tracked roles and their seed targets. This creates a role deployment when
+# the running proxy has none by that name, and leaves an existing row alone;
+# tasks/drift-check.yml reports a row that differs from its declaration.
+# Existing targets and fallback order remain editable in the Admin UI.
 #
 # In llm_router_seed_mode: rebuild (DR / from-scratch reset), that asymmetry
 # is deliberately dropped for role deployments too: EVERY declared role is
@@ -241,9 +239,10 @@
   when: item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
   no_log: true
 
-# Existing role targets stay UI-owned, but their privacy tags must track the
-# actual target. Read after create/recreate so this also covers rows changed in
-# this run; PATCH policy fields and preserve the role target and ladder.
+# Existing role targets and fallback order stay unchanged in initial mode,
+# but privacy tags must track the actual target. Read after create/recreate so
+# this also covers rows changed in this run; PATCH policy fields and preserve
+# the role target and ladder.
 - name: Read current role deployments for privacy tag reconciliation
   ansible.builtin.uri:
     url: "http://localhost:{{ llm_router_api_port }}/model/info"
@@ -276,7 +275,7 @@
     label: "{{ item.role }} tier {{ item.model_info.priority_policy.tier }}"
   no_log: true
 
-- name: Reconcile role deployment policy tags without changing its UI-owned target or ladder
+- name: Reconcile role deployment policy tags without changing its target or ladder
   ansible.builtin.uri:
     url: "http://localhost:{{ llm_router_api_port }}/model/{{ item.model_id }}/update"
     method: PATCH
