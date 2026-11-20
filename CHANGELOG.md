@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.60.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.60.0...v2.60.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **llm_router:** skip the schema push on a LiteLLM downgrade ([#2618](https://github.com/dryvist/ansible-proxmox-ai/issues/2618)) ([b5b68dd](https://github.com/dryvist/ansible-proxmox-ai/commit/b5b68dda62485f91d67fc095ba688fb87cefaeae))
+
 ## [2.60.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.59.1...v2.60.0) (2026-11-20)
 
 
