@@ -84,3 +84,36 @@
   loop: "{{ hermes_agent_profiles }}"
   loop_control:
     label: "{{ item.name }}"
+
+# An identity that runs no profiles keeps none in Hermes's scan path. Leftover directories are moved, never deleted.
+- name: Find leftover profile directories on an identity that runs no profiles
+  ansible.builtin.find:
+    paths: "{{ hermes_agent_hermes_home }}/profiles"
+    file_type: directory
+    recurse: false
+  register: _hermes_agent_leftover_profiles
+  when: hermes_agent_profiles_forced_off | bool
+
+- name: Ensure the retired profiles directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_retired_profiles_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when:
+    - hermes_agent_profiles_forced_off | bool
+    - _hermes_agent_leftover_profiles.files | default([]) | length > 0
+
+- name: Move leftover profile directories out of the profile scan
+  ansible.builtin.command:
+    argv:
+      - mv
+      - --no-target-directory
+      - "{{ item.path }}"
+      - "{{ hermes_agent_retired_profiles_dir }}/{{ item.path | basename }}"
+    removes: "{{ item.path }}"
+  loop: "{{ _hermes_agent_leftover_profiles.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: hermes_agent_profiles_forced_off | bool
