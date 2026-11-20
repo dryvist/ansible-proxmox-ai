@@ -109,6 +109,32 @@
           - _qwen_deployments | length == _qwen_entries | length
         fail_msg: "The registered Qwen entries or rendered deployments are missing or duplicated."
 
+    - name: Assert the preview deployment has a nine RPM ceiling and an ordinary local fallback
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _preview_rpm is integer
+          - _preview_rpm == 9
+          - >-
+            (_ordinary_pairs | selectattr('key', 'equalto', _preview.route_group)
+             | map(attribute='value') | list) == [[_medium]]
+          - >-
+            _config.model_list | selectattr('model_name', 'equalto', _medium)
+            | selectattr('litellm_params.tags', 'contains', 'local') | list | length > 0
+          - _preview.route_group not in llm_router_fallback_map
+          - _preview.route_group not in (_context_pairs | map(attribute='key') | list)
+          - _preview.route_group not in ((_ordinary_pairs + _context_pairs) | map(attribute='value') | flatten)
+          - _preview.route_group not in (_config.router_settings.default_fallbacks | default([]))
+      vars:
+        _preview: "{{ _qwen_entries | difference(_qwen_38_entries) | first }}"
+        _preview_rpm: >-
+          {{ (_qwen_deployments | selectattr('model_name', 'equalto', _preview.route_group)
+              | first).litellm_params.rpm }}
+        _medium: "{{ _llm_router_declared_primary.route_group }}"
+        _ordinary_pairs: "{{ _config.router_settings.fallbacks | map('dict2items') | flatten }}"
+        _context_pairs: >-
+          {{ _config.router_settings.context_window_fallbacks | default([]) | map('dict2items') | flatten }}
+
     - name: Assert each OpenAI-compatible chat entry resolves and projects registry metadata
       ansible.builtin.assert:
         quiet: true
@@ -255,6 +281,7 @@
           - _sandbox_key.models | intersect(llm_router_benchmark_only_model_names) | sort
             == (llm_router_benchmark_only_model_names | intersect(llm_router_sandbox_only_model_ids) | sort)
           - llm_router_benchmark_only_model_names | intersect(llm_router_sandbox_only_model_ids) | length > 0
+          - _llm_router_declared_primary.route_group in _sandbox_key.models
           - (_sandbox_key.sensitivity_tag | default('')) == '&sensitivity:public'
           - "'&zdr' not in (_sandbox_key.tags | default([]))"
         fail_msg: "The sandbox key must reach exactly the benchmark-only models tagged sandbox-only."
