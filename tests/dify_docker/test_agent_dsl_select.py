@@ -71,3 +71,22 @@ def test_a_sliced_import_wires_the_rotation_only_with_the_rotation_app():
     assert wires([])
     assert wires(["zammad-triage", rotation])
     assert not wires(["code-simplifier", "commit-grouper"])
+
+
+def test_a_publish_allowlist_name_missing_from_the_manifest_fails():
+    check = _task(
+        _yaml(IMPORT_LOOP),
+        "Fail when a catalog entry named for MCP publishing is not in the manifest",
+    )
+    manifest = json.dumps([{"name": "vikunja-clerk"}, {"name": "pr-keeper"}])
+
+    def passes(apps):
+        return _render(
+            check["ansible.builtin.assert"]["that"][0],
+            dify_docker_publish_agent_mcp_apps=apps,
+            dify_docker_agent_dsl_manifest_content=manifest,
+        ) == "True"
+
+    assert passes(["vikunja-clerk"])
+    assert not passes(["vikunja-clerk", "vikunja-clrek"])
+    assert "dify_docker_publish_agent_mcp_apps | length > 0" in check["when"]
