@@ -1,7 +1,7 @@
 # {{ ansible_managed }}
 # Ship all Hermes logs to the hermes_agent AI ingest listener:
 #   journald (every hermes-* unit, including differently tagged child processes)
-#   + agent, Kanban worker, board worker, and profile log files
+#   + agent, Kanban worker, board worker, and per-profile log files
 #   -> {{ hermes_agent_syslog_host }}:{{ hermes_agent_syslog_port }} (tcp)
 #   -> HAProxy -> Cribl Stream (ai_stamp) -> Splunk index=hermes.
 #
@@ -51,12 +51,15 @@ input(type="imfile"
       freshStartTail="off"
       Ruleset="hermes_agent")
 
+# One input per profile: the tag names the profile, so its log lines stay attributable downstream.
+{% for _profile in hermes_agent_profiles | default([]) %}
 input(type="imfile"
-      File="{{ hermes_agent_hermes_home }}/profiles/*/logs/*.log"
-      Tag="hermes-profile"
+      File="{{ hermes_agent_hermes_home }}/profiles/{{ _profile.name }}/logs/*.log"
+      Tag="hermes-profile-{{ _profile.name }}"
       PersistStateInterval="100"
       freshStartTail="off"
       Ruleset="hermes_agent")
+{% endfor %}
 
 if ($programname startswith 'hermes' or $!_SYSTEMD_UNIT startswith 'hermes-' or ($programname == 'systemd' and $msg contains 'hermes-')) then {
   call hermes_agent
