@@ -14,7 +14,10 @@ LOADER = load_yaml(ROOT / "inventory/load_tofu/add_lxc_hosts.yml")
 GUARD_FILE = "refuse_eval_tag_conflicts.yml"
 GUARD_NAME = "Refuse an evaluation guest that also carries a production or secret-reading tag"
 GUARD = next(task for task in load_yaml(ROOT / "inventory/load_tofu" / GUARD_FILE) if task.get("name") == GUARD_NAME)
-FORBIDDEN = {"managed-secrets", "clickhouse", "ai-proxied", "dify", "langflow", "sim", "llm-gpu-classify", "hermes-agent", "hermes-donna"}
+FORBIDDEN = {
+    "managed-secrets", "clickhouse", "ai-proxied", "dify", "langflow", "next-ai-drawio",
+    "sim", "llm-gpu-classify", "hermes-agent", "hermes-donna",
+}
 EVAL_TAGS = ["sim-eval", "future-eval"]
 
 
