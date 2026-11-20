@@ -32,6 +32,8 @@ def _ctx() -> dict:
         hermes_agent_github_route_bot_login="example-bot[bot]",
         hermes_agent_github_route_public_enabled=True,
         hermes_agent_model_provider=DEFAULTS["hermes_agent_model_provider"],
+        hermes_agent_model_shared_provider=DEFAULTS["hermes_agent_model_shared_provider"],
+        hermes_agent_model_shared_provider_name=DEFAULTS["hermes_agent_model_shared_provider_name"],
         hermes_agent_model_base_url="http://router.invalid/v1",
         hermes_agent_model_api_mode="chat_completions",
         hermes_agent_model_context_length=65536,
@@ -67,7 +69,7 @@ def test_defaults_name_a_port_distinct_from_the_default_gateway():
 
 def test_config_serves_only_the_public_route():
     cfg = _config()
-    assert cfg["model"]["provider"] == "custom"
+    assert cfg["model"]["provider"] == "custom:hermes-shared"
     webhook = cfg["platforms"]["webhook"]
     assert list(cfg["platforms"]) == ["webhook"]
     assert webhook["extra"]["port"] == 8645

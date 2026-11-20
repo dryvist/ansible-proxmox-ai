@@ -1,0 +1,28 @@
+---
+- name: Load Hermes defaults for the direct-cron name projection
+  ansible.builtin.include_vars:
+    dir: "{{ role_path | dirname }}/hermes_agent/defaults/main"
+
+# Project only the names and their bounded tag values. The cron records also
+# contain credential gates and prompt selectors, which are irrelevant here.
+- name: Publish Hermes job names and Prometheus tags to the router
+  ansible.builtin.set_fact:
+    llm_router_hermes_job_tag_map: >-
+      {%- set _tags = namespace(value={}) -%}
+      {%- for _name, _details in hermes_agent_direct_cron_telemetry.items() -%}
+      {%- set _ = _tags.value.update({_name: _details.tag}) -%}
+      {%- endfor -%}
+      {{ _tags.value }}
+    llm_router_hermes_job_tags: >-
+      {{ hermes_agent_direct_cron_telemetry.values()
+         | map(attribute='tag') | list | unique | sort }}
+
+- name: Validate Hermes job tag names before rendering Prometheus labels
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        llm_router_hermes_job_tags
+        | select('match', '^telemetry_job_[a-z0-9_]+$')
+        | list | length == llm_router_hermes_job_tags | length
+      - llm_router_hermes_job_tag_map | length == llm_router_hermes_job_tags | length
