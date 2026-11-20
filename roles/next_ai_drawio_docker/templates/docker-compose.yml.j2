@@ -1,0 +1,63 @@
+# {{ ansible_managed }}
+services:
+  {{ next_ai_drawio_docker_web_service }}:
+    image: {{ next_ai_drawio_docker_web_image }}
+    container_name: next-ai-drawio
+    user: "1001:1001"
+    restart: {{ next_ai_drawio_docker_restart_policy }}
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOSTNAME: "0.0.0.0"
+      PORT: "{{ next_ai_drawio_docker_web_internal_port }}"
+      AI_PROVIDER: openai
+      AI_MODEL: "{{ next_ai_drawio_docker_model_menu }}"
+      OPENAI_BASE_URL: "{{ next_ai_drawio_docker_llm_base_url }}"
+      OPENAI_API_KEY: "${NEXT_AI_DRAWIO_LLM_ROUTER_KEY:?NEXT_AI_DRAWIO_LLM_ROUTER_KEY must be set}"
+    ports:
+      - "{{ next_ai_drawio_docker_listen_host }}:{{ next_ai_drawio_docker_web_port }}:{{ next_ai_drawio_docker_web_internal_port }}"
+    volumes:
+      - {{ next_ai_drawio_docker_data_dir }}/data:/app/data
+
+  {{ next_ai_drawio_docker_mcp_service }}:
+    image: {{ next_ai_drawio_docker_mcp_image }}
+    build:
+      context: ./mcp-build
+      dockerfile: Dockerfile
+      args:
+        SUPERGATEWAY_IMAGE: "{{ next_ai_drawio_docker_mcp_base_image }}"
+        MCP_PACKAGE: "{{ next_ai_drawio_docker_mcp_package }}"
+    container_name: next-ai-drawio-mcp
+    user: "1000:1000"
+    restart: {{ next_ai_drawio_docker_restart_policy }}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    environment:
+      HOME: /tmp
+      BROWSER: none
+      DRAWIO_DATA_DIR: "off"
+    command:
+      - --stdio
+      - "{{ next_ai_drawio_docker_mcp_bin }}"
+      - --outputTransport
+      - streamableHttp
+      - --stateful
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "{{ next_ai_drawio_docker_mcp_port }}"
+      - --streamableHttpPath
+      - "{{ next_ai_drawio_docker_mcp_path }}"
+{% for tool in llm_router_mcp_next_ai_drawio_allowed_tools %}
+      - --tools
+      - {{ tool }}
+{% endfor %}
+      - --healthEndpoint
+      - /healthz
+    ports:
+      - "{{ next_ai_drawio_docker_listen_host }}:{{ next_ai_drawio_docker_mcp_port }}:{{ next_ai_drawio_docker_mcp_port }}"
