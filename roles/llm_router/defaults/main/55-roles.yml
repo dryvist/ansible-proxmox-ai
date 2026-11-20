@@ -54,14 +54,28 @@ _llm_router_role_deployments_source:
     fallbacks: []
     litellm_params:
       turn_off_message_logging: true
+  # The delegation sensitivity judge: one local member, no fallback, no message logging.
+  - role: sensitivity
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: []
+    litellm_params:
+      turn_off_message_logging: true
 llm_router_role_deployments: "{{ _llm_router_m_role_deployments }}"
 
 llm_router_seed_request_timeout: 30
 
+# A physical target is seedable only while its capability group is live. This
+# keeps exact-member roles aligned with the same rendered-entry gate as aliases.
+_llm_router_role_available_targets: >-
+  {{ ((_llm_router_live_models | default([]))
+      + (llm_router_capability_members
+         | selectattr('route_group', 'in', _llm_router_live_models | default([]))
+         | map(attribute='client_model_id') | list))
+     | unique | list }}
 _llm_router_roles_to_create: >-
   {{ llm_router_role_deployments
      | rejectattr('role', 'in', _llm_router_live_models)
-     | selectattr('model', 'in', _llm_router_live_models) | list }}
+     | selectattr('model', 'in', _llm_router_role_available_targets) | list }}
 # Live roles to delete and recreate from Git in `initial` mode, by name, for one
 # converge (-e '{"llm_router_rebuild_roles": ["judge"]}'). `rebuild` recreates every live role.
 llm_router_rebuild_roles: []
