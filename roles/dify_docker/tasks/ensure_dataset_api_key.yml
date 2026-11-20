@@ -1,0 +1,42 @@
+---
+- name: Read the stored Dify dataset API key from OpenBao
+  ansible.builtin.include_tasks: read_agent_leaf.yml
+  vars:
+    dify_docker_agent_leaf_read_path: "{{ dify_docker_openbao_path }}"
+    dify_docker_agent_leaf_read_register: dify_docker_dataset_api_key_lookup
+  no_log: true
+
+- name: Create the Dify dataset API key only when OpenBao has none
+  when:
+    - not ansible_check_mode
+    - ((dify_docker_dataset_api_key_lookup.secret | default({})).DIFY_DATASET_API_KEY | default('', true)) | length == 0
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/datasets/api-keys"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body: {}
+    status_code: 200
+    return_content: true
+  register: dify_docker_dataset_api_key_create
+  changed_when: dify_docker_dataset_api_key_create.status | default(0) == 200
+  no_log: true
+
+- name: Store the Dify dataset API key in OpenBao
+  when: dify_docker_dataset_api_key_create.status | default(0) == 200
+  block:
+    - name: Store the Dify dataset API key through the shared seed_generated task
+      ansible.builtin.include_tasks: seed_agent_leaf.yml
+      vars:
+        dify_docker_agent_leaf_seed_path: "{{ dify_docker_openbao_path }}"
+        dify_docker_agent_leaf_seed_fields:
+          - name: DIFY_DATASET_API_KEY
+            length: 50
+            charset: alnum
+            value: "{{ dify_docker_dataset_api_key_create.json.token }}"
+        dify_docker_agent_leaf_seed_register: dify_docker_dataset_api_key_seed_result
+        dify_docker_agent_leaf_seed_rollback_url: >-
+          {{ dify_docker_console_api_base }}/datasets/api-keys/{{ dify_docker_dataset_api_key_create.json.id }}
+      no_log: true

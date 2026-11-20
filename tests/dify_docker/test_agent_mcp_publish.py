@@ -289,7 +289,7 @@ def _includes(items):
             yield from _includes(task.get(section))
 
 
-def test_both_callers_share_the_helpers_and_mcp_access_log_is_off():
+def test_callers_share_the_helpers_and_mcp_access_log_is_off():
     task_dir = ROOT / "roles/dify_docker/tasks"
     helpers = ("resolve_agent_app_id.yml", "read_agent_leaf.yml", "seed_agent_leaf.yml")
 
@@ -298,6 +298,10 @@ def test_both_callers_share_the_helpers_and_mcp_access_log_is_off():
         includes = set(_includes(tasks))
         for helper in helpers:
             assert helper in includes, (caller, helper)
+
+    dataset_includes = set(_includes(_yaml(task_dir / "ensure_dataset_api_key.yml")))
+    assert {"read_agent_leaf.yml", "seed_agent_leaf.yml"} <= dataset_includes
+    assert "resolve_agent_app_id.yml" not in dataset_includes
 
     # The server code in the request path is a bearer secret; nginx must not
     # log any request to it.
