@@ -344,12 +344,3 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
 
         rendered_servers = set(parsed.get("mcp_servers", {}))
         assert rendered_servers == set(profile["mcp"])
-
-
-def test_openai_compatible_model_provider_is_declared_once() -> None:
-    defaults = _defaults()
-    assert defaults["hermes_agent_model_provider"] == "custom"
-
-    for name in ("config.yaml.j2", "config-profile.yaml.j2", "config-public-gateway.yaml.j2"):
-        template = (ROLE_ROOT / "templates" / name).read_text()
-        assert "provider: {{ hermes_agent_model_shared_provider }}" in template

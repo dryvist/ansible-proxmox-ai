@@ -103,3 +103,12 @@ def test_job_name_normalization_is_deterministic_and_prometheus_safe():
         "tag": "telemetry_job_mixed_job_name",
     }
     assert re.fullmatch(r"telemetry_job_[a-z0-9_]+", mapping["Mixed.job/Name"]["tag"])
+
+
+def test_openai_compatible_model_provider_is_declared_once() -> None:
+    defaults = role_defaults(ROLE_ROOT)
+    assert defaults["hermes_agent_model_provider"] == "custom"
+
+    for name in ("config.yaml.j2", "config-profile.yaml.j2", "config-public-gateway.yaml.j2"):
+        template = (ROLE_ROOT / "templates" / name).read_text()
+        assert "provider: {{ hermes_agent_model_shared_provider }}" in template
