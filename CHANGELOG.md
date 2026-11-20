@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.59.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.59.0...v2.59.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **llm_router:** pin LiteLLM back to 1.106.9 ([#2610](https://github.com/dryvist/ansible-proxmox-ai/issues/2610)) ([6db6b1e](https://github.com/dryvist/ansible-proxmox-ai/commit/6db6b1e4f0a48d885bce340f2c26b6f29be7907f))
+
 ## [2.59.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.58.1...v2.59.0) (2026-11-20)
 
 
