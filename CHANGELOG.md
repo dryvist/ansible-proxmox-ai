@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.65.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.64.3...v2.65.0) (2026-11-21)
+
+
+### Features
+
+* **dify:** declare the Vikunja clerk project policy variables ([#2668](https://github.com/dryvist/ansible-proxmox-ai/issues/2668)) ([87ff8b0](https://github.com/dryvist/ansible-proxmox-ai/commit/87ff8b0ecada1eba6d64897d0ed46a61318dc8ff))
+
+## [2.64.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.64.2...v2.64.3) (2026-11-21)
+
+
+### Bug Fixes
+
+* **agentgateway_docker:** allow the portless compose name on the Vikunja clerk sidecar ([#2665](https://github.com/dryvist/ansible-proxmox-ai/issues/2665)) ([ea9b961](https://github.com/dryvist/ansible-proxmox-ai/commit/ea9b9610adf32d6c2dfc8b69be5d8ea9c5021b0d))
+
 ## [2.64.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.64.1...v2.64.2) (2026-11-21)
 
 
