@@ -83,6 +83,7 @@ def test_integration_route_allows_only_its_connector() -> None:
 def test_agent_route_names_are_unique_and_path_safe(names: list[str], expected: bool) -> None:
     assert _task_passes(_task("Validate agent route names"),
         agentgateway_docker_a2a_targets=[],
+        agentgateway_docker_roster_a2a_targets=[],
         agentgateway_docker_dify_mcp_targets=[{"name": name} for name in names],
         agentgateway_docker_agent_roster=[],
     ) is expected

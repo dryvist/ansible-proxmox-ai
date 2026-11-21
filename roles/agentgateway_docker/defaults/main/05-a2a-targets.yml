@@ -35,3 +35,35 @@ agentgateway_docker_a2a_targets:
       {{ hostvars['localhost']['tofu_data']['containers']['langgraph']['ip'] }}:{{
       hostvars['localhost']['tofu_data']['constants']['service_ports']['langgraph_api']
       | mandatory('tofu_data.constants.service_ports.langgraph_api missing — regenerate tofu_inventory.json') }}
+
+# Roster-derived A2A targets: every roster agent that publishes an a2a_url gets
+# /a2a/<agent>/, unless a static target above already has that name. The
+# producer computes the URL from the guest's address and a service port, so
+# nothing here names an address; its host:port is the backend and its path the
+# backend path prefix. Only plain HTTP is accepted, which is what the native
+# listeners serve; any other scheme fails the render. The backend bearer is the
+# agent's own A2A token: env <AGENT>_A2A_TOKEN, then
+# bao_apps_secrets.<agent>_a2a_token. An agent with no token gets a route with
+# no backend credential.
+agentgateway_docker_roster_a2a_targets: >-
+  {%- set static_names = agentgateway_docker_a2a_targets | map(attribute='name') | list -%}
+  {%- set targets = [] -%}
+  {%- for name, agent in (ai_agents | default({})) | dictsort
+        if agent.a2a_url is defined and name not in static_names -%}
+    {%- if agent.a2a_url is not match('^http://[^/\\s]+(/\\S*)?$') -%}
+      {{ undef('roster agent ' ~ name ~ ' a2a_url must be an http:// URL') }}
+    {%- endif -%}
+    {%- set key = name | replace('-', '_') -%}
+    {%- set token = lookup('env', (key | upper) ~ '_A2A_TOKEN')
+        | default((bao_apps_secrets | default({})).get(key ~ '_a2a_token', ''), true) -%}
+    {%- set target = {
+        'name': name,
+        'path_prefix': '/a2a/' ~ name ~ '/',
+        'host': agent.a2a_url | regex_replace('^http://([^/]+).*$', '\\1'),
+        'backend_path_prefix': agent.a2a_url | regex_replace('^http://[^/]+', '') or '/'} -%}
+    {%- if token | length > 0 -%}
+      {%- set _ = target.update({'bearer_token': token}) -%}
+    {%- endif -%}
+    {%- set _ = targets.append(target) -%}
+  {%- endfor -%}
+  {{ targets }}

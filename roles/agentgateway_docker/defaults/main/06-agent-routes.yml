@@ -3,7 +3,8 @@
 # Route policies use apiKey, authorization, and requestHeaderModifier;
 # Dify backends use mcp.targets[].mcp.host. Verified 2026-11-06.
 # Each entry: {agent: <name>, allowed_callers: [<caller names>]}.
-# Defaults derive Hermes callers by tier and LangGraph callers by registration.
+# Defaults derive Hermes callers by tier and LangGraph callers by registration;
+# roster-derived A2A agents use their declared a2a_callers, else the tier.
 # A supplied roster replaces these defaults; missing entries deny every caller.
 agentgateway_docker_agent_roster: >-
   {%- set tier_callers = (ai_callers | default({})) | dict2items
@@ -11,6 +12,12 @@ agentgateway_docker_agent_roster: >-
       | map(attribute='key') | select('in', agentgateway_docker_roster_keys) | list -%}
   {%- set roster = [{'agent': 'hermes', 'allowed_callers': tier_callers},
                     {'agent': 'langgraph', 'allowed_callers': agentgateway_docker_roster_keys | list}] -%}
+  {#- A roster-derived A2A target allows the agent's declared a2a_callers that hold a gateway key, else the tier. -#}
+  {%- for target in agentgateway_docker_roster_a2a_targets -%}
+    {%- set declared = (ai_agents | default({})).get(target.name, {}).get('a2a_callers', []) -%}
+    {%- set _ = roster.append({'agent': target.name, 'allowed_callers':
+        (declared | select('in', agentgateway_docker_roster_keys) | list) if declared else tier_callers}) -%}
+  {%- endfor -%}
   {%- for target in agentgateway_docker_dify_mcp_targets | default([]) -%}
     {%- set _ = roster.append({'agent': target.name, 'allowed_callers': tier_callers}) -%}
   {%- endfor -%}
