@@ -77,6 +77,7 @@ def _roster(targets: list[dict[str, str]]) -> list[dict[str, Any]]:
         agentgateway_docker_a2a_allowed_tier="trusted",
         agentgateway_docker_roster_keys=ROSTER_KEYS,
         agentgateway_docker_dify_mcp_targets=targets,
+        agentgateway_docker_roster_a2a_targets=[],
     )
 
 
