@@ -333,6 +333,24 @@ binds:
                   prefix: "Bearer "
 {% endif %}
 {% endfor %}
+{% for hook in agentgateway_docker_signed_webhook_routes | default([]) %}
+    # Signed webhook relay: no caller key; the backend verifies the HMAC, read
+    # under the header name it accepts.
+    - matches:
+      - path:
+          exact: /hooks/{{ hook.name }}
+      policies:
+        urlRewrite:
+          path:
+            full: {{ hook.backend_path | to_json }}
+        transformations:
+          request:
+            set:
+              {{ hook.get('verified_header', 'linear-signature') }}: {{ ('request.headers["' ~ hook.signature_header ~ '"]') | to_json }}
+            remove: {{ [hook.signature_header] | to_json }}
+      backends:
+      - host: {{ hook.host }}
+{% endfor %}
 {% for target in agentgateway_docker_dify_mcp_targets %}
     - matches:
       - path:
