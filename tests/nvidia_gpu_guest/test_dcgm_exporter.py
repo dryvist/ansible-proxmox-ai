@@ -34,7 +34,7 @@ def _selected_tasks(major: str, check_mode: bool = False) -> list[dict]:
 def test_exporter_uses_the_release_compatible_package_pair():
     defaults = _load(ROLE / "defaults/main/20-dcgm-exporter.yml")
     assert defaults["nvidia_gpu_guest_dcgm_version"] == "4.6.1"
-    assert defaults["nvidia_gpu_guest_dcgm_exporter_version"] == "4.8.4"
+    assert defaults["nvidia_gpu_guest_dcgm_exporter_version"] == "4.9.0"
     assert "renovate: datasource=github-releases depName=NVIDIA/DCGM" in (
         ROLE / "defaults/main/20-dcgm-exporter.yml"
     ).read_text(encoding="utf-8")
@@ -202,7 +202,7 @@ def test_exporter_pin_matches_the_debian12_index_stanza():
     defaults = _load(ROLE / "defaults/main/20-dcgm-exporter.yml")
 
     assert stanza["Package"] == "datacenter-gpu-manager-exporter"
-    assert stanza["Version"] == "4.8.4.3955-1"
+    assert stanza["Version"] == "4.9.0.8414-1"
     assert stanza["Version"].startswith(defaults["nvidia_gpu_guest_dcgm_exporter_version"])
     assert stanza["Architecture"] == "amd64"
     assert stanza["Depends"] == "datacenter-gpu-manager-4-core"

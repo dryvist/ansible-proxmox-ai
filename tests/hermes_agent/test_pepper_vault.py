@@ -30,7 +30,7 @@ def test_vault_rendering(identity, url, enabled):
         return
     server = servers['vault']
     assert server['command'] == '/usr/bin/npx'
-    assert server['args'] == ['-y', '@modelcontextprotocol/server-filesystem@2.2.0',
+    assert server['args'] == ['-y', '@modelcontextprotocol/server-filesystem@2.3.0',
                               '--read-only', '--confine-roots', path]
     assert server['tools'] == {'include': TOOLS}
     assert server['resources'] is False
