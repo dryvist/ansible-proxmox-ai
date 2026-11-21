@@ -12,13 +12,13 @@ def test_hermes_0230_release_pins_match_the_tagged_runtime() -> None:
         "abf338605dae6dd28d101673ac6aed7995c955745db46d47676bc591a7957209"
     )
     assert defaults["hermes_agent_slack_bolt_version"] == "1.30.0"
-    assert defaults["hermes_agent_slack_sdk_version"] == "3.45.0"
+    assert defaults["hermes_agent_slack_sdk_version"] == "3.47.0"
     assert defaults["hermes_agent_slack_aiohttp_version"] == "3.14.5"
     assert defaults["hermes_agent_mcp_version"] == "2.3.0"
-    assert defaults["hermes_agent_mcp_httpx2_version"] == "2.15.1"
-    assert defaults["hermes_agent_mcp_starlette_version"] == "1.9.0"
+    assert defaults["hermes_agent_mcp_httpx2_version"] == "2.16.0"
+    assert defaults["hermes_agent_mcp_starlette_version"] == "1.10.0"
     assert defaults["hermes_agent_otlp_sdk_version"] == "1.45.1"
-    assert defaults["hermes_agent_firecrawl_py_version"] == "4.53.2"
+    assert defaults["hermes_agent_firecrawl_py_version"] == "4.57.0"
 
 
 def test_gateway_and_profiles_render_hermes_023_browser_config() -> None:

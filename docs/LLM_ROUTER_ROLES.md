@@ -42,9 +42,12 @@ members run in deployment order (local GPU first, then the local fallbacks, then
 the capability's own cloud tail). A request too large for the advertised window
 escapes through `context_window_fallbacks`
 (`defaults/main/37-fallback-entry-points.yml`) rather than walking the ordinary
-chain. Only `judge`, `recorder` and `fast-subagent` are seeded as database roles
-(`defaults/main/55-roles.yml`), and they copy the first member of their
-capability.
+chain. `judge`, `recorder`, `fast-subagent` and `recorder-medium` are seeded as
+database roles (`defaults/main/55-roles.yml`) and copy the first member of their
+capability. A role may instead target one exact member by its id: `sensitivity`
+targets the local 4080 member (`llm_router_hermes_local_4080_id`) with no
+fallback and message logging off, and is seeded only while that member's
+capability is live. The workstation proxy key carries it.
 
 ## Swap a role
 
