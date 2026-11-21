@@ -57,10 +57,12 @@ def _render_hindsight_config(
         return value
 
     env.filters["mandatory"] = mandatory
+    env.filters["bool"] = bool
     gateway_key_field = agent_id.replace("-", "_") + "_agentgateway_key"
     context = {
         "ansible_managed": "managed",
         "hermes_agent_id": agent_id,
+        "hermes_agent_is_isolated": agent_id == "pepper",
         "hermes_agent_memory_mode": mode,
         "hermes_agent_memory_api_url": "https://hindsight.example.test",
         "hermes_agent_memory_api_key": "fixture-hindsight-api-key",
@@ -207,11 +209,13 @@ def test_agents_share_hindsight_service_but_not_memory_banks() -> None:
     hermes = _render_hindsight_config("hermes")
     donna = _render_hindsight_config("donna")
 
+    bank_env = Environment()
+    bank_env.filters["bool"] = bool
+    bank_id = bank_env.from_string(defaults["hermes_agent_memory_bank_id"])
     for identity in ['hermes', 'hermes-private', 'donna']:
-        assert Environment().from_string(defaults["hermes_agent_memory_bank_id"]).render(
-            hermes_agent_id=identity) == identity
-    assert Environment().from_string(defaults["hermes_agent_memory_bank_id"]).render(
-        hermes_agent_id='pepper') == ''
+        assert bank_id.render(hermes_agent_id=identity, hermes_agent_is_isolated=False) == identity
+    assert bank_id.render(hermes_agent_id='pepper', hermes_agent_is_isolated=True) == ''
+    assert bank_id.render(hermes_agent_id='tracker-x', hermes_agent_is_isolated=True) == ''
     assert hermes["mode"] == donna["mode"] == "local_external"
     assert hermes["api_url"] == donna["api_url"]
     assert hermes["api_key"] == donna["api_key"] == "fixture-hindsight-api-key"

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.64.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.64.1...v2.64.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **hermes_agent:** apply the isolated posture to every hermes-isolated identity ([#2662](https://github.com/dryvist/ansible-proxmox-ai/issues/2662)) ([f1e479f](https://github.com/dryvist/ansible-proxmox-ai/commit/f1e479fe537018df2be02ad61b4a1cac72b92b29))
+
 ## [2.64.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.64.0...v2.64.1) (2026-11-21)
 
 
