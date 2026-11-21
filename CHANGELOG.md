@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.65.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.65.0...v2.65.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **drawio:** select configuration by active inventory groups ([#2649](https://github.com/dryvist/ansible-proxmox-ai/issues/2649)) ([179f77e](https://github.com/dryvist/ansible-proxmox-ai/commit/179f77efe883d42ab0fdfc3df7267263b8607783))
+
 ## [2.65.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.64.3...v2.65.0) (2026-11-21)
 
 
