@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.61.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.61.1...v2.61.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **llm-router:** add member-key role names to priority team allowlists ([#2634](https://github.com/dryvist/ansible-proxmox-ai/issues/2634)) ([8c8bbfa](https://github.com/dryvist/ansible-proxmox-ai/commit/8c8bbfafb29b9da109b1d78705a7560b7eacc91f))
+
 ## [2.61.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.61.0...v2.61.1) (2026-11-21)
 
 
