@@ -10,7 +10,8 @@ by catalog app name, and each entry names one variable and exactly one source:
 | `approle_role_id: {approle}` | The role id of the AppRole. |
 | `approle_secret_id: {approle}` | A new secret id, minted with `dify_docker_agent_secret_id_ttl` (default `720h`) and tagged with the app name. |
 
-`secret: true` stores the variable with the secret value type. An entry with no source, or with
+`secret: true` stores the variable with the secret value type. `optional: true` lets the source resolve
+to an empty value, which is written as empty instead of failing the app. An entry with no source, or with
 two, fails the app before its import. The failure names the app and the variable, never a value.
 
 AppRole role ids and secret ids are read and minted with an issuer AppRole, not the converge writer
