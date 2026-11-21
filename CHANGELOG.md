@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.64.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.63.2...v2.64.0) (2026-11-21)
+
+
+### Features
+
+* **agentgateway_docker:** publish the Crawl4AI page-reader MCP route ([#2642](https://github.com/dryvist/ansible-proxmox-ai/issues/2642)) ([39fa67e](https://github.com/dryvist/ansible-proxmox-ai/commit/39fa67ec4b467f7bed2ee3f6d907c08ab9d30a49))
+
 ## [2.63.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.63.1...v2.63.2) (2026-11-21)
 
 
