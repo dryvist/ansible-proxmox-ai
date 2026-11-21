@@ -44,6 +44,23 @@
     quiet: true
   loop: "{{ dify_docker_postgres_backup_stats.results }}"
 
+- name: Read the last lines of each PostgreSQL pre-upgrade backup
+  ansible.builtin.command:
+    argv: [tail, -n, "5", "{{ item }}"]
+  register: dify_docker_postgres_backup_tails
+  changed_when: false
+  loop: "{{ dify_docker_postgres_backup_paths }}"
+
+- name: Require each PostgreSQL pre-upgrade backup to end with its dump-complete marker
+  ansible.builtin.assert:
+    that:
+      - item.stdout is search('-- PostgreSQL database (cluster )?dump complete')
+    fail_msg: "PostgreSQL pre-upgrade backup {{ item.item }} is truncated: no dump-complete marker."
+    quiet: true
+  loop: "{{ dify_docker_postgres_backup_tails.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Set restrictive permissions on the PostgreSQL backups
   ansible.builtin.file:
     path: "{{ item }}"

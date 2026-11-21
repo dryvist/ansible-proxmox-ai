@@ -169,6 +169,27 @@ def test_upgrade_rescue_restarts_the_stack_before_failing():
     assert "ansible.builtin.fail" in fail
 
 
+def test_compose_version_preflight_precedes_render_and_deploy():
+    tasks = yaml.safe_load(CONFIG_TASKS.read_text(encoding="utf-8"))
+    names = [task.get("name") for task in tasks]
+    version_read = names.index("Read the Docker Compose version on the Dify host")
+    preflight = names.index("Require the Dify minimum Docker Compose version")
+    assert version_read < preflight < names.index("Render Dify docker-compose.yml")
+
+    read = tasks[version_read]
+    assert read["ansible.builtin.command"]["argv"] == ["docker", "compose", "version", "--short"]
+    assert read["changed_when"] is False
+    assert read["check_mode"] is False
+
+    assertion = tasks[preflight]["ansible.builtin.assert"]
+    that = str(assertion["that"])
+    assert "dify_docker_compose_version.stdout" in that
+    assert "dify_docker_compose_min_version" in that
+
+    defaults = load_defaults()
+    assert defaults["dify_docker_compose_min_version"] == "2.35.0"
+
+
 def test_password_pepper_is_preserved_from_existing_compose_and_rendered_only_when_defined():
     tasks = yaml.safe_load(CONFIG_TASKS.read_text(encoding="utf-8"))
     names = [task.get("name") for task in tasks]
