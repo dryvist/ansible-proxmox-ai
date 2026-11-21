@@ -16,7 +16,58 @@
   vars:
     _ungranted: [apps/recorder, apps/judge, apps/hermes-tracker-reporter]
     _apps_path: "{{ playbook_dir }}/../../inventory/group_vars/all/openbao_secrets/11-roster-domains.yml"
+    _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
+    _drawio_path: "{{ _apps | select('mapping') | selectattr('path', 'equalto', 'apps/next-ai-drawio') | first }}"
+    # add_host only mutates the play-scoped inventory; the shipped gate is a
+    # Jinja expression on the play-start group count, so this mirror proves the
+    # single-host invariant against the synthetic fixture below.
+    _ungranted_drawio_enabled: >-
+      {{ (groups.get('next_ai_drawio_group', []) | length == 1)
+         and (openbao_secrets_active_groups | default([])
+              | intersect(['next_ai_drawio_group', 'llm_router_group']) | length > 0)
+         | bool }}
   tasks:
+    - name: Draw.io stays out when the untagged inventory has no app group
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _drawio_path.optional | bool
+          - not (_ungranted_drawio_enabled | bool)
+      vars:
+        openbao_secrets_active_groups: [llm_router_group]
+
+    - name: Add a synthetic Draw.io inventory host
+      run_once: true
+      ansible.builtin.add_host:
+        name: fixture-next-ai-drawio
+        groups: next_ai_drawio_group
+
+    - name: Only Draw.io and LiteLLM converge scopes fetch the Draw.io leaf
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (_ungranted_drawio_enabled | bool) == item.enabled
+      vars:
+        openbao_secrets_active_groups: "{{ item.groups }}"
+      loop:
+        - { groups: [unrelated_fixture_group], enabled: false }
+        - { groups: [next_ai_drawio_group], enabled: true }
+        - { groups: [llm_router_group], enabled: true }
+
+    - name: Add a second synthetic Draw.io inventory host
+      run_once: true
+      ansible.builtin.add_host:
+        name: fixture-next-ai-drawio-extra
+        groups: next_ai_drawio_group
+
+    - name: Draw.io stays out when its inventory group has multiple hosts
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (_ungranted_drawio_enabled | bool)
+      vars:
+        openbao_secrets_active_groups: [llm_router_group]
+
     - name: With the shipped flags none of the ungranted paths is fetched
       ansible.builtin.assert:
         quiet: true
@@ -38,7 +89,6 @@
           - "'apps/zcode' in _fetched"
         fail_msg: "fetched={{ _fetched }}"
       vars:
-        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
         _declared: "{{ _apps | select('mapping') | map(attribute='path') | list }}"
         _fetched: >-
           {{ (_apps | select('mapping') | rejectattr('enabled', 'defined') | list
@@ -56,7 +106,6 @@
         llm_router_recorder_key_enabled: true
         llm_router_judge_key_enabled: true
         llm_router_hermes_tracker_reporter_key_enabled: true
-        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
         _fetched: >-
           {{ (_apps | select('mapping') | rejectattr('enabled', 'defined') | list
               + _apps | selectattr('enabled', 'defined') | selectattr('enabled') | list)
@@ -73,7 +122,6 @@
         fail_msg: "declared={{ _declared }}"
         success_msg: "Only the optional sandbox-agent router-key path is declared."
       vars:
-        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
         _declared: "{{ _apps | select('mapping') | map(attribute='path') | list }}"
         _sandbox_router_paths: >-
           {{ _apps | select('mapping')
