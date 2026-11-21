@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.63.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.63.0...v2.63.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **dify_docker:** allow SSRF proxy CONNECT to declared MCP provider hosts ([64b6d2a](https://github.com/dryvist/ansible-proxmox-ai/commit/64b6d2a5fb0038e4ff7f6b9322fbe1dc82362f6c))
+* **dify_docker:** squid allow for declared MCP provider hosts ([#2650](https://github.com/dryvist/ansible-proxmox-ai/issues/2650)) ([64b6d2a](https://github.com/dryvist/ansible-proxmox-ai/commit/64b6d2a5fb0038e4ff7f6b9322fbe1dc82362f6c))
+
 ## [2.63.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.62.0...v2.63.0) (2026-11-21)
 
 
