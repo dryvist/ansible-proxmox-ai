@@ -19,7 +19,7 @@ FILTER = types.SimpleNamespace(
 )
 
 
-def render(private: bool, public: bool = False) -> dict:
+def render(private: bool, public: bool = False, **extra) -> dict:
     env = Environment(
         autoescape=select_autoescape(default=False, default_for_string=False),
         loader=FileSystemLoader(ROLE / "templates"),
@@ -40,6 +40,7 @@ def render(private: bool, public: bool = False) -> dict:
         hermes_agent_webhook_port=8644,
         hermes_agent_webhook_prompt="p",
     )
+    ctx.update(extra)
     return yaml.safe_load(env.from_string(BLOCK).render(**ctx))["platforms"]["webhook"]["extra"]["routes"]
 
 
@@ -102,3 +103,13 @@ def test_prompt_fields_resolve_in_the_reconcile_payload():
         for part in path.split("."):
             value = value[part]
         assert value not in (None, "")
+
+
+def test_profile_routes_render_beside_the_private_route_without_a_secret():
+    route = {"name": "task-event", "profile": "task-pm", "prompt": "Event {event_name} for {data.task.id}"}
+    assert render(False, hermes_agent_profile_webhook_routes=[route]) == {
+        "task-event": {"profile": "task-pm", "prompt": "Event {event_name} for {data.task.id}"},
+    }
+    both = render(True, hermes_agent_profile_webhook_routes=[route])
+    assert list(both) == ["github-private", "task-event"]
+    assert "secret" not in both["task-event"]

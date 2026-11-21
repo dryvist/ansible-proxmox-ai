@@ -146,6 +146,7 @@ def _render(
         "agentgateway_docker_a2a_allowed_tier": INVENTORY_VARS["agentgateway_docker_a2a_allowed_tier"],
         "agentgateway_docker_dify_mcp_targets": [],
         "agentgateway_docker_proxied_mcp_targets": [],
+        "agentgateway_docker_signed_webhook_routes": [],
         "agentgateway_docker_hindsight_roster_tiers": roster_tiers,
         **FACADE_DEFAULTS,
         # Keep generic authorization fixtures independent of the role's live

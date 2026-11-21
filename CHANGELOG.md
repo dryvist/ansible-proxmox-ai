@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.61.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.60.3...v2.61.0) (2026-11-21)
+
+
+### Features
+
+* **agentgateway:** validate the rendered config with the pinned image before it lands ([#2608](https://github.com/dryvist/ansible-proxmox-ai/issues/2608)) ([b36cec3](https://github.com/dryvist/ansible-proxmox-ai/commit/b36cec3a97bbefaadff9b27fd0a73e3ba796e36d))
+* **agents:** relay signed task webhooks through the gateway to a profile webhook route ([#2617](https://github.com/dryvist/ansible-proxmox-ai/issues/2617)) ([e15d2dd](https://github.com/dryvist/ansible-proxmox-ai/commit/e15d2dd144d214ed5457e33bd1a4bd9db8d17944))
+
 ## [2.60.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.60.2...v2.60.3) (2026-11-20)
 
 

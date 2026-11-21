@@ -254,6 +254,22 @@
     # Roster keys are readable by the gateway's nonroot group only.
     group: "{{ agentgateway_docker_container_gid if agentgateway_docker_roster_keys | length > 0 else 'root' }}"
     mode: "{{ '0640' if agentgateway_docker_roster_keys | length > 0 else '0644' }}"
+    # The pinned image checks the staged file before it replaces the live one, so a
+    # render it rejects never reaches a restart. The validator reads every file the
+    # config names, so those files are mounted read-only at their runtime paths.
+    validate: >-
+      docker run --rm --network none --user 0:0 -v %s:/config.yaml:ro
+      {% if agentgateway_docker_nautobot_openapi_enabled | bool
+            and agentgateway_docker_nautobot_read_token | length > 0 %}
+      -v {{ agentgateway_docker_nautobot_openapi_schema_file }}:{{
+      agentgateway_docker_nautobot_openapi_schema_path }}:ro
+      -v {{ agentgateway_docker_nautobot_openapi_token_file }}:{{
+      agentgateway_docker_nautobot_openapi_token_path }}:ro
+      {% endif %}
+      {% if agentgateway_docker_proxied_mcp_targets | default([]) | length > 0 %}
+      -v {{ agentgateway_docker_proxied_mcp_secrets_dir }}:{{ agentgateway_docker_proxied_mcp_secrets_path }}:ro
+      {% endif %}
+      {{ agentgateway_docker_image }} --validate-only -f /config.yaml
   no_log: true
   notify: Restart agentgateway
 
