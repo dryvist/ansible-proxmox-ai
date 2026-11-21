@@ -13,7 +13,6 @@ WORKFLOWS = Path(__file__).parents[1] / ".github/workflows"
 
 
 def _job_steps(workflow: str, job: str) -> list[dict]:
-    """A job's steps with local composite actions (`uses: ./...`) expanded in place."""
     def expand(steps: list[dict]) -> list[dict]:
         out = []
         for step in steps:
@@ -25,6 +24,10 @@ def _job_steps(workflow: str, job: str) -> list[dict]:
                 out.append(step)
         return out
     return expand(yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"])
+
+
+def _step(steps: list[dict], name: str) -> dict:
+    return next(step for step in steps if step.get("name") == name)
 
 
 def test_agent_ci_fix_runs_only_for_pull_request_ci_gate_runs() -> None:
@@ -55,22 +58,17 @@ def test_agent_workflows_use_the_central_v2_callee(workflow: str) -> None:
 
 def test_installer_recompute_authenticates_checksum_requests() -> None:
     steps = yaml.safe_load((WORKFLOWS / "fix-installer-sha.yml").read_text())["jobs"]["fix"]["steps"]
-    recompute = next(step for step in steps if step.get("name") == "Recompute the checksum")
-    assert recompute["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    assert _step(steps, "Recompute the checksum")["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
 
 
 def test_nix_installs_whenever_the_agent_guest_test_runs() -> None:
     steps = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())["jobs"]["syntax-check"]["steps"]
-    nix = next(step for step in steps if step.get("name") == "Install Nix")
-    agent_guest = next(step for step in steps
-                       if step.get("name") == "Verify agent_guest residual deny contract")
-    assert nix["if"] == agent_guest["if"]
+    assert _step(steps, "Install Nix")["if"] == _step(steps, "Verify agent_guest residual deny contract")["if"]
 
 
 def test_report_step_reads_no_unused_selection_env() -> None:
     steps = yaml.safe_load(CI_GATE.read_text())["jobs"]["contract-scope"]["steps"]
-    report = next(step for step in steps if step.get("name") == "Report the selected contract scope")
-    assert "SELECTED" not in report["env"]
+    assert "SELECTED" not in _step(steps, "Report the selected contract scope")["env"]
 
 
 def test_ci_gate_header_names_the_contract_scope_gate() -> None:
@@ -109,7 +107,6 @@ def _context(
 
 
 def _evaluate_timeout(expression: str, context: Mapping[str, str | int | None]) -> object:
-    # Substitute the context values, then map the expression's && and || onto Python's and/or.
     body = expression.removeprefix("${{").removesuffix("}}")
     for key, value in context.items():
         body = body.replace(key, repr(value))
@@ -156,22 +153,22 @@ def test_router_contract_dependency_timeout_is_five_for_pull_requests(
 
 @pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda path: path.name)
 def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
+    default = {PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"}
+    table = {
+        ("_molecule-select.yml", "select"): {"5"},
+        ("_lane-alias-parity.yml", "lane-alias-names"): {"5"},
+        ("_llm-router-contract.yml", "router-contract-dependencies"): {ROUTER_DEPENDENCIES_TIMEOUT},
+        ("_llm-router-contract.yml", "llm-router-contract"): {ROUTER_TIMEOUT},
+        ("_data-contract.yml", "role-self-checks"): {ROLE_SELF_CHECKS_TIMEOUT},
+        ("ci-gate.yml", "gate"): {GATE_TIMEOUT},
+    }
     for name, job in yaml.safe_load(path.read_text())["jobs"].items():
         if "runs-on" in job and (path.name, name) != ("fix-installer-sha.yml", "fix"):
             value = " ".join(str(job.get("timeout-minutes")).split())
-            allowed = {PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"}
-            if (path.name, name) in {("_molecule-select.yml", "select"), ("_lane-alias-parity.yml", "lane-alias-names")}:
-                allowed = {"5"}
-            elif (path.name, name) == ("_llm-router-contract.yml", "router-contract-dependencies"):
-                allowed = {ROUTER_DEPENDENCIES_TIMEOUT}
-            elif (path.name, name) == ("_llm-router-contract.yml", "llm-router-contract"):
-                allowed = {ROUTER_TIMEOUT}
-            elif (path.name, name) == ("_data-contract.yml", "role-self-checks"):
-                allowed = {ROLE_SELF_CHECKS_TIMEOUT}
-            elif (path.name, name) == ("ci-gate.yml", "gate"):
+            if path.name in {"chat-ui-image.yml", "gateway-falsifier.yml"} and name not in table:
                 allowed = {GATE_TIMEOUT}
-            elif path.name in {"chat-ui-image.yml", "gateway-falsifier.yml"}:
-                allowed = {GATE_TIMEOUT}
+            else:
+                allowed = table.get((path.name, name), default)
             assert value in allowed, f"{path.name}:{name}"
 
 
@@ -180,17 +177,14 @@ def test_reusable_calls_forward_the_timeout_input() -> None:
     for name in ("data-contract",):
         timeout = " ".join(jobs[name]["with"]["timeout_minutes"].split())
         assert timeout == PROMOTION_TIMEOUT.replace("|| 10", "|| 15"), name
-    molecule_timeout_15 = (
+    mt = (
         "${{ (github.base_ref == 'main' && github.head_ref == 'develop' && "
         "github.event.pull_request.head.repo.full_name == github.repository) && 60 || 15 }}"
     )
-    hosted_timeout = " ".join(jobs["molecule-hosted"]["with"]["pull_request_timeout_minutes"].split())
-    assert hosted_timeout == molecule_timeout_15
-    hermes_timeout = " ".join(jobs["molecule-hermes-ui"]["with"]["pull_request_timeout_minutes"].split())
-    assert hermes_timeout == molecule_timeout_15.replace("|| 15", "|| 25")
     for name in ("molecule-hosted", "molecule-hermes-ui"):
-        timeout = " ".join(jobs[name]["with"]["pull_request_discover_timeout_minutes"].split())
-        assert timeout == molecule_timeout_15
+        with_block = jobs[name]["with"]
+        assert " ".join(with_block["pull_request_timeout_minutes"].split()) in (mt, mt.replace("|| 15", "|| 25"))
+        assert " ".join(with_block["pull_request_discover_timeout_minutes"].split()) == mt
     nested = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())["jobs"]["llm-router-contract"]
     assert nested["with"]["timeout_minutes"] == "${{ inputs.timeout_minutes }}"
 
@@ -250,21 +244,18 @@ def test_router_jobs_share_the_cached_dependency_action(job: str) -> None:
 
 
 def test_exact_galaxy_cache_hits_do_not_force_reinstall_pinned_requirements() -> None:
-    action_files = (
-        WORKFLOWS.parent / "actions/router-deps/action.yml",
-        WORKFLOWS.parent / "actions/inventory-load-contract/action.yml",
-    )
-    for path in action_files:
+    def install_step(steps: list[dict]) -> dict:
+        return next(step for step in steps if step.get("uses", "").startswith("nick-fields/retry@"))
+
+    for path in (WORKFLOWS.parent / name for name in
+                 ("actions/router-deps/action.yml", "actions/inventory-load-contract/action.yml")):
         steps = yaml.safe_load(path.read_text())["runs"]["steps"]
         assert not any(step.get("uses") == "./.github/actions/refresh-contracts" for step in steps)
-        install = next(step for step in steps if step.get("uses", "").startswith("nick-fields/retry@"))
-        assert install["if"].endswith("outputs.cache-hit != 'true'")
+        assert install_step(steps)["if"].endswith("outputs.cache-hit != 'true'")
 
-    workflow = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())
-    syntax_steps = workflow["jobs"]["syntax-check"]["steps"]
+    syntax_steps = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())["jobs"]["syntax-check"]["steps"]
     assert not any(step.get("uses") == "./.github/actions/refresh-contracts" for step in syntax_steps)
-    install = next(step for step in syntax_steps if step.get("uses", "").startswith("nick-fields/retry@"))
-    assert install["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
+    assert install_step(syntax_steps)["if"] == "steps.galaxy-cache.outputs.cache-hit != 'true'"
 
 
 def test_hermes_memory_dependency_families_share_manual_compatibility_group() -> None:
@@ -274,31 +265,22 @@ def test_hermes_memory_dependency_families_share_manual_compatibility_group() ->
 
     assert config["vulnerabilityAlerts"]["automerge"] is False
 
-    hermes_rule = next(
-        rule for rule in rules
-        if "NousResearch/hermes-agent" in rule.get("matchPackageNames", [])
-    )
-    plugin_rule = next(
-        rule for rule in rules
-        if "vectorize-io/hindsight" in rule.get("matchPackageNames", [])
-        and rule.get("matchDatasources") == ["github-tags"]
-    )
-    sdk_rule = next(
-        rule for rule in rules
-        if rule.get("matchDepNames") == ["hindsight-client", "hindsight-embed"]
-        and rule.get("allowedVersions") == "<1.0.0"
-    )
-    image_rule = next(
-        rule for rule in rules
-        if "ghcr.io/vectorize-io/hindsight" in rule.get("matchPackageNames", [])
-        and rule.get("matchDatasources") == ["docker"]
-    )
-
-    for rule in (hermes_rule, plugin_rule, sdk_rule, image_rule):
+    matchers = [
+        lambda r: "NousResearch/hermes-agent" in r.get("matchPackageNames", []),
+        lambda r: "vectorize-io/hindsight" in r.get("matchPackageNames", [])
+        and r.get("matchDatasources") == ["github-tags"],
+        lambda r: r.get("matchDepNames") == ["hindsight-client", "hindsight-embed"]
+        and r.get("allowedVersions") == "<1.0.0",
+        lambda r: "ghcr.io/vectorize-io/hindsight" in r.get("matchPackageNames", [])
+        and r.get("matchDatasources") == ["docker"],
+    ]
+    rules_found = [next(r for r in rules if m(r)) for m in matchers]
+    for rule in rules_found:
         assert rule["groupName"] == group
         assert rule["automerge"] is False
         assert "dep:review" in rule["addLabels"]
 
+    sdk_rule, image_rule = rules_found[2], rules_found[3]
     assert image_rule["pinDigests"] is True
     assert image_rule["minimumReleaseAge"] == "0 days"
     assert "matchManagers" not in image_rule
