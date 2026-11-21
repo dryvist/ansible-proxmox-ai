@@ -42,9 +42,9 @@ _llm_router_capability_member_params: >-
   {%- endfor -%}
   {{ ns.members }}
 
-# DB-seeded roles copy the first rendered member of their capability group.
-# The selected member is order-aware and carries the same upstream parameters
-# and admission bounds as its model_list deployment.
+# DB-seeded roles can target a capability group or one exact rendered member.
+# Group targets copy the first member; physical targets keep that member's
+# upstream parameters and admission bounds.
 _llm_router_role_params: >-
   {%- set ns = namespace(params={}) -%}
   {%- for member in _llm_router_capability_member_params -%}
@@ -52,25 +52,32 @@ _llm_router_role_params: >-
   {%- if group not in ns.params -%}
   {%- set _ = ns.params.update({group: member.params}) -%}
   {%- endif -%}
+  {%- if member.entry.client_model_id not in ns.params -%}
+  {%- set _ = ns.params.update({member.entry.client_model_id: member.params}) -%}
+  {%- endif -%}
   {%- endfor -%}
   {{ ns.params }}
 
 _llm_router_role_model_info: >-
   {%- set ns = namespace(info={}) -%}
   {%- for m in llm_router_capability_members -%}
-  {%- if m.route_group not in ns.info -%}
   {%- if m.embedding | default(false) -%}
-  {%- set _ = ns.info.update({m.route_group: {'mode': 'embedding', 'allow_fail_open': true}}) -%}
+  {%- set info = {'mode': 'embedding', 'allow_fail_open': true} -%}
   {%- elif m.context_window is defined -%}
-  {%- set _ = ns.info.update({m.route_group: {
+  {%- set info = {
         'mode': 'chat', 'allow_fail_open': true,
         'max_input_tokens': _llm_router_vllm_max_input_tokens_by_model[m.client_model_id]
                              if m.client_model_id in _llm_router_vllm_max_input_tokens_by_model
                              else m.context_window,
-        'max_tokens': m.max_output_tokens | default(m.context_window)}}) -%}
+        'max_tokens': m.max_output_tokens | default(m.context_window)} -%}
   {%- else -%}
-  {%- set _ = ns.info.update({m.route_group: {'mode': 'chat', 'allow_fail_open': true}}) -%}
+  {%- set info = {'mode': 'chat', 'allow_fail_open': true} -%}
   {%- endif -%}
+  {%- if m.route_group not in ns.info -%}
+  {%- set _ = ns.info.update({m.route_group: info}) -%}
+  {%- endif -%}
+  {%- if m.client_model_id not in ns.info -%}
+  {%- set _ = ns.info.update({m.client_model_id: info}) -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.info }}
