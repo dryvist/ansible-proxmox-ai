@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.64.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.64.0...v2.64.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **agentgateway_docker:** allow the public MCP host on the Vikunja clerk sidecar ([#2658](https://github.com/dryvist/ansible-proxmox-ai/issues/2658)) ([b29dd37](https://github.com/dryvist/ansible-proxmox-ai/commit/b29dd37d6ffcdb457d779818e30dfdfec25a40be))
+
 ## [2.64.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.63.2...v2.64.0) (2026-11-21)
 
 
