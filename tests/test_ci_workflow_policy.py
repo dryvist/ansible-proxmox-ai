@@ -33,6 +33,17 @@ def test_agent_ci_fix_runs_only_for_pull_request_ci_gate_runs() -> None:
     assert "github.event.workflow_run.event == 'pull_request'" in job["if"]
 
 
+def test_openhands_ci_fix_runs_on_failure_or_per_run_dispatch() -> None:
+    workflow = yaml.safe_load((WORKFLOWS / "ci-fix.yml").read_text())
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]  # PyYAML reads the `on` key as True
+    assert all(inputs[name]["required"] for name in ("failure_run_id", "failure_head_branch"))
+    job = workflow["jobs"]["ci-fix"]
+    assert job["if"] == ("github.event_name == 'workflow_dispatch' || "
+                         "github.event.workflow_run.conclusion == 'failure'")
+    assert job["with"]["failure_run_id"] == "${{ inputs.failure_run_id }}"
+    assert job["with"]["failure_head_branch"] == "${{ inputs.failure_head_branch }}"
+
+
 @pytest.mark.parametrize("workflow", ["agent-ci-fix.yml", "agent-pr-review-responder.yml"])
 def test_agent_workflows_use_the_central_v2_callee(workflow: str) -> None:
     jobs = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"].values()
