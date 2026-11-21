@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.66.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.65.1...v2.66.0) (2026-11-21)
+
+
+### Features
+
+* **dify_docker:** pin the stack to Dify 1.19.0 with the Compose preflight and dump check ([#2676](https://github.com/dryvist/ansible-proxmox-ai/issues/2676)) ([1422aaa](https://github.com/dryvist/ansible-proxmox-ai/commit/1422aaa0d0d502d6c864bce7106ed15b33676d6e))
+
 ## [2.65.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.65.0...v2.65.1) (2026-11-21)
 
 
