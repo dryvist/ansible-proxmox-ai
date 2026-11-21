@@ -123,6 +123,15 @@ def _render(
         "agentgateway_docker_vikunja_mcp_enabled": True,
         "agentgateway_docker_vikunja_read_token": "example-vikunja-token",
         "agentgateway_docker_vikunja_mcp_port": 8002,
+        # Crawl4AI route defaults: disabled, so the pinned baseline render is
+        # byte-for-byte unchanged; the enabled render is tested in
+        # test_crawl4ai_route.py.
+        "agentgateway_docker_crawl4ai_mcp_enabled": False,
+        "agentgateway_docker_crawl4ai_mcp_url": "",
+        "agentgateway_docker_crawl4ai_api_token": "",
+        "agentgateway_docker_crawl4ai_allowed_callers": FACADE_DEFAULTS[
+            "agentgateway_docker_facade_callers"
+        ],
         "agentgateway_docker_vikunja_clerk_enabled": False,
         "agentgateway_docker_vikunja_clerk_api_token": "",
         "agentgateway_docker_vikunja_clerk_http_token": "",
