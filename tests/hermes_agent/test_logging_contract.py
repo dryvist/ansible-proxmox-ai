@@ -34,7 +34,8 @@ def test_rsyslog_routes_unit_children_and_file_logs() -> None:
     assert 'File="{{ hermes_agent_log_directory }}/*.log"' in RSYSLOG
     assert 'File="{{ hermes_agent_hermes_home }}/kanban/logs/*.log"' in RSYSLOG
     assert 'File="{{ hermes_agent_hermes_home }}/kanban/boards/*/logs/*.log"' in RSYSLOG
-    assert 'File="{{ hermes_agent_hermes_home }}/profiles/*/logs/*.log"' in RSYSLOG
+    assert 'File="{{ hermes_agent_hermes_home }}/profiles/{{ _profile.name }}/logs/*.log"' in RSYSLOG
+    assert 'Tag="hermes-profile-{{ _profile.name }}"' in RSYSLOG
     assert 'Ruleset="hermes_agent"' in RSYSLOG
     assert 'freshStartTail="off"' in RSYSLOG
 
@@ -92,6 +93,7 @@ def test_rsyslog_paths_follow_inventory_identity_for_every_hermes_host(
         hermes_agent_syslog_queue_max_disk_space="256m",
         hermes_agent_hermes_home=context["hermes_agent_hermes_home"],
         hermes_agent_log_directory=context["hermes_agent_log_directory"],
+        hermes_agent_profiles=[{"name": "profile-a"}, {"name": "profile-b"}],
     )
     home = context["hermes_agent_hermes_home"]
     assert home == f"/var/lib/{identity}/.hermes"
@@ -99,9 +101,13 @@ def test_rsyslog_paths_follow_inventory_identity_for_every_hermes_host(
         f"{home}/logs/*.log",
         f"{home}/kanban/logs/*.log",
         f"{home}/kanban/boards/*/logs/*.log",
-        f"{home}/profiles/*/logs/*.log",
+        f"{home}/profiles/profile-a/logs/*.log",
+        f"{home}/profiles/profile-b/logs/*.log",
     ):
         assert f'File="{path}"' in rendered
+    assert 'Tag="hermes-profile-profile-a"' in rendered
+    assert 'Tag="hermes-profile-profile-b"' in rendered
+    assert "profiles/*/" not in rendered
 
 
 def test_rsyslog_route_is_enabled_and_deployed_by_the_logging_tag() -> None:

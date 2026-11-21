@@ -1,0 +1,130 @@
+---
+- name: Require the dedicated OpenBao LiteLLM key
+  ansible.builtin.assert:
+    that:
+      - next_ai_drawio_docker_llm_api_key | trim | length > 0
+    fail_msg: >-
+      bao_apps_secrets.next_ai_drawio_llm_router_key must be provisioned before
+      Next AI Draw.io can be deployed.
+    quiet: true
+  no_log: true
+
+- name: Load the shared LiteLLM model registry for its primary local default
+  ansible.builtin.include_role:
+    name: llm_router
+    tasks_from: registry.yml
+    public: true
+
+- name: Read the authenticated, key-authorized LiteLLM model catalog
+  ansible.builtin.uri:
+    url: "{{ next_ai_drawio_docker_llm_base_url }}/models"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ next_ai_drawio_docker_llm_api_key }}"
+    status_code: 200
+    return_content: true
+    timeout: 10
+    follow_redirects: none
+    unredirected_headers:
+      - Authorization
+    use_proxy: false
+  register: next_ai_drawio_docker_models
+  retries: 3
+  delay: 5
+  until: next_ai_drawio_docker_models.status | default(0) == 200
+  changed_when: false
+  no_log: true
+
+- name: Build the authorized chat model selector from the authenticated catalog
+  ansible.builtin.include_tasks: build-model-menu.yml
+
+- name: Create Next AI Draw.io data directory
+  ansible.builtin.file:
+    path: "{{ next_ai_drawio_docker_data_dir }}/data"
+    state: directory
+    owner: "1001"
+    group: "1001"
+    mode: "0700"
+
+- name: Create Next AI Draw.io MCP build directory
+  ansible.builtin.file:
+    path: "{{ next_ai_drawio_docker_data_dir }}/mcp-build"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Next AI Draw.io MCP Dockerfile
+  ansible.builtin.copy:
+    src: Dockerfile
+    dest: "{{ next_ai_drawio_docker_data_dir }}/mcp-build/Dockerfile"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Next AI Draw.io
+
+- name: Render Next AI Draw.io Compose project
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ next_ai_drawio_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart Next AI Draw.io
+
+- name: Deploy Next AI Draw.io via Docker Compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ next_ai_drawio_docker_data_dir }}"
+    state: present
+    build: policy
+  environment:
+    NEXT_AI_DRAWIO_LLM_ROUTER_KEY: "{{ next_ai_drawio_docker_llm_api_key }}"
+  register: next_ai_drawio_docker_compose_result
+  changed_when: >-
+    (next_ai_drawio_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+  no_log: true
+
+- name: Flush handlers before checking Next AI Draw.io health
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Next AI Draw.io web listener
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ next_ai_drawio_docker_web_port }}"
+    timeout: 120
+
+- name: Verify Next AI Draw.io web page responds
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ next_ai_drawio_docker_web_port }}/"
+    method: GET
+    status_code: 200
+    return_content: false
+    timeout: 10
+  register: next_ai_drawio_docker_health
+  retries: 12
+  delay: 5
+  until: next_ai_drawio_docker_health.status | default(0) == 200
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Wait for Next AI Draw.io MCP listener
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ next_ai_drawio_docker_mcp_port }}"
+    timeout: 120
+
+- name: Verify Next AI Draw.io MCP health endpoint responds
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ next_ai_drawio_docker_mcp_port }}/healthz"
+    method: GET
+    status_code: 200
+    return_content: false
+    timeout: 10
+  register: next_ai_drawio_docker_mcp_health
+  retries: 12
+  delay: 5
+  until: next_ai_drawio_docker_mcp_health.status | default(0) == 200
+  changed_when: false
+  when: not ansible_check_mode

@@ -77,6 +77,7 @@ def _roster(targets: list[dict[str, str]]) -> list[dict[str, Any]]:
         agentgateway_docker_a2a_allowed_tier="trusted",
         agentgateway_docker_roster_keys=ROSTER_KEYS,
         agentgateway_docker_dify_mcp_targets=targets,
+        agentgateway_docker_roster_a2a_targets=[],
     )
 
 
@@ -280,3 +281,10 @@ def test_every_task_that_reads_holds_or_renders_a_dify_url_suppresses_logs() -> 
         if "target.url" in serialized or task.get("name") == "Deploy agentgateway config":
             assert task.get("no_log") is True, task.get("name")
     assert _task(role_tasks, "Validate Dify MCP target URLs")["no_log"] is True
+
+
+def test_openbao_reads_run_in_check_mode():
+    for name in ("List Dify MCP app leaves from OpenBao", "Read each Dify MCP app leaf from OpenBao"):
+        task = _dify_task(name)
+        assert task["ansible.builtin.uri"]["method"] == "GET"
+        assert task["check_mode"] is False

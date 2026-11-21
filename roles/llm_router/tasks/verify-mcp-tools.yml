@@ -45,6 +45,27 @@
   delay: "{{ llm_router_liveness_delay }}"
   no_log: true
 
+- name: Verify the Next AI Draw.io MCP server exposes exactly its configured tools
+  when: llm_router_mcp_next_ai_drawio_enabled | bool
+  ansible.builtin.uri:
+    url: >-
+      {{ llm_router_local_api_url }}/mcp-rest/tools/list?server_id={{ llm_router_mcp_next_ai_drawio_server_id }}
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    return_content: true
+    timeout: 5
+  register: _llm_router_next_ai_drawio_mcp_tools
+  check_mode: false
+  until:
+    - _llm_router_next_ai_drawio_mcp_tools.status | default(0) == 200
+    - _llm_router_next_ai_drawio_mcp_tools.json.error | default(none) is none
+    - (_llm_router_next_ai_drawio_mcp_tools.json.tools | default([]) | map(attribute='name') | sort)
+      == (llm_router_mcp_next_ai_drawio_allowed_tools | sort)
+  retries: 10
+  delay: "{{ llm_router_liveness_delay }}"
+  no_log: true
+
 - name: Verify each enabled app-agent MCP server exposes exactly its configured tools
   ansible.builtin.uri:
     url: >-

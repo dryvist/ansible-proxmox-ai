@@ -6,6 +6,59 @@
 # enabled/servable state. Loaded FIRST: every tier view, selector var and alias
 # in defaults/main.yml is a projection of it, so the asserts below and the render
 # further down both need it in scope.
+- name: Load Hermes direct-cron telemetry identifiers
+  ansible.builtin.import_tasks: load-hermes-cron-tags.yml
+
+- name: Require a single addressable Next AI Draw.io MCP guest when tagged
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - groups.get('next_ai_drawio_group', []) | length <= 1
+      - >-
+        (groups.get('next_ai_drawio_group', []) | length == 0)
+        or (hostvars[groups['next_ai_drawio_group'][0]].container_ip | default('', true) | trim | length > 0)
+      - >-
+        (groups.get('next_ai_drawio_group', []) | length == 0)
+        or (hostvars['localhost'].tofu_data.constants.service_ports.next_ai_drawio_mcp is defined)
+    fail_msg: >-
+      Next AI Draw.io MCP registration requires at most one tagged guest with
+      a published container address and service_ports.next_ai_drawio_mcp.
+
+- name: Require the Draw.io router key before the app guest is served
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (groups.get('next_ai_drawio_group', []) | length == 0)
+        or (llm_router_next_ai_drawio_router_key | default('') | trim | length > 0)
+    fail_msg: >-
+      bao_apps_secrets.next_ai_drawio_llm_router_key must be provisioned before
+      the Draw.io guest is deployed so LiteLLM can seed its virtual key first.
+  no_log: true
+
+- name: Probe the Draw.io MCP listener from the router network path
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[groups['next_ai_drawio_group'][0]].container_ip }}"
+    port: "{{ hostvars['localhost'].tofu_data.constants.service_ports.next_ai_drawio_mcp }}"
+    state: started
+    connect_timeout: 1
+    timeout: 1
+  register: _llm_router_next_ai_drawio_port_probe
+  failed_when: false
+  changed_when: false
+  when:
+    - llm_router_mcp_next_ai_drawio_activation_enabled | bool
+    - groups.get('next_ai_drawio_group', []) | length == 1
+
+- name: Record Draw.io MCP listener readiness for registration
+  ansible.builtin.set_fact:
+    llm_router_mcp_next_ai_drawio_port_ready: >-
+      {{ _llm_router_next_ai_drawio_port_probe is defined
+         and _llm_router_next_ai_drawio_port_probe.state | default('') == 'started' }}
+  when:
+    - llm_router_mcp_next_ai_drawio_activation_enabled | bool
+    - groups.get('next_ai_drawio_group', []) | length == 1
+
 - name: Load the shared Vikunja MCP package pin for app-agent projections
   ansible.builtin.import_tasks: load-app-agent-package-pin.yml
 

@@ -88,6 +88,48 @@ binds:
                 insecure: true
 {% endif %}
 {% endfor %}
+{# Proxied remote MCP servers: one fixed caller (its bearer is matched by hash and
+   stripped), a tool allow-list, and a gateway-held backend credential read from
+   a file owned by root and readable by the gateway group. Assertions in
+   tasks/proxied_mcp.yml run before render. #}
+{% for target in agentgateway_docker_proxied_mcp_targets | default([]) %}
+    - matches:
+      - path:
+          exact: /{{ target.name }}
+      policies:
+        apiKey:
+          mode: strict
+          location:
+            header:
+              name: authorization
+              prefix: "Bearer "
+          keys:
+            - keyHash: {{ ('sha256:' ~ (target.inbound_token | hash('sha256'))) | to_json }}
+              metadata:
+                caller: {{ target.name | to_json }}
+        requestHeaderModifier:
+          remove: {{ agentgateway_docker_caller_credential_headers | to_json }}
+        mcpAuthorization:
+          rules:
+{% for tool in target.allowed_tools %}
+            - allow: {{ ('mcp.tool.name == "' ~ tool ~ '"') | to_json }}
+{% endfor %}
+      backends:
+      - mcp:
+          targets:
+          - name: {{ target.name }}
+            mcp:
+              host: {{ target.host | to_json }}
+            policies:
+              backendAuth:
+                key:
+                  value:
+                    file: {{ (agentgateway_docker_proxied_mcp_secrets_path ~ '/' ~ target.name) | to_json }}
+                  location:
+                    header:
+                      name: authorization
+                      prefix: {{ target.get('backend_token_prefix', 'Bearer ') | to_json }}
+{% endfor %}
 {% if (agentgateway_docker_qdrant_mcp_enabled | bool
        and agentgateway_docker_qdrant_memory_mcp_api_key | length > 0)
       or (agentgateway_docker_docs_mcp_enabled | bool
@@ -216,6 +258,53 @@ binds:
             mcp:
               host: "http://mcp-vikunja-clerk:{{ agentgateway_docker_vikunja_clerk_port }}/mcp"
 {% endif %}
+{% if agentgateway_docker_crawl4ai_mcp_enabled | bool
+      and agentgateway_docker_crawl4ai_mcp_url | trim | length > 0
+      and agentgateway_docker_crawl4ai_api_token | trim | length > 0 %}
+{# Crawl4AI page-reader MCP (capability route /crawl4ai) — the Crawl4AI
+   server's own MCP SSE endpoint (roles/crawl4ai_docker), dialed by URL; the
+   sse host-as-URI form carries the /mcp/sse path and selects TLS from the
+   scheme (types/local.rs McpBackendHost::process). The target backendAuth
+   holds the upstream bearer token, and requestHeaderModifier strips caller
+   credentials first, so a caller never reaches Crawl4AI with its own
+   credential. mcpAuthorization admits the single `md` tool: tools/list
+   filters down to `md` and other tool calls are denied here. #}
+{% set crawl4ai_rules = [] %}
+{% for caller in agentgateway_docker_crawl4ai_allowed_callers %}
+{% set _ = crawl4ai_rules.append({'allow': "apiKey.agent == '" ~ caller ~ "'"}) %}
+{% endfor %}
+    - matches:
+      - path:
+          exact: /crawl4ai
+      policies:
+        apiKey:
+          mode: {{ agentgateway_docker_mcp_route_auth_mode }}
+          location:
+            header:
+              name: X-Agent-Key
+{{ agentgateway_docker_api_key_block }}
+        authorization:
+          rules: {{ crawl4ai_rules | to_json }}
+        mcpAuthorization:
+          rules:
+            - allow: {{ 'mcp.tool.name == "md"' | to_json }}
+        requestHeaderModifier:
+          remove: {{ agentgateway_docker_caller_credential_headers | to_json }}
+      backends:
+      - mcp:
+          targets:
+          - name: crawl4ai
+            sse:
+              host: {{ agentgateway_docker_crawl4ai_mcp_url | to_json }}
+            policies:
+              backendAuth:
+                key:
+                  value: {{ agentgateway_docker_crawl4ai_api_token | to_json }}
+                  location:
+                    header:
+                      name: authorization
+                      prefix: "Bearer "
+{% endif %}
 {% if agentgateway_docker_nautobot_openapi_enabled | bool
       and agentgateway_docker_nautobot_read_token | length > 0 %}
 {# Read-only Nautobot REST tools from the reviewed OpenAPI schema projection. #}
@@ -268,7 +357,7 @@ binds:
             mcp:
               host: http://mcp-nautobot:{{ agentgateway_docker_nautobot_mcp_port }}/mcp/
 {% endif %}
-{% for target in agentgateway_docker_a2a_targets | default([]) %}
+{% for target in agentgateway_docker_a2a_targets | default([]) + agentgateway_docker_roster_a2a_targets %}
     - matches:
       - path:
           pathPrefix: {{ target.path_prefix }}
@@ -290,6 +379,24 @@ binds:
                   name: authorization
                   prefix: "Bearer "
 {% endif %}
+{% endfor %}
+{% for hook in agentgateway_docker_signed_webhook_routes | default([]) %}
+    # Signed webhook relay: no caller key; the backend verifies the HMAC, read
+    # under the header name it accepts.
+    - matches:
+      - path:
+          exact: /hooks/{{ hook.name }}
+      policies:
+        urlRewrite:
+          path:
+            full: {{ hook.backend_path | to_json }}
+        transformations:
+          request:
+            set:
+              {{ hook.get('verified_header', 'linear-signature') }}: {{ ('request.headers["' ~ hook.signature_header ~ '"]') | to_json }}
+            remove: {{ [hook.signature_header] | to_json }}
+      backends:
+      - host: {{ hook.host }}
 {% endfor %}
 {% for target in agentgateway_docker_dify_mcp_targets %}
     - matches:

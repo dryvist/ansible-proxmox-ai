@@ -43,10 +43,11 @@ dify_docker_console_api_base: "http://{{ container_ip }}:{{ dify_docker_web_port
 
 # Deployment-specific Vikunja MCP provider and catalog DSL placeholder mapping.
 # The Dify role defaults stay inert; only this deployment opts in to the provider.
-dify_docker_agent_tool_providers:
+# Each public value below is extended from an env-doc JSON key (see the end of this file).
+dify_public_agent_tool_providers:
   vikunja-clerk:
     VIKUNJA_MCP_PROVIDER_ID: vikunja
-dify_docker_agent_mcp_providers:
+dify_public_agent_mcp_providers:
   - name: vikunja
     server_identifier: vikunja
     server_url: >-
@@ -61,3 +62,29 @@ dify_docker_agent_mcp_providers:
     timeout: 60
     sse_read_timeout: 300
     tool_name: vikunja_tasks
+
+# Publish only the Vikunja clerk as a native MCP server; its URL goes only to the app's OpenBao leaf.
+dify_docker_publish_agent_mcp: true
+dify_public_publish_agent_mcp_apps: [vikunja-clerk]
+
+# Private agent apps, supplied at converge time so no deployment-specific name
+# lands in this file. Each env-doc key holds JSON in the shape of the variable it
+# extends; an unset key adds nothing.
+#   DIFY_PRIVATE_AGENT_DSLS              list of {name, url, sha256}
+#   DIFY_PRIVATE_AGENT_TOOL_PROVIDERS    map, merged into the public map
+#   DIFY_PRIVATE_AGENT_MCP_PROVIDERS     list, appended to the public list
+#   DIFY_PRIVATE_PUBLISH_AGENT_MCP_APPS  list, appended to the public list
+# The private DSL source token is bao-first (ai/dify) with an env fallback.
+dify_docker_private_agent_dsls: "{{ lookup('env', 'DIFY_PRIVATE_AGENT_DSLS') | default('[]', true) | from_json }}"
+dify_docker_private_agent_dsl_token: >-
+  {{ bao_local_llm_secrets.DIFY_PRIVATE_AGENT_DSL_TOKEN
+     | default(lookup('env', 'DIFY_PRIVATE_AGENT_DSL_TOKEN'), true) }}
+dify_docker_agent_tool_providers: >-
+  {{ dify_public_agent_tool_providers
+     | combine(lookup('env', 'DIFY_PRIVATE_AGENT_TOOL_PROVIDERS') | default('{}', true) | from_json) }}
+dify_docker_agent_mcp_providers: >-
+  {{ dify_public_agent_mcp_providers
+     + (lookup('env', 'DIFY_PRIVATE_AGENT_MCP_PROVIDERS') | default('[]', true) | from_json) }}
+dify_docker_publish_agent_mcp_apps: >-
+  {{ dify_public_publish_agent_mcp_apps
+     + (lookup('env', 'DIFY_PRIVATE_PUBLISH_AGENT_MCP_APPS') | default('[]', true) | from_json) }}

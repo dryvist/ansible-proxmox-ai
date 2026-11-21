@@ -76,6 +76,7 @@ def test_success_record_has_expected_fields(module):
         "status": "success",
         "error_class": None,
         "prompt_tokens": 512,
+        "cached_prompt_tokens": None,
         "completion_tokens": 128,
         "cache_hit": False,
         "key_alias": "ci-reviewer",
@@ -162,6 +163,22 @@ def test_no_prompt_or_response_content_leaks(module):
     assert "response" not in record
     assert "the actual prompt text" not in dumped
     assert "the actual response text" not in dumped
+
+
+@pytest.mark.parametrize(
+    ("usage_object", "expected"),
+    [
+        ({"prompt_tokens": 2000, "prompt_tokens_details": {"cached_tokens": 1234}}, 1234),
+        ({"prompt_tokens": 2000, "prompt_tokens_details": {"cached_tokens": None}}, 0),
+        ({"prompt_tokens": 2000, "prompt_tokens_details": {}}, 0),
+        ({"prompt_tokens": 2000, "prompt_tokens_details": None}, None),
+        ({"prompt_tokens": 2000}, None),
+        (None, None),
+    ],
+)
+def test_cached_prompt_tokens_come_from_the_usage_block(module, usage_object, expected):
+    payload = {"status": "success", "prompt_tokens": 2000, "metadata": {"usage_object": usage_object}}
+    assert module["build_record"](_kwargs(payload), None, 1.0, 1.0)["cached_prompt_tokens"] == expected
 
 
 def test_missing_api_base_is_none(module):

@@ -21,6 +21,8 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "ansible_managed": "managed",
     "hermes_agent_model": "hermes-default",
     "hermes_agent_model_provider": "custom",
+    "hermes_agent_model_shared_provider_name": "hermes-shared",
+    "hermes_agent_model_shared_provider": "custom:hermes-shared",
     "hermes_agent_model_base_url": "https://llm.example.com/v1",
     "hermes_agent_model_api_mode": "chat_completions",
     "hermes_agent_model_context_length": 65536,
@@ -325,7 +327,7 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
         rendered = env.from_string(src).render(hermes_agent_profile=profile, **context)
         parsed = yaml.safe_load(rendered)
 
-        assert parsed["model"]["provider"] == defaults["hermes_agent_model_provider"]
+        assert parsed["model"]["provider"] == defaults["hermes_agent_model_shared_provider"]
         assert parsed["plugins"]["enabled"] == ["dryvist-guardrails", "hindsight", "langfuse"]
         assert parsed["kanban"] == {"dispatch_in_gateway": False}
         assert parsed["agent"]["run_budget_seconds"] == run_budget_seconds()
@@ -337,17 +339,8 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
         assert "auxiliary" in parsed
         assert (
             parsed["auxiliary"]["goal_judge"]["provider"]
-            == defaults["hermes_agent_model_provider"]
+            == defaults["hermes_agent_model_shared_provider"]
         )
 
         rendered_servers = set(parsed.get("mcp_servers", {}))
         assert rendered_servers == set(profile["mcp"])
-
-
-def test_openai_compatible_model_provider_is_declared_once() -> None:
-    defaults = _defaults()
-    assert defaults["hermes_agent_model_provider"] == "custom"
-
-    for name in ("config.yaml.j2", "config-profile.yaml.j2", "config-public-gateway.yaml.j2"):
-        template = (ROLE_ROOT / "templates" / name).read_text()
-        assert "provider: {{ hermes_agent_model_provider }}" in template

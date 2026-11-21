@@ -1,0 +1,120 @@
+---
+- name: Verify the Next AI Draw.io Compose contract
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../roles/next_ai_drawio_docker/defaults/main.yml
+    - ../../roles/llm_router/defaults/main/80-mcp.yml
+  vars:
+    ansible_become: false
+    ansible_managed: Ansible managed
+    llm_router_primary_model: fixture-local-primary
+    next_ai_drawio_docker_default_model: "{{ llm_router_primary_model }}"
+    ai_orchestration_ollama_base_url: https://llm.example.test/v1
+    _tofu_fixture:
+      constants:
+        service_ports:
+          next_ai_drawio_web: "3070"
+          next_ai_drawio_mcp: "3071"
+    _template: >-
+      {{ playbook_dir }}/../../roles/next_ai_drawio_docker/templates/docker-compose.yml.j2
+    _expected_api_key_expression: >-
+      ${NEXT_AI_DRAWIO_LLM_ROUTER_KEY:?NEXT_AI_DRAWIO_LLM_ROUTER_KEY must be set}
+    _authorized_model_class_fixtures:
+      - {class: local, id: fixture-local-secondary}
+      - {class: local, id: fixture-local-primary}
+      - {class: sub, id: fixture-sub}
+      - {class: paid-zdr, id: fixture-paid-zdr}
+      - {class: free, id: fixture-free}
+      - {class: retains, id: fixture-retains}
+    _unsupported_model_id: fixture-upstream-only
+    _expected_tools:
+      - start_session
+      - create_new_diagram
+      - edit_diagram
+      - get_diagram
+      - get_drawing_guide
+      - get_shape_library
+    _expected_web_image_prefix: "ghcr.io/dayuanjiang/next-ai-draw-io:0.5.1@sha256:"
+    _expected_web_image_digest: e393f1d4d208c523716ce7455cf6f774a1d9b90fe551adae6691afd4e390141b
+    _expected_mcp_base_image: >-
+      ghcr.io/supercorp-ai/supergateway:4.2.2@sha256:5fd78fb79ffce27812313e5da9b3b3d0bc034267e131961f1140f4a4e0179d3a
+    _expected_mcp_package: '@next-ai-drawio/mcp-server@0.4.15'
+    _expected_mcp_stdio_command:
+      - --stdio
+      - /opt/next-ai-drawio-mcp/bin/next-ai-drawio-mcp
+      - --outputTransport
+      - streamableHttp
+  tasks:
+    - name: Load the authenticated catalog response fixture across every router class
+      ansible.builtin.set_fact:
+        tofu_data: "{{ _tofu_fixture }}"
+        next_ai_drawio_docker_models:
+          json:
+            data: "{{ _authorized_model_class_fixtures }}"
+
+    - name: Build the model menu with the production projection
+      ansible.builtin.include_tasks: ../../roles/next_ai_drawio_docker/tasks/build-model-menu.yml
+
+    - name: Render Compose with the dedicated OpenBao key available
+      ansible.builtin.set_fact:
+        _rendered: "{{ lookup('ansible.builtin.template', _template) | from_yaml }}"
+      vars:
+        bao_apps_secrets:
+          next_ai_drawio_llm_router_key: fixture-next-ai-drawio-key
+
+    - name: Assert web image, router settings, persistent admin data, and Tofu listener
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _rendered.services['next-ai-drawio'].image
+            == _expected_web_image_prefix ~ _expected_web_image_digest
+          - _rendered.services['next-ai-drawio'].user == '1001:1001'
+          - _rendered.services['next-ai-drawio'].ports == ['0.0.0.0:3070:3000']
+          - _rendered.services['next-ai-drawio'].environment.AI_PROVIDER == 'openai'
+          - >-
+            _rendered.services['next-ai-drawio'].environment.AI_MODEL
+            == 'fixture-local-primary,fixture-local-secondary,fixture-sub,fixture-paid-zdr,fixture-free,fixture-retains'
+          - next_ai_drawio_docker_chat_model_ids | first == llm_router_primary_model
+          - >-
+            next_ai_drawio_docker_chat_model_ids
+            | difference(next_ai_drawio_docker_models.json.data | map(attribute='id') | list)
+            | length == 0
+          - _unsupported_model_id not in next_ai_drawio_docker_chat_model_ids
+          - >-
+            (_authorized_model_class_fixtures | map(attribute='class') | unique | list | length) >= 3
+          - _rendered.services['next-ai-drawio'].environment.OPENAI_BASE_URL == 'https://llm.example.test/v1'
+          - _rendered.services['next-ai-drawio'].environment.OPENAI_API_KEY == _expected_api_key_expression
+          - _rendered.services['next-ai-drawio'].volumes == ['/opt/next-ai-drawio/data:/app/data']
+          - _rendered.services['next-ai-drawio'].security_opt == ['no-new-privileges:true']
+        fail_msg: The Next AI Draw.io web service escaped its image, router, storage, or listener contract.
+
+    - name: Assert the isolated authenticated MCP sidecar contract
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services['next-ai-drawio-mcp'].image == 'next-ai-drawio-mcp:4.2.2-0.4.15'
+          - _rendered.services['next-ai-drawio-mcp'].build.context == './mcp-build'
+          - >-
+            _rendered.services['next-ai-drawio-mcp'].build.args.SUPERGATEWAY_IMAGE
+            == _expected_mcp_base_image
+          - _rendered.services['next-ai-drawio-mcp'].build.args.MCP_PACKAGE == _expected_mcp_package
+          - _rendered.services['next-ai-drawio-mcp'].user == '1000:1000'
+          - _rendered.services['next-ai-drawio-mcp'].read_only | bool
+          - _rendered.services['next-ai-drawio-mcp'].cap_drop == ['ALL']
+          - _rendered.services['next-ai-drawio-mcp'].security_opt == ['no-new-privileges:true']
+          - _rendered.services['next-ai-drawio-mcp'].ports == ['0.0.0.0:3071:3071']
+          - _rendered.services['next-ai-drawio-mcp'].environment.BROWSER == 'none'
+          - _rendered.services['next-ai-drawio-mcp'].environment.DRAWIO_DATA_DIR == 'off'
+          - _rendered.services['next-ai-drawio-mcp'].environment.SUPERGATEWAY_API_KEY is not defined
+          - _rendered.services['next-ai-drawio-mcp'].command[0:4] == _expected_mcp_stdio_command
+          - "'--stateful' in _rendered.services['next-ai-drawio-mcp'].command"
+          - "'--streamableHttpPath' in _rendered.services['next-ai-drawio-mcp'].command"
+          - >-
+            _rendered.services['next-ai-drawio-mcp'].command
+            | select('in', ['start_session', 'create_new_diagram', 'edit_diagram',
+                            'get_diagram', 'get_drawing_guide', 'get_shape_library'])
+            | list | sort == _expected_tools | sort
+          - _rendered.services['next-ai-drawio-mcp'].environment.PORT is not defined
+        fail_msg: The MCP sidecar exposed an unapproved tool or preview port, or lost its auth/isolation contract.
