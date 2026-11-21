@@ -1,0 +1,71 @@
+---
+# Pins the dify_docker SSRF proxy carve-out for Dify's own MCP client: CONNECT
+# to the declared MCP provider hosts on port 443 only, before the
+# private-destination deny, and nothing broader.
+#
+# Run from the repository root with PROXMOX_SUBDOMAIN set:
+#   ansible-playbook tests/dify_docker/test_ssrf_mcp_gateway_carveout.yml -i localhost, -c local
+- name: Verify the dify_docker SSRF proxy MCP gateway carve-out
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_become: false
+    _squid: "{{ playbook_dir }}/../../roles/dify_docker/templates/squid.conf.j2"
+  tasks:
+    - name: Load shared wait and execution budgets
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all/00-core.yml"
+
+    - name: Load the role defaults as they ship
+      ansible.builtin.import_tasks: _load_defaults.yml
+
+    - name: Set fixture values for secrets and external configuration
+      ansible.builtin.import_tasks: _fixtures.yml
+
+    - name: Render the SSRF proxy configuration with no MCP provider declared
+      ansible.builtin.set_fact:
+        _no_provider_squid: "{{ lookup('ansible.builtin.template', _squid) }}"
+
+    - name: Render nothing for the gateway without a declared provider
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'dst_mcp_gateway' not in _no_provider_squid"
+
+    - name: Declare MCP providers on the gateway host, plus ones that must not pass
+      ansible.builtin.set_fact:
+        dify_docker_agent_mcp_providers:
+          - {name: one, server_url: "https://mcp.example.invalid/one"}
+          - {name: two, server_url: "https://mcp.example.invalid:443/two"}
+          - {name: plain, server_url: "http://plain.example.invalid/x"}
+          - {name: odd-port, server_url: "https://odd.example.invalid:8443/x"}
+          - {name: no-url}
+
+    - name: Render the SSRF proxy configuration with the providers
+      ansible.builtin.set_fact:
+        _mcp_squid: "{{ lookup('ansible.builtin.template', _squid) }}"
+        _lines: "{{ lookup('ansible.builtin.template', _squid).splitlines() }}"
+
+    - name: Allow exactly the gateway host, CONNECT on 443, before the private deny
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # One exact host (no leading dot, no subdomains), deduplicated; http and
+          # non-443 providers are left out.
+          - >-
+            _lines | select('match', '^acl dst_mcp_gateway ') | list
+            == ['acl dst_mcp_gateway dstdomain mcp.example.invalid']
+          - "'plain.example.invalid' not in _mcp_squid"
+          - "'odd.example.invalid' not in _mcp_squid"
+          # The only allow for the host is CONNECT to the 443 port acl.
+          - "'acl SSL_ports port 443' in _lines"
+          - >-
+            _lines | select('search', 'dst_mcp_gateway') | select('match', '^http_access ') | list
+            == ['http_access allow CONNECT dst_mcp_gateway SSL_ports']
+          - >-
+            _lines.index('http_access allow CONNECT dst_mcp_gateway SSL_ports')
+            < _lines.index('http_access deny to_private_networks')
+          # The other boundaries stay as they were.
+          - _lines | select('match', '^acl to_private_networks dst ') | list | length >= 8
+          - "'http_access allow all' not in _lines"
+          - _lines | select('match', '^http_access ') | list | last == 'http_access deny all'

@@ -15,6 +15,13 @@
 # before location matching and a bare prefix would let a proxied traversal
 # like /triggers/webhook/../e/x land on another location; CONNECT and every
 # other path, host or port fall through to the denies below.
+# A second carve-out lets Dify's own MCP client reach the declared MCP
+# providers (dify_docker_agent_mcp_providers, the agent gateway): CONNECT only,
+# port 443 only, exact host names taken from each https server_url, so no other
+# private host or port passes. With no provider declared it renders nothing.
+{% set _mcp_hosts = dify_docker_agent_mcp_providers | selectattr('server_url', 'defined')
+     | map(attribute='server_url') | map('trim') | select('match', '^https://[^/:]+(:443)?(/|$)')
+     | map('urlsplit', 'hostname') | unique | list %}
 acl client_localnet src 10.0.0.0/8
 acl client_localnet src 172.16.0.0/12
 acl client_localnet src 192.168.0.0/16
@@ -39,6 +46,9 @@ acl allowed_domains dstdomain .marketplace.dify.ai
 acl dst_dify_trigger dstdomain {{ dify_docker_internal_trigger_url | urlsplit('hostname') }}
 acl port_dify_trigger port {{ dify_docker_internal_trigger_url | urlsplit('port') | default(80, true) }}
 acl path_trigger_webhook urlpath_regex -i ^/triggers/webhook/[A-Za-z0-9_-]+$
+{% if _mcp_hosts %}
+acl dst_mcp_gateway dstdomain {{ _mcp_hosts | join(' ') }}
+{% endif %}
 
 http_port {{ dify_docker_ssrf_proxy_port }}
 
@@ -47,6 +57,9 @@ http_access deny CONNECT !SSL_ports
 http_access allow localhost manager
 http_access deny manager
 http_access allow dst_dify_trigger port_dify_trigger path_trigger_webhook
+{% if _mcp_hosts %}
+http_access allow CONNECT dst_mcp_gateway SSL_ports
+{% endif %}
 http_access deny to_private_networks
 http_access allow allowed_domains
 http_access allow client_localnet
