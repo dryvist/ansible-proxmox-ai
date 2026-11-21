@@ -83,7 +83,7 @@ def test_card_crons_get_kanban_only_through_their_per_job_toolsets() -> None:
     ).render(hermes_agent_api_server_toolsets=defaults["hermes_agent_api_server_toolsets"]))
     slack = yaml.safe_load(env.from_string(
         str(defaults["hermes_agent_slack_toolsets"])
-    ).render(hermes_agent_cron_toolsets=cron, hermes_agent_a2a_peers=[]))
+    ).render(hermes_agent_api_server_toolsets=defaults["hermes_agent_api_server_toolsets"], hermes_agent_a2a_peers=[]))
     assert "kanban" not in cron and "kanban" not in slack
 
     profiles = {profile["name"]: profile for profile in _profiles()}
@@ -140,7 +140,7 @@ def test_fabric_status_gets_kanban_at_the_job_scope_and_keeps_its_delivery() -> 
     status_toolsets = yaml.safe_load(env.from_string(
         str(status_job["enabled_toolsets"])
     ).render(hermes_agent_cron_toolsets=cron_toolsets))
-    assert status_toolsets == defaults["hermes_agent_api_server_toolsets"] + ["kanban"]
+    assert status_toolsets == cron_toolsets + ["kanban"]
     assert "hermes_home" not in status_job  # The report stays on the existing default profile.
     assert status_job["deliver"] == "slack:{{ hermes_agent_slack_hermes_all_channel }}"
     assert status_job["channel_when_healthy"] == (
