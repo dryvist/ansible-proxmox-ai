@@ -64,4 +64,4 @@ def test_vikunja_clerk_policy_comes_from_env_keys_with_write_refusing_defaults()
     variables = load_inventory_variables()["dify_docker_agent_app_variables"]
 
     assert variables["vikunja-clerk"] == CLERK_VARIABLES
-    assert set(variables) == {"pr-keeper", "merge-steward", "vikunja-clerk"}
+    assert set(variables) == {"pr-keeper", "merge-steward", "vikunja-clerk", "vikunja-triage", "zammad-triage"}
