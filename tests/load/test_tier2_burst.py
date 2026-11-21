@@ -234,7 +234,7 @@ const manager = renovate.customManagers.find(manager => manager.matchStrings.som
 for (const file of ['tests/load/catalog.yml', 'roles/hermes_agent/defaults/main/10-installer-and-bundles.yml']) {
   assert.ok(manager.managerFilePatterns.some(pattern => new RegExp(pattern.slice(1, -1)).test(file)), file);
   const match = new RegExp(manager.matchStrings[0]).exec(fs.readFileSync(new URL(file, root), 'utf8'));
-  assert.equal(match.groups.depName, 'dryvist/ai-llm-prompts');
+  assert.equal(match.groups.depName, 'jpe-ai-agents/ai-llm-prompts');
   assert.match(match.groups.currentValue, /^v\\d+\\.\\d+\\.\\d+$/);
   assert.match(match.groups.currentDigest, /^[0-9a-f]{40}$/);
 }
