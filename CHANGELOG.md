@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.63.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.63.1...v2.63.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **dify_docker:** apply config changes first; reconnect an MCP provider without its tool ([#2654](https://github.com/dryvist/ansible-proxmox-ai/issues/2654)) ([b9fb6c2](https://github.com/dryvist/ansible-proxmox-ai/commit/b9fb6c275f022cf979c293513417467512209281))
+* **renovate:** hold litellm at 1.106.9 ([#2648](https://github.com/dryvist/ansible-proxmox-ai/issues/2648)) ([febfc58](https://github.com/dryvist/ansible-proxmox-ai/commit/febfc582ad1800a3fa6552ab7924b388c8f8bc83))
+
 ## [2.63.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.63.0...v2.63.1) (2026-11-21)
 
 
