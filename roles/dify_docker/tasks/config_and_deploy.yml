@@ -21,6 +21,32 @@
       - dify_docker_agent_server_secret_key
       - dify_docker_agent_local_sandbox_auth_token
 
+- name: Read the Docker Compose version on the Dify host
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - version
+      - --short
+  register: dify_docker_compose_version
+  changed_when: false
+  check_mode: false
+
+# Dify 1.19.0 requires Compose 2.35.0+ so root .env overrides take precedence
+# when resolving service defaults (1.19.0 release notes).
+- name: Require the Dify minimum Docker Compose version
+  ansible.builtin.assert:
+    that:
+      - >-
+        dify_docker_compose_version.stdout | trim | regex_replace('^v', '')
+        is version(dify_docker_compose_min_version, '>=')
+    fail_msg: >-
+      Docker Compose {{ dify_docker_compose_min_version }} or later is required on
+      this host for Dify 1.19.0 (found
+      {{ dify_docker_compose_version.stdout | trim | default('none') }}).
+      Upgrade the docker-compose-plugin before converging Dify.
+    quiet: true
+
 - name: Check for the existing Dify Compose configuration
   ansible.builtin.stat:
     path: "{{ dify_docker_data_dir }}/docker-compose.yml"
