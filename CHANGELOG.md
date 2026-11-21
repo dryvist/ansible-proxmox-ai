@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.66.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.1...v2.66.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **dify_docker:** map the vikunja-triage MCP provider placeholder ([#2684](https://github.com/dryvist/ansible-proxmox-ai/issues/2684)) ([c5b1ea2](https://github.com/dryvist/ansible-proxmox-ai/commit/c5b1ea27654c6a810411cad69f8265d6ac383549))
+
 ## [2.66.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.0...v2.66.1) (2026-11-21)
 
 
