@@ -47,7 +47,7 @@ def main() -> int:
     pinned = commit.group(3)
     previous = checksum.group(3)
 
-    url = f"https://raw.githubusercontent.com/dryvist/ai-llm-prompts/{pinned}/agents/dify/manifest.json"
+    url = f"https://raw.githubusercontent.com/jpe-ai-agents/ai-llm-prompts/{pinned}/agents/dify/manifest.json"
     with urllib.request.urlopen(url, timeout=30) as response:
         manifest = response.read()
     entries = json.loads(manifest)

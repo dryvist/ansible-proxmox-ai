@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.61.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.61.0...v2.61.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **deps:** point ai-llm-prompts references at jpe-ai-agents ([#2635](https://github.com/dryvist/ansible-proxmox-ai/issues/2635)) ([8459b2c](https://github.com/dryvist/ansible-proxmox-ai/commit/8459b2c3e54ea25396b4821592e870869cf95618))
+
 ## [2.61.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.60.3...v2.61.0) (2026-11-21)
 
 
