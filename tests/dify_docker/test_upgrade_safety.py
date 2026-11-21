@@ -169,12 +169,20 @@ def test_upgrade_rescue_restarts_the_stack_before_failing():
     assert "ansible.builtin.fail" in fail
 
 
-def test_compose_version_preflight_precedes_render_and_deploy():
-    tasks = yaml.safe_load(CONFIG_TASKS.read_text(encoding="utf-8"))
+def test_compose_version_preflight_precedes_the_upgrade_stop_and_deploy():
+    main = [task.get("ansible.builtin.include_tasks") for task in yaml.safe_load(MAIN_TASKS.read_text(encoding="utf-8"))]
+    assert main.index("compose_preflight.yml") < main.index("upgrade_safety.yml") < main.index("config_and_deploy.yml")
+    preflight_task = next(
+        task for task in yaml.safe_load(MAIN_TASKS.read_text(encoding="utf-8"))
+        if task.get("ansible.builtin.include_tasks") == "compose_preflight.yml"
+    )
+    assert "when" not in preflight_task
+
+    tasks = yaml.safe_load((TASK_DIR / "compose_preflight.yml").read_text(encoding="utf-8"))
     names = [task.get("name") for task in tasks]
     version_read = names.index("Read the Docker Compose version on the Dify host")
     preflight = names.index("Require the Dify minimum Docker Compose version")
-    assert version_read < preflight < names.index("Render Dify docker-compose.yml")
+    assert version_read < preflight
 
     read = tasks[version_read]
     assert read["ansible.builtin.command"]["argv"] == ["docker", "compose", "version", "--short"]
