@@ -136,24 +136,32 @@ _llm_router_fallback_map_source: >-
 llm_router_fallback_map: "{{ _llm_router_m_fallback_map }}"
 
 # Each scoped CI key gets the complete shared map, with only its primary
-# capability entry replaced by that key's declared review chain.
+# capability entry replaced by that key's declared review chain. The private
+# key (github-actions, which OpenHands and the org CI workflows send) keeps only
+# local rungs in every chain.
 llm_router_review_key_fallbacks: >-
   {%- set ns = namespace(private=[], oss=[]) -%}
   {%- set _primary = llm_router_primary_model -%}
+  {%- set _local = _llm_router_m_d1_rungs_by_class['local'] -%}
   {%- set _private = llm_router_review_private_chain -%}
   {%- set _oss = llm_router_review_oss_chain -%}
   {%- for _name, _chain in llm_router_fallback_map.items() -%}
-  {%- set _private_chain = _private if _name == _primary else _chain -%}
+  {%- set _private_chain = (_private if _name == _primary else _chain)
+        | select('in', _local) | list -%}
   {%- set _oss_chain = _oss if _name == _primary else _chain -%}
   {%- set _discard = ns.private.append({_name: _private_chain}) -%}
   {%- set _discard = ns.oss.append({_name: _oss_chain}) -%}
   {%- endfor -%}
   {{ {'private': ns.private, 'oss': ns.oss} }}
 
+# Context-window escapes target wider cloud rungs (37-context-window-escape.yml),
+# so the private key overrides them with an empty list. Its own fallbacks list
+# also replaces the router's '*' default_fallbacks entry.
 llm_router_review_key_router_settings: >-
   {%- set _fallbacks = llm_router_review_key_fallbacks -%}
   {%- set _aliases = llm_router_model_group_aliases -%}
   {{ {
-    'private': {'model_group_alias': _aliases, 'fallbacks': _fallbacks.private},
+    'private': {'model_group_alias': _aliases, 'fallbacks': _fallbacks.private,
+                'context_window_fallbacks': []},
     'oss': {'model_group_alias': _aliases, 'fallbacks': _fallbacks.oss},
   } }}
