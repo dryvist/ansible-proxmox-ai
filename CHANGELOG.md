@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.62.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.61.2...v2.62.0) (2026-11-21)
+
+
+### Features
+
+* **agentgateway:** add roster-derived A2A targets beside the static ones ([#2639](https://github.com/dryvist/ansible-proxmox-ai/issues/2639)) ([319e300](https://github.com/dryvist/ansible-proxmox-ai/commit/319e300a943cf8757421ef56f7e4003b9fd2d4e4))
+* **hermes_agent:** give the vikunja-task route its own secret ([#2636](https://github.com/dryvist/ansible-proxmox-ai/issues/2636)) ([d6c6714](https://github.com/dryvist/ansible-proxmox-ai/commit/d6c67147a9f22c0ba315dcd6490f5b832b2c9316))
+
+
+### Bug Fixes
+
+* **dify_docker:** fail when a private app is named for MCP publishing without its token ([#2640](https://github.com/dryvist/ansible-proxmox-ai/issues/2640)) ([eddf2a7](https://github.com/dryvist/ansible-proxmox-ai/commit/eddf2a72196eebc4f98d840c7934c52005ab584e))
+
 ## [2.61.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.61.1...v2.61.2) (2026-11-21)
 
 
