@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.66.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.3...v2.66.4) (2026-11-21)
+
+
+### Bug Fixes
+
+* **dify_docker:** declare the triage apps environment variables with inert defaults ([#2690](https://github.com/dryvist/ansible-proxmox-ai/issues/2690)) ([cfd1395](https://github.com/dryvist/ansible-proxmox-ai/commit/cfd139524ddfe2aa6184a1b3c79057800273a5b7))
+* **dify_docker:** declare the triage apps' environment variables with inert defaults ([cfd1395](https://github.com/dryvist/ansible-proxmox-ai/commit/cfd139524ddfe2aa6184a1b3c79057800273a5b7))
+
 ## [2.66.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.2...v2.66.3) (2026-11-21)
 
 
