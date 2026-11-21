@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.66.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.0...v2.66.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **llm_router:** keep the github-actions key on local models only ([#2677](https://github.com/dryvist/ansible-proxmox-ai/issues/2677)) ([d6eff0f](https://github.com/dryvist/ansible-proxmox-ai/commit/d6eff0fbf8139c9f672db4caa82d3b5ab03e181a))
+
 ## [2.66.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.65.1...v2.66.0) (2026-11-21)
 
 
