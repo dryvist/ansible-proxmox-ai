@@ -145,6 +145,7 @@ def _render(
         "ai_callers": callers,
         "agentgateway_docker_a2a_allowed_tier": INVENTORY_VARS["agentgateway_docker_a2a_allowed_tier"],
         "agentgateway_docker_dify_mcp_targets": [],
+        "agentgateway_docker_roster_a2a_targets": [],
         "agentgateway_docker_proxied_mcp_targets": [],
         "agentgateway_docker_signed_webhook_routes": [],
         "agentgateway_docker_hindsight_roster_tiers": roster_tiers,

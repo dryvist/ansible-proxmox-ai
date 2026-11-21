@@ -17,6 +17,7 @@ def _render(expression, **variables):
     environment = Environment()
     environment.filters["from_json"] = json.loads
     environment.filters["difference"] = lambda left, right: [item for item in left if item not in right]
+    environment.filters["intersect"] = lambda left, right: [item for item in left if item in right]
     return environment.from_string("{{ " + expression + " }}").render(**variables)
 
 
@@ -93,3 +94,24 @@ def test_a_publish_allowlist_name_missing_from_the_manifest_fails():
     assert passes(["vikunja-clerk", "example-private"], private=["example-private"])
     assert not passes(["example-private"])
     assert "dify_docker_publish_agent_mcp_apps | length > 0" in check["when"]
+
+
+def test_a_publish_allowlist_name_that_is_only_private_fails_without_the_token():
+    check = _task(
+        _yaml(IMPORT_LOOP),
+        "Fail when an app named for MCP publishing is a private DSL and no private DSL token was supplied",
+    )
+    manifest = json.dumps([{"name": "vikunja-clerk"}])
+
+    def passes(apps, private=()):
+        return _render(
+            check["ansible.builtin.assert"]["that"][0],
+            dify_docker_publish_agent_mcp_apps=apps,
+            dify_docker_agent_dsl_manifest_content=manifest,
+            dify_docker_private_agent_dsls=[{"name": name} for name in private],
+        ) == "True"
+
+    assert passes(["vikunja-clerk"], private=["example-private"])
+    assert not passes(["vikunja-clerk", "example-private"], private=["example-private"])
+    assert passes(["vikunja-clerk"], private=["vikunja-clerk"])
+    assert "dify_docker_private_agent_dsl_token | length == 0" in check["when"]
