@@ -64,13 +64,23 @@
                 if _config.router_settings.get('default_fallbacks', []) | length > 0
                 else 0)
           # recorder-medium (also via the recorder key) and fast-subagent are reached through the full-scope keys,
-          # not a key of their own.
+          # not a key of their own. The large role is listed on Hermes profile keys,
+          # and its fallback group remains in the local model scope.
           - >-
             _local_keys | map(attribute='alias') | sort
             == (_local_roles | difference(['recorder-medium', 'fast-subagent'])) | sort
           - _local_keys | map(attribute='models') | flatten | intersect(_cloud_groups) | length == 0
           - _recorder_key.allowed_classes == ['local']
           - _recorder_key.models | intersect(_cloud_groups) | length == 0
+          - "'large' in _llm_router_local_agent_groups"
+          - _llm_router_hermes_profile_keys | length > 0
+          - >-
+            _llm_router_hermes_profile_keys | rejectattr('models', 'contains', 'large')
+            | list | length == 0
+          - "'large' not in _llm_router_key_scope_all"
+          - >-
+            _keys | selectattr('models', 'contains', 'large')
+            | map(attribute='alias') | difference(_profile_key_aliases) | length == 0
           - _judge.fallbacks == llm_router_d1_zdr_ladder_groups
           - _judge_key.allowed_classes == ['local']
           - _judge_key.models | intersect(_unsafe_rungs) | length == 0
@@ -86,6 +96,7 @@
         _local_roles: >-
           {{ llm_router_role_deployments | selectattr('fallbacks', 'equalto', [])
              | map(attribute='role') | list }}
+        _profile_key_aliases: "{{ _llm_router_hermes_profile_keys | map(attribute='alias') | list }}"
         _empty_fallbacks: >-
           {{ _config.router_settings.get('fallbacks', []) | map('dict2items') | flatten
              | selectattr('key', 'in', _local_roles)
