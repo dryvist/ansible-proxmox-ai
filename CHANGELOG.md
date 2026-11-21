@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.65.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.64.3...v2.65.0) (2026-11-21)
+
+
+### Features
+
+* **dify:** declare the Vikunja clerk project policy variables ([#2668](https://github.com/dryvist/ansible-proxmox-ai/issues/2668)) ([87ff8b0](https://github.com/dryvist/ansible-proxmox-ai/commit/87ff8b0ecada1eba6d64897d0ed46a61318dc8ff))
+
 ## [2.64.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.64.2...v2.64.3) (2026-11-21)
 
 
