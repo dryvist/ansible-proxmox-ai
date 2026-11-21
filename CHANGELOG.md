@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.63.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.62.0...v2.63.0) (2026-11-21)
+
+
+### Features
+
+* **llm_router:** turn on the vikunja-pm profile key ([#2631](https://github.com/dryvist/ansible-proxmox-ai/issues/2631)) ([fa2a3b0](https://github.com/dryvist/ansible-proxmox-ai/commit/fa2a3b061c9ffd084fb91faf6475fd51767914e9))
+
 ## [2.62.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.61.2...v2.62.0) (2026-11-21)
 
 
