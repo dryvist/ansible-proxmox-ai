@@ -3,7 +3,7 @@
 `agent-dsl-manifest-<commit>.json` preserves the exact bytes of
 `agents/dify/manifest.json` at the ai-llm-prompts commit pinned in
 `roles/dify_docker/vars/agent_dsls.yml`, captured read-only from
-`https://raw.githubusercontent.com/dryvist/ai-llm-prompts/<commit>/agents/dify/manifest.json`.
+`https://raw.githubusercontent.com/jpe-ai-agents/ai-llm-prompts/<commit>/agents/dify/manifest.json`.
 
 `test_agent_dsl_manifest.py` hashes this fixture and requires the hash to equal
 `dify_docker_agent_dsl_manifest_sha256`, so a commit bump that leaves the

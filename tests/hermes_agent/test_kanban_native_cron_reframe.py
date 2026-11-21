@@ -5,7 +5,7 @@ Four changes, each with a specific way to regress silently:
 1. The splunk-digest kanban card is REMOVED (not paused). Its old memory key
    ("splunk-digest-last") was recalled by hermes-splunk-triage's catalog
    prompt as a dangling read once nothing wrote it any more — fixed in
-   dryvist/ai-llm-prompts, guarded here at converge time too (assert.yml).
+   jpe-ai-agents/ai-llm-prompts, guarded here at converge time too (assert.yml).
    A re-add of the card (or its vars) without also re-checking that prompt
    would reopen the same trap.
 2. splunk-parsing-quality-v2 (direct cron) is retired in favour of the
