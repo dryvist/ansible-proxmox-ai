@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.66.8](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.7...v2.66.8) (2026-11-22)
+
+
+### Bug Fixes
+
+* **llm_router:** render every role fallback ladder from Git and sync it on each converge ([#2710](https://github.com/dryvist/ansible-proxmox-ai/issues/2710)) ([dbc2e49](https://github.com/dryvist/ansible-proxmox-ai/commit/dbc2e494ee23413176121e46c885e403690709f7))
+
 ## [2.66.7](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.6...v2.66.7) (2026-11-22)
 
 
