@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.67.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.9...v2.67.0) (2026-11-22)
+
+
+### Features
+
+* **hermes_agent:** read the vikunja-task webhook secret from the apps domain ([#2651](https://github.com/dryvist/ansible-proxmox-ai/issues/2651)) ([70af42f](https://github.com/dryvist/ansible-proxmox-ai/commit/70af42f6096f9baa90e6a4fb6f3bf2421cd61bac))
+
 ## [2.66.9](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.8...v2.66.9) (2026-11-22)
 
 
