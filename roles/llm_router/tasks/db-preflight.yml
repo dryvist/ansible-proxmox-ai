@@ -11,10 +11,9 @@
 # PGPASSWORD, never on argv, and each psql task is no_log.
 #
 # Stored fallbacks are read from LiteLLM_Config (param_name = 'router_settings',
-# key 'fallbacks'), the row POST /fallback writes (tasks/seed-roles.yml). Git's
-# expected fallbacks are the declared order filtered to the names the proxy
-# serves, the same intersection seed-roles.yml writes. A rung the proxy does not
-# serve is skipped and counted, not reported as drift.
+# key 'fallbacks'). Git's expected role ladders come from the rendered
+# router_settings.fallbacks map. Declared rungs absent from the rendered
+# model_list are skipped and counted, not reported as drift.
 
 - name: Refuse the preflight when no router database is configured
   ansible.builtin.assert:
@@ -30,13 +29,23 @@
 
 # The rendered config is the git side of the model-list comparison. It is
 # rendered in memory, the same way assert-registry-render-parity.yml renders it.
-- name: Render the git model_list in memory
+- name: Render the git config in memory
   ansible.builtin.set_fact:
-    _llm_router_preflight_git_models: >-
-      {{ (lookup('template', _llm_router_preflight_template) | from_yaml).model_list
-         | map(attribute='model_name') | unique | list }}
+    _llm_router_preflight_git_config: "{{ lookup('template', _llm_router_preflight_template) | from_yaml }}"
   vars:
     _llm_router_preflight_template: "{{ role_path }}/templates/config.yaml.j2"
+  no_log: true
+
+- name: Project the rendered model and fallback baselines
+  ansible.builtin.set_fact:
+    _llm_router_preflight_git_models: >-
+      {{ _llm_router_preflight_git_config.model_list
+         | map(attribute='model_name') | unique | list }}
+    _llm_router_preflight_git_fallback_map: >-
+      {{ dict((_llm_router_preflight_git_config.router_settings.fallbacks | default([]))
+         | map('dict2items') | flatten | map(attribute='key')
+         | zip((_llm_router_preflight_git_config.router_settings.fallbacks | default([]))
+           | map('dict2items') | flatten | map(attribute='value'))) }}
   no_log: true
 
 - name: Name the router database connection (the password stays in PGPASSWORD)
@@ -146,14 +155,14 @@
                else (_llm_router_preflight_stored_raw | map('dict2items') | flatten | items2dict)) }}
   run_once: true
 
-- name: Compare each git role's fallbacks with the stored ones
+- name: Compare each rendered role fallback with the stored one
   ansible.builtin.set_fact:
     _llm_router_preflight_roles: >-
-      {%- set served = _llm_router_preflight_git_models | union(_llm_router_preflight_db_models) -%}
+      {%- set served = _llm_router_preflight_git_models -%}
       {%- set ns = namespace(out=[]) -%}
       {%- for d in llm_router_role_deployments -%}
       {%- set declared = d.fallbacks | default([], true) | list -%}
-      {%- set expected = declared | select('in', served) | list -%}
+      {%- set expected = _llm_router_preflight_git_fallback_map.get(d.role, []) | list -%}
       {%- set has_record = d.role in _llm_router_preflight_stored_map -%}
       {%- set stored = (_llm_router_preflight_stored_map[d.role] | default([], true) | list) if has_record else [] -%}
       {%- if has_record and stored == expected -%}

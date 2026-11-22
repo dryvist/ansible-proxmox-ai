@@ -1,11 +1,7 @@
 ---
-# Pins llm_router_seed_mode (Vikunja 3316): router_settings (fallback ladders,
-# routing_strategy, ...) must stay editable in the LiteLLM Admin UI between
-# converges. `initial` (default) seeds the database only the first time, when
-# no router_settings row exists yet; `rebuild` always overwrites it (DR /
-# from-scratch reset). See roles/llm_router/README.md -> "Editing ladders in
-# the UI" and defaults/main/45-database.yml for the litellm-source facts this
-# rests on.
+# Pins router-settings ownership: Git synchronizes `fallbacks` every converge,
+# while `initial` (default) preserves other UI-managed settings after the first
+# full seed. `rebuild` always overwrites the full row (DR / from-scratch reset).
 #
 # Same-target role model_info drift is covered separately in
 # test_role_model_info_reconcile.yml.
@@ -30,8 +26,8 @@
           - llm_router_seed_mode == 'initial'
         fail_msg: >-
           llm_router_seed_mode defaults to '{{ llm_router_seed_mode }}', not
-          'initial' — a converge would overwrite an Admin UI ladder edit by
-          default, which is the exact regression this variable exists to stop.
+          'initial' — existing non-fallback router settings must remain UI-owned
+          by default.
         success_msg: initial is the default seed mode.
 
 - name: The seed gate protects an existing row only in initial mode
@@ -66,7 +62,7 @@
             fail_msg: >-
               _llm_router_router_settings_may_seed is true with
               seed_mode=initial and an existing row —
-              sync-router-settings.yml would run and clobber an Admin UI edit.
+              the full-payload gate is open and could clobber an Admin UI edit.
 
     - name: Initial mode, no row yet -> the seed gate opens (first seed)
       block:
@@ -132,7 +128,55 @@
           {{ llm_router_router_settings_probe.rc == 0
              and (llm_router_router_settings_probe.stdout | default('') | trim) == '1' }}
 
-- name: The tasks/main.yml imports the probe before the gated sync, both keyed off seed_mode
+- name: Existing rows receive only the Git-owned fallback field in initial mode
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_drift_env_marker_values: {}
+  tasks:
+    - name: Load the router defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Model a rendered config and an existing router settings row
+      ansible.builtin.set_fact:
+        llm_router_seed_mode: initial
+        llm_router_router_settings_in_db: true
+        llm_router_rendered_config:
+          content: >-
+            {{ {'router_settings': {
+                 'fallbacks': [{'judge': ['small']}],
+                 'routing_strategy': 'least-busy',
+                 'redis_password': 'not-sent'}} | to_json | b64encode }}
+
+    - name: Existing rows synchronize only fallbacks
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _llm_router_settings_payload
+            == {'fallbacks': [{'judge': ['small']}]}
+        fail_msg: >-
+          An existing initial-mode row should receive only the rendered
+          fallback map, got {{ _llm_router_settings_payload }}.
+
+    - name: Model the first seed for a missing router settings row
+      ansible.builtin.set_fact:
+        llm_router_router_settings_in_db: false
+
+    - name: First seed still sends the full payload without the credential
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _llm_router_settings_payload.fallbacks
+            == [{'judge': ['small']}]
+          - _llm_router_settings_payload.routing_strategy == 'least-busy'
+          - _llm_router_settings_payload.routing_groups == []
+          - "'redis_password' not in _llm_router_settings_payload"
+
+- name: The tasks/main.yml probes before syncing settings on every converge
   hosts: localhost
   gather_facts: false
   vars:
@@ -143,7 +187,7 @@
         src: "{{ _role_dir }}/tasks/main.yml"
       register: _main_source
 
-    - name: Assert the probe import precedes the gated sync import, and each carries the right when
+    - name: Assert the probe precedes sync and the fallback request is per-converge
       ansible.builtin.assert:
         quiet: true
         that:
@@ -153,15 +197,41 @@
           - _sync_offset != -1
           - _probe_offset < _sync_offset
           - "\"llm_router_seed_mode == 'initial'\" in _text"
-          - "'_llm_router_router_settings_may_seed | bool' in _text"
+          - "'_llm_router_router_settings_may_seed | bool' not in _sync_when"
+          - "'llm_router_db_host | length > 0' in _sync_when"
+          - "'llm_router_store_model_in_db | bool' in _sync_when"
+          - "'sync-router-settings-request.yml' in _text"
+          - "'llm_router_settings_sync_marker.changed' in _text"
         fail_msg: >-
-          tasks/main.yml no longer imports probe-router-settings.yml before
-          the seed_mode-gated sync-router-settings.yml import — the DB read
-          this gate depends on would run too late, or not at all.
+          tasks/main.yml must probe before preparing the settings payload, sync
+          fallbacks on every database-backed converge, and avoid running the
+          full-payload seed gate on the sync task.
       vars:
         _text: "{{ _main_source.content | b64decode }}"
         _probe_offset: "{{ _text.find('import_tasks: probe-router-settings.yml') }}"
         _sync_offset: "{{ _text.find('import_tasks: sync-router-settings.yml') }}"
+        _flush_offset: "{{ _text.find('Flush handlers so config / unit changes apply before verification') }}"
+        _sync_when: "{{ _text[(_sync_offset | int):(_flush_offset | int)] }}"
+
+- name: Role seeding contains no fallback API calls
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Read seed-roles.yml
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/seed-roles.yml"
+      register: _seed_roles_source
+
+    - name: Assert role creation remains while the /fallback API is unused
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'Create the role deployments that are absent' in _seed_roles_text"
+          - "'/fallback' not in _seed_roles_text"
+      vars:
+        _seed_roles_text: "{{ _seed_roles_source.content | b64decode }}"
 
 - name: Seeded models and MCP permissions reconcile every converge while budgets remain rebuild-only
   hosts: localhost

@@ -169,13 +169,14 @@ live in the database instead. See below.
 ## Roles: what lives in git, what lives in the database
 
 Authority is split: the catalog (`llm-models.d/` → `config.yaml`) lives in
-git and changes rarely; roles (which model a caller-facing name resolves to,
-and its fallback order) live in the router database and the Admin UI owns
-them, changing often. The first seed is declared in
+git and changes rarely; role targets (which model a caller-facing name
+resolves to) live in the router database and the Admin UI owns them after
+their first seed. The first seed is declared in
 `defaults/main/55-roles.yml`; `tasks/seed-roles.yml` writes a role only when
 the running proxy carries no deployment by that name, so an `initial`-mode
-converge never overwrites an edit made in the UI — `rebuild` (below) is the
-exception.
+converge never overwrites a target edited in the UI — `rebuild` (below) is the
+exception. Git owns every fallback ladder in the rendered router settings;
+an Admin UI ladder edit is replaced with the Git value on the next converge.
 
 Full detail — the two rules a seeded fallback rung must satisfy, the
 seeded `judge` and `recorder` roles and how each is scoped, and how to swap a
@@ -184,23 +185,24 @@ role by hand or through the Admin UI — moved to
 
 ## Editing ladders in the UI (`llm_router_seed_mode`, Vikunja 3316)
 
-Router settings and fallback ladders stay Admin UI-owned after first seed.
+Git owns fallback ladders and synchronizes them on every converge. Other
+router settings stay Admin UI-owned after first seed in `initial` mode.
 Virtual-key model allowlists and MCP permissions follow Git on every
 converge; `models_authoritative: false` keeps additive model extensions.
 In `initial`, routes and attribution metadata remain UI-owned. Budgets
 reconcile only in `rebuild`. See
 [`llm_router_seed_mode`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#same-contract-elsewhere).
 
-- **`initial`** (default) — the converge seeds `router_settings` into the
-  database only the first time, when no row exists yet
+- **`initial`** (default) — the converge seeds the full `router_settings`
+  payload only the first time, when no row exists yet
   (`tasks/probe-router-settings.yml`, a read-only `psql` check —
   confirmed against an older release; recheck the endpoint after the proxy
-  refactor). Once a row
-  exists, a converge leaves it alone; `tasks/sync-router-settings.yml` is
-  skipped.
+  refactor). On later converges, it updates only the Git-owned `fallbacks`
+  field, leaving other router settings alone.
 - **`rebuild`** — DR / from-scratch reset. Every converge re-pushes the
-  rendered file's `router_settings` and re-seeds every declared role
-  deployment and its fallback list, discarding whatever the Admin UI holds.
+  rendered file's full `router_settings` and recreates every declared role
+  deployment, discarding whatever the Admin UI holds for those settings.
+  Fallback ladders still come only from the rendered `router_settings.fallbacks` map.
   Set it for one converge to restore the git-declared state, then set it
   back to `initial`.
 
@@ -269,7 +271,7 @@ endpoint contract, and the serving-share metric:
 | `llm_router_light_port` | `service_ports.llm_fast_api` | llm-fast / llm-light backend port |
 | `llm_router_large_port` | `service_ports.ollama_api` | llm-large backend port |
 | `llm_router_routing_strategy` | `simple-shuffle` | load-balancing across same-name deployments |
-| `llm_router_seed_mode` | `initial` | `initial` seeds `router_settings`/roles once then leaves Admin UI edits alone; `rebuild` = DR full overwrite of both |
+| `llm_router_seed_mode` | `initial` | `initial` full-seeds settings/roles once, then syncs Git fallbacks every converge; `rebuild` = DR full overwrite |
 | `llm_router_rebuild_roles` | `[]` | `initial` mode: recreate these live roles from Git |
 | `llm_router_master_key` | `env LLM_ROUTER_MASTER_KEY` (mandatory) | proxy master key |
 | `llm_router_llm_large_bearer` | `env LLM_LARGE_BEARER_TOKEN` (mandatory) | llm-large bearer |

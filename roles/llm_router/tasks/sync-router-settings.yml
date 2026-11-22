@@ -1,36 +1,16 @@
 ---
-# Make the rendered file authoritative for router_settings — but only when
-# main.yml's llm_router_seed_mode gate let this file be imported at all (see
-# there and defaults/main/45-database.yml): `initial`, the default, skips this
-# import once a row already exists, so an Admin UI edit to fallbacks/routing
-# survives every later converge; `rebuild` always runs it.
+# Prepare the Git-owned router_settings payload. In `initial` mode with an
+# existing row, this payload contains only `fallbacks`; a first seed or
+# `rebuild` carries the full rendered settings. The request runs after runtime
+# verification on every converge, even when this marker is unchanged.
 #
 # store_model_in_db gates config reconciliation for EVERY config section, not
-# just models (litellm/repositories/config_repository.py, reconcile_config:
-# "DB values override YAML values"). We need it true for role deployments, so
-# a persisted router_settings row silently shadows this file on every start —
-# a stale routing_groups entry survived its removal from the template and kept
-# registering a handler that raised on every success event.
+# just models. It must stay true for role deployments, so the persisted
+# router_settings row cannot shadow this file at startup.
 #
-# Notifies restart -> liveness wait -> sync, in that order (handlers run in
-# definition order, not notification order — see handlers/main.yml). The
-# corrective POST runs against the freshly-restarted, confirmed-live proxy,
-# never the old one: posting first, before the restart, meant a proxy that
-# was already down (crash-looping on a bad prior config) failed the POST
-# with connection-refused and stopped the rolling converge at that member —
-# never reaching the restart that would have fixed it.
-#
-# /config/update merges per key and the request wins
-# (proxy_server.py: "router_settings: merge existing + request, request wins"),
-# so this sets only what the file owns and leaves the rest of the row alone —
-# including the credential stored there, which is never sent through this
-# surface. routing_groups is sent as an explicit empty list because an omitted
-# key keeps whatever the row holds, which is the shadowing itself.
-#
-# ponytail: change detection is a content-addressed marker file, because the
-# proxy exposes no read endpoint for this section (/config/list accepts only
-# general_settings). It will not notice a row edited out of band; delete the
-# marker or change the config to force a re-push.
+# /config/update merges per key and the request wins. This sends only the fields
+# Git owns for this seed mode, leaves the credential untouched, and sets the
+# retired routing_groups key to an explicit empty list on full seeds.
 
 - name: Read the rendered proxy config back for its router_settings
   ansible.builtin.slurp:
@@ -44,6 +24,7 @@
     owner: root
     group: root
     mode: "0644"
+  register: llm_router_settings_sync_marker
   notify:
     - Restart litellm
     - Wait for LiteLLM liveness before syncing settings
