@@ -84,10 +84,9 @@ llm_router_entry_point_fallback_overrides: >-
   {%- endfor -%}
   {{ ns.map }}
 
-# The rendered fallback map is shared with explicitly scoped virtual keys.
-# Keeping its entries here lets a key replace one entry without rebuilding the
-# global list or changing the order in which the config template writes it.
-_llm_router_fallback_map_source: >-
+# The pre-role fallback map is also the input to explicitly scoped virtual
+# keys. Keep it separate so router-owned role ladders do not alter those scopes.
+_llm_router_fallback_map_base_source: >-
   {%- set ns = namespace(map={}) -%}
   {%- set _default_chain = _llm_router_m_hermes_default_fallback_chain -%}
   {%- set _modality_names = llm_router_cross_modality_fail_fast_names -%}
@@ -133,9 +132,20 @@ _llm_router_fallback_map_source: >-
   {%- endif -%}
   {%- endif -%}
   {{ ns.map }}
+_llm_router_fallback_map_source: >-
+  {%- set ns = namespace(map=_llm_router_fallback_map_base_source) -%}
+  {%- set _rendered_models = (llm_router_registry_enabled_route_names
+        + llm_router_direct_route_aliases) | unique | list -%}
+  {%- for _role in llm_router_role_deployments if _role.fallbacks | length > 0 -%}
+  {%- if _role.role not in ns.map or _role.role in llm_router_local_only_chains -%}
+  {%- set _chain = _role.fallbacks | select('in', _rendered_models) | list -%}
+  {%- set _discard = ns.map.update({_role.role: _chain}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.map }}
 llm_router_fallback_map: "{{ _llm_router_m_fallback_map }}"
 
-# Each scoped CI key gets the complete shared map, with only its primary
+# Each scoped CI key gets the complete pre-role map, with only its primary
 # capability entry replaced by that key's declared review chain. The private
 # key (github-actions, which OpenHands and the org CI workflows send) keeps only
 # local rungs in every chain.
@@ -145,7 +155,9 @@ llm_router_review_key_fallbacks: >-
   {%- set _local = _llm_router_m_d1_rungs_by_class['local'] -%}
   {%- set _private = llm_router_review_private_chain -%}
   {%- set _oss = llm_router_review_oss_chain -%}
-  {%- for _name, _chain in llm_router_fallback_map.items() -%}
+  {#- Keep the virtual-key projection on the pre-role map. Adding declared
+      role ladders to the router-wide map must not widen these key scopes. -#}
+  {%- for _name, _chain in _llm_router_fallback_map_base_source.items() -%}
   {%- set _private_chain = (_private if _name == _primary else _chain)
         | select('in', _local) | list -%}
   {%- set _oss_chain = _oss if _name == _primary else _chain -%}
