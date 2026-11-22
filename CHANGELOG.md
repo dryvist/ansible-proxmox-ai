@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.66.9](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.8...v2.66.9) (2026-11-22)
+
+
+### Bug Fixes
+
+* **llm_router:** mark a tagged key local-route when it names a role with only local members ([#2712](https://github.com/dryvist/ansible-proxmox-ai/issues/2712)) ([ae28a9d](https://github.com/dryvist/ansible-proxmox-ai/commit/ae28a9df5a2af0aaf0e19a54c8705eed1b0542ef))
+
 ## [2.66.8](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.7...v2.66.8) (2026-11-22)
 
 
