@@ -1,6 +1,7 @@
 ---
-# Role targets and fallback order remain UI-owned. Their admission tags follow
-# the actual stored target so a UI retarget cannot carry stale privacy classes.
+# Role targets remain UI-owned. Their admission tags follow the actual stored
+# target so a UI retarget cannot carry stale privacy classes; ladders come from
+# the rendered router fallback map.
 - name: Derive sensitivity and privacy tag updates for existing role targets
   ansible.builtin.set_fact:
     _llm_router_role_policy_sources: >-
@@ -14,6 +15,8 @@
       {%- set actual = live.litellm_params | default({}) -%}
       {%- set _capability_groups = llm_router_capability_members
             | map(attribute='route_group') | unique | list -%}
+      {%- set _capability_model_ids = llm_router_capability_members
+            | map(attribute='client_model_id') | list -%}
       {%- set candidates = namespace(entries=[], params=[]) -%}
       {%- for member in _llm_router_capability_member_params -%}
       {%- if (member.params.model | default('')) == (actual.model | default(''))
@@ -24,7 +27,7 @@
       {%- endfor -%}
       {#- Preserve non-capability targets such as the native Hermes router. -#}
       {%- for entry in _llm_router_role_params | dict2items
-            if entry.key not in _capability_groups -%}
+            if entry.key not in _capability_groups + _capability_model_ids -%}
       {%- if (entry.value.model | default('')) == (actual.model | default(''))
             and (entry.value.api_base | default('')) == (actual.api_base | default('')) -%}
       {%- set target_entry = (llm_router_registry_enabled

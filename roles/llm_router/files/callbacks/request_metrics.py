@@ -44,6 +44,15 @@ def _host_only(api_base):
     return urlparse(api_base).hostname or api_base
 
 
+def _cached_prompt_tokens(usage):
+    """Cached prompt tokens from the usage block: 0 when it has prompt-token details without a cached count, None
+    when it has no prompt-token details at all."""
+    details = usage.get("prompt_tokens_details") if isinstance(usage, dict) else None
+    if not isinstance(details, dict):
+        return None
+    return int(details.get("cached_tokens") or 0)
+
+
 def build_record(kwargs, response_obj, start_time, end_time):
     """Pure function so it's testable without a real litellm proxy or hooks."""
     payload = kwargs.get("standard_logging_object") or {}
@@ -72,6 +81,7 @@ def build_record(kwargs, response_obj, start_time, end_time):
         "latency_ms": latency_ms,
         "ttft_ms": ttft_ms,
         "prompt_tokens": payload.get("prompt_tokens"),
+        "cached_prompt_tokens": _cached_prompt_tokens(metadata.get("usage_object")),
         "completion_tokens": payload.get("completion_tokens"),
         "cache_hit": payload.get("cache_hit"),
         "key_alias": contract.get("key_alias"),

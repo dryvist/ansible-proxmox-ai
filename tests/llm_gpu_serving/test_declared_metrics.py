@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import llm_gpu_serving.declared_metrics_helpers as helpers
 from llm_gpu_serving.declared_metrics_helpers import (
     COLLECTOR_DIR,
     LEGACY_GROUP,
@@ -212,4 +213,23 @@ def test_declared_metrics_match_rendered_start_flag_values():
             {"llm_gpu_serving_host_profile": gpu_vllm_profile},
             "vllm",
         ),
+    )
+
+
+def test_a_profile_with_a_declared_maximum_publishes_it_and_others_do_not() -> None:
+    copy = helpers._module_task(helpers.SHARED_ROOT / "tasks/publish.yml", "ansible.builtin.copy")
+    context = {
+        **helpers.DEFAULTS,
+        "llm_gpu_accelerator": "lane-a",
+        "llm_serving_declared_metrics_engine": "vllm",
+        "llm_serving_declared_metrics_profile_names": ["with", "without"],
+        "llm_serving_declared_metrics_profiles": {
+            "with": {"max_num_seqs": 2, "max_model_len": 8, "max_generation_tokens_per_second": 1000},
+            "without": {"max_num_seqs": 3, "max_model_len": 9},
+        },
+    }
+    content = helpers._text(copy["ansible.builtin.copy"]["content"], context)
+    assert content == (
+        helpers._expected("lane-a", "with", "vllm", 2, 8, max_rate=1000)
+        + helpers._expected("lane-a", "without", "vllm", 3, 9)
     )

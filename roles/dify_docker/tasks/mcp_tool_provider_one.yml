@@ -96,6 +96,18 @@
             != dify_docker_agent_mcp_provider.sse_read_timeout | string }}
   no_log: true
 
+# A provider whose first tool fetch failed (for example an outbound proxy
+# refusal) stays registered with no tools, and an update that keeps its
+# server_url never reconnects it.
+- name: Decide whether the named Dify MCP provider is missing its required tool
+  ansible.builtin.set_fact:
+    dify_docker_mcp_provider_missing_tool: >-
+      {{ dify_docker_mcp_matching_providers | length == 1
+         and (dify_docker_mcp_provider_details.json.tools | default([])
+              | selectattr('name', 'equalto', dify_docker_agent_mcp_provider.tool_name)
+              | list | length == 0) }}
+  no_log: true
+
 - name: Report the declared Dify MCP provider change in check mode
   ansible.builtin.debug:
     msg: >-
@@ -103,10 +115,15 @@
       Dify would register MCP provider {{ dify_docker_agent_mcp_provider.name }}.
       {% elif dify_docker_mcp_provider_needs_reconcile | bool %}
       Dify would update MCP provider {{ dify_docker_agent_mcp_provider.name }}.
+      {% elif dify_docker_mcp_provider_missing_tool | bool %}
+      Dify would reconnect MCP provider {{ dify_docker_agent_mcp_provider.name }}, which has no
+      {{ dify_docker_agent_mcp_provider.tool_name }} tool.
       {% else %}
       Dify MCP provider {{ dify_docker_agent_mcp_provider.name }} already matches its declaration.
       {% endif %}
-  changed_when: dify_docker_mcp_provider_needs_reconcile | bool
+  changed_when: >-
+    dify_docker_mcp_provider_needs_reconcile | bool
+    or dify_docker_mcp_provider_missing_tool | bool
   when: ansible_check_mode
 
 - name: Register the declared Dify MCP provider
@@ -162,6 +179,31 @@
     - not ansible_check_mode
     - dify_docker_mcp_matching_providers | length == 0
       or dify_docker_mcp_provider_needs_reconcile | bool
+      or dify_docker_mcp_provider_missing_tool | bool
+  no_log: true
+
+# Dify's own authorize call reconnects with the stored URL and headers and marks
+# the provider authorized, which the tool refresh below requires.
+- name: Authorize the changed Dify MCP provider
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/workspaces/current/tool-provider/mcp/auth"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    follow_redirects: none
+    use_proxy: false
+    body_format: json
+    body:
+      provider_id: "{{ dify_docker_mcp_provider_resolved_id }}"
+    status_code: 200
+    return_content: true
+  when:
+    - not ansible_check_mode
+    - dify_docker_mcp_matching_providers | length == 0
+      or dify_docker_mcp_provider_needs_reconcile | bool
+      or dify_docker_mcp_provider_missing_tool | bool
+  changed_when: true
   no_log: true
 
 - name: Refresh tools for the changed Dify MCP provider
@@ -182,6 +224,7 @@
     - not ansible_check_mode
     - dify_docker_mcp_matching_providers | length == 0
       or dify_docker_mcp_provider_needs_reconcile | bool
+      or dify_docker_mcp_provider_missing_tool | bool
   changed_when: true
   no_log: true
 

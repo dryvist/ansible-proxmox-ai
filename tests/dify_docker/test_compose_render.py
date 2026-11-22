@@ -11,6 +11,7 @@ import pytest
     [
         "tests/dify_docker/test_compose_ssr_api_url.yml",
         "tests/dify_docker/test_ssrf_trigger_carveout.yml",
+        "tests/dify_docker/test_ssrf_mcp_gateway_carveout.yml",
     ],
 )
 def test_compose_render_contract(playbook):

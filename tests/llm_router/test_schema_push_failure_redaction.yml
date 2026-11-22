@@ -1,5 +1,5 @@
 ---
-# A failed `prisma db push` must fail the converge WITH its output, and that
+# A failed `prisma migrate deploy` must fail the converge WITH its output, and that
 # output must carry no database URL, password or token. The push task keeps
 # no_log (its argv holds the URL), so the failure is raised by
 # roles/llm_router/tasks/fail-schema-push.yml from the registered result.
@@ -41,12 +41,21 @@
           - push_task.failed_when is false
         quiet: true
 
+    - name: The schema step migrates forward and never calls db push
+      ansible.builtin.assert:
+        that:
+          - "\"'migrate', 'deploy'\" in push_task['ansible.builtin.command'].argv"
+          - "\"'db', 'push'\" not in push_task['ansible.builtin.command'].argv"
+          - "'accept-data-loss' not in push_task['ansible.builtin.command'].argv"
+          - "'/litellm_proxy_extras/schema.prisma' in push_task['ansible.builtin.command'].argv"
+        quiet: true
+
     - name: Run the failure task against the sample output
       block:
         - name: Fail with the redacted output
           ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/fail-schema-push.yml"
           vars:
-            failed_step: prisma db push
+            failed_step: prisma migrate deploy
             failed_result:
               rc: 1
               stdout: "{{ sample }}"
@@ -58,7 +67,7 @@
         - name: The failure carries the diagnostic and none of the secrets
           ansible.builtin.assert:
             that:
-              - "'prisma db push exited 1' in ansible_failed_result.msg"
+              - "'prisma migrate deploy exited 1' in ansible_failed_result.msg"
               - "'P1001' in ansible_failed_result.msg"
               - "'<redacted-url>' in ansible_failed_result.msg"
               - "'did not fail' not in ansible_failed_result.msg"

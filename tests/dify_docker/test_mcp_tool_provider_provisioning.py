@@ -22,13 +22,16 @@ def _task(tasks, name: str):
 
 def test_vikunja_mcp_provider_is_declared_and_resolves_the_dsl_placeholder():
     group_vars = _yaml(GROUP_VARS)
-    provider, = group_vars["dify_docker_agent_mcp_providers"]
+    provider, = group_vars["dify_public_agent_mcp_providers"]
 
     assert provider["name"] == "vikunja"
     assert provider["server_identifier"] == "vikunja"
     assert provider["openbao_field"] == "VIKUNJA_MCP_HTTP_TOKEN_VIKUNJA_CLERK"
     assert provider["tool_name"] == "vikunja_tasks"
-    assert group_vars["dify_docker_agent_tool_providers"]["vikunja-clerk"] == {
+    assert group_vars["dify_public_agent_tool_providers"]["vikunja-clerk"] == {
+        "VIKUNJA_MCP_PROVIDER_ID": "vikunja"
+    }
+    assert group_vars["dify_public_agent_tool_providers"]["vikunja-triage"] == {
         "VIKUNJA_MCP_PROVIDER_ID": "vikunja"
     }
 
@@ -73,3 +76,37 @@ def test_mcp_provider_api_uses_openbao_headers_and_check_mode_safe_writes():
     for task in (get_providers, _task(tasks, "Read the named Dify MCP provider details"), create, update, refresh):
         assert task["ansible.builtin.uri"]["follow_redirects"] == "none"
         assert task["ansible.builtin.uri"]["use_proxy"] is False
+
+
+def test_a_provider_without_its_tool_is_authorized_then_refreshed():
+    tasks = _yaml(TASKS)
+    missing = _task(tasks, "Decide whether the named Dify MCP provider is missing its required tool")
+    auth = _task(tasks, "Authorize the changed Dify MCP provider")
+    refresh = _task(tasks, "Refresh tools for the changed Dify MCP provider")
+    resolved = _task(tasks, "Keep the Dify MCP provider id for tool refresh")
+
+    fact = missing["ansible.builtin.set_fact"]["dify_docker_mcp_provider_missing_tool"]
+    assert "dify_docker_mcp_provider_details.json.tools" in fact
+    assert "dify_docker_agent_mcp_provider.tool_name" in fact
+    assert auth["ansible.builtin.uri"]["url"].endswith("/workspaces/current/tool-provider/mcp/auth")
+    assert auth["ansible.builtin.uri"]["method"] == "POST"
+    assert auth["ansible.builtin.uri"]["body"] == {"provider_id": "{{ dify_docker_mcp_provider_resolved_id }}"}
+    assert auth["ansible.builtin.uri"]["use_proxy"] is False
+    assert auth["when"][0] == "not ansible_check_mode"
+    assert auth["no_log"] is True
+    # The same three triggers drive the id, the authorize and the refresh.
+    for task in (resolved, auth, refresh):
+        assert "dify_docker_mcp_provider_missing_tool | bool" in task["when"][1]
+        assert "dify_docker_mcp_provider_needs_reconcile | bool" in task["when"][1]
+    assert tasks.index(missing) < tasks.index(resolved) < tasks.index(auth) < tasks.index(refresh)
+
+
+def test_changed_configuration_is_applied_before_the_health_checks():
+    tasks = _yaml(ROOT / "roles/dify_docker/tasks/config_and_deploy.yml")
+    names = [task.get("name") for task in tasks]
+    flush = _task(tasks, "Recreate Dify against changed configuration before the health checks")
+
+    assert flush["ansible.builtin.meta"] == "flush_handlers"
+    assert names.index("Render Dify squid (ssrf_proxy) configuration") < names.index(flush["name"])
+    assert names.index("Deploy Dify via docker compose") < names.index(flush["name"])
+    assert names.index(flush["name"]) < names.index("Wait for Dify web port to accept TCP connections")

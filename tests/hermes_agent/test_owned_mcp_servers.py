@@ -42,9 +42,12 @@ def _owned_slugs(identity: str, roster: dict[str, str] = ROSTER) -> list[str]:
 
 def _splunk_access(identity: str, owner_map: dict[str, str]) -> bool:
     raw = _defaults()["hermes_agent_splunk_access"]
-    rendered = Environment().from_string(raw).render(
+    env = Environment()
+    env.filters["bool"] = bool
+    rendered = env.from_string(raw).render(
         ai_agent_owner=owner_map,
         hermes_agent_id=identity,
+        hermes_agent_is_isolated=identity == "pepper",
     )
     return yaml.safe_load(rendered)
 

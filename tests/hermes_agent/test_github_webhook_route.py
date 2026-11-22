@@ -19,7 +19,7 @@ FILTER = types.SimpleNamespace(
 )
 
 
-def render(private: bool, public: bool = False) -> dict:
+def render(private: bool, public: bool = False, **extra) -> dict:
     env = Environment(
         autoescape=select_autoescape(default=False, default_for_string=False),
         loader=FileSystemLoader(ROLE / "templates"),
@@ -40,6 +40,7 @@ def render(private: bool, public: bool = False) -> dict:
         hermes_agent_webhook_port=8644,
         hermes_agent_webhook_prompt="p",
     )
+    ctx.update(extra)
     return yaml.safe_load(env.from_string(BLOCK).render(**ctx))["platforms"]["webhook"]["extra"]["routes"]
 
 
@@ -102,3 +103,35 @@ def test_prompt_fields_resolve_in_the_reconcile_payload():
         for part in path.split("."):
             value = value[part]
         assert value not in (None, "")
+
+
+def test_profile_routes_render_beside_the_private_route_without_a_secret():
+    route = {"name": "task-event", "profile": "task-pm", "prompt": "Event {event_name} for {data.task.id}"}
+    assert render(False, hermes_agent_profile_webhook_routes=[route]) == {
+        "task-event": {"profile": "task-pm", "prompt": "Event {event_name} for {data.task.id}"},
+    }
+    both = render(True, hermes_agent_profile_webhook_routes=[route])
+    assert list(both) == ["github-private", "task-event"]
+    assert "secret" not in both["task-event"]
+
+
+def test_profile_route_with_secret_env_renders_only_the_env_ref():
+    route = {"name": "task-event", "profile": "task-pm", "prompt": "p",
+             "secret_env": "TASK_EVENT_SECRET", "secret": "route-only-value"}
+    rendered = render(False, hermes_agent_profile_webhook_routes=[route])["task-event"]
+    assert rendered["secret"] == "${TASK_EVENT_SECRET}"
+    assert "route-only-value" not in json.dumps(rendered)
+
+
+def test_env_file_carries_each_route_secret_beside_the_global_one():
+    env_tpl = (ROLE / "templates" / "hermes-env.j2").read_text()
+    start = env_tpl.index("{% if hermes_agent_webhook_enabled")
+    block = env_tpl[start:env_tpl.index("{% endif %}", start) + len("{% endif %}")]
+    jinja = Environment(autoescape=select_autoescape(default=False, default_for_string=False))
+    jinja.filters["bool"] = bool
+    routes = [{"name": "a", "secret_env": "A_SECRET", "secret": "va"}, {"name": "b"}]
+    out = jinja.from_string(block).render(
+        hermes_agent_webhook_enabled=True, hermes_agent_webhook_secret="g",
+        hermes_agent_webhook_port=8644, hermes_agent_profile_webhook_routes=routes)
+    lines = [line for line in out.splitlines() if line]
+    assert lines == ["WEBHOOK_ENABLED=true", "WEBHOOK_PORT=8644", "WEBHOOK_SECRET=g", "A_SECRET=va"]

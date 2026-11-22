@@ -38,6 +38,11 @@
            | map('dict2items') | map('selectattr', 'key', 'in',
                ['window', 'http_status', 'prometheus_status', 'result_count', 'sample_count'])
            | map('items2dict') | list }}
+    # Only the first gate sets llm_campaign_latency_skip_when_busy; a trip between
+    # cells still fails closed so the trial lock's always section restores the baseline.
+    _llm_campaign_lane_busy: >-
+      {{ _llm_campaign_latency_reason == 'ratio over max'
+         and llm_campaign_latency_skip_when_busy | default(false) }}
   changed_when: false
 
 - name: Fail closed on interactive latency gate failures
@@ -59,6 +64,22 @@
       count={{ _llm_campaign_latency_observation.largest_window_count | default('none', true) }};
       window counts={{ _llm_campaign_latency_observation.window_counts | to_json }}.
     quiet: true
+  when: not (_llm_campaign_lane_busy | bool)
+
+- name: Report the busy interactive lane skip
+  ansible.builtin.debug:
+    msg: >-
+      Interactive latency gate skipped: lane busy;
+      ratio={{ _llm_campaign_latency_observation.raw_ratio }},
+      max={{ _llm_campaign_latency_observation.max_ratio }},
+      window={{ _llm_campaign_latency_observation.window }},
+      baseline p95={{ _llm_campaign_latency_observation.baseline_value }},
+      samples={{ _llm_campaign_latency_observation.sample_count }}.
+  when: _llm_campaign_lane_busy | bool
+
+- name: End the campaign before any work while the interactive lane is busy
+  ansible.builtin.meta: end_play
+  when: _llm_campaign_lane_busy | bool
 
 - name: Report idle interactive latency gate
   ansible.builtin.debug:

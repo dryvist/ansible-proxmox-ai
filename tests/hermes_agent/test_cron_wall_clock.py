@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from types import SimpleNamespace
 
@@ -14,6 +15,8 @@ from jinja2 import Environment
 from conftest import (
     PATCHED_CRON_TIMEOUT_SOURCE,
     ROLE_ROOT,
+    _apply_runtime_patch,
+    _replace_task,
     _task,
     role_defaults,
 )
@@ -241,6 +244,25 @@ def test_wall_clock_limit_parses_one_process_environment(monkeypatch) -> None:
     assert limit("unconfigured-job") is None
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "invalid")
     assert limit("unconfigured-job") == managed
+
+
+def test_call_site_patched_before_per_job_limits_gets_the_job_name() -> None:
+    stale = (
+        "    _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None\n"
+        "    _cron_wall_timeout_limit = _hermes_cron_wall_timeout_limit()\n"
+    )
+    resolve = _replace_task(
+        "Resolve the aggregate cron wall clock beside the inactivity timeout"
+    )
+    assert re.search(resolve["regexp"], stale, flags=re.MULTILINE) is None
+    upgraded = _apply_runtime_patch(
+        "Pass the job name at a call site patched before per-job wall clocks", stale
+    )
+    assert (
+        "_cron_wall_timeout_limit = _hermes_cron_wall_timeout_limit(job_name)"
+        in upgraded
+    )
+    assert "_hermes_cron_wall_timeout_limit()" not in PATCHED_CRON_TIMEOUT_SOURCE
 
 
 def test_every_catalog_job_uses_its_override_or_the_derived_default(monkeypatch) -> None:

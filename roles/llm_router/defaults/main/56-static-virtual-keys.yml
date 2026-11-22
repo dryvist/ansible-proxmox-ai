@@ -52,6 +52,14 @@ _llm_router_static_virtual_keys:
     allowed_classes: [local]
     models: "{{ [llm_router_primary_model] }}"
     models_authoritative: true
+  # Full registry-derived chat scope across all consumer classes. The app
+  # itself starts with the shared primary model.
+  - alias: next-ai-drawio
+    value: "{{ (bao_apps_secrets | default({})).get('next_ai_drawio_llm_router_key', '') }}"
+    allowed_classes: "{{ _llm_router_consumer_classes_all }}"
+    models: "{{ _llm_router_key_scope_chat_without_judge }}"
+    models_authoritative: true
+    daily_budget: "{{ _llm_router_key_daily_budget }}"
   # n8n's LiteLLM Request node, scoped to the local small capability.
   - alias: n8n
     value: "{{ bao_apps_secrets.n8n_llm_router_key | default('', true) }}"
@@ -117,12 +125,19 @@ _llm_router_static_virtual_keys:
   # this list the key 401s on every scrape with "Only proxy admin can be
   # used", which a scraper reports as no data. Both spellings: the proxy
   # 307s /metrics to /metrics/ and the check is on the path as requested.
+  # The scraper may also read plan usage through the pass-through.
   - alias: prometheus-scrape
     value: "{{ bao_apps_secrets.prometheus_llm_router_key | default('', true) }}"
     models: "{{ ['no-default-models'] }}"
     allowed_classes: [local]
     models_authoritative: true
-    allowed_routes: ["/metrics", "/metrics/"]
+    allowed_routes: >-
+      {{ ['/metrics', '/metrics/']
+         + ([llm_router_zcode_usage_path]
+            if llm_router_zcode_usage_api_key | default('') | trim | length > 0 else []) }}
+    metadata: >-
+      {{ {'allowed_passthrough_routes': [llm_router_zcode_usage_path]}
+         if llm_router_zcode_usage_api_key | default('') | trim | length > 0 else {} }}
   # The dashboard reads the active local capabilities through /v2/model/info.
   - alias: glance
     value: "{{ bao_apps_secrets.glance_llm_router_key | default('', true) }}"
@@ -152,9 +167,9 @@ _llm_router_static_virtual_keys:
     models: "{{ [llm_router_small_model, llm_router_primary_model] + llm_router_studio_model_names }}"
     models_authoritative: true
   # Private CI: the local capabilities and their ordinary registry aliases, the
-  # private and local review aliases, and the review-only CI Luna group. No
-  # subscription, paid, free or retaining class is granted, so private source
-  # leaves the estate only for CI Luna (58-review-roles.yml).
+  # private and local review aliases. No cloud class or group is granted, and
+  # the key's chains hold only local rungs (58-review-key-fallbacks.yml), so
+  # private source never leaves the estate.
   # The live model list is replaced with these declared entry points on every
   # converge; old names retire from the key when the Git seed changes.
   - alias: github-actions
@@ -163,7 +178,7 @@ _llm_router_static_virtual_keys:
     models: >-
       {{ ([llm_router_small_model, llm_router_primary_model, llm_router_large_model,
            llm_router_review_aliases.private, llm_router_review_aliases.local]
-          + llm_router_ci_local_model_aliases + llm_router_ci_luna_groups
+          + llm_router_ci_local_model_aliases
           + llm_router_agent_only_groups + llm_router_studio_model_names)
          | unique | list }}
     models_authoritative: true

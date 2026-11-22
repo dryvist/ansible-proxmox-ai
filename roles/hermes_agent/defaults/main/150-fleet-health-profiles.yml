@@ -96,8 +96,31 @@ hermes_agent_profiles:
     toolsets:
       cron: []
     soul_addendum_bundle: true
+  - name: tracker-reporter
+    description: Read-only tracker reporter (grouped, change-only task and incident summaries)
+    # zammad: the router's read-only incident tool server, called with this profile's own router key.
+    mcp: [vikunja, zammad]
+    env: []
+    skills: []
+    # Own bank: the reporter remembers what it last said per channel.
+    memory_bank_id: "{{ hermes_agent_memory_bank_id ~ '-tracker-reporter' }}"
+    toolsets:
+      cron: []
+    soul_addendum_file: soul-tracker-reporter.md.j2
+  - name: vikunja-pm
+    description: Vikunja task expert (finds, files, updates, labels, relates and comments on tasks; never deletes)
+    # vikunja_write: the router's Vikunja write tier, called with this profile's own router key.
+    mcp: [vikunja_write]
+    env: []
+    skills: []
+    memory_bank_id: "{{ hermes_agent_memory_bank_id ~ '-vikunja-pm' }}"
+    soul_addendum_file: soul-vikunja-pm.md.j2
+    # Served on the gateway A2A listener under /vikunja-pm.
+    a2a:
+      name: Vikunja task expert
+      advertised_toolsets: [vikunja_write]
   - name: orchestrator
-    description: Kanban decomposition and assignment owner; the only profile that reads the Vikunja backlog
+    description: Kanban decomposition and assignment owner; reads the Vikunja backlog to assign work
     mcp: [vikunja, docs]
     env: []
     skills: [hermes_agent/github-issues-api]
@@ -148,15 +171,21 @@ hermes_agent_profiles:
 hermes_agent_seeded_cron_names: >-
   {{ [hermes_agent_splunk_status_digest_cron_name] }}
 
-# Every brain-dependent cron, derived rather than hand-maintained. The watchdog
-# pauses and resumes this exact set when local serving is unavailable.
+# Every brain-dependent cron THIS identity owns, derived rather than
+# hand-maintained. The watchdog pauses and resumes this exact set when local
+# serving is unavailable, and counts a name missing from the guest's board as a
+# failure, so another identity's job must never appear here.
 #
 # Only `enabled` direct jobs are included: the disabled ones are already
 # paused and never reconciled, so naming them would just add no-op
-# `cron pause` calls.
+# `cron pause` calls. The seeded status digest is a `system: splunk` job
+# (tasks/cron_reconcile.yml) and follows the same owner rule.
 hermes_agent_brain_dependent_cron_names: >-
-  {{ hermes_agent_seeded_cron_names
-     + (hermes_agent_direct_cron_jobs
+  {%- set splunk_owner = (ai_agent_owner | default({})).get('splunk', '') -%}
+  {{ (hermes_agent_seeded_cron_names
+      if hermes_agent_id in ([splunk_owner] if splunk_owner else hermes_agent_job_identities_default)
+      else [])
+     + (hermes_agent_direct_cron_jobs_owned
         | selectattr('enabled', 'defined') | selectattr('enabled')
         | map(attribute='name') | list) }}
 
@@ -190,3 +219,7 @@ hermes_agent_superseded_kanban_enqueuer_cron_names: >-
 
 # Hermes writes last-known-good config copies under each profile backups/config.
 hermes_agent_profile_backup_directory_mode: "0750"
+# True on an identity that runs no named profiles (tasks/main.yml sets it with the empty profile list).
+# Hermes still scans every profiles/<name>/.env, so leftover profile directories move to retired-profiles/.
+hermes_agent_profiles_forced_off: false
+hermes_agent_retired_profiles_dir: "{{ hermes_agent_hermes_home }}/retired-profiles"

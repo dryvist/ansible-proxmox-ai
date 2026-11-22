@@ -1,0 +1,87 @@
+---
+# Every role name a key is scoped to is also on its priority team's allowlist.
+# LiteLLM checks the team allowlist as well as the key scope
+# (roles/llm_router/defaults/main/59a-privacy-defaults.yml derives it from the
+# member keys), so a role missing from the team answers 403 for every key in it.
+#
+# Run (from the REPO ROOT — self-contained):
+#   ansible-playbook tests/llm_router/test_team_role_allowlist.yml -i localhost, -c local
+
+- name: Verify each team allowlist covers the roles its member keys name
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - policy_fixture.yml
+    - ../../inventory/group_vars/all/02-gpu-accelerator.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the catalog-backed model registry
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+        public: true
+
+    - name: Load the real router group_vars
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
+
+    - name: Load the estate group_vars the role defaults derive from
+      ansible.builtin.include_vars:
+        dir: "{{ playbook_dir }}/../../inventory/group_vars/all"
+
+    - name: Stub the tofu inventory data and the bao secret maps
+      ansible.builtin.set_fact:
+        llm_router_master_key: dummy-render-check
+        llm_router_llm_large_bearer: dummy-render-check
+        ai_subdomain: pve.example.test
+        tofu_data:
+          domain: example.com
+          constants:
+            service_ports: { llm_router_api: 4000, otel_traces_http: 4318, postgres_default: 5432 }
+        bao_local_llm_secrets: {}
+        bao_apps_secrets:
+          llm_router_db_password: dummy-render-check
+        llm_router_db_host: postgres-ai.pve.example.test
+
+    - name: Refresh cached router projections after fixture input changes [team-role-allowlist-1]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Every key's scoped role names are on its team's allowlist
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gaps | length == 0
+          - _covered | length > 0
+        fail_msg: "key|team|missing roles: {{ _gaps }}"
+        success_msg: "{{ _covered | length }} role-scoped keys are covered by their team allowlist."
+      vars:
+        _roles: "{{ llm_router_role_deployments | map(attribute='role') | list }}"
+        _team_models: >-
+          {{ dict(llm_router_priority_team_settings | map(attribute='team_id')
+                  | zip(llm_router_priority_team_settings | map(attribute='models'))) }}
+        _covered: >-
+          {{ llm_router_virtual_keys | selectattr('team_id', 'defined')
+             | selectattr('team_id', 'in', _team_models.keys() | list)
+             | map(attribute='models', default=[]) | map('intersect', _roles) | select | list }}
+        _gaps: >-
+          {%- set out = [] -%}
+          {%- for k in llm_router_virtual_keys if k.team_id is defined and k.team_id in _team_models -%}
+          {%- set missing = k.models | default([]) | select('in', _roles)
+                | reject('in', _team_models[k.team_id]) | list -%}
+          {%- if missing -%}
+          {%- set _ = out.append(k.alias ~ '|' ~ k.team_id ~ '|' ~ missing | join(',')) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: The team allowlist does not widen a key's own scope
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'judge' not in (llm_router_virtual_keys | selectattr('alias', 'equalto', 'dify') | first).models"
+        fail_msg: The dify key's scope gained the judge role.

@@ -41,6 +41,8 @@ ENV = jinja2.Environment(
 )
 ENV.filters.update(FilterModule().filters())
 ENV.tests.update(AnsibleTestModule().tests())
+# Mirror Ansible's undef(hint) global: rendering the result raises with the hint.
+ENV.globals["undef"] = lambda hint="": jinja2.StrictUndefined(hint=hint)
 INVENTORY_VARS = load_group_vars_all()
 FACADE_DEFAULTS = yaml.safe_load((DEFAULTS_DIR / "40-facade.yml").read_text())
 ROLE_DEFAULTS: dict[str, Any] = {}
@@ -65,7 +67,9 @@ def _render_callers(roster: dict[str, Any], registry: dict[str, Any] | None = No
 
 def _render_key_fields(roster: dict[str, Any], registry: dict[str, Any] | None = None) -> dict[str, Any]:
     return _render_map(
-        INVENTORY_VARS["ai_agent_gateway_key_fields"], ai_callers=_render_callers(roster, registry)
+        INVENTORY_VARS["ai_agent_gateway_key_fields"],
+        ai_callers=_render_callers(roster, registry),
+        agent_callers_registry=registry or {},
     )
 
 
@@ -119,6 +123,15 @@ def _render(
         "agentgateway_docker_vikunja_mcp_enabled": True,
         "agentgateway_docker_vikunja_read_token": "example-vikunja-token",
         "agentgateway_docker_vikunja_mcp_port": 8002,
+        # Crawl4AI route defaults: disabled, so the pinned baseline render is
+        # byte-for-byte unchanged; the enabled render is tested in
+        # test_crawl4ai_route.py.
+        "agentgateway_docker_crawl4ai_mcp_enabled": False,
+        "agentgateway_docker_crawl4ai_mcp_url": "",
+        "agentgateway_docker_crawl4ai_api_token": "",
+        "agentgateway_docker_crawl4ai_allowed_callers": FACADE_DEFAULTS[
+            "agentgateway_docker_facade_callers"
+        ],
         "agentgateway_docker_vikunja_clerk_enabled": False,
         "agentgateway_docker_vikunja_clerk_api_token": "",
         "agentgateway_docker_vikunja_clerk_http_token": "",
@@ -141,6 +154,9 @@ def _render(
         "ai_callers": callers,
         "agentgateway_docker_a2a_allowed_tier": INVENTORY_VARS["agentgateway_docker_a2a_allowed_tier"],
         "agentgateway_docker_dify_mcp_targets": [],
+        "agentgateway_docker_roster_a2a_targets": [],
+        "agentgateway_docker_proxied_mcp_targets": [],
+        "agentgateway_docker_signed_webhook_routes": [],
         "agentgateway_docker_hindsight_roster_tiers": roster_tiers,
         **FACADE_DEFAULTS,
         # Keep generic authorization fixtures independent of the role's live

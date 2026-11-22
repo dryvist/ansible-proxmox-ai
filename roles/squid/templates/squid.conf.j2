@@ -24,31 +24,38 @@ http_access deny CONNECT !SSL_ports
 http_access deny manager
 
 # --- Egress profiles ---------------------------------------------------------
-# One ACL group per Proxmox firewall egress profile, keyed off the client
-# address. Client addresses are the DHCP reservations of that profile's
-# inventory group — never hand-written here. A profile with no members in
-# inventory emits no rule at all, so it falls through to the deny below.
-{% for identity_scoped in [true, false] %}
-{% for profile, spec in squid_egress_profiles | dictsort if (spec.identity is defined) == identity_scoped %}
-{% set members = namespace(hosts=[], domains=spec.domains | list) %}
-{% for host in groups[spec.group] | default([]) %}
-{% if not identity_scoped or hostvars[host].hermes_agent_identity | default('') == spec.identity %}
-{% set members.hosts = members.hosts + [host] %}
-{% if spec.domains_by_host is defined %}
-{% set members.domains = members.domains + (lookup('vars', spec.domains_by_host)[host] | mandatory('Pepper domains must be resolved by the squid role before rendering')) %}
+# One ACL group per Proxmox firewall egress profile, keyed off the client's
+# MAC address as the tofu inventory declares it for each member of that
+# profile's inventory group — never hand-written here. Squid and its clients
+# share one layer-2 segment, and the guest firewall's MAC filter keeps a guest
+# from changing its MAC. A profile with no members in inventory emits no rule
+# at all, so it falls through to the deny below.
+{# Per-host profiles first: each isolated host gets its own ACL pair and is denied
+   everything else before any shared profile can grant access. #}
+{% for per_host in [true, false] %}
+{% for profile, spec in squid_egress_profiles | dictsort if (spec.per_host | default(false)) == per_host %}
+{% set member_sets = [] %}
+{% if per_host %}
+{% for host in groups[spec.group] | default([]) if host in hermes_agent_isolated_hosts %}
+{% set _ = member_sets.append({'name': profile ~ '_' ~ (host | regex_replace('[^A-Za-z0-9]', '_')), 'hosts': [host],
+     'domains': spec.domains | list + (lookup('vars', spec.domains_by_host)[host]
+       | mandatory('Isolated host domains must be resolved by the squid role before rendering'))}) %}
+{% endfor %}
+{% else %}
+{% set _ = member_sets.append({'name': profile, 'hosts': groups[spec.group] | default([]), 'domains': spec.domains | list}) %}
+{% endif %}
+{% for members in member_sets %}
+{% set clients = members.hosts | map('extract', hostvars, 'container_mac') | reject('equalto', '') | list %}
+{% if clients %}
+
+acl {{ members.name }}_clients arp {{ clients | join(' ') }}
+acl {{ members.name }}_domains dstdomain {{ members.domains | unique | join(' ') }}
+http_access allow {{ members.name }}_clients {{ members.name }}_domains
+{% if per_host %}
+http_access deny {{ members.name }}_clients
 {% endif %}
 {% endif %}
 {% endfor %}
-{% set clients = members.hosts | map('extract', hostvars, 'container_reserved_ip') | reject('equalto', '') | list %}
-{% if clients %}
-
-acl {{ profile }}_clients src {{ clients | join(' ') }}
-acl {{ profile }}_domains dstdomain {{ members.domains | unique | join(' ') }}
-http_access allow {{ profile }}_clients {{ profile }}_domains
-{% if identity_scoped %}
-http_access deny {{ profile }}_clients
-{% endif %}
-{% endif %}
 {% endfor %}
 {% endfor %}
 

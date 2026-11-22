@@ -8,6 +8,7 @@ llm_router_drift_ui_settings_git_file: roles/llm_router/defaults/main/75-ui-sett
 llm_router_drift_key_page_size: 100
 # Environment names used by config markers.
 # Values are variables that populate the environment file.
+# The router_settings sync posts each mapped value in plain text and the proxy stores it: never map a credential.
 llm_router_drift_env_marker_values:
   LLM_ROUTER_REDIS_HOST: "{{ llm_router_redis_host }}"
 
@@ -116,9 +117,8 @@ _llm_router_still_shadowed: >-
         | map(attribute='model_name') | list) | list }}
 
 # The declared roles the proxy carries as database rows, and the report lines
-# for those whose target or fallback order differs from the seed in
-# 55-roles.yml. Fallbacks compare against the seed intersected with the live
-# model names, the same list seed-roles.yml writes.
+# for those whose target or fallback order differs from Git. Fallbacks compare
+# against the chain in the rendered router fallback map.
 _llm_router_drift_live_roles: >-
   {{ llm_router_role_deployments
      | rejectattr('role', 'in', llm_router_model_group_aliases | list)
@@ -127,7 +127,6 @@ _llm_router_drift_live_roles: >-
                   | map(attribute='model_name') | list) | list }}
 _llm_router_drift_role_report: >-
   {%- set rows = _llm_router_model_rows | default([]) -%}
-  {%- set live_names = rows | map(attribute='model_name') | unique | list -%}
   {%- set ns = namespace(out=[]) -%}
   {%- for record in _llm_router_drift_role_fallbacks.results | default([]) -%}
   {%- set role = record.item -%}
@@ -144,10 +143,10 @@ _llm_router_drift_role_report: >-
         ~ '; catalog ' ~ seed_window] -%}
   {%- endif -%}
   {%- set live_fallbacks = (record.json | default({}, true)).fallback_models | default([], true) | list -%}
-  {%- set seed_fallbacks = role.fallbacks | select('in', live_names) | list -%}
-  {%- if live_fallbacks != seed_fallbacks -%}
+  {%- set git_fallbacks = llm_router_fallback_map.get(role.role, []) | list -%}
+  {%- if live_fallbacks != git_fallbacks -%}
   {%- set ns.out = ns.out + ['role ' ~ role.role ~ ' falls back ' ~ live_fallbacks | join(' > ')
-        ~ '; seed ' ~ seed_fallbacks | join(' > ')] -%}
+        ~ '; Git ' ~ git_fallbacks | join(' > ')] -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.out }}

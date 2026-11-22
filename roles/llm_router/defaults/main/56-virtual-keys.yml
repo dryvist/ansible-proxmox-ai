@@ -101,13 +101,16 @@ llm_router_sandbox_only_model_ids: >-
   {%- endfor -%}
   {{ ns.names | unique | list }}
 
+# The sensitivity role is granted only to the workstation keys that call it
+# (56b-workstation-keys.yml); do not fan it out through the full-scope key set.
 _llm_router_key_scope_all_source: >-
   {{ (llm_router_all_servable_models
       + (llm_router_model_group_aliases | list
          | reject('in', llm_router_direct_route_aliases)
          | reject('equalto', llm_router_subagent_public_name) | list)
       + (llm_router_hermes_agents | list)
-      + (llm_router_role_deployments | map(attribute='role') | list)
+      + (llm_router_role_deployments | map(attribute='role')
+         | reject('equalto', 'sensitivity') | list)
       + _llm_router_directly_callable_ladder_names + llm_router_studio_model_names)
      | reject('in', llm_router_agent_only_groups + llm_router_sandbox_only_model_ids
                       + llm_router_benchmark_only_model_names)
@@ -116,6 +119,30 @@ _llm_router_key_scope_all: "{{ _llm_router_m_key_scope_all }}"
 # The scope above names the router's own judge role. A caller key that must reach
 # only ZDR rungs drops that role, so no judge fallback chain is reachable through it.
 _llm_router_key_scope_without_judge: "{{ _llm_router_key_scope_all | reject('equalto', 'judge') | list }}"
+
+# Chat UIs must not offer embedding or registry-tagged non-chat model groups.
+# Exclude each entry's client name, route names and stable/direct aliases from
+# the key itself, so its authenticated /v1/models response is the chat menu's
+# source of truth for currently authorized models.
+_llm_router_non_chat_model_names: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for entry in llm_router_registry_enabled
+       if entry.embedding | default(false) | bool
+          or 'non-chat' in (entry.tags | default([])) -%}
+  {%- set ns.names = ns.names + [entry.client_model_id]
+        + ([entry.route_group] if entry.route_group is defined else [])
+        + ([entry.fallback_group] if entry.fallback_group is defined else [])
+        + (entry.stable_aliases | default([]))
+        + (entry.direct_route_aliases | default([])) -%}
+  {%- endfor -%}
+  {%- for alias, target in llm_router_model_group_aliases.items()
+       if target in ns.names -%}
+  {%- set ns.names = ns.names + [alias] -%}
+  {%- endfor -%}
+  {{ ns.names | unique | list }}
+_llm_router_key_scope_chat_without_judge: >-
+  {{ _llm_router_key_scope_without_judge
+     | reject('in', _llm_router_non_chat_model_names) | list }}
 
 # Private CI can call local registry aliases whose targets it already allows.
 # Aliases with dedicated fallback policy and direct routes stay separately scoped.

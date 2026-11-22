@@ -8,10 +8,33 @@ llm_router_mcp_zammad_http_token: >-
   {{ (bao_local_llm_secrets | default({})).get('ZAMMAD_MCP_TOKEN', '') }}
 llm_router_mcp_slack_bot_token: >-
   {{ (bao_local_llm_secrets | default({})).get('SLACK_BOT_TOKEN', '') }}
+llm_router_next_ai_drawio_router_key: >-
+  {{ (bao_apps_secrets | default({})).get('next_ai_drawio_llm_router_key', '') }}
 # The Slack server, its env lines, its workspace-id lookup, its verify probe
 # and its key grant exist only while the bot token resolves non-empty.
 llm_router_mcp_slack_enabled: >-
   {{ (llm_router_mcp_slack_bot_token | default('') | trim | length) > 0 }}
+# Registration is requested independently of the app key. The router probes
+# the published MCP listener from its own network path before enabling it, so
+# the first converge can seed the virtual key before the app is running.
+llm_router_mcp_next_ai_drawio_activation_enabled: true
+llm_router_mcp_next_ai_drawio_port_ready: false
+llm_router_mcp_next_ai_drawio_enabled: >-
+  {{ (llm_router_mcp_next_ai_drawio_activation_enabled | bool)
+     and (groups.get('next_ai_drawio_group', []) | length == 1)
+     and (llm_router_mcp_next_ai_drawio_port_ready | bool)
+     and (llm_router_next_ai_drawio_router_key | default('') | trim | length > 0) }}
+llm_router_mcp_next_ai_drawio_server_id: drawio
+llm_router_mcp_next_ai_drawio_url: >-
+  http://{{ hostvars[groups['next_ai_drawio_group'][0]].container_ip }}:{{
+  hostvars['localhost'].tofu_data.constants.service_ports.next_ai_drawio_mcp }}/mcp
+llm_router_mcp_next_ai_drawio_allowed_tools:
+  - start_session
+  - create_new_diagram
+  - edit_diagram
+  - get_diagram
+  - get_drawing_guide
+  - get_shape_library
 # Resolved from Slack auth.test at converge time; an empty default lets
 # template-only contract checks render without pretending to authenticate.
 llm_router_slack_team_id: ""
@@ -43,6 +66,8 @@ llm_router_mcp_hermes_object_permission: >-
 # names are a separate permission plane and must not become dormant grants.
 llm_router_mcp_registered_server_ids: >-
   {{ llm_router_mcp_hermes_object_permission.mcp_servers
+     + ([llm_router_mcp_next_ai_drawio_server_id]
+        if llm_router_mcp_next_ai_drawio_enabled | bool else [])
      + (_llm_router_app_agent_matrix | selectattr('enabled')
         | map(attribute='server_id') | list) }}
 

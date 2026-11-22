@@ -49,7 +49,9 @@ REGISTRY_PROJECTIONS = {
     "llm_router_hermes_cloud_models_credentialed": [],
     "_llm_router_m_hermes_cloud_models_credentialed": [],
     "_llm_router_m_resolved_credentials": {},
+    "llm_router_hermes_job_tag_map": {},  # set_fact in tasks/load-hermes-cron-tags.yml
     "agentgateway_docker_roster_keys": {},
+    "agentgateway_docker_roster_a2a_targets": [],
     "agentgateway_docker_hindsight_roster_tiers": {},
     "agentgateway_docker_hindsight_agent_banks": {},
 }

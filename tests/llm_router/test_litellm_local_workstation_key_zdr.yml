@@ -5,7 +5,7 @@
   vars_files:
     - policy_fixture.yml
     - ../../inventory/group_vars/all/02-gpu-accelerator.yml
-  vars:
+  vars: &workstation_key_vars
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     tofu_data:
       constants:
@@ -50,11 +50,52 @@
           - _key.router_settings.enable_tag_filtering | bool
         fail_msg: "workstation key={{ _key }} cloud groups={{ _cloud_groups }}"
       vars:
+        # The key holds the sensitivity role, so it also reaches that role's local target.
         _capability_names: >-
-          {{ ([llm_router_small_model, llm_router_small_capability_name,
-               llm_router_primary_model, llm_router_large_model]
-              + llm_router_optional_capability_models) | unique | list }}
+          {{ (([llm_router_small_model, llm_router_small_capability_name,
+                llm_router_primary_model, llm_router_large_model, 'sensitivity']
+               + llm_router_optional_capability_models) | unique | list)
+             + (llm_router_role_deployments | selectattr('role', 'equalto', 'sensitivity')
+                 | map(attribute='model') | list) }}
         _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local-workstation') | first }}"
         _cloud_groups: >-
           {{ llm_router_d1_group_class_by_name | dict2items
              | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}
+
+- name: Verify the scraper key gains only the plan-usage route when its upstream key is set
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - policy_fixture.yml
+    - ../../inventory/group_vars/all/02-gpu-accelerator.yml
+  vars:
+    <<: *workstation_key_vars
+    bao_apps_secrets:
+      litellm_local_workstation_llm_router_key: sk-fixture-workstation
+      prometheus_llm_router_key: sk-fixture-scrape
+    bao_local_llm_secrets:
+      ZAI_API_KEY: fixture-usage-key
+  tasks:
+    - name: Load defaults and the model registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Only the scraper key gains a pass-through grant, for the usage route alone
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _granted | map(attribute='alias') | list == ['prometheus-scrape']
+          - _key.metadata.allowed_passthrough_routes == [llm_router_zcode_usage_path]
+          - _key.allowed_routes | sort == ['/metrics', '/metrics/', llm_router_zcode_usage_path] | sort
+          - _key.models == ['no-default-models']
+        fail_msg: "scraper key={{ _key }} granted={{ _granted | map(attribute='alias') | list }}"
+      vars:
+        _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'prometheus-scrape') | first }}"
+        _granted: >-
+          {{ llm_router_virtual_keys | rejectattr('alias', 'equalto', 'litellm-local-workstation')
+             | selectattr('metadata.allowed_passthrough_routes', 'defined') | list }}

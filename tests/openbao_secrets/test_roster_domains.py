@@ -10,6 +10,7 @@ from jinja2.nativetypes import NativeEnvironment
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOMAIN_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains.yml"
 ROSTER_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/11-roster-domains.yml"
+AGENT_ROSTER_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/01-agent-roster.yml"
 IDENTITY_DEFAULTS = REPO_ROOT / "inventory/group_vars/all/openbao_secrets/10-domains-identities.yml"
 AGENT_DEFAULTS = REPO_ROOT / "inventory/group_vars/hermes_agent_group/00-agent-settings.yml"
 ROSTER = {"splunk-heimdall": {"container": "splunk-heimdall", "owns": ["splunk"]}}
@@ -26,6 +27,16 @@ def _static_domains() -> list:
     return fleet + identities
 
 
+def _gateway_key_fields(ai_agents, registry=None):
+    vars_file = yaml.safe_load(AGENT_ROSTER_DEFAULTS.read_text(encoding="utf-8"))
+    callers = {**(registry or {}), **{name: {} for name in ai_agents}}
+    environment = NativeEnvironment()
+    return environment.from_string(vars_file["ai_agent_gateway_key_fields"]).render(
+        ai_callers=callers,
+        agent_callers_registry=registry or {},
+    )
+
+
 def _render_domains(ai_agents, registry=None):
     defaults = yaml.safe_load(DOMAIN_DEFAULTS.read_text(encoding="utf-8"))
     roster = yaml.safe_load(ROSTER_DEFAULTS.read_text(encoding="utf-8"))
@@ -38,7 +49,7 @@ def _render_domains(ai_agents, registry=None):
         _openbao_secrets_static_domains=_static_domains(),
         ai_agents=ai_agents,
         ai_agent_owner=owners,
-        ai_callers={**(registry or {}), **{name: {} for name in ai_agents}},
+        ai_agent_gateway_key_fields=_gateway_key_fields(ai_agents, registry),
     )
 
 
@@ -50,7 +61,7 @@ def _render_optional_domains(ai_agents, registry=None):
             "_openbao_secrets_static_optional_domains"
         ],
         ai_agents=ai_agents,
-        ai_callers={**(registry or {}), **{name: {} for name in ai_agents}},
+        ai_agent_gateway_key_fields=_gateway_key_fields(ai_agents, registry),
     )
 
 
@@ -79,7 +90,7 @@ def test_roster_agent_gets_its_paths_and_owned_mcp_paths():
         {
             "name": "splunk-heimdall",
             "paths": [
-                "ai/splunk-heimdall",
+                {"path": "ai/splunk-heimdall", "optional": True},
                 "apps/splunk-heimdall",
                 {"path": "apps/splunk-heimdall-gw", "optional": True},
                 "ai/mcp/splunk",
@@ -142,6 +153,18 @@ def test_registry_callers_alone_still_get_the_gateway_reader_domain():
         *_render_optional_domains({}),
         "agentgateway-agent-keys",
     ]
+
+
+def test_registry_caller_without_gateway_key_gets_no_gateway_secret_leaf():
+    registry = {"example-public": {"trust_tier": "public", "gateway_key": False}}
+    domains = _render_domains({}, registry)
+
+    assert all(
+        {"path": "apps/example-public-gw", "optional": True} not in domain.get("paths", [])
+        for domain in domains
+    )
+    assert "agentgateway-agent-keys" not in {domain["name"] for domain in domains}
+    assert "agentgateway-agent-keys" not in _render_optional_domains({}, registry)
 
 
 def test_domain_names_map_to_distinct_approle_env_prefixes():

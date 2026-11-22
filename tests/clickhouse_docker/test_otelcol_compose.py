@@ -16,7 +16,7 @@ def test_one_pinned_non_root_collector_with_readonly_config_and_memory_budget():
     assert defaults()["clickhouse_docker_otelcol_enabled"] is True
     assert set(cfg["services"]) == {"clickhouse", "otel_collector"}
     svc = cfg["services"]["otel_collector"]
-    assert svc["image"] == "otel/opentelemetry-collector-contrib:0.164.0"
+    assert svc["image"] == "otel/opentelemetry-collector-contrib:0.165.0"
     assert svc["user"] == "10001:10001"
     assert svc["mem_limit"] == "512m"
     assert svc["command"] == ["--config=/etc/otelcol-contrib/config.yaml",

@@ -1,21 +1,17 @@
 ---
 # FIRST SEED ONLY in llm_router_seed_mode: initial (default,
 # defaults/main/45-database.yml). Creates a role deployment when the running
-# proxy has none by that name, and does nothing at all to one that already
-# exists. That asymmetry is the whole contract: role targets and fallback
-# order are edited in the Admin UI, and a converge that re-asserted them
-# would silently undo every such edit the next time it ran — which is
-# exactly the "no git change per swap" property this design exists to
-# provide (defaults/main/55-roles.yml).
+# proxy has none by that name, and does nothing to one that already exists.
+# Role targets remain Admin UI-owned after seeding; fallback ladders are owned
+# by the rendered router_settings.fallbacks map.
 #
 # In llm_router_seed_mode: rebuild (DR / from-scratch reset), that asymmetry
 # is deliberately dropped for role deployments too: EVERY declared role is
 # treated as stale (the reconcile path near the end of this file), so a
 # rebuild converge deletes and recreates each one with the current
-# litellm_params (timeout/window clamps, #843) and pushes its declared
-# fallback list, exactly like router_settings already does
-# (_llm_router_router_settings_may_seed, defaults/main/45-database.yml) —
-# git wins across the whole role layer, not just router_settings.
+# litellm_params (timeout/window clamps, #843) and model_info, matching the
+# rebuild contract for router_settings (_llm_router_router_settings_may_seed,
+# defaults/main/45-database.yml).
 #
 # Runs LAST in the role, after the liveness probe: these are HTTP calls
 # against the pool's proxy, so it must already be serving — true whether
@@ -24,17 +20,16 @@
 #
 # In `initial` mode an existing role is never deleted or recreated, whatever
 # its target or model_info: tasks/drift-check.yml reports a role that differs
-# from its seed. The two writes an existing role still receives are a fallback
-# order where it has none (backfill below) and its privacy tags.
+# from its seed. Its privacy tags still track the actual target.
 
 - name: Assert every role targets a model the catalog describes
   ansible.builtin.assert:
     quiet: true
     that:
-      - _llm_router_role_targets | difference(llm_router_registry_enabled_route_names) | length == 0
+      - _llm_router_role_targets | difference(_llm_router_seedable_catalog_targets) | length == 0
     fail_msg: >-
       Role target(s)
-      [{{ _llm_router_role_targets | difference(llm_router_registry_enabled_route_names) | join(', ') }}]
+      [{{ _llm_router_role_targets | difference(_llm_router_seedable_catalog_targets) | join(', ') }}]
       name no enabled entry in llm-models.d/. A role must resolve to a
       catalogued model — seeding one that does not is how a caller ends up
       naming a deployment the proxy cannot serve.
@@ -43,6 +38,19 @@
   vars:
     _llm_router_role_targets: >-
       {{ llm_router_role_deployments | map(attribute='model') | unique | list }}
+    _llm_router_seedable_catalog_targets: >-
+      {{ (llm_router_registry_enabled_route_names
+          + (llm_router_capability_members | map(attribute='client_model_id') | list))
+         | unique | list }}
+
+- name: Assert every role named for rebuild is declared
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_rebuild_roles | difference(llm_router_role_deployments | map(attribute='role')) | length == 0
+    fail_msg: >-
+      llm_router_rebuild_roles names undeclared role(s):
+      {{ llm_router_rebuild_roles | difference(llm_router_role_deployments | map(attribute='role')) | join(', ') }}
 
 - name: Read the role deployments the proxy already carries
   ansible.builtin.uri:
@@ -56,9 +64,8 @@
   no_log: true
 
 # Every model name the proxy currently serves — config-rendered and
-# database-stored alike. Serves two purposes: a ROLE in this list is already
-# carried and is left completely alone, and a FALLBACK rung must be in it or
-# the fallback endpoint rejects the whole request.
+# database-stored alike. A ROLE in this list is already carried and is left
+# completely alone by the create path.
 - name: Note which model names the proxy already serves
   ansible.builtin.set_fact:
     _llm_router_live_models: >-
@@ -95,86 +102,10 @@
   register: llm_router_seeded
   no_log: true
 
-- name: Seed the fallback order for the roles just created
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ llm_router_master_key }}"
-    body_format: json
-    body:
-      model: "{{ item.role }}"
-      # Intersected with what the proxy actually serves, in the declared order.
-      # The endpoint rejects the WHOLE request with a 400 if any one rung is
-      # not a live model name, and an egress rung is only rendered when its
-      # provider key is seeded — so passing the list unfiltered would fail the
-      # converge on precisely the deployment where a credential is missing,
-      # which is the case this fabric is built to tolerate.
-      fallback_models: "{{ item.fallbacks | select('in', _llm_router_live_models) | list }}"
-      fallback_type: general
-    status_code: [200, 201]
-    timeout: "{{ llm_router_seed_request_timeout }}"
-  # Only roles created in THIS run, and only those left with an order to
-  # express after that intersection. An existing role's order belongs to
-  # whoever last set it in the UI.
-  loop: "{{ _llm_router_roles_to_create | selectattr('fallbacks') | list }}"
-  loop_control:
-    label: "{{ item.role }} -> {{ item.fallbacks | select('in', _llm_router_live_models) | join(', ') }}"
-  # The endpoint also rejects an empty list, so a role whose every rung is
-  # unrendered gets no fallback record rather than a failed request.
-  when: item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
-  no_log: true
-
-# BACKFILL a fallback order onto an existing role that has NONE. Seeding only
-# ever creates, so a role first seeded with an empty list (cheap, until its
-# ladder was declared) kept refusing forever: a rung that fails with no
-# fallback record is a hard error to the caller, the standing local-first
-# rule inverted. Gated on the proxy reporting no record at all (404 from
-# GET /fallback/<role>), so a UI-edited order is never touched.
-- name: Read the fallback record of each existing role that declares one
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback/{{ item.role }}?fallback_type=general"
-    headers:
-      Authorization: "Bearer {{ llm_router_master_key }}"
-    status_code: [200, 404]
-    timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: >-
-    {{ llm_router_role_deployments
-       | selectattr('role', 'in', _llm_router_live_models)
-       | selectattr('fallbacks') | list }}
-  loop_control:
-    label: "{{ item.role }}"
-  register: llm_router_role_fallback_records
-  # Read-only; a check run needs the live value to preview fallback backfill.
-  check_mode: false
-  no_log: true
-
-- name: Backfill the declared fallback order onto roles that carry none
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ llm_router_master_key }}"
-    body_format: json
-    body:
-      model: "{{ item.item.role }}"
-      fallback_models: "{{ item.item.fallbacks | select('in', _llm_router_live_models) | list }}"
-      fallback_type: general
-    status_code: [200, 201]
-    timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: "{{ llm_router_role_fallback_records.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item.role }} -> {{ item.item.fallbacks | select('in', _llm_router_live_models) | join(', ') }}"
-  when:
-    - item.status | default(0) == 404
-    - item.item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
-  no_log: true
-
 # REBUILD (DR / from-scratch reset) only: every live, catalogued role is
 # deleted and recreated with the current litellm_params and model_info, and its
-# declared fallback order is pushed — git wins across the whole role layer, as
-# it does for router_settings. In `initial` mode _llm_router_roles_to_rebuild
-# is empty, so an existing role is never touched here.
+# target. In `initial` mode _llm_router_roles_to_rebuild is empty, so an
+# existing role is never touched here.
 #
 # Delete-then-create rather than /model/update, deliberately. 55-roles.yml
 # records the measured trap: /model/update writes the new litellm_params and
@@ -220,30 +151,9 @@
     label: "{{ item.role }} -> {{ item.model }}"
   no_log: true
 
-# /model/delete + /model/new above carry no fallback record, so each rebuilt
-# role gets its declared order back.
-- name: Seed the fallback order for the roles just rebuilt
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ llm_router_master_key }}"
-    body_format: json
-    body:
-      model: "{{ item.role }}"
-      fallback_models: "{{ item.fallbacks | select('in', _llm_router_live_models) | list }}"
-      fallback_type: general
-    status_code: [200, 201]
-    timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: "{{ _llm_router_roles_to_rebuild | selectattr('fallbacks') | list }}"
-  loop_control:
-    label: "{{ item.role }} -> {{ item.fallbacks | select('in', _llm_router_live_models) | join(', ') }}"
-  when: item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
-  no_log: true
-
 # Existing role targets stay UI-owned, but their privacy tags must track the
 # actual target. Read after create/recreate so this also covers rows changed in
-# this run; PATCH policy fields and preserve the role target and ladder.
+# this run; PATCH policy fields and preserve the role target.
 - name: Read current role deployments for privacy tag reconciliation
   ansible.builtin.uri:
     url: "http://localhost:{{ llm_router_api_port }}/model/info"
@@ -276,7 +186,7 @@
     label: "{{ item.role }} tier {{ item.model_info.priority_policy.tier }}"
   no_log: true
 
-- name: Reconcile role deployment policy tags without changing its UI-owned target or ladder
+- name: Reconcile role policy tags without changing its UI-owned target
   ansible.builtin.uri:
     url: "http://localhost:{{ llm_router_api_port }}/model/{{ item.model_id }}/update"
     method: PATCH

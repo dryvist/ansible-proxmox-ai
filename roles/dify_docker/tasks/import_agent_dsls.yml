@@ -133,6 +133,45 @@
     - dify_docker_import_agent_dsls | bool
     - dify_docker_agent_dsl_select | length > 0
 
+- name: Fail when an app named for MCP publishing is in neither the manifest nor the private DSLs
+  ansible.builtin.assert:
+    that:
+      - >-
+        dify_docker_publish_agent_mcp_apps | difference(dify_docker_agent_dsl_manifest_content
+        | from_json | map(attribute='name') | list
+        + (dify_docker_private_agent_dsls | map(attribute='name') | list)) | length == 0
+    fail_msg: >-
+      Apps named for MCP publishing but in neither the manifest nor the private DSLs:
+      {{ dify_docker_publish_agent_mcp_apps | difference(dify_docker_agent_dsl_manifest_content
+      | from_json | map(attribute='name') | list
+      + (dify_docker_private_agent_dsls | map(attribute='name') | list)) | join(', ') }}
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+    - dify_docker_publish_agent_mcp | bool
+    - dify_docker_publish_agent_mcp_apps | length > 0
+
+- name: Fail when an app named for MCP publishing is a private DSL and no private DSL token was supplied
+  ansible.builtin.assert:
+    that:
+      - >-
+        dify_docker_publish_agent_mcp_apps
+        | intersect(dify_docker_private_agent_dsls | map(attribute='name') | list)
+        | difference(dify_docker_agent_dsl_manifest_content | from_json | map(attribute='name') | list)
+        | length == 0
+    fail_msg: >-
+      Apps named for MCP publishing need the private DSL token:
+      {{ dify_docker_publish_agent_mcp_apps
+      | intersect(dify_docker_private_agent_dsls | map(attribute='name') | list)
+      | difference(dify_docker_agent_dsl_manifest_content | from_json | map(attribute='name') | list)
+      | join(', ') }}
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_import_agent_dsls | bool
+    - dify_docker_publish_agent_mcp | bool
+    - dify_docker_publish_agent_mcp_apps | length > 0
+    - dify_docker_private_agent_dsl_token | length == 0
+
 - name: Remove the verified agent DSL catalog manifest copy
   ansible.builtin.file:
     path: "/tmp/dify-agent-dsl-manifest-{{ dify_docker_agent_dsl_commit }}.json"

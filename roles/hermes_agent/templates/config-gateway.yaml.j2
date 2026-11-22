@@ -1,5 +1,6 @@
 {% set _api_server_on = hermes_agent_api_server_key | length > 0 %}
 {% set _a2a_inbound_on = hermes_agent_a2a_inbound_enabled | bool %}
+{% set _a2a_served = hermes_agent_profiles | default([]) | selectattr('a2a', 'defined') | list %}
 {% set _profile_channels = hermes_agent_slack_profile_channels
      if hermes_agent_slack_profile_channels is defined and hermes_agent_slack_profile_channels is mapping else {} %}
 {% set _profile_routes_on = _profile_channels | length > 0 %}
@@ -23,16 +24,29 @@ gateway:
       enabled: true
       extra:
         port: {{ hermes_agent_a2a_inbound_port }}
+{% if _a2a_served | length > 0 %}
+        # Named profiles that declare `a2a`, served under /<profile> on this listener.
+        agents:
+{% for _profile in _a2a_served %}
+          {{ _profile.name | to_json }}:
+            profile: {{ _profile.name | to_json }}
+            name: {{ (_profile.a2a.name | default('Hermes ' ~ _profile.name)) | to_json }}
+            description: {{ (_profile.a2a.description | default(_profile.description)) | to_json }}
+            advertised_toolsets: {{ _profile.a2a.advertised_toolsets | default([]) | to_json }}
+{% endfor %}
+{% endif %}
 {% endif %}
 {% if _profile_routes_on %}
   # Named-profile Slack routes: 152-profile-slack-routes.yml.
   multiplex_profiles: true
   profile_routes:
-{% for profile, channel in _profile_channels | dictsort %}
-    - name: {{ (profile ~ '-reports') | to_json }}
+{% for profile, value in _profile_channels | dictsort %}
+{% for channel in ([value] if value is string else (value | list)) %}
+    - name: {{ (profile ~ ('-reports' if loop.first else '-reports-' ~ loop.index)) | to_json }}
       platform: slack
       chat_id: {{ channel | string | to_json }}
       profile: {{ profile | to_json }}
+{% endfor %}
 {% endfor %}
 {% endif %}
 {% endif %}

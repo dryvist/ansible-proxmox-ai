@@ -199,17 +199,13 @@ llm_router_spend_logs_retention_interval: 1d
 # a decision until it is written down.
 llm_router_store_prompts_in_spend_logs: false
 
-# One base variable gates every router_settings seed step (Vikunja 3316):
-# ladders (fallbacks, routing_strategy, ...) are administered live in the
-# LiteLLM Admin UI and must stay editable there between converges.
+# `fallbacks` is Git-owned and is synchronized on every converge. The seed
+# mode below controls the remaining router_settings fields, which stay
+# Admin-UI-owned between full seeds.
 #
-#   initial (default) — seed router_settings into the database only the
-#     first time, when the LiteLLM_Config row is still absent (the row this
-#     role's own render put there is the DR "from scratch" case; a row an
-#     operator has since edited in the UI is left alone). Existing virtual-key
-#     model allowlists and MCP permissions reconcile from Git every converge;
-#     routes and attribution metadata remain UI-owned and are reported by the
-#     drift check. Budgets remain rebuild-gated.
+#   initial (default) — send the complete router_settings payload only the
+#     first time, when the LiteLLM_Config row is absent. On later converges,
+#     synchronize only the Git-rendered `fallbacks` field.
 #   rebuild — DR / full overwrite: every converge re-pushes the rendered
 #     file's router_settings, discarding whatever the database holds. Use
 #     for one converge to restore the git-declared ladder from scratch, then
@@ -220,19 +216,35 @@ llm_router_store_prompts_in_spend_logs: false
 # contract rests on.
 llm_router_seed_mode: initial
 
-# Whether sync-router-settings.yml may push the rendered file's payload into
-# the database this converge. rebuild always may (DR reset); initial may only
-# when tasks/probe-router-settings.yml found no existing row to protect.
+# Whether sync-router-settings.yml may push the full rendered payload into the
+# database this converge. Fallbacks are sent separately on every converge.
+# rebuild always permits the full payload; initial only does when
+# tasks/probe-router-settings.yml found no existing row.
 _llm_router_router_settings_may_seed: >-
   {{ llm_router_seed_mode == 'rebuild'
      or not (llm_router_router_settings_in_db | default(false)) }}
 
-# The router_settings the converge pushes back into the database so the
-# persisted row cannot shadow the rendered file. Derived from the rendered
-# config rather than a hand-listed key set, minus the credential (never sent
-# through the update endpoint) and with the retired routing group forced empty.
+# The full router_settings payload for first seed or rebuild. Derived from the
+# rendered config rather than a hand-listed key set, minus the credential
+# (never sent through the update endpoint) and with the retired routing group
+# forced empty.
+# An os.environ/ marker is sent as its resolved value (the drift check's map in
+# 76-drift.yml): the proxy compares a config-owned key against its resolved
+# runtime value and refuses the whole update with a 400 when they differ.
+_llm_router_settings_full_payload: >-
+  {%- set ns = namespace(settings={}) -%}
+  {%- for setting in (llm_router_rendered_config.content | b64decode | from_yaml).router_settings
+        | default({}, true) | dict2items if setting.key != 'redis_password' -%}
+  {%- set value = setting.value -%}
+  {%- if value is string and value is match('^os\\.environ/.+') -%}
+  {%- set value = llm_router_drift_env_marker_values.get(value | regex_replace('^os\\.environ/', ''), value) -%}
+  {%- endif -%}
+  {%- set ns.settings = ns.settings | combine({setting.key: value}) -%}
+  {%- endfor -%}
+  {{ ns.settings | combine({'routing_groups': []}) }}
+# Existing rows in initial mode retain their UI-managed router settings while
+# the Git-owned fallback map is still corrected on every converge.
 _llm_router_settings_payload: >-
-  {{ (llm_router_rendered_config.content | b64decode | from_yaml).router_settings
-     | default({}, true)
-     | dict2items | rejectattr('key', 'equalto', 'redis_password') | items2dict
-     | combine({'routing_groups': []}) }}
+  {{ _llm_router_settings_full_payload
+     if _llm_router_router_settings_may_seed | bool
+     else {'fallbacks': _llm_router_settings_full_payload.fallbacks | default([])} }}

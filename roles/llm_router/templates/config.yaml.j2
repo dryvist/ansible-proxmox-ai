@@ -9,6 +9,8 @@
 {% set _context_window_fallbacks = llm_router_context_window_fallbacks -%}
 {% set _rate_limit_retries_by_group = llm_router_rate_limit_retries_by_group -%}
 {% set _default_fallbacks = _llm_router_m_default_fallbacks -%}
+{% set _benchmark_fallback_overrides = llm_router_entry_point_fallback_overrides | dict2items
+     | selectattr('key', 'in', llm_router_benchmark_only_model_names) | list -%}
 {% include 'model-list.yaml.j2' %}
 router_settings:
   routing_strategy: {{ llm_router_routing_strategy }}
@@ -32,7 +34,7 @@ router_settings:
 {% for alias, target in llm_router_model_group_aliases.items() %}
     {{ alias | to_json }}: {{ target | to_json }}
 {% endfor %}
-{% if _hermes_default_fallback_chain | length > 0 %}
+{% if _hermes_default_fallback_chain | length > 0 or _benchmark_fallback_overrides | length > 0 %}
   # The source-verified fallback key is the name the caller of that invocation
   # TYPED — captured on entry, so it is never the complexity-selected local
   # group. It is equally never an alias resolved to its target: model_group_alias
@@ -43,6 +45,8 @@ router_settings:
   # Only credential-backed provider groups render here, so no dead route or
   # duplicate local attempt is advertised.
   fallbacks:
+{% endif %}
+{% if _hermes_default_fallback_chain | length > 0 %}
 {# A local-only name on the default chain (light's `small` rung) is written once,
    by the local-only loop below, with its exact local chain. #}
 {% for _group in _hermes_default_fallback_chain if _group not in llm_router_local_only_fail_fast_names %}
@@ -67,6 +71,17 @@ router_settings:
 {% for _name in llm_router_ci_luna_groups %}
     - {{ _name | to_json }}: {{ _fallback_map[_name] | to_json }}
 {% endfor %}
+  # Declared role ladders that no loop above or below writes.
+{% for _role in llm_router_role_deployments
+      if _fallback_map.get(_role.role, []) | length > 0
+        and _role.role not in _hermes_default_fallback_chain
+        and _role.role not in llm_router_cross_modality_fail_fast_names
+        and _role.role not in llm_router_local_only_fail_fast_names
+        and _role.role not in llm_router_local_only_chains
+        and _role.role not in llm_router_ci_luna_groups
+        and _role.role not in llm_router_entry_point_names %}
+    - {{ _role.role | to_json }}: {{ _fallback_map[_role.role] | to_json }}
+{% endfor %}
 {% if llm_router_context_window_wider_groups | length > 0
       or llm_router_entry_point_fallback_overrides | length > 0 %}
     # ENTRY POINTS. hermes-default is not the only name a caller uses: every
@@ -89,6 +104,9 @@ router_settings:
 {% endfor %}
 {% endif %}
 {% endif %}
+{% for _override in _benchmark_fallback_overrides %}
+    - {{ _override.key | to_json }}: {{ _override.value | to_json }}
+{% endfor %}
 {% if _context_window_fallbacks | length > 0 %}
   # Escape hatch for the local legs, which serve a smaller context than the
   # primary. Rendered all-or-nothing on purpose: a key missing from a map that

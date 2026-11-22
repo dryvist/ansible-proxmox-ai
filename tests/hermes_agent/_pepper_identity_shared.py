@@ -18,7 +18,10 @@ def resolve(name, context):
     values.update(context)
     env = Environment(undefined=StrictUndefined)
     env.filters['mandatory'] = lambda value, message='': value
-    env.filters.update(bool=bool, trim=lambda x: str(x).strip())
+    # Ansible's bool filter: rendered group vars arrive as the strings 'True' or 'False'.
+    env.filters.update(bool=lambda x: x if isinstance(x, bool) else str(x).strip().lower() in ('true', 'yes', 'on', '1'),
+                       trim=lambda x: str(x).strip(),
+                       regex_replace=lambda x, pattern, replacement='': re.sub(pattern, replacement, str(x)))
     env.globals['lookup'] = lambda kind, key: context.get('environment', {}).get(key, '')
 
     # Resolve dependencies explicitly without evaluating unrelated defaults

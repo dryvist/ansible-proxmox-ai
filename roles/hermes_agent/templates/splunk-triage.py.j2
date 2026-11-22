@@ -73,7 +73,7 @@ TERMS = {{ item.terms | to_json }}
 EARLIEST = "{{ item.window }}"
 ROW_LIMIT = 1000  # the MCP tool's maximum; the truncation guard fails loudly past it
 
-TOP_N = {{ hermes_agent_triage_top_n }}
+TOP_N = {{ item.top_n | default(hermes_agent_triage_top_n) }}
 # Output cap. Novel findings that do not fit are NOT ledgered, so they surface on
 # the next run instead of being silently lost.
 MAX_FINDINGS = {{ hermes_agent_triage_max_findings }}
@@ -101,6 +101,12 @@ SED_RULES = [
     r's/\[\d+\]/[<pid>]/g',
     r's/\b(?:\d{1,3}\.){3}\d{1,3}\b/<ip>/g',
     r's/\b[0-9a-f]{8,}\b/<hex>/g',
+    # Ephemeral github-runner family: collapse every runner name into one key
+    # so the whole family moves together instead of fragmenting into ~9
+    # signatures that individually fall in and out of the TOP_N cutoff.
+    r's/github-runner[-\w.]+/github-runner/g',
+    # Unclosed-bracket pid (an open [ followed by digits with no close):
+    r's/\[\d+(?!\])/[<pid>]/g',
     r's/\d+/<n>/g',
     r's/ +/ /g',
 ]
@@ -133,7 +139,12 @@ SPL = " ".join([
 # Bumped when the state shape changes; an older/absent value means "no usable
 # baseline", and the run reports full counts with no new/escalating claims.
 # 2: keyed by signature rather than by host|sourcetype.
-STATE_SCHEMA = 2
+# 3: adds the per-day "seen" map so a signature that drops out of the TOP_N
+#    window between runs is recognised as steady, not re-flagged new. Bumping
+#    also invalidates the last TOP_N=12 baseline (12 keys), so the first run
+#    after this change reports everything steady and seeds the seen map
+#    cleanly instead of re-flagging ~88 mid-band signatures as new.
+STATE_SCHEMA = 3
 SILENT = "[SILENT]"
 # Prefix that tells the cron scheduler this run's own observation path
 # failed, so the post is routed to the issues channel instead of the work
@@ -303,13 +314,21 @@ def sig_line(entry, headline, detail):
             f"    {detail} · {host_phrase(entry.hosts)}")
 
 
-def build_findings(current, baseline, have_baseline):
+def build_findings(current, baseline, have_baseline, seen=None, today=None):
     """One finding per error signature, loudest first.
 
     With no usable baseline nothing can be called NEW or ESCALATING — there is
     nothing to have changed from — so every signature is reported as a plain
     count.
+
+    A signature missing from the previous run's baseline is called NEW —
+    unless it was already observed on today's UTC day. TOP_N truncation makes a
+    mid-band signature oscillate in and out of the baseline window, so "absent
+    from the previous run" is not proof the signature is new; the per-day
+    seen-map is. new: is reserved for signatures never seen before today; a
+    signature that reappears after dropping out of the window is steady.
     """
+    seen = seen or {}
     findings = []
     for key, entry in current.items():
         bucket = band(entry.count)
@@ -318,6 +337,14 @@ def build_findings(current, baseline, have_baseline):
             findings.append(Finding(
                 f"steady:{key}:{bucket}",
                 sig_line(entry, "", f"{fmt(entry.count)} events"), False))
+        elif previous is None and seen.get(key) == today:
+            # Dropped out of the previous run's truncated baseline but was
+            # already seen today: steady, not a re-flagged critical.
+            findings.append(Finding(
+                f"steady:{key}:{bucket}",
+                sig_line(entry, "", f"{fmt(entry.count)} events "
+                                    f"(reappeared after dropping out of the "
+                                    f"truncated baseline)"), False))
         elif previous is None:
             findings.append(Finding(
                 f"new:{key}",
@@ -433,6 +460,22 @@ def load_ledger(state, today):
     return list(keys) if isinstance(keys, list) else []
 
 
+def prune_seen(seen, today, max_age_days=7, max_keys=512):
+    """Bound the per-day seen-map so state stays durable, not unbounded.
+
+    Drops entries whose last observation is older than max_age_days (ISO date
+    strings compare chronologically), then trims to the max_keys most recently
+    observed. The seen-map is dedupe evidence, not a raw log — it only needs to
+    outlast a day, so 7 days with a bounded key count is plenty.
+    """
+    cutoff = (dt.datetime.strptime(today, "%Y-%m-%d")
+              - dt.timedelta(days=max_age_days)).date().isoformat()
+    pruned = {k: d for k, d in seen.items() if d >= cutoff}
+    if len(pruned) > max_keys:
+        pruned = dict(sorted(pruned.items(), key=lambda kv: kv[1])[-max_keys:])
+    return pruned
+
+
 def scope_line(current, total_sigs):
     """What the run actually covered.
 
@@ -457,12 +500,16 @@ def build_report(results, now, state):
     baseline = baseline if have_baseline else {}
     prev_hosts = (prior or {}).get("hosts") or {}
     prev_stypes = (prior or {}).get("sourcetypes") or {}
+    seen = (prior or {}).get("seen") or {}
+    if not isinstance(seen, dict):
+        seen = {}
     ledger = load_ledger(prior, today)
 
     cur_hosts, cur_stypes = rollup(current, "hosts"), rollup(current, "sourcetypes")
 
     shown = []
-    for finding in build_findings(current, baseline, have_baseline):
+    for finding in build_findings(current, baseline, have_baseline,
+                                  seen=seen, today=today):
         if len(shown) >= MAX_FINDINGS:
             break
         if finding.critical or finding.key not in ledger:
@@ -472,9 +519,15 @@ def build_report(results, now, state):
     posted = list(ledger)
 
     def payload(keys):
+        # seen: every key observed this run is stamped with today's UTC day, so
+        # the next run can tell "dropped out of the truncated baseline" from
+        # "genuinely new". Merged over the prior day map, then pruned.
+        merged_seen = dict(seen)
+        merged_seen.update({k: today for k in current})
         return {"schema": STATE_SCHEMA,
                 "counts": {k: e.count for k, e in current.items()},
                 "hosts": cur_hosts, "sourcetypes": cur_stypes,
+                "seen": prune_seen(merged_seen, today),
                 "ledger": {"day": today, "keys": keys}}
 
     if not current:

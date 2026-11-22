@@ -36,16 +36,34 @@
     _home: "{{ item.hermes_home | default('') }}"
     _profile: "{{ _home.split('/profiles/')[-1] if '/profiles/' in _home else '' }}"
   ansible.builtin.set_fact:
+    # The profile's report channels, first the shared list default and, when
+    # it is not in context, rebuilt from the single channel of the old map.
+    # A target that is already one of the profile's channels is kept; every
+    # other single Slack target moves to the profile's first channel.
     hermes_agent_direct_deliver: >-
-      {{ ('slack:' ~ hermes_agent_slack_profile_channels[_profile])
-         if (_profile in hermes_agent_slack_profile_channels and _deliver is match('slack:[^,]+$'))
-         else _deliver }}
+      {%- set _chan = (hermes_agent_slack_profile_channel_lists[_profile] | list)
+         if (hermes_agent_slack_profile_channel_lists is defined
+             and _profile in hermes_agent_slack_profile_channel_lists)
+         else (([hermes_agent_slack_profile_channels[_profile]]
+                if hermes_agent_slack_profile_channels[_profile] is string
+                else (hermes_agent_slack_profile_channels[_profile] | list))
+               if (_profile in (hermes_agent_slack_profile_channels | default({}, true)))
+               else []) -%}
+      {{ _deliver if ((_deliver is match('slack:[^,]+$'))
+                      and (_profile in (hermes_agent_slack_profile_channels | default({}, true)))
+                      and (_deliver.replace('slack:', '') in _chan))
+         else (('slack:' ~ _chan[0])
+               if ((_deliver is match('slack:[^,]+$'))
+                   and (_profile in (hermes_agent_slack_profile_channels | default({}, true))))
+               else _deliver) }}
     hermes_agent_direct_model: >-
       {{ '' if hermes_agent_direct_no_agent | bool
          else item.model | default(hermes_agent_cron_model) }}
     hermes_agent_direct_model_provider: >-
+      {%- set _provider = item.model_provider | default(hermes_agent_cron_model_provider) -%}
       {{ '' if hermes_agent_direct_no_agent | bool
-         else item.model_provider | default(hermes_agent_cron_model_provider) }}
+         else ('custom:' ~ hermes_agent_direct_cron_telemetry[item.name].provider)
+              if _provider == hermes_agent_model_provider else _provider }}
     hermes_agent_direct_failure_deliver: "{{ item.failure_deliver | default(hermes_agent_cron_failure_deliver) }}"
 
 # The main-channel rule for this job, on the targets resolved above (defaults,
@@ -65,6 +83,8 @@
     refuse_footer: "{{ item.channel_when_healthy | default('') }}"
   when: hermes_agent_direct_wanted | bool
 
+# item.prompt_tail is the job's run-specific text. It goes last so that jobs
+# sharing a prompt also share everything before it.
 - name: "Direct cron | Load prompt + append reporting footer for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_prompt: >-
@@ -79,7 +99,8 @@
           | regex_replace('(?s)^---\n.*?\n---\n', '')
           | replace('${DELIVER}', hermes_agent_direct_deliver)
           | replace('${CHANNEL_WHEN_HEALTHY}', item.channel_when_healthy | default(''))
-          | trim) }}
+          | trim)
+         ~ (('\n\n' ~ item.prompt_tail | trim) if item.prompt_tail is defined else '') }}
   vars:
     hermes_agent_direct_prompt_paths: >-
       {{ (item.prompt_files | default([item.prompt_file | default('')]))

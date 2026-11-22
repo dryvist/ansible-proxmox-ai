@@ -14,6 +14,72 @@ dify_docker_agent_app_variables:
       secret: false
       value: "{{ lookup('env', 'DIFY_PR_AUTOMATION_REPOS') | default('example-org/example-repo', true) }}"
   merge-steward: *pr_automation_app_variables
+  # Vikunja clerk project policy, from converge-time env keys. The inert defaults
+  # (empty allow list, inbox 0) make the clerk refuse every write.
+  vikunja-clerk:
+    - name: VIKUNJA_ALLOWED_PROJECTS
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_CLERK_ALLOWED_PROJECTS') | default('[]', true) }}"
+    - name: VIKUNJA_DENIED_PROJECTS
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_CLERK_DENIED_PROJECTS') | default('[]', true) }}"
+    - name: VIKUNJA_INBOX_PROJECT_ID
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_CLERK_INBOX_PROJECT_ID') | default('0', true) }}"
+  # Triage apps stay in their DSL's shadow mode. Credentials come from converge-time env
+  # keys; the empty defaults leave a run with nothing to read or post.
+  vikunja-triage:
+    - name: VIKUNJA_TRIAGE_ALLOWED_PROJECTS
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_TRIAGE_ALLOWED_PROJECTS') | default('[]', true) }}"
+    - name: VIKUNJA_TRIAGE_READONLY_PROJECTS
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_TRIAGE_READONLY_PROJECTS') | default('[]', true) }}"
+    - name: VIKUNJA_TRIAGE_RANK_ONLY_PROJECTS
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_TRIAGE_RANK_ONLY_PROJECTS') | default('[]', true) }}"
+    - name: VIKUNJA_TRIAGE_DENIED_PROJECTS
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_TRIAGE_DENIED_PROJECTS') | default('[]', true) }}"
+    - {name: OPENBAO_ADDR, secret: false, value: "{{ lookup('env', 'DIFY_TRIAGE_OPENBAO_ADDR') }}"}
+    - {name: OPENBAO_ROLE_ID, secret: true, value: "{{ lookup('env', 'DIFY_VIKUNJA_TRIAGE_OPENBAO_ROLE_ID') }}"}
+    - {name: OPENBAO_SECRET_ID, secret: true, value: "{{ lookup('env', 'DIFY_VIKUNJA_TRIAGE_OPENBAO_SECRET_ID') }}"}
+    - {name: GITHUB_READ_TOKEN_PATH, secret: false, value: github-token/vikunja-triage}
+    - {name: GITHUB_API_BASE, secret: false, value: "https://api.github.com"}
+    - {name: GITHUB_WEB_HOST, secret: false, value: github.com}
+    - {name: DIFY_API_BASE, secret: false, value: "{{ dify_docker_internal_trigger_url }}/v1"}
+    - {name: DIFY_DATASET_API_KEY, secret: true, value: "{{ lookup('env', 'DIFY_TRIAGE_DATASET_API_KEY') }}"}
+    - {name: TRIAGE_EMBEDDING_PROVIDER, secret: false, value: "{{ lookup('env', 'DIFY_TRIAGE_EMBEDDING_PROVIDER') }}"}
+    - {name: TRIAGE_EMBEDDING_MODEL, secret: false, value: "{{ lookup('env', 'DIFY_TRIAGE_EMBEDDING_MODEL') }}"}
+    - &triage_slack_token
+      name: SLACK_AGENT_BOT_TOKEN
+      secret: true
+      value: "{{ lookup('env', 'DIFY_TRIAGE_SLACK_AGENT_BOT_TOKEN') }}"
+    - &triage_slack_base {name: SLACK_API_BASE, secret: false, value: "https://slack.com/api"}
+    - &triage_digest
+      name: AGENT_DIGEST_CHANNEL
+      secret: false
+      value: "{{ lookup('env', 'DIFY_TRIAGE_AGENT_DIGEST_CHANNEL') }}"
+    - &triage_failure
+      name: AGENT_FAILURE_CHANNEL
+      secret: false
+      value: "{{ lookup('env', 'DIFY_TRIAGE_AGENT_FAILURE_CHANNEL') }}"
+    - &triage_dashboard
+      name: AGENT_DASHBOARD_URL
+      secret: false
+      value: "{{ lookup('env', 'DIFY_TRIAGE_AGENT_DASHBOARD_URL') }}"
+  zammad-triage:
+    - {name: ZAMMAD_API_BASE, secret: false, value: "{{ lookup('env', 'DIFY_ZAMMAD_TRIAGE_API_BASE') }}"}
+    - {name: OPENBAO_ADDR, secret: false, value: "{{ lookup('env', 'DIFY_TRIAGE_OPENBAO_ADDR') }}"}
+    - {name: OPENBAO_ROLE_ID, secret: true, value: "{{ lookup('env', 'DIFY_ZAMMAD_TRIAGE_OPENBAO_ROLE_ID') }}"}
+    - {name: OPENBAO_SECRET_ID, secret: true, value: "{{ lookup('env', 'DIFY_ZAMMAD_TRIAGE_OPENBAO_SECRET_ID') }}"}
+    - {name: ZAMMAD_TOKEN_PATH, secret: false, value: "{{ lookup('env', 'DIFY_ZAMMAD_TRIAGE_TOKEN_PATH') }}"}
+    - {name: LITELLM_ROUTER_KEY, secret: true, value: "{{ lookup('env', 'DIFY_ZAMMAD_TRIAGE_ROUTER_KEY') }}"}
+    - *triage_slack_token
+    - *triage_slack_base
+    - *triage_digest
+    - *triage_failure
+    - *triage_dashboard
 
 # Session/credential-protection key, bao-first (ai/dify) with an env fallback —
 # same shape as the other ai-domain consumers. bao_local_llm_secrets defaults to
@@ -43,10 +109,13 @@ dify_docker_console_api_base: "http://{{ container_ip }}:{{ dify_docker_web_port
 
 # Deployment-specific Vikunja MCP provider and catalog DSL placeholder mapping.
 # The Dify role defaults stay inert; only this deployment opts in to the provider.
-dify_docker_agent_tool_providers:
+# Each public value below is extended from an env-doc JSON key (see the end of this file).
+dify_public_agent_tool_providers:
   vikunja-clerk:
     VIKUNJA_MCP_PROVIDER_ID: vikunja
-dify_docker_agent_mcp_providers:
+  vikunja-triage:
+    VIKUNJA_MCP_PROVIDER_ID: vikunja
+dify_public_agent_mcp_providers:
   - name: vikunja
     server_identifier: vikunja
     server_url: >-
@@ -61,3 +130,29 @@ dify_docker_agent_mcp_providers:
     timeout: 60
     sse_read_timeout: 300
     tool_name: vikunja_tasks
+
+# Publish only the Vikunja clerk as a native MCP server; its URL goes only to the app's OpenBao leaf.
+dify_docker_publish_agent_mcp: true
+dify_public_publish_agent_mcp_apps: [vikunja-clerk]
+
+# Private agent apps, supplied at converge time so no deployment-specific name
+# lands in this file. Each env-doc key holds JSON in the shape of the variable it
+# extends; an unset key adds nothing.
+#   DIFY_PRIVATE_AGENT_DSLS              list of {name, url, sha256}
+#   DIFY_PRIVATE_AGENT_TOOL_PROVIDERS    map, merged into the public map
+#   DIFY_PRIVATE_AGENT_MCP_PROVIDERS     list, appended to the public list
+#   DIFY_PRIVATE_PUBLISH_AGENT_MCP_APPS  list, appended to the public list
+# The private DSL source token is bao-first (ai/dify) with an env fallback.
+dify_docker_private_agent_dsls: "{{ lookup('env', 'DIFY_PRIVATE_AGENT_DSLS') | default('[]', true) | from_json }}"
+dify_docker_private_agent_dsl_token: >-
+  {{ bao_local_llm_secrets.DIFY_PRIVATE_AGENT_DSL_TOKEN
+     | default(lookup('env', 'DIFY_PRIVATE_AGENT_DSL_TOKEN'), true) }}
+dify_docker_agent_tool_providers: >-
+  {{ dify_public_agent_tool_providers
+     | combine(lookup('env', 'DIFY_PRIVATE_AGENT_TOOL_PROVIDERS') | default('{}', true) | from_json) }}
+dify_docker_agent_mcp_providers: >-
+  {{ dify_public_agent_mcp_providers
+     + (lookup('env', 'DIFY_PRIVATE_AGENT_MCP_PROVIDERS') | default('[]', true) | from_json) }}
+dify_docker_publish_agent_mcp_apps: >-
+  {{ dify_public_publish_agent_mcp_apps
+     + (lookup('env', 'DIFY_PRIVATE_PUBLISH_AGENT_MCP_APPS') | default('[]', true) | from_json) }}

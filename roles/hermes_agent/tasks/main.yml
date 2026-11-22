@@ -32,16 +32,52 @@
 # test_component_tag_narrowing.py fails the build when a component tag pulls
 # in another component's work again.
 
+- name: Assert direct-cron telemetry identifiers are safe and unique
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_direct_cron_telemetry.values()
+        | map(attribute='tag') | list | unique | length
+        == hermes_agent_direct_cron_telemetry | length
+      - >-
+        hermes_agent_direct_cron_telemetry.values()
+        | map(attribute='provider') | list | unique | length
+        == hermes_agent_direct_cron_telemetry | length
+      - >-
+        hermes_agent_direct_cron_telemetry.values()
+        | map(attribute='tag') | select('match', '^telemetry_job_[a-z0-9_]+$')
+        | list | length == hermes_agent_direct_cron_telemetry | length
+  tags: always
+
 - name: Keep operational profiles off the private identity
   ansible.builtin.set_fact:
     hermes_agent_profiles: []
-  when: (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) in ['hermes-private', 'pepper']
+    hermes_agent_profiles_forced_off: true
+  # Reads hermes_agent_identity, which may be set before hermes_agent_id; keeps its own fallback.
+  when: >-
+    (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) == 'hermes-private'
+    or (hermes_agent_isolated
+        | default((hermes_agent_identity | default(hermes_agent_id | default('hermes'))) == 'pepper') | bool)
   # Profiles guard: probe, install, config, cron, and content readers all consume the empty override.
+  tags: always
+
+- name: Keep key-gated profiles off until their router key is fetched
+  ansible.builtin.set_fact:
+    hermes_agent_profiles: "{{ hermes_agent_profiles | rejectattr('name', 'in', _gated_off) | list }}"
+  vars:
+    _gated_off: >-
+      {{ ([] if llm_router_hermes_tracker_reporter_key_enabled | default(false) | bool else ['tracker-reporter'])
+         + ([] if llm_router_hermes_vikunja_pm_key_enabled | default(false) | bool else ['vikunja-pm']) }}
+  # Profiles guard, as above: every profile reader sees the list without the gated profiles.
   tags: always
 
 - name: Reject inherited Pepper profile homes before any runtime changes
   ansible.builtin.import_tasks: pepper_profiles.yml
-  when: (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) == 'pepper'
+  # Reads hermes_agent_identity, which may be set before hermes_agent_id; keeps its own fallback.
+  when: >-
+    (hermes_agent_isolated
+     | default((hermes_agent_identity | default(hermes_agent_id | default('hermes'))) == 'pepper') | bool)
   # Identity guard: must precede any component's first guest change.
   tags: always
 
@@ -112,6 +148,10 @@
     hermes_runtime_bin: "{{ hermes_agent_bin }}"
     hermes_runtime_hermes_home: "{{ hermes_agent_hermes_home }}"
     hermes_runtime_user: "{{ hermes_agent_user }}"
+    # The isolated guest's proxy admits no browser download host.
+    hermes_runtime_installer_skip_browser: "{{ hermes_agent_is_isolated }}"
+  # An isolated guest has no direct route out; egress.yml sets this from agent_guest_proxy_env.
+  environment: "{{ hermes_agent_proxy_environment if hermes_agent_is_isolated else {} }}"
   tags: hermes_runtime_install
 
 - name: Preserve the installer change state for consumer check-mode guards
@@ -147,7 +187,7 @@
 
 - name: Prepare Pepper read-only evidence before enabling its MCP server
   ansible.builtin.import_tasks: pepper_vault.yml
-  when: hermes_agent_id == 'pepper'
+  when: (hermes_agent_is_isolated | bool)
   tags: hermes_profiles_env
 
 - name: Deploy secrets, config.yaml, persona content, and Hindsight provider config
@@ -256,9 +296,9 @@
           {'name': 'HERMES_GITHUB_APP_SLUG', 'value': hermes_agent_github_app_slug},
           {'name': 'HERMES_TRUST_BOUNDARY', 'value': hermes_agent_github_trust_boundary_default},
           {'name': 'HERMES_CRON_GOAL_JOBS',
-           'value': (hermes_agent_cron_goal_mode_jobs if hermes_agent_id != 'pepper' else []) | join(',')},
+           'value': (hermes_agent_cron_goal_mode_jobs if not hermes_agent_is_isolated else []) | join(',')},
           {'name': 'HERMES_CRON_GOAL_MAX_TURNS', 'value': hermes_agent_kanban_goal_max_turns}
-         ] + ((hermes_agent_proxy_environment if hermes_agent_id == 'pepper' else {})
+         ] + ((hermes_agent_proxy_environment if hermes_agent_is_isolated else {})
               | dict2items(key_name='name', value_name='value')) }}
     # The dashboard resolves its config from the sticky active profile when one is
     # set, and the profile config.yaml carries no dashboard block. The OIDC

@@ -127,6 +127,11 @@ def test_vikunja_clerk_role_default_image_is_digest_pinned() -> None:
     )
 
 
+def test_vikunja_clerk_allows_the_compose_name_with_and_without_the_port() -> None:
+    hosts = ROLE_DEFAULTS["agentgateway_docker_vikunja_clerk_allowed_host"].split(",")
+    assert hosts == ["mcp-vikunja-clerk:{{ agentgateway_docker_vikunja_clerk_port }}", "mcp-vikunja-clerk"]
+
+
 def test_vikunja_clerk_tokens_are_trimmed_and_secret_tasks_are_hidden() -> None:
     secrets = {
         "VIKUNJA_MCP_TOKEN_VIKUNJA_CLERK": "api-fixture-token\n",
@@ -158,10 +163,10 @@ def test_vikunja_clerk_tokens_are_trimmed_and_secret_tasks_are_hidden() -> None:
     assert all(task.get("no_log") is True for task in credential_tasks)
 
 
-def test_vikunja_clerk_config_exposes_only_the_tasks_module() -> None:
+def test_vikunja_clerk_config_exposes_only_the_tasks_and_projects_modules() -> None:
     rendered = ENV.from_string(VIKUNJA_CONFIG_TEMPLATE.read_text()).render()
     config = yaml.safe_load(rendered)
 
     assert config["readOnly"] is False
-    assert config["modules"]["tasks"] is True
-    assert all(not enabled for name, enabled in config["modules"].items() if name != "tasks")
+    enabled = {name for name, on in config["modules"].items() if on}
+    assert enabled == {"tasks", "projects"}

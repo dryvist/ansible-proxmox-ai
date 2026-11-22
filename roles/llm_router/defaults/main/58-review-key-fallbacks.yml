@@ -80,12 +80,20 @@ llm_router_entry_point_fallback_overrides: >-
   {%- set _discard = ns.map.update({llm_router_subagent_public_name:
         [llm_router_subagent_public_fallback_group]}) -%}
   {%- endif -%}
+  {#- The sandbox benchmark can fall back to a narrower local window. Keep an
+      empty override if that capability is unavailable so the default stays out. -#}
+  {%- for _model in _llm_router_m_hermes_cloud_models_credentialed
+        | selectattr('client_model_id', 'in', llm_router_benchmark_only_model_names)
+        | selectattr('client_model_id', 'in', llm_router_sandbox_only_model_ids) -%}
+  {%- set _medium = _llm_router_declared_primary.route_group -%}
+  {%- set _targets = [_medium] if _medium in llm_router_rendered_capability_names else [] -%}
+  {%- set _discard = ns.map.update({_model.route_group: _targets}) -%}
+  {%- endfor -%}
   {{ ns.map }}
 
-# The rendered fallback map is shared with explicitly scoped virtual keys.
-# Keeping its entries here lets a key replace one entry without rebuilding the
-# global list or changing the order in which the config template writes it.
-_llm_router_fallback_map_source: >-
+# The pre-role fallback map is also the input to explicitly scoped virtual
+# keys. Keep it separate so router-owned role ladders do not alter those scopes.
+_llm_router_fallback_map_base_source: >-
   {%- set ns = namespace(map={}) -%}
   {%- set _default_chain = _llm_router_m_hermes_default_fallback_chain -%}
   {%- set _modality_names = llm_router_cross_modality_fail_fast_names -%}
@@ -131,27 +139,48 @@ _llm_router_fallback_map_source: >-
   {%- endif -%}
   {%- endif -%}
   {{ ns.map }}
+_llm_router_fallback_map_source: >-
+  {%- set ns = namespace(map=_llm_router_fallback_map_base_source) -%}
+  {%- set _rendered_models = (llm_router_registry_enabled_route_names
+        + llm_router_direct_route_aliases) | unique | list -%}
+  {%- for _role in llm_router_role_deployments if _role.fallbacks | length > 0 -%}
+  {%- if _role.role not in ns.map or _role.role in llm_router_local_only_chains -%}
+  {%- set _chain = _role.fallbacks | select('in', _rendered_models) | list -%}
+  {%- set _discard = ns.map.update({_role.role: _chain}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.map }}
 llm_router_fallback_map: "{{ _llm_router_m_fallback_map }}"
 
-# Each scoped CI key gets the complete shared map, with only its primary
-# capability entry replaced by that key's declared review chain.
+# Each scoped CI key gets the complete pre-role map, with only its primary
+# capability entry replaced by that key's declared review chain. The private
+# key (github-actions, which OpenHands and the org CI workflows send) keeps only
+# local rungs in every chain.
 llm_router_review_key_fallbacks: >-
   {%- set ns = namespace(private=[], oss=[]) -%}
   {%- set _primary = llm_router_primary_model -%}
+  {%- set _local = _llm_router_m_d1_rungs_by_class['local'] -%}
   {%- set _private = llm_router_review_private_chain -%}
   {%- set _oss = llm_router_review_oss_chain -%}
-  {%- for _name, _chain in llm_router_fallback_map.items() -%}
-  {%- set _private_chain = _private if _name == _primary else _chain -%}
+  {#- Keep the virtual-key projection on the pre-role map. Adding declared
+      role ladders to the router-wide map must not widen these key scopes. -#}
+  {%- for _name, _chain in _llm_router_fallback_map_base_source.items() -%}
+  {%- set _private_chain = (_private if _name == _primary else _chain)
+        | select('in', _local) | list -%}
   {%- set _oss_chain = _oss if _name == _primary else _chain -%}
   {%- set _discard = ns.private.append({_name: _private_chain}) -%}
   {%- set _discard = ns.oss.append({_name: _oss_chain}) -%}
   {%- endfor -%}
   {{ {'private': ns.private, 'oss': ns.oss} }}
 
+# Context-window escapes target wider cloud rungs (37-context-window-escape.yml),
+# so the private key overrides them with an empty list. Its own fallbacks list
+# also replaces the router's '*' default_fallbacks entry.
 llm_router_review_key_router_settings: >-
   {%- set _fallbacks = llm_router_review_key_fallbacks -%}
   {%- set _aliases = llm_router_model_group_aliases -%}
   {{ {
-    'private': {'model_group_alias': _aliases, 'fallbacks': _fallbacks.private},
+    'private': {'model_group_alias': _aliases, 'fallbacks': _fallbacks.private,
+                'context_window_fallbacks': []},
     'oss': {'model_group_alias': _aliases, 'fallbacks': _fallbacks.oss},
   } }}

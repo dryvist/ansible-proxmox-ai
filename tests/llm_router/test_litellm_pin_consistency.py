@@ -107,6 +107,37 @@ def test_renovate_compiles_the_lock_with_the_pypi_source():
     ), "The generated lock must be handled only by the pip-compile manager"
 
 
+RELEASE_AGE_UNIT_DAYS = {"hour": 1 / 24, "day": 1, "week": 7}
+
+
+def test_litellm_rule_holds_updates_for_at_least_seven_days():
+    config = json.loads(RENOVATE_FILE.read_text())
+    rules = [
+        rule
+        for rule in config["packageRules"]
+        if "litellm" in (
+            *rule.get("matchDepNames", []),
+            *rule.get("matchPackageNames", []),
+        )
+    ]
+    assert len(rules) == 1, (
+        f"Expected exactly one package rule matching litellm, found {len(rules)}"
+    )
+    minimum_release_age = rules[0].get("minimumReleaseAge")
+    assert minimum_release_age, "The litellm package rule must set minimumReleaseAge"
+    match = re.fullmatch(
+        r"(?P<quantity>\d+)\s*(?P<unit>hour|day|week)s?",
+        str(minimum_release_age),
+    )
+    assert match, (
+        f"minimumReleaseAge {minimum_release_age!r} is not a <number> <unit> duration"
+    )
+    age_days = int(match.group("quantity")) * RELEASE_AGE_UNIT_DAYS[match.group("unit")]
+    assert age_days >= 7, (
+        f"minimumReleaseAge {minimum_release_age!r} is shorter than the 7-day cooldown"
+    )
+
+
 def test_docs_cite_no_version_number():
     offenders = [
         f"{path.relative_to(REPO_ROOT)}:{number}: {line.strip()}"

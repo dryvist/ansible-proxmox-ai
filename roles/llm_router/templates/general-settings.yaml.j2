@@ -1,11 +1,29 @@
 general_settings:
   master_key: os.environ/LLM_ROUTER_MASTER_KEY
-{% if groups['llm_classify'] | default([]) | length > 0 %}
+  # The agent-quota route is core, not optional, so it renders unconditionally
+  # and ahead of the gated routes below. Its bearer resolves at request time
+  # from the env line litellm.env.j2 emits only when the token is set — a
+  # missing token fails at request time (upstream 401), never by silently
+  # dropping the route.
   pass_through_endpoints:
+    - path: {{ llm_router_agent_quota_path | to_json }}
+      target: {{ (llm_router_agent_quota_upstream_base_url.rstrip('/') ~ llm_router_agent_quota_upstream_path) | to_json }}
+      headers:
+        Authorization: Bearer os.environ/{{ llm_router_agent_quota_reader_token_env }}
+      auth: true
+      methods: [GET]
+{% if groups['llm_classify'] | default([]) | length > 0 %}
     - path: /v1/systemone
       target: {{ llm_router_classifier_url | to_json }}
       headers:
         Authorization: Bearer os.environ/LLM_LAYA_API_KEY
+      auth: true
+{% endif %}
+{% if llm_router_zcode_usage_api_key | default('') | trim | length > 0 %}
+    - path: {{ llm_router_zcode_usage_path | to_json }}
+      target: {{ llm_router_zcode_usage_url | to_json }}
+      headers:
+        Authorization: Bearer os.environ/LLM_ZCODE_USAGE_API_KEY
       auth: true
 {% endif %}
   # Rationale: defaults/main/37-fallback-entry-points.yml. Unconditional —

@@ -24,11 +24,15 @@
       guest, and both fail late and confusingly.
     quiet: true
 
+# The controller has nix but no nixos-rebuild; run the one from the guest
+# configuration's own pinned nixpkgs.
 - name: Converge the NixOS guest from the controller
   ansible.builtin.command:
     argv: >-
       {{
-        ['nixos-rebuild', nixos_deploy_action,
+        ['nix', 'run',
+         nixos_deploy_flake_ref ~ '#nixosConfigurations.' ~ nixos_deploy_host_attr ~ '.pkgs.nixos-rebuild',
+         '--', nixos_deploy_action,
          '--flake', nixos_deploy_flake_ref ~ '#' ~ nixos_deploy_host_attr,
          '--target-host', nixos_deploy_target]
         + nixos_deploy_extra_args
@@ -40,6 +44,9 @@
   # the nix build in roles/hermes_agent/tasks/config_and_content.yml.
   vars:
     ansible_become: false
+    # The play pins the guest's NixOS interpreter; this task runs on the
+    # controller, so it uses the interpreter running the playbook instead.
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
   run_once: false
   timeout: "{{ nixos_deploy_timeout }}"
   register: nixos_deploy_result

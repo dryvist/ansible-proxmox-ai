@@ -1,13 +1,13 @@
 ---
 
-- name: Assert Pepper identity and rollout boundaries
+- name: Assert isolated identity boundaries
   ansible.builtin.assert:
     quiet: true
     that:
       - hermes_agent_model_api_key | default('', true) | trim | length > 0
       - >-
-        hermes_agent_model_api_key == (lookup('env', 'PEPPER_AGENT_MODEL_API_KEY')
-        or hermes_agent_bao.get('pepper_llm_router_key', ''))
+        hermes_agent_model_api_key == (lookup('env', hermes_agent_env_prefix ~ '_AGENT_MODEL_API_KEY')
+        or hermes_agent_bao.get((hermes_agent_id | replace('-', '_')) ~ '_llm_router_key', ''))
       - hermes_agent_profiles | length == 0
       - hermes_agent_kanban_max_in_progress | int == 1
       - hermes_agent_kanban_max_in_progress_per_profile | int == 1
@@ -22,21 +22,46 @@
       - not hermes_agent_vikunja_mcp_enabled | bool
       - not hermes_agent_nautobot_mcp_enabled | bool
       - not hermes_agent_splunk_access | bool
-      - hermes_agent_pepper_content_reviewed | bool
       - hermes_agent_memory_provider | length == 0
       - hermes_agent_memory_api_key | length == 0
       - hermes_agent_memory_bank_id | length == 0
       - not hermes_agent_kanban_goal_mode | bool
-      - "'pepper-bundle' in hermes_agent_bundle_flake_ref"
-    fail_msg: Pepper rollout prerequisites or identity boundaries are not satisfied.
+    fail_msg: Isolated identity boundaries are not satisfied.
   no_log: true
-  when: hermes_agent_id == 'pepper'
+  when: (hermes_agent_is_isolated | bool)
+
+- name: Assert Pepper rollout prerequisites
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_pepper_content_reviewed | bool or hermes_agent_pepper_research_enabled | bool
+      - "'pepper-bundle' in hermes_agent_bundle_flake_ref"
+    fail_msg: Pepper rollout prerequisites are not satisfied.
+  when:
+    - (hermes_agent_is_isolated | bool)
+    - hermes_agent_id == 'pepper'
+
+- name: Assert the Pepper research posture and the client wiring never coexist
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - not hermes_agent_pepper_vault_enabled | bool
+      - not hermes_agent_youtrack_mcp_enabled | bool
+      - hermes_agent_youtrack_mcp_url | default('', true) | trim | length == 0
+      - hermes_agent_youtrack_mcp_token | default('', true) | trim | length == 0
+      - not hermes_agent_pepper_intake_enabled | default(false) | bool
+      - hermes_agent_pepper_digest_deliver | default('', true) | length == 0
+    fail_msg: Pepper research posture and client wiring are mutually exclusive.
+  no_log: true
+  when:
+    - (hermes_agent_is_isolated | bool)
+    - hermes_agent_pepper_research_enabled | bool
 
 - name: Assert Pepper YouTrack credentials and tool scope
   ansible.builtin.assert:
     quiet: true
     that:
-      - hermes_agent_id == 'pepper'
+      - (hermes_agent_is_isolated | bool)
       - hermes_agent_youtrack_mcp_url | trim | length > 0
       - hermes_agent_youtrack_mcp_token | trim | length > 0
       - hermes_agent_youtrack_mcp_tools | length > 0
@@ -229,7 +254,7 @@
     quiet: true
     that:
       - >-
-        hermes_agent_id == 'pepper'
+        (hermes_agent_is_isolated | bool)
         or hermes_agent_profiles | length == 0
         or hermes_agent_kanban_orchestrator_profile
            in (hermes_agent_profiles | map(attribute='name') | list)
@@ -254,4 +279,4 @@
       - "{{ hermes_agent_vikunja_bridge_bucket_blocked }}"
       - "{{ hermes_agent_vikunja_bridge_bucket_needs_triage }}"
       - "{{ hermes_agent_vikunja_bridge_bucket_busy }}"
-  when: hermes_agent_id != 'pepper'
+  when: not (hermes_agent_is_isolated | bool)
