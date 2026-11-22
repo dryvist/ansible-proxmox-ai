@@ -40,8 +40,9 @@ _llm_router_local_tier_group_names: >-
   {%- endfor -%}
   {{ ns.local | unique | reject('in', ns.other) | list }}
 
-# A caller key whose every model resolves to a local-tier group, or names a role
-# deployment with a local model and only local fallbacks, has a local route.
+# A caller key whose every model resolves to a local-tier group has a local route.
+# A key with the &local tag may also name a role deployment that has a local model,
+# only local fallbacks and a name no registry entry or alias uses.
 # LiteLLM re-checks the key's model list on every fallback hop
 # (general_settings.enforce_fallback_model_access), so no hop can leave that list,
 # and the &local tag keeps each hop on local deployments. Fail closed: without the
@@ -52,10 +53,17 @@ _llm_router_route_local_key_aliases: >-
   {%- set ns = namespace(aliases=[]) -%}
   {%- set _local = _llm_router_local_tier_group_names -%}
   {%- set _resolve = llm_router_model_group_aliases | default({}, true) -%}
-  {#- A role name is local when its model and every fallback are local-tier names. -#}
+  {#- A role name is local when its model and every fallback are local-tier names
+      and no registry entry or alias carries the same name. -#}
+  {%- set _registry_names = (llm_router_registry_enabled | map(attribute='client_model_id') | list)
+        + (llm_router_registry_enabled | selectattr('route_group', 'defined') | map(attribute='route_group') | list)
+        + (llm_router_registry_enabled | selectattr('fallback_group', 'defined')
+           | map(attribute='fallback_group') | list)
+        + (_resolve.keys() | list) -%}
   {%- set _roles = namespace(local=[]) -%}
   {%- for _role in llm_router_role_deployments
-       if _resolve.get(_role.model, _role.model) in _local
+       if _role.role not in _registry_names
+          and _resolve.get(_role.model, _role.model) in _local
           and (_role.fallbacks | default([]) | reject('in', _local) | list | length == 0) -%}
   {%- set _roles.local = _roles.local + [_role.role] -%}
   {%- endfor -%}
@@ -65,7 +73,10 @@ _llm_router_route_local_key_aliases: >-
           and (_key.models_authoritative | default(true) | bool) -%}
   {%- set _bad = namespace(n=0) -%}
   {%- for _name in _key.models -%}
-  {%- if _resolve.get(_name, _name) not in _local and _name not in _roles.local -%}
+  {#- A role target can change in the database, so a role name counts only for a key
+      whose &local tag keeps every hop on local deployments. -#}
+  {%- if _resolve.get(_name, _name) not in _local
+        and not ('&local' in (_key.tags | default([])) and _name in _roles.local) -%}
   {%- set _bad.n = _bad.n + 1 -%}
   {%- endif -%}
   {%- endfor -%}
