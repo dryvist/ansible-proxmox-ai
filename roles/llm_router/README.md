@@ -175,8 +175,7 @@ their first seed. The first seed is declared in
 `defaults/main/55-roles.yml`; `tasks/seed-roles.yml` writes a role only when
 the running proxy carries no deployment by that name, so an `initial`-mode
 converge never overwrites a target edited in the UI — `rebuild` (below) is the
-exception. Git owns every fallback ladder in the rendered router settings;
-an Admin UI ladder edit is replaced with the Git value on the next converge.
+exception. Git owns every fallback ladder and rewrites it on each converge.
 
 Full detail — the two rules a seeded fallback rung must satisfy, the
 seeded `judge` and `recorder` roles and how each is scoped, and how to swap a
@@ -185,8 +184,7 @@ role by hand or through the Admin UI — moved to
 
 ## Editing ladders in the UI (`llm_router_seed_mode`, Vikunja 3316)
 
-Git owns fallback ladders and synchronizes them on every converge. Other
-router settings stay Admin UI-owned after first seed in `initial` mode.
+Settings other than `fallbacks` stay Admin UI-owned after first seed in `initial` mode.
 Virtual-key model allowlists and MCP permissions follow Git on every
 converge; `models_authoritative: false` keeps additive model extensions.
 In `initial`, routes and attribution metadata remain UI-owned. Budgets
@@ -197,12 +195,10 @@ reconcile only in `rebuild`. See
   payload only the first time, when no row exists yet
   (`tasks/probe-router-settings.yml`, a read-only `psql` check —
   confirmed against an older release; recheck the endpoint after the proxy
-  refactor). On later converges, it updates only the Git-owned `fallbacks`
-  field, leaving other router settings alone.
+  refactor). Later converges update only `fallbacks`.
 - **`rebuild`** — DR / from-scratch reset. Every converge re-pushes the
   rendered file's full `router_settings` and recreates every declared role
-  deployment, discarding whatever the Admin UI holds for those settings.
-  Fallback ladders still come only from the rendered `router_settings.fallbacks` map.
+  deployment, discarding the Admin UI values.
   Set it for one converge to restore the git-declared state, then set it
   back to `initial`.
 
