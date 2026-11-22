@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.66.7](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.6...v2.66.7) (2026-11-22)
+
+
+### Bug Fixes
+
+* **renovate:** hold LiteLLM updates for seven days ([#2706](https://github.com/dryvist/ansible-proxmox-ai/issues/2706)) ([28f2709](https://github.com/dryvist/ansible-proxmox-ai/commit/28f2709e734ca73b6d20d2b96fcbed61fdeddbe0))
+
 ## [2.66.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.5...v2.66.6) (2026-11-21)
 
 
