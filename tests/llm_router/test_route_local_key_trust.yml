@@ -153,3 +153,25 @@
           - not (_llm_router_key_trust_metadata['fixture-local-route'].route_local | bool)
           - _llm_router_route_local_key_aliases | length == 0
         fail_msg: "Enforcement off must mark no key; markers={{ _llm_router_key_trust_metadata }}."
+
+    - name: Declare keys that name role deployments, with the enforcement on
+      ansible.builtin.set_fact:
+        llm_router_enforce_fallback_model_access: true
+        llm_router_role_deployments:
+          - {role: fixture-role-local, model: "{{ llm_router_primary_model }}", fallbacks: []}
+          - role: fixture-role-hosted-fallback
+            model: "{{ llm_router_primary_model }}"
+            fallbacks: [fixture-not-local]
+          - {role: fixture-role-hosted-model, model: fixture-not-local, fallbacks: []}
+        llm_router_virtual_keys:
+          - alias: fixture-key-role-local
+            models: ["{{ llm_router_primary_model }}", fixture-role-local]
+          - {alias: fixture-key-role-hosted-fallback, models: [fixture-role-hosted-fallback]}
+          - {alias: fixture-key-role-hosted-model, models: [fixture-role-hosted-model]}
+
+    - name: A role name counts as local only when its model and every fallback are local
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_route_local_key_aliases == ['fixture-key-role-local']
+        fail_msg: "Marked keys: {{ _llm_router_route_local_key_aliases }}."
