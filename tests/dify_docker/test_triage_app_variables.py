@@ -82,4 +82,5 @@ def test_only_the_slack_and_digest_fields_of_the_triage_apps_are_optional():
 
 def test_zammad_triage_reads_its_token_from_its_runtime_leaf():
     path = {entry["name"]: entry for entry in entries("zammad-triage")}["ZAMMAD_TOKEN_PATH"]
-    assert path["value"] == "{{ dify_docker_openbao_path }}/agent-runtime/zammad-triage"
+    assert path["value"] == (
+        "{{ openbao_secrets_kv_mount }}/data/{{ dify_docker_openbao_path }}/agent-runtime/zammad-triage")
