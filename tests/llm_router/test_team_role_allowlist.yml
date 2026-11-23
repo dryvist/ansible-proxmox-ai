@@ -46,6 +46,7 @@
         bao_local_llm_secrets: {}
         bao_apps_secrets:
           llm_router_db_password: dummy-render-check
+          litellm_local_workstation_llm_router_key: dummy-render-check
         llm_router_db_host: postgres-ai.pve.example.test
 
     - name: Refresh cached router projections after fixture input changes [team-role-allowlist-1]
@@ -78,6 +79,21 @@
           {%- endif -%}
           {%- endfor -%}
           {{ out }}
+
+    - name: The workstation key's direct and speech routes are on its team allowlist
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _direct_and_speech | length > 0
+          - _direct_and_speech | difference(_key.models) | length == 0
+          - _direct_and_speech | difference(_team.models) | length == 0
+        fail_msg: "key={{ _key.models }} team={{ _team.models }}"
+      vars:
+        _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local-workstation') | first }}"
+        _team: "{{ llm_router_priority_team_settings | selectattr('team_id', 'equalto', _key.team_id) | first }}"
+        _direct_and_speech: >-
+          {{ llm_router_direct_route_aliases
+             + (llm_router_gpu_audio_models | map(attribute='client_model_id') | list) }}
 
     - name: The team allowlist does not widen a key's own scope
       ansible.builtin.assert:
