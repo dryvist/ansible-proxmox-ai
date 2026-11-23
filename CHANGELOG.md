@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.68.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.2...v2.68.0) (2026-11-23)
+
+
+### Features
+
+* **dify_docker:** pin the stack to Dify 1.20.0 ([#2727](https://github.com/dryvist/ansible-proxmox-ai/issues/2727)) ([acdae4e](https://github.com/dryvist/ansible-proxmox-ai/commit/acdae4e68d4093cd2cf0cce7caf0492502de2fda))
+
 ## [2.67.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.1...v2.67.2) (2026-11-23)
 
 
