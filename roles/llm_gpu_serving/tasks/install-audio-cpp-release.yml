@@ -1,0 +1,120 @@
+---
+- name: Install the pinned audio.cpp CUDA release
+  when: >-
+    not llm_gpu_serving_audio_cpp_server_stat.stat.exists
+    or not llm_gpu_serving_audio_cpp_marker_stat.stat.exists
+    or (llm_gpu_serving_audio_cpp_marker.content | b64decode | trim)
+    != (llm_gpu_serving_audio_cpp_server_asset_name ~ '|'
+        ~ llm_gpu_serving_audio_cpp_runtime_asset_name)
+  block:
+    - name: Create a temporary audio.cpp extraction directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: audio-cpp
+      register: llm_gpu_serving_audio_cpp_extract_tmp
+
+    - name: Install the downloaded audio.cpp CUDA release
+      when: not ansible_check_mode
+      block:
+        - name: Download the pinned audio.cpp CUDA server through the cache
+          ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
+          vars:
+            llamacpp_release_download_url: "{{ llm_gpu_serving_audio_cpp_release_download_url }}"
+            llamacpp_release_asset_name: "{{ llm_gpu_serving_audio_cpp_server_asset_name }}"
+            llamacpp_release_asset_sha256: "{{ llm_gpu_serving_audio_cpp_server_sha256 }}"
+            llamacpp_release_download_path: >-
+              {{ llm_gpu_serving_audio_cpp_extract_tmp.path }}/{{ llm_gpu_serving_audio_cpp_server_asset_name }}
+
+        - name: Download the pinned audio.cpp CUDA runtime through the cache
+          ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
+          vars:
+            llamacpp_release_download_url: "{{ llm_gpu_serving_audio_cpp_release_download_url }}"
+            llamacpp_release_asset_name: "{{ llm_gpu_serving_audio_cpp_runtime_asset_name }}"
+            llamacpp_release_asset_sha256: "{{ llm_gpu_serving_audio_cpp_runtime_sha256 }}"
+            llamacpp_release_download_path: >-
+              {{ llm_gpu_serving_audio_cpp_extract_tmp.path }}/{{ llm_gpu_serving_audio_cpp_runtime_asset_name }}
+
+        - name: Extract the pinned audio.cpp server archive
+          ansible.builtin.unarchive:
+            src: "{{ llm_gpu_serving_audio_cpp_extract_tmp.path }}/{{ llm_gpu_serving_audio_cpp_server_asset_name }}"
+            dest: "{{ llm_gpu_serving_audio_cpp_extract_tmp.path }}"
+            remote_src: true
+
+        - name: Extract the pinned audio.cpp CUDA runtime archive
+          ansible.builtin.unarchive:
+            src: "{{ llm_gpu_serving_audio_cpp_extract_tmp.path }}/{{ llm_gpu_serving_audio_cpp_runtime_asset_name }}"
+            dest: "{{ llm_gpu_serving_audio_cpp_extract_tmp.path }}"
+            remote_src: true
+
+        - name: Find the audio.cpp server binary
+          ansible.builtin.find:
+            paths: "{{ llm_gpu_serving_audio_cpp_extract_tmp.path }}"
+            patterns: audiocpp_server
+            file_type: file
+            recurse: true
+          register: llm_gpu_serving_audio_cpp_server_find
+
+        - name: Find the CUDA runtime library in the audio.cpp runtime archive
+          ansible.builtin.find:
+            paths: "{{ llm_gpu_serving_audio_cpp_extract_tmp.path }}"
+            patterns: "libcudart.so*"
+            file_type: file
+            recurse: true
+          register: llm_gpu_serving_audio_cpp_cudart_find
+
+        - name: Assert the audio.cpp archives contain the server and CUDA runtime
+          ansible.builtin.assert:
+            that:
+              - llm_gpu_serving_audio_cpp_server_find.matched | int > 0
+              - llm_gpu_serving_audio_cpp_cudart_find.matched | int > 0
+            fail_msg: "The CUDA release archives lack audiocpp_server or libcudart."
+
+        - name: Create the audio.cpp install directory
+          ansible.builtin.file:
+            path: "{{ llm_gpu_serving_audio_cpp_install_dir }}"
+            state: directory
+            owner: "{{ llm_gpu_serving_user }}"
+            group: "{{ llm_gpu_serving_group }}"
+            mode: "0750"
+
+        - name: Install audio.cpp binaries, shared libraries, and the CUDA runtime
+          ansible.builtin.command:
+            argv:
+              - cp
+              - -a
+              - --remove-destination
+              - "{{ item }}/."
+              - "{{ llm_gpu_serving_audio_cpp_install_dir }}/"
+          loop:
+            - "{{ llm_gpu_serving_audio_cpp_server_find.files[0].path | dirname }}"
+            - "{{ llm_gpu_serving_audio_cpp_cudart_find.files[0].path | dirname }}"
+          changed_when: true
+          notify:
+            - Stop every other GPU serving profile before switching
+            - Start the active GPU serving profile
+            - Start selected co-resident GPU serving profiles
+
+        - name: Record the installed audio.cpp asset names
+          ansible.builtin.copy:
+            content: >-
+              {{ llm_gpu_serving_audio_cpp_server_asset_name }}|{{ llm_gpu_serving_audio_cpp_runtime_asset_name }}
+            dest: "{{ llm_gpu_serving_audio_cpp_asset_marker }}"
+            owner: "{{ llm_gpu_serving_user }}"
+            group: "{{ llm_gpu_serving_group }}"
+            mode: "0640"
+
+        - name: Remove the temporary audio.cpp extraction directory
+          ansible.builtin.file:
+            path: "{{ llm_gpu_serving_audio_cpp_extract_tmp.path }}"
+            state: absent
+
+    - name: Preview the audio.cpp CUDA release install in check mode
+      ansible.builtin.debug:
+        msg: >-
+          Would install {{ llm_gpu_serving_audio_cpp_server_asset_name }}
+          (sha256 {{ llm_gpu_serving_audio_cpp_server_sha256 }}) and
+          {{ llm_gpu_serving_audio_cpp_runtime_asset_name }}
+          (sha256 {{ llm_gpu_serving_audio_cpp_runtime_sha256 }}), tag
+          {{ llm_gpu_serving_audio_cpp_release_tag }}, to
+          {{ llm_gpu_serving_audio_cpp_install_dir }}.
+      when: ansible_check_mode

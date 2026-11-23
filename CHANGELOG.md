@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.69.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.68.1...v2.69.0) (2026-11-23)
+
+
+### Features
+
+* **llm-gpu-serving:** serve MiMo 9B and speech models on the light GPU lane ([#2740](https://github.com/dryvist/ansible-proxmox-ai/issues/2740)) ([72a7510](https://github.com/dryvist/ansible-proxmox-ai/commit/72a7510e2c5dc1c7a18efba6a876e195d4f40874))
+
 ## [2.68.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.68.0...v2.68.1) (2026-11-23)
 
 

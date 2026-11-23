@@ -7,9 +7,10 @@ of `llamacpp_serving`, `vllm_serving`, or `sglang_serving`; the engine identity
 and Tofu selector determine the serving group and router profile.
 
 Deploys profile-based GPU inference with vLLM packages for vLLM profiles and a
-prebuilt CUDA release binary for llama.cpp profiles. Each enabled profile
-receives its own systemd unit; the role keeps only `llm_active_profile` running
-and serving on the shared API listener.
+prebuilt CUDA release binary for llama.cpp profiles. Audio.cpp profiles use the
+pinned CUDA 12.8 release for speech inference. Each enabled profile receives
+its own systemd unit; the role keeps `llm_active_profile` and the selected
+co-resident profiles running on their registered listeners.
 
 ## Play
 
@@ -64,6 +65,9 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
   package for SM120 kernel support in one uv command for vLLM profiles.
 - Installs the Renovate-pinned llama.cpp CUDA assets from the shared
   `llamacpp_release` contract only when the recorded asset changes.
+- Installs the pinned audio.cpp v0.9.6 CUDA 12.8 server and runtime archives
+  with SHA256 verification when an active or selected co-resident profile uses
+  `audio_cpp`.
 - Seeds `model_store: true` artifacts from the model registry into the declared
   origin with immutable Hub revisions. The GLM shard is not seeded. The seed playbook
   checks for running GPU compute applications before each download and verifies
@@ -77,7 +81,8 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
   stop and disable the other units before starting and enabling the selected
   unit. Existing units for profiles later disabled in defaults are stopped,
   disabled, and removed before the active unit starts.
-- Retries `GET /v1/models` until the active profile responds successfully.
+- Retries `GET /v1/models` for vLLM and llama.cpp profiles and `GET /health` for
+  audio.cpp profiles until the active profile responds successfully.
 
 ## Profiles
 
@@ -88,6 +93,7 @@ validated.
 Runtime serving settings live here; model bytes, Hub repository, include
 globs, file format, quantization, engine support, GGUF file name, and use are
 defined once in `llm-models.d/65-gpu-artifacts.yml`,
+`llm-models.d/72-gpu-artifacts-mimo-speech.yml`,
 `llm-models.d/66-gpu-artifacts-glm53flash.yml`, and
 `llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml` and
 `llm-models.d/69-gpu-artifacts-matrix.yml` and
@@ -95,7 +101,13 @@ defined once in `llm-models.d/65-gpu-artifacts.yml`,
 registry links to those records by `artifact_id` and stays `enabled: false`,
 `servable: false` until a serving floor is measured. The shared GPU registry
 also contains the `16gb` llama.cpp candidate owned by `llamacpp_serving`; this
-legacy role indexes only its own five profile names.
+legacy role indexes only its own profiles.
+
+An `audio_cpp` profile reads its list of `{id, family, path, task}` models from
+the resolved profile registry's `audio_cpp_models` field. The loader supplies
+each model's pinned GGUF cache path. The role renders one audio.cpp configuration
+per profile and sets `max_loaded_models` to the number of registered models.
+Audio profiles are checked at `/health`.
 
 `small`, `medium-b`, `max`, and `glm-flash` run llama.cpp (GGUF) from the
 installed release binary; `medium-a` runs vLLM (safetensors). A vLLM
@@ -162,6 +174,14 @@ estimated 1.165M-token pool after reducing utilization from 85%; twelve slots
 exceed the estimate. The profile also carries a 12 GiB vLLM runtime reserve.
 This estimate is a configuration screen, not measured live acceptance.
 
+### Co-resident speech profile
+
+The `small` llama.cpp profile may run with the `speech` audio.cpp profile. The
+speech profile serves its two registry-resolved GGUFs from one CUDA server
+configuration and uses its own registered listener. This pairing is specific
+to the small llama.cpp profile; vLLM co-resident profiles keep their existing
+reserved llama.cpp configuration and memory checks.
+
 ## Stress window
 
 Run `template 76` with `llm_gpu_serving_paused=true`, then `template 18` with
@@ -169,7 +189,7 @@ Run `template 76` with `llm_gpu_serving_paused=true`, then `template 18` with
 The shared pause variable applies to this role and both engine-specific roles.
 Pausing stops the selected unit while leaving it enabled, its profile selected,
 and its model cache intact. Resuming starts the selected unit and requires the
-normal `/v1/models` health check to pass.
+normal engine-specific health check to pass.
 
 ## Serving floors
 
@@ -192,6 +212,7 @@ profile's floor; `tasks/assert-profile-floors.yml` fails the role otherwise.
 | `llm_gpu_serving_uv_version` | Pinned uv installer version, tracked by Renovate |
 | `llm_gpu_serving_huggingface_hub_version` | Pinned Hugging Face CLI package version, tracked by Renovate |
 | `llm_gpu_serving_vllm_version` | Pinned vLLM package version, tracked by Renovate |
+| `llm_gpu_serving_audio_cpp_release_version` | Pinned audio.cpp release, tracked by Renovate |
 | `llm_gpu_serving_api_port` | Shared API listener port |
 | `llm_profiles.<name>.floor` | Optional measured serving floor (see Serving floors) |
 
@@ -202,7 +223,9 @@ the `pve_host_systemd_units` role in `ansible-proxmox`. The renderer requires
 the target's existing engine executables, model-cache root, bind address,
 working directory, and output paths as run-time inputs: the vLLM executable
 (`llm_gpu_serving_host_vllm_bin`) for vLLM profiles and the llama-server
-executable (`llm_gpu_serving_host_llamacpp_bin`) for llama.cpp profiles.
+executable (`llm_gpu_serving_host_llamacpp_bin`) for llama.cpp profiles. Audio
+profiles require absolute `llm_gpu_serving_host_audio_cpp_bin` and
+`llm_gpu_serving_host_audio_cpp_config_file` inputs.
 
 `llm_gpu_serving_host_contract_scope` selects the profiles. `primary`
 (default) renders the profile marked `primary` to

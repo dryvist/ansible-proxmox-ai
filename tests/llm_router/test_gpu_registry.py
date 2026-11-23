@@ -107,6 +107,7 @@ def test_pro6000_profiles_are_guarded_and_free() -> None:
         "small-lfm25-2b6",
         "small-granite42-3b",
         "small-lfm25-24b-a2b",
+        "speech",
         "medium-a",
         "qwen38-96k-11-fp8-mtp",
         "medium-b",
