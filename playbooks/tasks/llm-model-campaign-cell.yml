@@ -220,11 +220,38 @@
     - _llm_campaign_run.converter.kind == 'lm-eval'
     - _llm_campaign_run.run_on != 'controller'
 
+- name: Find gbench summary files for its converter
+  ansible.builtin.find:
+    paths: "{{ output_path }}"
+    patterns: [summary.json]
+    recurse: true
+    file_type: file
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+  register: _llm_campaign_gbench_files
+  when:
+    - _llm_campaign_run.converter is defined
+    - _llm_campaign_run.converter.kind == 'gbench'
+
+- name: Fetch gbench summary files for conversion
+  ansible.builtin.fetch:
+    src: "{{ item.path }}"
+    dest: "{{ _llm_campaign_cell_controller_dir }}/"
+    flat: true
+  loop: "{{ _llm_campaign_gbench_files.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when:
+    - _llm_campaign_run.converter is defined
+    - _llm_campaign_run.converter.kind == 'gbench'
+    - _llm_campaign_run.run_on != 'controller'
+
 - name: Find local converter inputs for this cell
   ansible.builtin.find:
     paths: "{{ _llm_campaign_cell_controller_dir }}"
-    patterns: "{{ 'results_*.json' if _llm_campaign_run.converter.kind == 'lm-eval'
-                else _llm_campaign_cell_slug ~ '.json' }}"
+    patterns: >-
+      {{ 'results_*.json' if _llm_campaign_run.converter.kind == 'lm-eval'
+         else ('summary.json' if _llm_campaign_run.converter.kind == 'gbench'
+               else _llm_campaign_cell_slug ~ '.json') }}
     recurse: true
     file_type: file
   delegate_to: localhost
