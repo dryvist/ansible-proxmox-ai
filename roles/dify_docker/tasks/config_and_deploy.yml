@@ -127,22 +127,7 @@
   changed_when: false
   check_mode: false
 
-- name: Resolve free bytes on the filesystem holding Docker's data root
-  ansible.builtin.set_fact:
-    dify_docker_docker_root_free_bytes: >-
-      {%- set ns = namespace(mount='', bytes=0) -%}
-      {%- for candidate in ansible_mounts | sort(attribute='mount', reverse=true) -%}
-      {%- set base = candidate.mount | regex_replace('/+$', '') -%}
-      {%- if (dify_docker_docker_root_probe.stdout | trim) is match(base ~ '(/|$)')
-             and candidate.mount | length > ns.mount | length -%}
-      {%- set ns.mount = candidate.mount -%}
-      {%- set ns.bytes = candidate.size_available -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {{ ns.bytes }}
-  when: ansible_mounts is defined
-
-- name: Read free bytes on the Docker data filesystem when mount facts are absent
+- name: Read free bytes on the Docker data filesystem
   ansible.builtin.command:
     argv:
       - df
@@ -153,21 +138,14 @@
   register: dify_docker_docker_root_df_probe
   changed_when: false
   check_mode: false
-  when: ansible_mounts is not defined
 
-- name: Take the df reading when mount facts are absent
-  ansible.builtin.set_fact:
-    dify_docker_docker_root_free_bytes: >-
-      {{ dify_docker_docker_root_df_probe.stdout_lines[-1] | int }}
-  when: ansible_mounts is not defined
-
-- name: Require room for a full second Dify image set on the Docker data filesystem
+- name: Require room for the Dify image set on the Docker data filesystem
   ansible.builtin.assert:
     that:
-      - dify_docker_docker_root_free_bytes | int >= dify_docker_min_free_bytes_before_pull | int
+      - dify_docker_docker_root_df_probe.stdout_lines[-1] | int >= dify_docker_min_free_bytes_before_pull | int
     fail_msg: >-
       The filesystem holding Docker's data root has
-      {{ dify_docker_docker_root_free_bytes | int }} bytes free; pulling the Dify
+      {{ dify_docker_docker_root_df_probe.stdout_lines[-1] | int }} bytes free; pulling the Dify
       image set needs at least {{ dify_docker_min_free_bytes_before_pull | int }} bytes.
       Grow the guest disk before converging.
     quiet: true
