@@ -6,8 +6,8 @@
 # WHAT IS RENDERED. The fully credentialed config.yaml (tasks/credentialed_render.yml)
 # — model_list, router_settings.fallbacks, default_fallbacks,
 # context_window_fallbacks and model_group_alias — plus the role deployments
-# tasks/seed-roles.yml creates over the API, with the fallback order it seeds
-# for them (rungs filtered to names the proxy serves, as that task does).
+# tasks/seed-roles.yml creates over the API. Role ladders come from the
+# rendered router_settings.fallbacks map.
 # How a name resolves its rungs: tasks/fallback_completeness_contract.yml.
 #
 # THE THREE CONTRACTS, each reported by client name:
@@ -61,6 +61,67 @@
   tasks:
     - name: Produce the fully credentialed render
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: Every role declaring fallbacks has a rendered router_settings entry
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _roles_with_fallbacks | difference(_rendered_fallback_keys) | length == 0
+        fail_msg: >-
+          Role(s) {{ _roles_with_fallbacks | difference(_rendered_fallback_keys) }}
+          declare fallback ladders but are absent from router_settings.fallbacks.
+      vars:
+        _roles_with_fallbacks: >-
+          {{ llm_router_role_deployments | selectattr('fallbacks')
+             | map(attribute='role') | list }}
+        _rendered_fallback_keys: >-
+          {{ _config.router_settings.fallbacks | default([])
+             | map('dict2items') | flatten | map(attribute='key') | list }}
+
+    - name: Role fallback entries keep declared order and drop unrendered models
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _role_fallback_mismatches | length == 0
+        fail_msg: >-
+          Rendered role fallback entries differ from their declared ladders
+          filtered to rendered models: {{ _role_fallback_mismatches }}.
+      vars:
+        _rendered_model_names: "{{ _config.model_list | map(attribute='model_name') | unique | list }}"
+        _rendered_fallback_map: >-
+          {{ dict(_config.router_settings.fallbacks | default([])
+             | map('dict2items') | flatten | map(attribute='key')
+             | zip(_config.router_settings.fallbacks | default([])
+               | map('dict2items') | flatten | map(attribute='value'))) }}
+        _role_fallback_mismatches: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for role in llm_router_role_deployments if role.fallbacks | length > 0 -%}
+          {%- set expected = role.fallbacks | select('in', _rendered_model_names) | list -%}
+          {%- if _rendered_fallback_map.get(role.role, none) != expected -%}
+          {%- set ns.bad = ns.bad + [role.role ~ ' expected ' ~ expected
+                ~ ' got ' ~ _rendered_fallback_map.get(role.role, '<missing>')] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+
+    - name: Role map additions do not change scoped virtual-key fallback names
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _private_fallback_names == _base_fallback_names
+          - _oss_fallback_names == _base_fallback_names
+        fail_msg: >-
+          The scoped key projections must retain the pre-role fallback-map
+          names: base={{ _base_fallback_names }}, private={{ _private_fallback_names }},
+          OSS={{ _oss_fallback_names }}.
+      vars:
+        _base_fallback_names: "{{ _llm_router_fallback_map_base_source.keys() | list | sort }}"
+        _private_fallback_names: >-
+          {{ llm_router_review_key_fallbacks.private
+             | map('dict2items') | flatten | map(attribute='key') | list | sort }}
+        _oss_fallback_names: >-
+          {{ llm_router_review_key_fallbacks.oss
+             | map('dict2items') | flatten | map(attribute='key') | list | sort }}
 
     - name: Check every routable name's ladder
       ansible.builtin.import_tasks: tasks/fallback_completeness_contract.yml

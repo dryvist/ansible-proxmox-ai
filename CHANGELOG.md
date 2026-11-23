@@ -1,5 +1,55 @@
 # Changelog
 
+## [2.67.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.1...v2.67.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** tracker app credentials from each app's own leaf and AppRole ([#2696](https://github.com/dryvist/ansible-proxmox-ai/issues/2696)) ([f338c6d](https://github.com/dryvist/ansible-proxmox-ai/commit/f338c6dcc5ae28f515bd63861c77285d8a42c2fb))
+
+## [2.67.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.0...v2.67.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** pin the agent DSL catalog to ai-llm-prompts v1.134.2 ([#2721](https://github.com/dryvist/ansible-proxmox-ai/issues/2721)) ([4a8a2b4](https://github.com/dryvist/ansible-proxmox-ai/commit/4a8a2b4f5e2758c0d264da20d329a985aa03b720))
+* **renovate:** hold LiteLLM updates for 7 days ([#2705](https://github.com/dryvist/ansible-proxmox-ai/issues/2705)) ([960022a](https://github.com/dryvist/ansible-proxmox-ai/commit/960022a966223265bc53996cac9804378f28927a))
+
+## [2.67.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.9...v2.67.0) (2026-11-22)
+
+
+### Features
+
+* **hermes_agent:** read the vikunja-task webhook secret from the apps domain ([#2651](https://github.com/dryvist/ansible-proxmox-ai/issues/2651)) ([70af42f](https://github.com/dryvist/ansible-proxmox-ai/commit/70af42f6096f9baa90e6a4fb6f3bf2421cd61bac))
+
+## [2.66.9](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.8...v2.66.9) (2026-11-22)
+
+
+### Bug Fixes
+
+* **llm_router:** mark a tagged key local-route when it names a role with only local members ([#2712](https://github.com/dryvist/ansible-proxmox-ai/issues/2712)) ([ae28a9d](https://github.com/dryvist/ansible-proxmox-ai/commit/ae28a9df5a2af0aaf0e19a54c8705eed1b0542ef))
+
+## [2.66.8](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.7...v2.66.8) (2026-11-22)
+
+
+### Bug Fixes
+
+* **llm_router:** render every role fallback ladder from Git and sync it on each converge ([#2710](https://github.com/dryvist/ansible-proxmox-ai/issues/2710)) ([dbc2e49](https://github.com/dryvist/ansible-proxmox-ai/commit/dbc2e494ee23413176121e46c885e403690709f7))
+
+## [2.66.7](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.6...v2.66.7) (2026-11-22)
+
+
+### Bug Fixes
+
+* **renovate:** hold LiteLLM updates for seven days ([#2706](https://github.com/dryvist/ansible-proxmox-ai/issues/2706)) ([28f2709](https://github.com/dryvist/ansible-proxmox-ai/commit/28f2709e734ca73b6d20d2b96fcbed61fdeddbe0))
+
+## [2.66.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.5...v2.66.6) (2026-11-21)
+
+
+### Bug Fixes
+
+* **dify_docker:** pin the agent DSL catalog to ai-llm-prompts v1.129.0 ([#2702](https://github.com/dryvist/ansible-proxmox-ai/issues/2702)) ([70902e3](https://github.com/dryvist/ansible-proxmox-ai/commit/70902e3ca41ae2203b781a02e9eb5e5584e1ab43))
+
 ## [2.66.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.4...v2.66.5) (2026-11-21)
 
 
