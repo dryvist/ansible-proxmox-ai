@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.68.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.68.0...v2.68.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** return the stack to 1.19.0 ([#2735](https://github.com/dryvist/ansible-proxmox-ai/issues/2735)) ([9557cbc](https://github.com/dryvist/ansible-proxmox-ai/commit/9557cbc536a151cc0d1a527132ecb4943d068798))
+
+## [2.68.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.2...v2.68.0) (2026-11-23)
+
+
+### Features
+
+* **dify_docker:** pin the stack to Dify 1.20.0 ([#2727](https://github.com/dryvist/ansible-proxmox-ai/issues/2727)) ([acdae4e](https://github.com/dryvist/ansible-proxmox-ai/commit/acdae4e68d4093cd2cf0cce7caf0492502de2fda))
+
+## [2.67.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.1...v2.67.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** tracker app credentials from each app's own leaf and AppRole ([#2696](https://github.com/dryvist/ansible-proxmox-ai/issues/2696)) ([f338c6d](https://github.com/dryvist/ansible-proxmox-ai/commit/f338c6dcc5ae28f515bd63861c77285d8a42c2fb))
+
 ## [2.67.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.0...v2.67.1) (2026-11-23)
 
 
