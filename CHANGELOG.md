@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.69.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.0...v2.69.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **nvidia_gpu_guest:** skip the DCGM exporter file when the pinned version is installed ([#2748](https://github.com/dryvist/ansible-proxmox-ai/issues/2748)) ([d88f445](https://github.com/dryvist/ansible-proxmox-ai/commit/d88f44523a06c558fc833927b6388fb2d59acb15))
+
 ## [2.69.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.68.1...v2.69.0) (2026-11-23)
 
 
