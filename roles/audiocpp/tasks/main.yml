@@ -1,0 +1,119 @@
+---
+# audio.cpp speech server (API-only) on CPU. Idempotent. Weights come from the
+# shared models mount; this role never downloads them.
+
+- name: Assert the speech server declares models on a models mount
+  ansible.builtin.assert:
+    that:
+      - audiocpp_models | length > 0
+      - audiocpp_models_dir | length > 0
+      - audiocpp_models | map(attribute='id') | unique | list | length == audiocpp_models | length
+    fail_msg: >-
+      audiocpp_models must list at least one model with a unique id, and the
+      host must declare a models mount (container_models_mount_path).
+    quiet: true
+
+- name: Stat each speech model file on the models mount
+  ansible.builtin.stat:
+    path: "{{ audiocpp_models_dir }}/{{ item.file }}"
+  register: audiocpp_model_files
+  loop: "{{ audiocpp_models }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: Assert every speech model file is present
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    fail_msg: "Speech model file is missing from the models mount: {{ item.item.file }}"
+    quiet: true
+  loop: "{{ audiocpp_model_files.results }}"
+  loop_control:
+    label: "{{ item.item.id }}"
+
+- name: Install speech server prerequisites
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - tar
+      - gzip
+      # The prebuilt server links the OpenMP runtime.
+      - libgomp1
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the speech server service user
+  ansible.builtin.user:
+    name: "{{ audiocpp_user }}"
+    group: "{{ audiocpp_group }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create the speech server directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ audiocpp_install_dir }}"
+    - "{{ audiocpp_data_dir }}"
+    - "{{ audiocpp_config_dir }}"
+
+- name: Download the pinned audio.cpp release
+  ansible.builtin.get_url:
+    url: "{{ audiocpp_release_url }}"
+    dest: "{{ audiocpp_data_dir }}/{{ audiocpp_release_asset }}"
+    checksum: "sha256:{{ audiocpp_release_sha256 }}"
+    mode: "0644"
+
+- name: Unpack the pinned audio.cpp release
+  ansible.builtin.unarchive:
+    src: "{{ audiocpp_data_dir }}/{{ audiocpp_release_asset }}"
+    dest: "{{ audiocpp_install_dir }}"
+    remote_src: true
+    creates: "{{ audiocpp_install_dir }}/.release-{{ audiocpp_release_version }}"
+
+- name: Mark the unpacked release version
+  ansible.builtin.file:
+    path: "{{ audiocpp_install_dir }}/.release-{{ audiocpp_release_version }}"
+    state: touch
+    mode: "0644"
+
+- name: Render the speech server configuration
+  ansible.builtin.template:
+    src: audiocpp-server.json.j2
+    dest: "{{ audiocpp_config_file }}"
+    owner: root
+    group: "{{ audiocpp_group }}"
+    mode: "0640"
+  notify: Restart audiocpp-server
+
+- name: Render the speech server unit
+  ansible.builtin.template:
+    src: audiocpp-server.service.j2
+    dest: "/etc/systemd/system/{{ audiocpp_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart audiocpp-server
+
+- name: Enable and start the speech server
+  ansible.builtin.systemd:
+    name: "{{ audiocpp_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for the speech server to answer its health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ audiocpp_api_port }}/health"
+    status_code: 200
+  register: audiocpp_health
+  until: audiocpp_health.status == 200
+  retries: 24
+  delay: 5
