@@ -73,6 +73,7 @@ def test_band_suffixed_keys_from_before_the_upgrade_still_count_as_posted():
     text, _ = TRIAGE.build_report(data, at(2), state)
     assert "storage.raft" not in text, "an old band suffix must not make it a new issue"
     assert TRIAGE.legacy_key("share:syslog:-2") == "share:syslog:down"
+    assert TRIAGE.legacy_key("share:pan:traffic:1") == "share:pan:traffic:up"
     assert TRIAGE.legacy_key("host:openbao-02:up:50") == "host:openbao-02:up"
     assert TRIAGE.legacy_key("host:openbao-02:up") == "host:openbao-02:up"
 
