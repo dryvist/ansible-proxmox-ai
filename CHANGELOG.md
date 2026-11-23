@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.69.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.5...v2.69.6) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm-models:** route the 4080 small lane by the model id llama.cpp serves ([#2767](https://github.com/dryvist/ansible-proxmox-ai/issues/2767)) ([25539eb](https://github.com/dryvist/ansible-proxmox-ai/commit/25539eb46deeb39a7889a40da467b4eb399d4f40))
+
+## [2.69.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.4...v2.69.5) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** zammad-triage token path names the KV mount ([#2752](https://github.com/dryvist/ansible-proxmox-ai/issues/2752)) ([8960a9e](https://github.com/dryvist/ansible-proxmox-ai/commit/8960a9ea6c2ab2c420111f82383f448f5d0baafa))
+
 ## [2.69.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.3...v2.69.4) (2026-11-23)
 
 
