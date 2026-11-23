@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.72.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.71.0...v2.72.0) (2026-11-23)
+
+
+### Features
+
+* **llm_gpu_serving:** serve co-resident speech beside llama.cpp on the NVIDIA guest ([#2791](https://github.com/dryvist/ansible-proxmox-ai/issues/2791)) ([2590b78](https://github.com/dryvist/ansible-proxmox-ai/commit/2590b7806dd9cd6120ca30d0f50e6752d30498ba))
+
 ## [2.71.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.70.0...v2.71.0) (2026-11-23)
 
 

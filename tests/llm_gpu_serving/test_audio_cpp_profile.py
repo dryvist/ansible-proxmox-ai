@@ -139,3 +139,32 @@ def test_unknown_gpu_engine_is_rejected_by_profile_validation():
     )
 
     assert rendered == "False"
+
+
+def test_nvidia_llama_cpp_play_converges_co_resident_speech_only_when_selected():
+    plays = _load("playbooks/llm-serving-llama-cpp.yml")
+    play = next(item for item in plays if item["hosts"] == "llm_vllm_group")
+    task = next(item for item in play["tasks"] if "co-resident" in item["name"])
+    includes = [step["ansible.builtin.include_role"] for step in task["block"] if "ansible.builtin.include_role" in step]
+
+    assert task["when"] == "llm_gpu_serving_co_resident_profiles | default([]) | length > 0"
+    assert includes == [{"name": "llm_gpu_serving", "tasks_from": "co-resident.yml"}]
+    assert task["rescue"][0]["vars"]["_isolated_play_name"] == "llm_gpu_serving_co_resident"
+
+
+def test_co_resident_entry_point_never_touches_the_llama_cpp_server():
+    tasks = _load("roles/llm_gpu_serving/tasks/co-resident.yml")
+    cache_sync = next(task for task in tasks if "cache-sync-profile-artifacts.yml" in str(task))
+
+    assert not any("notify" in task for task in tasks)
+    assert cache_sync["vars"]["llm_gpu_serving_cache_sync_notify_service"] is False
+    assert all(task["loop"] == "{{ llm_gpu_serving_co_resident_profiles }}" for task in tasks if "loop" in task)
+
+
+def test_ada_speech_listens_on_the_llama_cpp_port_plus_one():
+    # The router derives speech_port from the same key, plus one.
+    host = _load("inventory/host_vars/llm-ada-lovelace-6X-16GB-embed.yml")
+    core = _load("roles/llm_gpu_serving/defaults/main/00-core.yml")
+
+    assert host["llm_gpu_serving_api_port_key"] == "llm_fast_api"
+    assert core["llm_gpu_serving_co_resident_api_port"] == "{{ llm_gpu_serving_api_port | int + 1 }}"

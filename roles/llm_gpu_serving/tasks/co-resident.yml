@@ -1,0 +1,104 @@
+---
+# Serve only the selected co-resident profiles, for a guest whose text model is
+# served by another role (the NVIDIA llama.cpp play). These tasks never render,
+# start or stop the active profile's unit, and never notify the role handlers,
+# so the other role's server keeps its port and card.
+- name: Load shared llama.cpp release settings and require the artifact cache
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/prepare.yml"
+
+- name: Load the registry model identity for each GPU profile
+  ansible.builtin.include_tasks: load-registry.yml
+
+- name: Validate GPU serving profiles and cache
+  ansible.builtin.include_tasks: validate-profiles.yml
+
+- name: Select only the co-resident profiles' engines
+  ansible.builtin.set_fact:
+    llm_gpu_serving_selected_engines: >-
+      {{ llm_gpu_serving_co_resident_profiles
+         | map('extract', llm_gpu_serving_profiles)
+         | map(attribute='engine') | unique | list }}
+
+- name: Create the GPU serving user and install prerequisites
+  ansible.builtin.include_tasks: prepare-host.yml
+
+- name: Install NVIDIA userspace from the host module version
+  ansible.builtin.include_role:
+    name: nvidia_gpu_guest
+    tasks_from: install-nvidia-userspace.yml
+
+- name: Create serving directories, uv and the pinned Hugging Face CLI
+  ansible.builtin.include_tasks: install-model-cache-cli.yml
+
+- name: Inspect and install the co-resident engine assets
+  ansible.builtin.include_tasks: inspect-install-engine-assets.yml
+
+- name: Resolve the co-resident health host
+  ansible.builtin.set_fact:
+    llm_gpu_serving_health_host: >-
+      {{ llm_gpu_serving_listen_host | default(ansible_facts.default_ipv4.address) }}
+
+# notify_service stays false: it would stop every unit with this role's prefix
+# and start the active profile, which the other role serves.
+- name: Cache each co-resident profile's registered model artifacts
+  ansible.builtin.include_tasks: cache-sync-profile-artifacts.yml
+  loop: "{{ llm_gpu_serving_co_resident_profiles }}"
+  loop_control:
+    loop_var: llm_gpu_serving_cache_sync_profile
+    label: "{{ llm_gpu_serving_cache_sync_profile }}"
+  vars:
+    llm_gpu_serving_cache_sync_notify_service: false
+
+- name: Render each co-resident audio.cpp configuration
+  ansible.builtin.template:
+    src: audio-cpp-server.json.j2
+    dest: "{{ llm_gpu_serving_audio_cpp_config_dir }}/{{ item }}.json"
+    owner: root
+    group: "{{ llm_gpu_serving_group }}"
+    mode: "0640"
+  vars:
+    llm_gpu_serving_profile_name: "{{ item }}"
+    llm_gpu_serving_profile: "{{ llm_gpu_serving_profiles[item] }}"
+    llm_gpu_serving_profile_registry_model: "{{ llm_gpu_serving_registry_by_profile[item] }}"
+  loop: "{{ llm_gpu_serving_co_resident_profiles }}"
+  loop_control:
+    label: "{{ item }}"
+  when: llm_gpu_serving_profiles[item].engine == 'audio_cpp'
+  register: llm_gpu_serving_co_resident_configs
+
+- name: Render each co-resident systemd unit
+  ansible.builtin.template:
+    src: llm-gpu-serving.service.j2
+    dest: "{{ llm_gpu_serving_systemd_dir }}/{{ llm_gpu_serving_unit_prefix }}-{{ item }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    llm_gpu_serving_profile_name: "{{ item }}"
+    llm_gpu_serving_profile: "{{ llm_gpu_serving_profiles[item] }}"
+    llm_gpu_serving_profile_registry_model: "{{ llm_gpu_serving_registry_by_profile[item] }}"
+    llm_gpu_serving_profile_model_dir: >-
+      {{ llm_gpu_serving_model_cache_path }}/{{ llm_gpu_serving_registry_by_profile[item].artifact.hf_repo }}
+    llm_gpu_serving_audio_cpp_config_file: "{{ llm_gpu_serving_audio_cpp_config_dir }}/{{ item }}.json"
+  loop: "{{ llm_gpu_serving_co_resident_profiles }}"
+  loop_control:
+    label: "{{ item }}"
+  register: llm_gpu_serving_co_resident_units
+
+- name: Start each co-resident unit, restarting it when its files changed
+  ansible.builtin.systemd:
+    name: "{{ llm_gpu_serving_unit_prefix }}-{{ item }}.service"
+    state: >-
+      {{ 'restarted'
+         if (llm_gpu_serving_co_resident_configs.results + llm_gpu_serving_co_resident_units.results)
+            | selectattr('item', 'equalto', item) | selectattr('changed', 'defined')
+            | selectattr('changed') | list | length > 0
+         else 'started' }}
+    enabled: true
+    daemon_reload: true
+  loop: "{{ llm_gpu_serving_co_resident_profiles }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Check co-resident profile health
+  ansible.builtin.include_tasks: health-check-co-resident.yml
