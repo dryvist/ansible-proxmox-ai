@@ -49,6 +49,11 @@ Plugin transport settings follow the
 [Dify API client](https://github.com/langgenius/dify/blob/1.18.0/api/core/plugin/impl/base.py)
 and [daemon configuration](https://github.com/langgenius/dify-plugin-daemon/blob/0.6.12/internal/types/app/config.go).
 
+## Installation
+
+The role ships in the `ansible-proxmox-ai` repository and is applied via
+`playbooks/site.yml` after `ansible-galaxy collection install -r requirements.yml --force`.
+
 ## Prerequisites
 
 - An LXC tagged `dify` (nesting enabled for Docker) with its data directory on
@@ -58,8 +63,6 @@ and [daemon configuration](https://github.com/langgenius/dify-plugin-daemon/blob
   shared OpenBao seed task on first converge.
 
 ## Usage
-
-Install dependencies once (`ansible-galaxy collection install -r requirements.yml --force`), then:
 
 ```bash
 sops exec-env secrets.enc.yaml 'doppler run -- ansible-playbook playbooks/site.yml --tags dify_docker'
@@ -174,16 +177,8 @@ OpenBao token alone does not rotate a credential that Dify already stores.
 In check mode, the role reads Marketplace, Dify and OpenBao state and reports missing plugin or
 credential changes. It skips the console API writes.
 
-## Tier2 rotation webhook wiring
-
-After the agent DSL import, the role wires the `tier2-rotation` catalog
-workflow (`dify_docker_rotation_app_name`) to the agent apps it fans out to:
-the agent set is read from the rotation draft itself, each agent app keeps a
-public `<AGENT>_TRIGGER_URL` and a non-secret `<AGENT>_WEBHOOK_ID` digest pair,
-and the rotation's HTTP request node dispatches from inside the stack through
-the ssrf_proxy. The full wiring contract, idempotent reseed behavior, check
-mode behavior, and the ssrf_proxy carve-out are documented in
-[tier2-rotation-wiring.md](tier2-rotation-wiring.md).
+The Tier2 rotation webhook wiring is documented in
+[rotation-webhook-wiring.md](rotation-webhook-wiring.md).
 
 ## Agent MCP server publishing
 
