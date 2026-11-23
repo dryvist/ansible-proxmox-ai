@@ -32,11 +32,10 @@ def test_a_fully_quiet_digest_never_posts_a_heartbeat():
 
 def test_an_older_state_file_still_reads_without_a_quiet_post():
     """The ledger's older key-only shape remains readable on a quiet run."""
-    day = "2026-07-24"
     grown, state = quiet_state()
     # Rewrite the ledger into the OLD shape, keys only.
     state["ledger"]["keys"] = [e["k"] for e in state["ledger"]["keys"]]
-    assert DIGEST.load_ledger(state, day) == state["ledger"]["keys"], \
+    assert DIGEST.load_ledger(state, None) == state["ledger"]["keys"], \
         "the accessor must still read a pre-2026-07-29 ledger"
 
     text, _ = step(grown, state, at(2) + dt.timedelta(hours=12))
@@ -95,18 +94,20 @@ def test_suppressed_repeats_are_surfaced_on_the_next_post():
     assert "3 identical repeat(s) suppressed since 09:00" in text, text
 
 
-def test_a_new_utc_day_re_reports_a_still_broken_digest():
-    """The ledger is day-scoped everywhere else in this file; the failure gate
-    must not become a permanent mute for an outage that outlives a day."""
+def test_a_still_broken_digest_is_re_reported_once_per_routine_window():
+    """The failure gate is the same rolling floor as every finding: not a
+    permanent mute, and not reset early by the UTC day rolling over."""
     day1 = dt.datetime(2026, 7, 29, 23, 0, tzinfo=dt.timezone.utc)
     boom = RuntimeError("502 Bad Gateway")
     _, state = DIGEST.failure_report(boom, None, day1)
     silent, state = DIGEST.failure_report(boom, state, day1 + dt.timedelta(minutes=30))
     assert silent == DIGEST.SILENT
 
-    day2 = dt.datetime(2026, 7, 30, 8, 0, tzinfo=dt.timezone.utc)
-    again, _ = DIGEST.failure_report(boom, state, day2)
-    assert again != DIGEST.SILENT, "a new UTC day must re-report a still-failing digest"
+    next_morning = dt.datetime(2026, 7, 30, 8, 0, tzinfo=dt.timezone.utc)
+    quiet, state = DIGEST.failure_report(boom, state, next_morning)
+    assert quiet == DIGEST.SILENT, "a UTC day boundary must not shorten the 24h floor"
+    again, _ = DIGEST.failure_report(boom, state, day1 + dt.timedelta(hours=24))
+    assert again != DIGEST.SILENT, "24h on, a still-failing digest is re-reported"
 
 
 def test_recovery_is_announced_once():

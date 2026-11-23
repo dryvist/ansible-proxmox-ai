@@ -182,26 +182,32 @@ def _whole_index_low(hour, low):
             hourly_row("os", "host-b", steady + [low], at(hour))]
 
 
-def test_a_cleared_index_down_that_recurs_the_same_day_posts_again():
+def test_a_cleared_index_down_that_recurs_posts_again_only_after_the_critical_floor():
     _, s0 = step(BASE, None, 0, hourly=_whole_index_low(0, 6_000))
     _, s1 = step(BASE, s0, 1, hourly=_whole_index_low(1, 2_000))
     first, s2 = step(BASE, s1, 2, hourly=_whole_index_low(2, 2_000))
     assert "\nindex=os down" in first
     _, s3 = step(BASE, s2, 3, hourly=_whole_index_low(3, 6_000))     # recovers, clears
     _, s4 = step(BASE, s3, 4, hourly=_whole_index_low(4, 2_000))
-    again, s5 = step(BASE, s4, 5, hourly=_whole_index_low(5, 2_000))
-    assert "\nindex=os down" in again, "a critical condition is not suppressed by the day's ledger"
-    assert ledger_keys(s5).count("down:index:os") == 1, "a repeated episode is ledgered once, not per episode"
+    held, s5 = step(BASE, s4, 5, hourly=_whole_index_low(5, 2_000))
+    assert "\nindex=os down" not in held, "a recurrence 3h after the post is inside the 4h floor"
+    _, s6 = step(BASE, s5, 6, hourly=_whole_index_low(6, 6_000))     # clears again
+    _, s7 = step(BASE, s6, 7, hourly=_whole_index_low(7, 2_000))
+    again, s8 = step(BASE, s7, 8, hourly=_whole_index_low(8, 2_000))
+    assert "\nindex=os down" in again, "a recurrence past the 4h floor is a new post"
+    assert ledger_keys(s8).count("down:index:os") == 1, "a repeated episode is ledgered once, not per episode"
 
 
 def test_a_state_file_from_before_critical_records_posts_an_active_index_down_once():
     # Before reported_critical existed, the index DOWN was already in the ledger and in
-    # reported_findings. The first run after the upgrade must still post it as critical.
+    # reported_findings. After the upgrade it posts once its critical floor has passed.
     _, s0 = step(BASE, None, 0, hourly=_whole_index_low(0, 6_000))
     _, s1 = step(BASE, s0, 1, hourly=_whole_index_low(1, 2_000))
     _, s2 = step(BASE, s1, 2, hourly=_whole_index_low(2, 2_000))
     legacy = {k: v for k, v in s2.items() if k != "reported_critical"}
-    upgraded, _ = step(BASE, legacy, 3, hourly=_whole_index_low(3, 2_000))
+    soon, _ = step(BASE, legacy, 3, hourly=_whole_index_low(3, 2_000))
+    assert "\nindex=os down" not in soon, "posted 1h ago: inside the 4h floor"
+    upgraded, _ = step(BASE, legacy, 6, hourly=_whole_index_low(6, 2_000))
     assert "\nindex=os down" in upgraded, "an active critical must post after the upgrade"
 
 
