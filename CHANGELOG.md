@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.69.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.5...v2.69.6) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm-models:** route the 4080 small lane by the model id llama.cpp serves ([#2767](https://github.com/dryvist/ansible-proxmox-ai/issues/2767)) ([25539eb](https://github.com/dryvist/ansible-proxmox-ai/commit/25539eb46deeb39a7889a40da467b4eb399d4f40))
+
 ## [2.69.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.4...v2.69.5) (2026-11-23)
 
 
