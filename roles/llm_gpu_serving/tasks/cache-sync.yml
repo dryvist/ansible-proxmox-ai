@@ -269,10 +269,14 @@
     - llm_gpu_serving_cache_sync_operation == 'download'
     - llm_gpu_serving_cache_sync_download_pending | bool
 
+# A co-resident converge tolerates the processes its host role serves beside it.
 - name: Require an idle GPU before downloading a registered artifact
   ansible.builtin.assert:
     that:
-      - llm_gpu_serving_cache_sync_compute_apps.stdout | trim | length == 0
+      - >-
+        llm_gpu_serving_cache_sync_compute_apps.stdout_lines
+        | map('regex_replace', '^[^,]*,\\s*([^,]*),.*$', '\\1') | map('basename')
+        | reject('in', llm_gpu_serving_cache_sync_tolerated_compute_apps) | list | length == 0
     fail_msg: >-
       The model-store download is blocked while a GPU compute application is
       running: {{ llm_gpu_serving_cache_sync_compute_apps.stdout | trim }}.
