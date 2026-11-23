@@ -207,3 +207,10 @@ def test_mode_variables_must_be_shadow_unless_the_app_is_listed_as_live():
     message = _env().from_string(check["ansible.builtin.assert"]["fail_msg"]).render(
         dify_docker_dsl_name="example-app", dify_docker_dsl_bad_mode_names=["EXAMPLE_MODE"])
     assert "example-app" in message and "EXAMPLE_MODE" in message
+
+
+def test_an_optional_variable_may_resolve_to_an_empty_value():
+    names = _fact(_yaml(PRE), "Record the declared variable names for this app", "dify_docker_dsl_resolve_names")
+    entries = [{"name": "REQUIRED", "value": ""}, {"name": "OPTIONAL", "value": "", "optional": True},
+               {"name": "NOT_OPTIONAL", "value": "", "optional": False}]
+    assert _render(names, dify_docker_dsl_variable_entries=entries) == ["REQUIRED", "NOT_OPTIONAL"]
