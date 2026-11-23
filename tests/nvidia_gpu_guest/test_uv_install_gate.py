@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
     ("tasks_file", "prefix"),
     [
         (REPO_ROOT / "roles/nvidia_gpu_guest/tasks/main.yml", "nvidia_gpu_guest"),
-        (REPO_ROOT / "roles/llm_gpu_serving/tasks/main.yml", "llm_gpu_serving"),
+        (REPO_ROOT / "roles/llm_gpu_serving/tasks/install-model-cache-cli.yml", "llm_gpu_serving"),
     ],
 )
 def test_uv_installer_is_skipped_only_when_the_pinned_version_is_reported(tasks_file: Path, prefix: str) -> None:
