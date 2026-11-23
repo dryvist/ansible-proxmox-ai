@@ -41,8 +41,9 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
         "nemotron-super-vl-64k-8",
         "nemotron-bolt-64k-16",
         "moe1-qwen36-n14-s1",
+        "speech",
     }
-    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 798_292_036_714
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 802_719_278_474
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {
@@ -57,6 +58,11 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
     }
     model_store_ids = {artifact["artifact_id"] for artifact in model_store}
     assert "qwen35-9b-q4-k-m" in model_store_ids
+    assert {
+        "mimo-9b-q4-k-m",
+        "qwen3-asr-1-7b-q8-0",
+        "ming-3-0-tts-0-5b-q8-0",
+    } <= model_store_ids
     assert "k2-horizon-7b-q4-k-m" in model_store_ids
     assert "qwen35-9b-nvfp4" not in model_store_ids
     assert {"bge-m3-q8-0", "bge-reranker-v2-m3-q8-0"} <= model_store_ids

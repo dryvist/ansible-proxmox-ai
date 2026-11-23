@@ -1,0 +1,152 @@
+---
+# Registry-derived model-group and serving projections. Split from
+# 20-registry.yml to keep each defaults shard within the token budget.
+# Defaults are loaded together; these projections resolve after role defaults
+# and the registry they consume are in scope.
+# --- Model groups (tier views over the registry) ------------------------------
+# Each view is the enabled registry entries for one tier, in registry order.
+# The templates iterate these; the entries themselves are registry dicts
+# (client_model_id / upstream_model_id / provider / context_window / ...), so a
+# model id is never re-typed here.
+#
+# large: registered under the backend's OWN model id (the serving gate lists
+# models under their full MLX repo ids) — no alias names. One deployment each,
+# bearer-authed, no cross-tier fallback.
+llm_router_large_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'local-large') | list }}
+llm_router_studio_shared_models: >-
+  {{ llm_router_large_models
+     if llm_router_studio_profiles_enabled | bool
+        and llm_router_studio_precheck_passed | bool else [] }}
+llm_router_studio_small_fallback_route: >-
+  {{ (llm_router_studio_shared_models
+      | selectattr('route_group', 'equalto', llm_router_primary_model)
+      | map(attribute='client_model_id') | first) | default('', true) }}
+# opencode: flat-rate $10/mo subscription tier. Sunk cost exhausted before metered API tiers.
+llm_router_opencode_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'opencode') | list }}
+# light: the llama-server --models-preset section names, served as-is. Each becomes a CPU
+# `llm-light` deployment, plus a same-name GPU `llm-fast` deployment only when
+# llm_router_llm_fast_enabled is true — that toggle is what decides whether the
+# tier is a load-balanced pair or a single deployment with no standby.
+llm_router_light_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'light')
+     | selectattr('route_group', 'defined') | list }}
+# cpu-moe / cpu-9b: CPU llama.cpp pool; each id renders two deployments
+# (-50 warm, -51 on demand). Scaler owns LXC power for -51 and both 9B guests.
+llm_router_cpu_moe_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'cpu-moe')
+     | selectattr('route_group', 'defined') | list }}
+llm_router_cpu_9b_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'cpu-9b')
+     | selectattr('route_group', 'defined') | list }}
+# vllm: served by the NVIDIA/CUDA guest. Its own tier rather than a `light`
+# entry, because the light tier renders a GPU+CPU deployment PAIR sharing a
+# model name, and no second backend serves these weights — rendering the pair
+# would advertise a standby that does not exist.
+# Empty while llm_router_llm_vllm_enabled is false (10-network.yml): the tier
+# then renders no deployment and contributes no fallback rung.
+llm_router_vllm_models: >-
+  {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm')
+      | rejectattr('upstream_model_id', 'in', llm_router_vllm_precheck_held_models | default([])) | list)
+     if llm_router_llm_vllm_enabled | bool
+        and (llm_router_vllm_precheck_passed | default(false) | bool) else [] }}
+# hermes-local: a Hermes-fallback-chain rung over a tier's backend that is
+# ALSO reachable directly under its own tier/id (e.g. the 4080 vllm guest).
+# Rendered alongside that physical tier (same api_base/api_key — see
+# config.yaml.j2), but kept a separate tier key so it can carry its own
+# fail-fast litellm_params/model_info and opt into the fallback chain without
+# duplicating or re-aliasing the physical entry. NOT credential-gated like the
+# hermes-cloud tiers below — it is local, not paid egress.
+# Empty while llm_router_llm_vllm_enabled is false, with the vllm tier above.
+llm_router_hermes_local_models: >-
+  {{ [] }}
+# The single hermes-local-tier entry (hermes-local-4080), the primary target of
+# the fast/subagent/cheap/review DB roles (55-roles.yml). Read from the enabled
+# registry rather than the switch-gated view above, so the role rows keep a
+# catalogued target while the tier is off; the role seed creates a role only
+# once its target is live, as for any other unrendered rung (seed-roles.yml).
+llm_router_hermes_local_4080_id: >-
+  {{ llm_router_model_registry | selectattr('tier', 'equalto', 'vllm')
+     | map(attribute='client_model_id') | list | first }}
+
+llm_router_capability_members: >-
+  {{ (llm_router_studio_shared_models + llm_router_light_models
+      + llm_router_cpu_moe_models + llm_router_cpu_9b_models
+      + llm_router_vllm_models + llm_router_gpu_models)
+     | selectattr('route_group', 'defined')
+     | sort(attribute='order') | list }}
+# The capability names a deployment renders under in this converge.
+llm_router_rendered_capability_names: >-
+  {{ llm_router_capability_members | map(attribute='route_group') | unique | list }}
+llm_router_capability_registry_members: >-
+  {%- set ns = namespace(members=[]) -%}
+  {%- for m in llm_router_model_registry
+        | selectattr('tier', 'in', llm_router_local_registry_tiers)
+        | selectattr('route_group', 'defined') -%}
+  {%- if not (m.co_resident_only | default(false) | bool)
+        or m.profile in llm_router_gpu_co_resident_profiles -%}
+  {%- set ns.members = ns.members + [m] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.members | sort(attribute='order') | list }}
+
+# The SAME prefill-derived cap model-list.yaml.j2 applies to every
+# vllm/hermes-local deployment: the smaller of the context window and what
+# this card can prefill inside the local-rung first-byte budget — computed
+# ONCE here so a role pointed at the same backend (55-roles.yml
+# _llm_router_role_model_info) can never advertise a bigger window than the
+# physical deployment does. Falls back to the raw context_window with no vllm
+# host inventoried, same as the template's own no-inventory fallback.
+#
+# The multiplier is llm_router_local_stream_timeout_seconds (the local-rung
+# first-byte/TTFT budget, 40-routing.yml), never
+# llm_router_admission_budget_seconds (the busy-slot no-queueing/retry-handoff
+# budget) — the two bound different things. llm-models.d/30-local-gpu.yml's
+# own litellm_params.stream_timeout for this same deployment stays on
+# llm_router_admission_budget_seconds, a separate bound tested by
+# test_gpu_rung_admission_matches_backend.yml.
+#
+# llm_router_prefill_window_floor_tokens (below) is the minimum every entry
+# here must clear; roles/llm_router/tasks/assert-prefill-budget-floor.yml
+# enforces it.
+llm_router_prefill_window_floor_tokens: 2048
+_llm_router_vllm_max_input_tokens_by_model: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- set _vllm_hosts = groups['llm_vllm_group'] | default([]) -%}
+  {#- Read from the enabled registry, not the switch-gated views above: a light-tier
+      sibling (embedding, reranker) keeps the window it advertises today when the tier is off. -#}
+  {%- for m in llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') -%}
+  {%- set _prefill_rate = (hostvars[_vllm_hosts[0]].llama_cpp_prefill_tokens_per_second
+        | default(0) | int) if (_vllm_hosts | length > 0) else 0 -%}
+  {%- set _cap = ([m.context_window,
+        _prefill_rate * llm_router_local_stream_timeout_seconds | int] | min)
+        if _prefill_rate > 0 else m.context_window -%}
+  {%- set ns.out = ns.out | combine({m.client_model_id: _cap}) -%}
+  {%- endfor -%}
+  {{ ns.out }}
+
+# Names owned by enabled registry entries after applying an optional route_group.
+# Multiple provider deployments may intentionally share one route group.
+#
+# stable_aliases are deliberately NOT folded in here. An alias renders into
+# router_settings.model_group_alias and never becomes a model_list entry, so it
+# can never appear among the rendered names this set is diffed against —
+# including it would only widen the exemption and let a genuinely unregistered
+# deployment name slip past the rendered-but-not-registered direction. Direct
+# route aliases are added separately because each has a dedicated deployment.
+llm_router_registry_enabled_route_names: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- if m.tier not in llm_router_local_registry_tiers
+        or (m.route_group is defined
+            and (m.tier != 'vllm'
+                 or ((llm_router_vllm_precheck_passed | default(false) | bool)
+                     and m.upstream_model_id not in llm_router_vllm_precheck_held_models | default([])))
+            and (m.tier != 'local-large' or m in llm_router_studio_shared_models)) -%}
+  {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ (ns.names + llm_router_direct_route_aliases
+      + (llm_router_gpu_audio_models | default([]) | map(attribute='client_model_id') | list))
+      | unique | list }}

@@ -2,6 +2,33 @@
 - name: Load the registry model identity before rendering profile units
   ansible.builtin.include_tasks: load-registry.yml
 
+- name: Render one CUDA audio.cpp configuration per serving profile
+  ansible.builtin.template:
+    src: audio-cpp-server.json.j2
+    dest: "{{ llm_gpu_serving_audio_cpp_config_dir }}/{{ item.key }}.json"
+    owner: "{{ omit if llm_gpu_serving_render_only | default(false) else 'root' }}"
+    group: "{{ omit if llm_gpu_serving_render_only | default(false) else llm_gpu_serving_group }}"
+    mode: "0640"
+  vars:
+    llm_gpu_serving_profile_name: "{{ item.key }}"
+    llm_gpu_serving_profile: "{{ item.value }}"
+    llm_gpu_serving_profile_registry_model: "{{ llm_gpu_serving_registry_by_profile[item.key] }}"
+    llm_gpu_serving_audio_cpp_config_file: "{{ llm_gpu_serving_audio_cpp_config_dir }}/{{ item.key }}.json"
+  loop: "{{ llm_gpu_serving_profiles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - item.value.enabled | default(true)
+    - item.value.engine == 'audio_cpp'
+    - >-
+      not (item.value.co_resident_only | default(false))
+      or item.key == llm_active_profile
+      or item.key in llm_gpu_serving_co_resident_profiles
+  notify:
+    - Stop every other GPU serving profile before switching
+    - Start the active GPU serving profile
+    - Start selected co-resident GPU serving profiles
+
 - name: Render one systemd unit per GPU serving profile
   ansible.builtin.template:
     src: llm-gpu-serving.service.j2
@@ -15,6 +42,7 @@
     llm_gpu_serving_profile_registry_model: "{{ llm_gpu_serving_registry_by_profile[item.key] }}"
     llm_gpu_serving_profile_model_dir: >-
       {{ llm_gpu_serving_model_cache_path }}/{{ llm_gpu_serving_registry_by_profile[item.key].artifact.hf_repo }}
+    llm_gpu_serving_audio_cpp_config_file: "{{ llm_gpu_serving_audio_cpp_config_dir }}/{{ item.key }}.json"
   loop: "{{ llm_gpu_serving_profiles | dict2items }}"
   loop_control:
     label: "{{ item.key }}"

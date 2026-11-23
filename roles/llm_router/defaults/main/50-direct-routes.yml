@@ -15,6 +15,20 @@ llm_router_direct_gpu_models: >-
        | rejectattr('client_model_id', 'in', llm_router_benchmark_only_model_names) | list -%}
   {{ _eligible if (llm_router_gpu_profiles_enabled | default(false) | bool
        and groups['llm_gpu_group'] | default([]) | length > 0) else [] }}
+# The Ada lane is represented in the local GPU registry because its physical
+# route has tier vllm. Keep its direct alias out of `small`, which can select a
+# different GPU or CPU member, and require the same endpoint and serving probe
+# as the physical vllm deployment.
+llm_router_direct_local_gpu_models: >-
+  {%- set _candidates = llm_router_registry_enabled
+       | selectattr('tier', 'equalto', 'vllm')
+       | selectattr('direct_route_aliases', 'defined') | list -%}
+  {%- set _eligible = _candidates
+       | rejectattr('upstream_model_id', 'in', llm_router_vllm_precheck_held_models | default([]))
+       | rejectattr('client_model_id', 'in', llm_router_benchmark_only_model_names) | list -%}
+  {{ _eligible if (llm_router_llm_vllm_enabled | bool
+       and llm_router_vllm_precheck_passed | default(false) | bool
+       and groups['llm_vllm_group'] | default([]) | length > 0) else [] }}
 llm_router_direct_studio_models: >-
   {%- set ns = namespace(models=[]) -%}
   {%- for m in (llm_router_large_models
@@ -37,7 +51,7 @@ llm_router_studio_model_names: >-
      | map(attribute='client_model_id') | list }}
 llm_router_direct_route_alias_pairs: >-
   {%- set ns = namespace(pairs=[]) -%}
-  {%- for m in llm_router_direct_gpu_models + llm_router_direct_studio_models -%}
+  {%- for m in llm_router_direct_gpu_models + llm_router_direct_local_gpu_models + llm_router_direct_studio_models -%}
   {%- for alias in m.direct_route_aliases -%}
   {%- set ns.pairs = ns.pairs + [[alias, alias]] -%}
   {%- endfor -%}
