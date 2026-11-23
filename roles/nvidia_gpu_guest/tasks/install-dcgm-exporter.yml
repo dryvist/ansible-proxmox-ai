@@ -33,6 +33,19 @@
     - ansible_facts['distribution'] == 'Debian'
     - ansible_facts['distribution_major_version'] | int >= 13
 
+- name: Read the installed DCGM exporter version on Debian 13
+  ansible.builtin.command:
+    argv: [dpkg-query, --show, "--showformat=${Version}", datacenter-gpu-manager-exporter]
+  register: nvidia_gpu_guest_dcgm_exporter_installed
+  changed_when: false
+  # dpkg-query exits 1 when the package is not installed.
+  failed_when: nvidia_gpu_guest_dcgm_exporter_installed.rc not in [0, 1]
+  check_mode: false
+  when:
+    - ansible_facts['distribution'] == 'Debian'
+    - ansible_facts['distribution_major_version'] | int >= 13
+
+# The pinned version is the filename's second field; an exporter already at it needs no download.
 - name: Download the pinned Debian 12 DCGM exporter package
   ansible.builtin.get_url:
     url: "{{ nvidia_gpu_guest_dcgm_exporter_deb12_url }}"
@@ -46,6 +59,7 @@
     - not ansible_check_mode
     - ansible_facts['distribution'] == 'Debian'
     - ansible_facts['distribution_major_version'] | int >= 13
+    - nvidia_gpu_guest_dcgm_exporter_installed.stdout != nvidia_gpu_guest_dcgm_exporter_deb12_filename.split('_')[1]
 
 - name: Install the pinned Debian 12 DCGM exporter package on Debian 13
   ansible.builtin.apt:
@@ -60,6 +74,7 @@
     - not ansible_check_mode
     - ansible_facts['distribution'] == 'Debian'
     - ansible_facts['distribution_major_version'] | int >= 13
+    - nvidia_gpu_guest_dcgm_exporter_installed.stdout != nvidia_gpu_guest_dcgm_exporter_deb12_filename.split('_')[1]
 
 - name: Create the DCGM exporter configuration directory
   ansible.builtin.file:
