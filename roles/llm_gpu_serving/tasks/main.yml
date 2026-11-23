@@ -201,53 +201,8 @@
     label: "{{ item.name }}"
   when: item.name != 'vllm' or llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'
 
-- name: Inspect the llama.cpp server binary
-  ansible.builtin.stat:
-    path: "{{ llm_gpu_serving_llamacpp_server_bin }}"
-  register: llm_gpu_serving_llamacpp_server_stat
-  when: "'llama_cpp' in llm_gpu_serving_selected_engines"
-
-- name: Inspect the installed llama.cpp asset marker
-  ansible.builtin.stat:
-    path: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
-  register: llm_gpu_serving_llamacpp_marker_stat
-  when: "'llama_cpp' in llm_gpu_serving_selected_engines"
-
-- name: Read the installed llama.cpp asset name
-  ansible.builtin.slurp:
-    src: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
-  register: llm_gpu_serving_llamacpp_marker
-  when:
-    - "'llama_cpp' in llm_gpu_serving_selected_engines"
-    - llm_gpu_serving_llamacpp_marker_stat.stat.exists
-
-- name: Install the llama.cpp CUDA release binary
-  ansible.builtin.include_tasks: install-llamacpp-release.yml
-  when: "'llama_cpp' in llm_gpu_serving_selected_engines"
-
-- name: Inspect the audio.cpp server binary
-  ansible.builtin.stat:
-    path: "{{ llm_gpu_serving_audio_cpp_server_bin }}"
-  register: llm_gpu_serving_audio_cpp_server_stat
-  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
-
-- name: Inspect the installed audio.cpp asset marker
-  ansible.builtin.stat:
-    path: "{{ llm_gpu_serving_audio_cpp_asset_marker }}"
-  register: llm_gpu_serving_audio_cpp_marker_stat
-  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
-
-- name: Read the installed audio.cpp asset marker
-  ansible.builtin.slurp:
-    src: "{{ llm_gpu_serving_audio_cpp_asset_marker }}"
-  register: llm_gpu_serving_audio_cpp_marker
-  when:
-    - "'audio_cpp' in llm_gpu_serving_selected_engines"
-    - llm_gpu_serving_audio_cpp_marker_stat.stat.exists
-
-- name: Install the audio.cpp CUDA release binary
-  ansible.builtin.include_tasks: install-audio-cpp-release.yml
-  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
+- name: Inspect and install selected GPU engine assets
+  ansible.builtin.include_tasks: inspect-install-engine-assets.yml
 
 - name: Resolve the active profile's registry model
   ansible.builtin.set_fact:
@@ -393,23 +348,5 @@
   ansible.builtin.include_tasks: health-check.yml
   when: not (llm_gpu_serving_paused | default(false) | bool)
 
-- name: Wait for every selected co-resident GPU profile to answer
-  vars:
-    llm_gpu_serving_co_resident_health_path: >-
-      {{ '/health' if llm_gpu_serving_profiles[item].engine == 'audio_cpp' else '/v1/models' }}
-    llm_gpu_serving_co_resident_health_url: >-
-      {{ 'http://' ~ llm_gpu_serving_health_host ~ ':' ~ llm_gpu_serving_profiles[item].port
-         ~ llm_gpu_serving_co_resident_health_path }}
-  ansible.builtin.uri:
-    url: "{{ llm_gpu_serving_co_resident_health_url }}"
-    status_code: 200
-  register: llm_gpu_serving_co_resident_health
-  retries: "{{ llm_gpu_serving_health_retries }}"
-  delay: "{{ llm_gpu_serving_health_delay }}"
-  until: llm_gpu_serving_co_resident_health.status == 200
-  loop: "{{ llm_gpu_serving_co_resident_profiles }}"
-  loop_control:
-    label: "{{ item }}"
-  when:
-    - not ansible_check_mode
-    - not (llm_gpu_serving_paused | default(false) | bool)
+- name: Check selected co-resident GPU profile health
+  ansible.builtin.include_tasks: health-check-co-resident.yml
