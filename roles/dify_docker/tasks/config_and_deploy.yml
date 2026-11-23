@@ -112,6 +112,48 @@
 - name: Re-assert the database password before consumers are recreated
   ansible.builtin.include_tasks: db_password.yml
 
+# An inline pull inside `compose up` can exhaust the guest disk halfway through
+# and leave the stack down; measure Docker's data filesystem first, assert the
+# floor, then pull before any container is recreated.
+
+- name: Read Docker's data root directory
+  ansible.builtin.command:
+    argv:
+      - docker
+      - info
+      - --format
+      - "{{ '{{' }}.DockerRootDir{{ '}}' }}"
+  register: dify_docker_docker_root_probe
+  changed_when: false
+  check_mode: false
+
+- name: Read free bytes on the Docker data filesystem
+  ansible.builtin.command:
+    argv:
+      - df
+      - -B1
+      - --output=avail
+      - --
+      - "{{ dify_docker_docker_root_probe.stdout | trim }}"
+  register: dify_docker_docker_root_df_probe
+  changed_when: false
+  check_mode: false
+
+- name: Require room for the Dify image set on the Docker data filesystem
+  ansible.builtin.assert:
+    that:
+      - dify_docker_docker_root_df_probe.stdout_lines[-1] | int >= dify_docker_min_free_bytes_before_pull | int
+    fail_msg: >-
+      The filesystem holding Docker's data root has
+      {{ dify_docker_docker_root_df_probe.stdout_lines[-1] | int }} bytes free; pulling the Dify
+      image set needs at least {{ dify_docker_min_free_bytes_before_pull | int }} bytes.
+      Grow the guest disk before converging.
+    quiet: true
+
+- name: Pull Dify images before any container is recreated
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ dify_docker_data_dir }}"
+
 - name: Deploy Dify via docker compose
   community.docker.docker_compose_v2:
     project_src: "{{ dify_docker_data_dir }}"
