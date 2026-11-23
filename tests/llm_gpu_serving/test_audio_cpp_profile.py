@@ -156,9 +156,47 @@ def test_co_resident_entry_point_never_touches_the_llama_cpp_server():
     tasks = _load("roles/llm_gpu_serving/tasks/co-resident.yml")
     cache_sync = next(task for task in tasks if "cache-sync-profile-artifacts.yml" in str(task))
 
+    wrapper = _load("roles/llm_gpu_serving/tasks/cache-sync-profile-artifacts.yml")[0]
+    notify = _jinja().from_string(wrapper["vars"]["llm_gpu_serving_cache_sync_notify_service"])
+    active_unit = next(task for task in tasks if task.get("name", "").startswith("Keep this role's unit"))
+
     assert not any("notify" in task for task in tasks)
-    assert cache_sync["vars"]["llm_gpu_serving_cache_sync_notify_service"] is False
+    # The wrapper's own include vars win over the caller's, so the caller's flag must reach it.
+    assert cache_sync["vars"]["llm_gpu_serving_cache_sync_profile_notify"] is False
+    assert notify.render(llm_gpu_serving_cache_sync_profile_notify=False) == "False"
+    assert notify.render() == "True"
+    assert active_unit["ansible.builtin.systemd"]["state"] == "stopped"
+    assert active_unit["ansible.builtin.systemd"]["enabled"] is False
+    assert active_unit["ansible.builtin.systemd"]["name"].endswith("-{{ llm_active_profile }}.service")
     assert all(task["loop"] == "{{ llm_gpu_serving_co_resident_profiles }}" for task in tasks if "loop" in task)
+
+
+def test_co_resident_health_failure_reads_each_unit_status_and_journal():
+    from ansible.plugins.filter.core import FilterModule
+    from ansible.plugins.filter.mathstuff import FilterModule as MathFilters
+
+    block = _load("roles/llm_gpu_serving/tasks/health-check-co-resident.yml")[0]
+    read = block["rescue"][0]
+    env = jinja2.Environment()
+    env.filters.update(FilterModule().filters())
+    env.filters.update(MathFilters().filters())
+    items = ast.literal_eval(
+        env.from_string(read["loop"]).render(
+            llm_gpu_serving_co_resident_profiles=["speech"], llm_gpu_serving_health_journal_lines=80
+        )
+    )
+    argvs = [
+        env.from_string(read["ansible.builtin.command"]["argv"]).render(
+            item=item, llm_gpu_serving_unit_prefix="llm-gpu-serving"
+        )
+        for item in items
+    ]
+
+    assert argvs == [
+        "['systemctl', 'status', 'llm-gpu-serving-speech.service', '--no-pager']",
+        "['journalctl', '-u', 'llm-gpu-serving-speech.service', '--no-pager', '-n', '80']",
+    ]
+    assert block["rescue"][-1]["ansible.builtin.fail"]
 
 
 def test_ada_speech_listens_on_the_llama_cpp_port_plus_one():
