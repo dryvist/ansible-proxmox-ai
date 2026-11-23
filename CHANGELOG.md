@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.69.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.3...v2.69.4) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm_router:** disable go-longcat-2.0, which the provider no longer lists ([#2759](https://github.com/dryvist/ansible-proxmox-ai/issues/2759)) ([8f92cc2](https://github.com/dryvist/ansible-proxmox-ai/commit/8f92cc2f02b8e320ef15b35b272dad5df8fe5139))
+
+## [2.69.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.2...v2.69.3) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llama_cpp:** accept an already-running model in the residency load ([#2756](https://github.com/dryvist/ansible-proxmox-ai/issues/2756)) ([f89a654](https://github.com/dryvist/ansible-proxmox-ai/commit/f89a654f5c97e7b2a6fa84dfba189d0756b2819c))
+
 ## [2.69.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.1...v2.69.2) (2026-11-23)
 
 
