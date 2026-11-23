@@ -16,6 +16,7 @@ Deploys the Dify LLMOps platform as a Docker Compose stack in an LXC.
 | `dify_docker_internal_trigger_url` | `http://nginx:80` | per-agent `<AGENT>_TRIGGER_URL` variables, the compose-internal webhook base |
 | `dify_docker_otel_endpoint` | `ai_orchestration_otel_endpoint` | `OTLP_BASE_ENDPOINT`, the Cribl OpenTelemetry collector base URL |
 | `dify_docker_agent_app_leaf_segment` | `agent-apps` | the OpenBao path segment of each catalog agent app's leaves, under `dify_docker_openbao_path` |
+| `dify_docker_min_free_bytes_before_pull` | `32212254720` (30 GiB) | free-bytes floor enforced on the Docker data filesystem before image pulls |
 
 Celery concurrency applies per worker container across its subscribed queues.
 Additional worker replicas multiply the active task capacity. `GRAPH_ENGINE_MAX_WORKERS`
@@ -48,11 +49,6 @@ Plugin transport settings follow the
 [Dify API client](https://github.com/langgenius/dify/blob/1.18.0/api/core/plugin/impl/base.py)
 and [daemon configuration](https://github.com/langgenius/dify-plugin-daemon/blob/0.6.12/internal/types/app/config.go).
 
-## Installation
-
-The role ships in the `ansible-proxmox-ai` repository and is applied via
-`playbooks/site.yml` after `ansible-galaxy collection install -r requirements.yml --force`.
-
 ## Prerequisites
 
 - An LXC tagged `dify` (nesting enabled for Docker) with its data directory on
@@ -62,6 +58,8 @@ The role ships in the `ansible-proxmox-ai` repository and is applied via
   shared OpenBao seed task on first converge.
 
 ## Usage
+
+Install dependencies once (`ansible-galaxy collection install -r requirements.yml --force`), then:
 
 ```bash
 sops exec-env secrets.enc.yaml 'doppler run -- ansible-playbook playbooks/site.yml --tags dify_docker'
@@ -179,51 +177,13 @@ credential changes. It skips the console API writes.
 ## Tier2 rotation webhook wiring
 
 After the agent DSL import, the role wires the `tier2-rotation` catalog
-workflow (`dify_docker_rotation_app_name`) to the agent apps it fans out to.
-The agent set is read from the rotation draft itself: every
-`<AGENT>_TRIGGER_URL` variable that has a matching `<AGENT>_WEBHOOK_ID` names
-one agent, and its Dify app name is the key lowercased with underscores folded
-to hyphens (`AI_NEWS` maps to the app `ai-news`). No agent list is kept in the
-role. Each agent app is resolved by exact name through the paged app lookup,
-its webhook trigger is located through the console triggers API, and its bare
-webhook id is read from the webhook endpoint for the trigger's node. A missing
-agent app or webhook trigger fails the converge with the agent's app name.
-
-Each `<AGENT>_TRIGGER_URL` is set to `dify_docker_internal_trigger_url`
-without a trailing slash and each `<AGENT>_WEBHOOK_ID` to the bare webhook id
-through one `environment_variable_patch` on the rotation draft, which is then
-published; the rotation's own schedule trigger and each agent's webhook trigger are
-enabled when Dify reports them disabled. The step is idempotent: when every
-value already matches, no draft sync or publish is sent. Dify masks secret
-values in the draft response, so a masked non-empty `<AGENT>_WEBHOOK_ID`
-cannot prove the stored id is current. Each agent instead keeps a non-secret
-companion string variable `<AGENT>_WEBHOOK_DIGEST` holding the SHA-256 digest
-of the webhook id: the id and the digest are rewritten together whenever the
-stored digest is missing or differs and left alone when it matches, with the
-digest appended through the same patch under a deterministic id when the
-variable is new and the existing variable's id reused when it is already
-present by name. To force a reseed after a webhook is recreated, delete the
-`<AGENT>_WEBHOOK_DIGEST` variable once in the console. The live operator
-inputs `ROTATION_SPEED`, `ROTATION_OFFSET` and `ROTATION_PAUSED` are never
-written. Check mode reads the same endpoints, reports the variable names that
-would change, and writes nothing. All Dify 1.18.0 console endpoints above are
-verified against that release's source.
-
-The rotation's HTTP request node dispatches from inside the stack, through the
-ssrf_proxy. The per-agent variables therefore carry
-`dify_docker_internal_trigger_url` — the stack's own `nginx` service on the
-Compose network over plain HTTP, which routes `/triggers` to the API — rather
-than the public `dify_docker_trigger_url`, whose name resolves to a private
-address the proxy refuses. The ssrf_proxy squid config allows exactly that
-origin (derived from the variable, so an override moves the rule with it) on
-that origin's own port, for one webhook id path — `/triggers/webhook/<id>`
-where the id is a single run of letters, digits, underscores or hyphens, end
-anchored — placed before the deny-private rule. The end anchor matters: nginx
-resolves dot segments before location matching, so a bare path prefix would
-let a proxied traversal land on another location. Dot segments,
-percent-encoded paths, extra segments, other ports, and every other path on
-the internal origin remain denied. `TRIGGER_URL` itself stays the public base
-for callers outside the stack.
+workflow (`dify_docker_rotation_app_name`) to the agent apps it fans out to:
+the agent set is read from the rotation draft itself, each agent app keeps a
+public `<AGENT>_TRIGGER_URL` and a non-secret `<AGENT>_WEBHOOK_ID` digest pair,
+and the rotation's HTTP request node dispatches from inside the stack through
+the ssrf_proxy. The full wiring contract, idempotent reseed behavior, check
+mode behavior, and the ssrf_proxy carve-out are documented in
+[tier2-rotation-wiring.md](tier2-rotation-wiring.md).
 
 ## Agent MCP server publishing
 
