@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.67.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.1...v2.67.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** tracker app credentials from each app's own leaf and AppRole ([#2696](https://github.com/dryvist/ansible-proxmox-ai/issues/2696)) ([f338c6d](https://github.com/dryvist/ansible-proxmox-ai/commit/f338c6dcc5ae28f515bd63861c77285d8a42c2fb))
+
 ## [2.67.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.0...v2.67.1) (2026-11-23)
 
 
