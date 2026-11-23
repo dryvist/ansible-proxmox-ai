@@ -17,6 +17,7 @@ def test_runner_pins_tools_and_defaults_publishing_off() -> None:
     vars_ = plays[1]["vars"]
     assert vars_["_benchmark_run_evalscope_version"] == "1.13.0"
     assert vars_["_benchmark_run_promptfoo_version"] == "0.124.1"
+    assert vars_["_benchmark_run_gbench_version"] == "0.5.0.post1"
     assert vars_["_benchmark_run_lmcache_version"] == "0.5.7"
     assert vars_["_benchmark_run_tau2_bench_commit"] == "989d3285ae669e49503324bdb9981bf14fccedeb"
     assert vars_["_benchmark_run_vllm_client_version"] == "{{ vllm_serving_version }}"
@@ -151,12 +152,14 @@ def test_runner_checks_tagged_client_and_collects_raw_artifacts() -> None:
         "stderr_line_count",
         "promptfoo_pass_summary",
         "tau2_summary",
+        "gbench_summary",
         "workload_id",
         "kv_arm",
         "cache_workload",
     }
     assert "_benchmark_run_promptfoo_summary.stdout" in safe_summary["promptfoo_pass_summary"]
     assert "_benchmark_run_tau2_summary.stdout" in safe_summary["tau2_summary"]
+    assert "_benchmark_run_gbench_summary.stdout" in safe_summary["gbench_summary"]
 
 
 def test_runner_upgrades_guest_first_and_publishes_patch_metadata() -> None:
