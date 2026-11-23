@@ -8,6 +8,14 @@
 - name: Validate GPU serving profiles and cache
   ansible.builtin.include_tasks: validate-profiles.yml
 
+- name: Resolve serving engines selected for this converge
+  ansible.builtin.set_fact:
+    llm_gpu_serving_selected_engines: >-
+      {{ ([llm_gpu_serving_profiles[llm_active_profile].engine]
+          + (llm_gpu_serving_co_resident_profiles
+             | map('extract', llm_gpu_serving_profiles)
+             | map(attribute='engine') | list)) | unique }}
+
 - name: Create the GPU serving system group
   ansible.builtin.group:
     name: "{{ llm_gpu_serving_group }}"
@@ -74,6 +82,7 @@
     - path: "{{ llm_gpu_serving_uv_python_install_dir }}"
     - path: "{{ llm_gpu_serving_uv_tool_dir }}"
     - path: "{{ llm_gpu_serving_uv_tool_bin_dir }}"
+    - path: "{{ llm_gpu_serving_audio_cpp_config_dir }}"
   loop_control:
     label: "{{ item.path }}"
 
@@ -196,20 +205,49 @@
   ansible.builtin.stat:
     path: "{{ llm_gpu_serving_llamacpp_server_bin }}"
   register: llm_gpu_serving_llamacpp_server_stat
+  when: "'llama_cpp' in llm_gpu_serving_selected_engines"
 
 - name: Inspect the installed llama.cpp asset marker
   ansible.builtin.stat:
     path: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
   register: llm_gpu_serving_llamacpp_marker_stat
+  when: "'llama_cpp' in llm_gpu_serving_selected_engines"
 
 - name: Read the installed llama.cpp asset name
   ansible.builtin.slurp:
     src: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
   register: llm_gpu_serving_llamacpp_marker
-  when: llm_gpu_serving_llamacpp_marker_stat.stat.exists
+  when:
+    - "'llama_cpp' in llm_gpu_serving_selected_engines"
+    - llm_gpu_serving_llamacpp_marker_stat.stat.exists
 
 - name: Install the llama.cpp CUDA release binary
   ansible.builtin.include_tasks: install-llamacpp-release.yml
+  when: "'llama_cpp' in llm_gpu_serving_selected_engines"
+
+- name: Inspect the audio.cpp server binary
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_audio_cpp_server_bin }}"
+  register: llm_gpu_serving_audio_cpp_server_stat
+  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
+
+- name: Inspect the installed audio.cpp asset marker
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_audio_cpp_asset_marker }}"
+  register: llm_gpu_serving_audio_cpp_marker_stat
+  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
+
+- name: Read the installed audio.cpp asset marker
+  ansible.builtin.slurp:
+    src: "{{ llm_gpu_serving_audio_cpp_asset_marker }}"
+  register: llm_gpu_serving_audio_cpp_marker
+  when:
+    - "'audio_cpp' in llm_gpu_serving_selected_engines"
+    - llm_gpu_serving_audio_cpp_marker_stat.stat.exists
+
+- name: Install the audio.cpp CUDA release binary
+  ansible.builtin.include_tasks: install-audio-cpp-release.yml
+  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
 
 - name: Resolve the active profile's registry model
   ansible.builtin.set_fact:
@@ -246,6 +284,7 @@
   when:
     - not (llm_gpu_serving_render_only | default(false) | bool)
     - llm_gpu_serving_co_resident_profiles | length > 0
+    - llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'
 
 - name: Assert the combined co-resident GPU reserve fits outside vLLM
   ansible.builtin.assert:
@@ -269,6 +308,7 @@
   when:
     - not (llm_gpu_serving_render_only | default(false) | bool)
     - llm_gpu_serving_co_resident_profiles | length > 0
+    - llm_gpu_serving_profiles[llm_active_profile].engine == 'vllm'
 
 - name: Resolve active profile model paths
   ansible.builtin.set_fact:
@@ -286,15 +326,13 @@
   vars:
     llm_gpu_serving_cache_sync_notify_service: true
 
-- name: Cache each selected co-resident profile's registered model artifact
-  ansible.builtin.include_tasks: cache-sync.yml
+- name: Cache each selected co-resident profile's registered model artifacts
+  ansible.builtin.include_tasks: cache-sync-profile-artifacts.yml
   loop: "{{ llm_gpu_serving_co_resident_profiles }}"
   loop_control:
     loop_var: llm_gpu_serving_cache_sync_profile
     label: "{{ llm_gpu_serving_cache_sync_profile }}"
   vars:
-    llm_gpu_serving_cache_sync_artifact_id: >-
-      {{ llm_gpu_serving_registry_by_profile[llm_gpu_serving_cache_sync_profile].artifact.artifact_id }}
     llm_gpu_serving_cache_sync_notify_service: true
 
 - name: Retire units for disabled GPU serving profiles
@@ -356,8 +394,14 @@
   when: not (llm_gpu_serving_paused | default(false) | bool)
 
 - name: Wait for every selected co-resident GPU profile to answer
+  vars:
+    llm_gpu_serving_co_resident_health_path: >-
+      {{ '/health' if llm_gpu_serving_profiles[item].engine == 'audio_cpp' else '/v1/models' }}
+    llm_gpu_serving_co_resident_health_url: >-
+      {{ 'http://' ~ llm_gpu_serving_health_host ~ ':' ~ llm_gpu_serving_profiles[item].port
+         ~ llm_gpu_serving_co_resident_health_path }}
   ansible.builtin.uri:
-    url: "http://{{ llm_gpu_serving_health_host }}:{{ llm_gpu_serving_profiles[item].port }}/v1/models"
+    url: "{{ llm_gpu_serving_co_resident_health_url }}"
     status_code: 200
   register: llm_gpu_serving_co_resident_health
   retries: "{{ llm_gpu_serving_health_retries }}"
