@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.70.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.8...v2.70.0) (2026-11-23)
+
+
+### Features
+
+* **campaign:** support gbench recipes in llm-model-campaign ([#2793](https://github.com/dryvist/ansible-proxmox-ai/issues/2793)) ([7bc7b2c](https://github.com/dryvist/ansible-proxmox-ai/commit/7bc7b2c0d9beab114a4d427646e35574a9d7407b))
+
 ## [2.69.8](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.7...v2.69.8) (2026-11-23)
 
 

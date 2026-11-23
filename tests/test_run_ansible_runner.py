@@ -1,8 +1,7 @@
-"""Contract for scripts/run-ansible.sh: a thin shim that pins the shared runner and sets this repo's switches."""
+"""Contract for scripts/run-ansible.sh: a thin shim that runs the shared runner from main and sets this repo's switches."""
 
 import os
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 import unittest
@@ -62,17 +61,15 @@ class RunAnsibleShimContract(unittest.TestCase):
         env.update(overrides or {})
         return subprocess.run([str(RUNNER), *args], cwd=ROOT, env=env, check=False, capture_output=True, text=True)
 
-    def test_pins_the_shared_runner_and_sets_this_repos_switches(self):
+    def test_runs_the_shared_runner_from_main_and_sets_this_repos_switches(self):
         result = self._run(["playbooks/site.yml", "--limit", "qdrant_group"])
-        refs = re.findall(r"^HOMELAB_CONTRACTS_REF=(v\d+\.\d+\.\d+)$", RUNNER.read_text(), re.M)
-        self.assertEqual(len(refs), 1)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             self.argv_log.read_text(encoding="utf-8").splitlines(),
             [
                 "run",
-                f"github:dryvist/homelab-contracts/{refs[0]}#run-ansible",
+                "github:jpe-ansible/homelab-contracts/main#run-ansible",
                 "--",
                 "playbooks/site.yml",
                 "--limit",
