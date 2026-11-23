@@ -83,12 +83,18 @@
         _small_entry: >-
           {{ llm_router_model_registry | selectattr('tier', 'equalto', 'vllm')
              | selectattr('direct_route_aliases', 'defined') | first }}
-        _mimo_artifact: >-
-          {{ llm_router_model_artifacts | selectattr('hf_repo', 'search', 'MiMo')
-             | selectattr('format', 'equalto', 'GGUF') | first }}
         _studio_entry: >-
           {{ llm_router_large_models | selectattr('serving_role', 'equalto', 'primary') | first }}
         _audio_targets: "{{ llm_router_gpu_audio_deployment_targets }}"
+
+    - name: Resolve Ada's model artifact by its registry artifact ID
+      ansible.builtin.set_fact:
+        _mimo_artifacts: >-
+          {{ llm_router_model_artifacts
+             | selectattr('artifact_id', 'equalto', _small_entry.artifact_id) | list }}
+        _mimo_artifact: >-
+          {{ llm_router_model_artifacts
+             | selectattr('artifact_id', 'equalto', _small_entry.artifact_id) | first }}
 
     - name: Resolve the fixture speech URL from its inventory port plus one
       ansible.builtin.set_fact:
@@ -118,15 +124,18 @@
           - >-
             _direct_chat | map(attribute='litellm_params.model') | unique | list
             == [_small_entry.provider ~ '/' ~ _small_entry.upstream_model_id]
-          - _expected_direct_alias not in llm_router_model_group_aliases
-          - _small_entry.artifact_id == _mimo_artifact.artifact_id
+          - llm_router_model_group_aliases[_expected_direct_alias] == _expected_direct_alias
+          - _mimo_artifacts | length == 1
+          - _mimo_artifact.format == 'GGUF'
+          - _mimo_artifact.quantization == 'Q4_K_M'
+          - _mimo_artifact.serving_profile == 'small'
           - _small_entry.upstream_model_id == _mimo_artifact.hf_repo
           - >-
             _direct_chat | selectattr('litellm_params.use_chat_completions_api', 'equalto', true)
             | list | length == llm_router_priority_tiers | length
           - _expected_studio_alias in _studio_entry.direct_route_aliases
           - _expected_studio_alias in llm_router_direct_route_aliases
-          - _expected_studio_alias not in llm_router_model_group_aliases
+          - llm_router_model_group_aliases[_expected_studio_alias] == _expected_studio_alias
           - _inkling_route | length == llm_router_priority_tiers | length
           - >-
             _inkling_route | map(attribute='litellm_params.model') | unique | list
