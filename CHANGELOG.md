@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.68.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.68.0...v2.68.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** return the stack to 1.19.0 ([#2735](https://github.com/dryvist/ansible-proxmox-ai/issues/2735)) ([9557cbc](https://github.com/dryvist/ansible-proxmox-ai/commit/9557cbc536a151cc0d1a527132ecb4943d068798))
+
 ## [2.68.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.2...v2.68.0) (2026-11-23)
 
 
