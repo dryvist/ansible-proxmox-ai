@@ -5,11 +5,16 @@
   vars:
     llm_gpu_serving_active_unit: "{{ llm_gpu_serving_unit_prefix }}-{{ llm_active_profile }}.service"
     llm_gpu_serving_active_port: "{{ llm_gpu_serving_profiles[llm_active_profile].port }}"
+    llm_gpu_serving_active_health_path: >-
+      {{ '/health' if llm_gpu_serving_profiles[llm_active_profile].engine == 'audio_cpp' else '/v1/models' }}
+    llm_gpu_serving_active_health_url: >-
+      {{ 'http://' ~ llm_gpu_serving_health_host ~ ':' ~ llm_gpu_serving_active_port
+         ~ llm_gpu_serving_active_health_path }}
   when: not ansible_check_mode
   block:
     - name: Probe the active GPU serving profile until it answers
       ansible.builtin.uri:
-        url: "http://{{ llm_gpu_serving_health_host }}:{{ llm_gpu_serving_active_port }}/v1/models"
+        url: "{{ llm_gpu_serving_active_health_url }}"
         status_code: 200
       register: llm_gpu_serving_health
       retries: "{{ llm_gpu_serving_health_retries }}"
@@ -45,7 +50,8 @@
     - name: Fail with the health check outcome
       ansible.builtin.fail:
         msg: >-
-          GPU serving unit {{ llm_gpu_serving_active_unit }} did not answer /v1/models
+          GPU serving unit {{ llm_gpu_serving_active_unit }} did not answer
+          {{ llm_gpu_serving_active_health_path }}
           after {{ llm_gpu_serving_health_retries }} attempts
           {{ llm_gpu_serving_health_delay }}s apart; the unit status and the last
           {{ llm_gpu_serving_health_journal_lines }} journal lines are shown above.

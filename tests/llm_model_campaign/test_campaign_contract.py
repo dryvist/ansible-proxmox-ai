@@ -94,5 +94,8 @@ def test_small_lane_serving_artifact_carries_campaign_size() -> None:
         if artifact.get("serving_profile") == "small" and artifact.get("use") == "serving"
     ]
 
-    assert len(artifacts) == 1
-    assert artifacts[0]["model_size"] == "size-small"
+    assert {artifact["artifact_id"] for artifact in artifacts} == {
+        "qwen35-9b-q4-k-m",
+        "mimo-9b-q4-k-m",
+    }
+    assert all(artifact["model_size"] == "size-small" for artifact in artifacts)
