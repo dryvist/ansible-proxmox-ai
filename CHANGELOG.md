@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.71.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.70.0...v2.71.0) (2026-11-23)
+
+
+### Features
+
+* **benchmark-run:** add gbench runner suites ([#2796](https://github.com/dryvist/ansible-proxmox-ai/issues/2796)) ([c31bb49](https://github.com/dryvist/ansible-proxmox-ai/commit/c31bb490742269643dbec62e54c6a67d8fdb80a7))
+
 ## [2.70.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.8...v2.70.0) (2026-11-23)
 
 
