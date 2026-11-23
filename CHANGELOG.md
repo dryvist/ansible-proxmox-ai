@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.72.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.0...v2.72.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **inventory:** keep the GPU serving cache writable on the NVIDIA llama.cpp guest ([#2801](https://github.com/dryvist/ansible-proxmox-ai/issues/2801)) ([2a19fff](https://github.com/dryvist/ansible-proxmox-ai/commit/2a19fffd7db93eb679862415d827a25c300d8a95))
+* **llm_gpu_serving:** let a co-resident download run beside named GPU processes ([#2802](https://github.com/dryvist/ansible-proxmox-ai/issues/2802)) ([687cdf0](https://github.com/dryvist/ansible-proxmox-ai/commit/687cdf0e9760275fae88b10fb2e8c6a78abdda58))
+
 ## [2.72.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.71.0...v2.72.0) (2026-11-23)
 
 
