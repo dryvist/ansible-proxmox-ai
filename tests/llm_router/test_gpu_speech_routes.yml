@@ -1,0 +1,160 @@
+---
+- name: Verify Ada direct chat and co-resident speech routes
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - policy_fixture.yml
+    - ../../inventory/group_vars/all/02-gpu-accelerator.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 5000
+          llm_fast_api: 5001
+          llm_gpu_serving_api: 5002
+          ollama_api: 5003
+          otel_traces_http: 5004
+          redis_default: 5005
+    bao_apps_secrets: {}
+    bao_local_llm_secrets: {}
+    llm_router_subdomain: pve.example.test
+    llm_large_serving_host: studio-fixture
+    ai_router_request_timeout_seconds: 2400
+    ai_router_retry_after_seconds: 2
+    hermes_goal_judge_model: judge
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+  tasks:
+    - name: Add the Ada audio and small-lane fixture
+      ansible.builtin.add_host:
+        name: small-audio-fixture
+        groups: [llm_gpu_group, llm_vllm_group]
+        ansible_connection: local
+        llm_gpu_accelerator: "{{ llm_gpu_accelerator_secondary }}"
+        llm_active_profile: small
+        llama_cpp_parallel: 2
+        llm_gpu_serving_api_port_key: llm_gpu_serving_api
+        llm_gpu_serving_co_resident_profiles: [speech]
+        llm_router_gpu_member: false
+        llm_router_gpu_audio_member: true
+
+    - name: Add a normal GPU member with no audio opt-in
+      ansible.builtin.add_host:
+        name: shared-gpu-fixture
+        groups: [llm_gpu_group]
+        ansible_connection: local
+        llm_gpu_accelerator: "{{ llm_gpu_accelerator_primary }}"
+        llm_active_profile: medium-a
+        llm_gpu_serving_co_resident_profiles: []
+
+    - name: Load router role defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Set the fixture switches and backend URLs
+      ansible.builtin.set_fact:
+        llm_router_subdomain: pve.example.test
+        llm_router_4080_profiles_enabled: true
+        llm_router_gpu_profiles_enabled: true
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_router_studio_precheck_passed: true
+        llm_router_llm_large_base_url: http://studio-fixture.example.test:11434/v1
+
+    - name: Load the registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Refresh derived router inputs
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Render the router configuration
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Derive expected names from their registry projections
+      ansible.builtin.set_fact:
+        _expected_direct_alias: "{{ ['gemma', '4', '12b'] | join('-') }}"
+        _expected_studio_alias: "{{ ['inkling', '2', 'mini'] | join('-') }}"
+        _expected_asr_name: "{{ ['qwen3', 'asr', '1', '7b'] | join('-') }}"
+        _expected_tts_name: "{{ ['ming', '3', '0', 'tts'] | join('-') }}"
+        _small_entry: >-
+          {{ llm_router_model_registry | selectattr('tier', 'equalto', 'vllm')
+             | selectattr('direct_route_aliases', 'defined') | first }}
+        _mimo_artifact: >-
+          {{ llm_router_model_artifacts | selectattr('hf_repo', 'search', 'MiMo')
+             | selectattr('format', 'equalto', 'GGUF') | first }}
+        _studio_entry: >-
+          {{ llm_router_large_models | selectattr('serving_role', 'equalto', 'primary') | first }}
+        _audio_targets: "{{ llm_router_gpu_audio_deployment_targets }}"
+
+    - name: Resolve the fixture speech URL from its inventory port plus one
+      ansible.builtin.set_fact:
+        _expected_audio_base: >-
+          {{ 'http://' ~ _audio_targets[0].host ~ '.' ~ llm_router_apex_domain ~ ':'
+             ~ ((tofu_data.constants.service_ports[
+                  hostvars[_audio_targets[0].host].llm_gpu_serving_api_port_key] + 1) | string)
+             ~ '/v1' }}
+
+    - name: Collect the rendered direct and speech route families
+      ansible.builtin.set_fact:
+        _direct_chat: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', _expected_direct_alias) | list }}
+        _inkling_route: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', _expected_studio_alias) | list }}
+        _asr_routes: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', _expected_asr_name) | list }}
+        _tts_routes: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', _expected_tts_name) | list }}
+
+    - name: Keep chat and Studio aliases pinned to their single backends
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _direct_chat | length == llm_router_priority_tiers | length
+          - _direct_chat | map(attribute='litellm_params.api_base') | unique | list == [llm_router_llm_vllm_base_url]
+          - >-
+            _direct_chat | map(attribute='litellm_params.model') | unique | list
+            == [_small_entry.provider ~ '/' ~ _small_entry.upstream_model_id]
+          - _expected_direct_alias not in llm_router_model_group_aliases
+          - _small_entry.artifact_id == _mimo_artifact.artifact_id
+          - _small_entry.upstream_model_id == _mimo_artifact.hf_repo
+          - >-
+            _direct_chat | selectattr('litellm_params.use_chat_completions_api', 'equalto', true)
+            | list | length == llm_router_priority_tiers | length
+          - _expected_studio_alias in _studio_entry.direct_route_aliases
+          - _expected_studio_alias in llm_router_direct_route_aliases
+          - _expected_studio_alias not in llm_router_model_group_aliases
+          - _inkling_route | length == llm_router_priority_tiers | length
+          - >-
+            _inkling_route | map(attribute='litellm_params.model') | unique | list
+            == [_studio_entry.provider ~ '/' ~ _studio_entry.upstream_model_id]
+          - _inkling_route | map(attribute='litellm_params.api_base') | unique | list == [llm_router_llm_large_base_url]
+
+    - name: Keep both speech APIs on Ada and project their LiteLLM modes
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _audio_targets | map(attribute='host') | unique | list == ['small-audio-fixture']
+          - >-
+            'small-audio-fixture' not in
+            (llm_router_gpu_members | map(attribute='host') | list)
+          - _audio_targets | map(attribute='api_base') | unique | list == [_expected_audio_base]
+          - _asr_routes | length == llm_router_priority_tiers | length
+          - _tts_routes | length == llm_router_priority_tiers | length
+          - _asr_routes | map(attribute='model_info.mode') | unique | list == ['audio_transcription']
+          - _tts_routes | map(attribute='model_info.mode') | unique | list == ['audio_speech']
+          - >-
+            _asr_routes | map(attribute='litellm_params.api_base') | unique | list
+            == _audio_targets | map(attribute='api_base') | unique | list
+          - >-
+            _tts_routes | map(attribute='litellm_params.api_base') | unique | list
+            == _audio_targets | map(attribute='api_base') | unique | list
+          - _expected_asr_name in (llm_router_gpu_audio_models | map(attribute='client_model_id') | list)
+          - _expected_tts_name in (llm_router_gpu_audio_models | map(attribute='client_model_id') | list)
+          - _expected_direct_alias in llm_router_direct_route_aliases
+        fail_msg: >-
+          Chat={{ _direct_chat }}, ASR={{ _asr_routes }}, TTS={{ _tts_routes }},
+          audio targets={{ _audio_targets }}.

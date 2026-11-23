@@ -6,7 +6,37 @@
 # Pro6000: separate physical GPU serving tier. It is inventory-gated like the
 # CPU pool so this proxy never advertises a backend without a tofu-tagged host.
 llm_router_gpu_models: >-
-  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu') | list }}
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu')
+     | rejectattr('profile', 'equalto', 'speech') | list }}
+# Audio entries are separate from the shared GPU model list because the Ada
+# guest is excluded from normal GPU-member load balancing. They render only
+# when an audio-opted-in host declares the speech profile co-resident.
+llm_router_gpu_audio_models: >-
+  {%- set ns = namespace(models=[]) -%}
+  {%- for profile in llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu')
+        | selectattr('profile', 'equalto', 'speech') | selectattr('mode', 'defined') -%}
+  {%- set ns.models = ns.models + [profile] -%}
+  {%- for route in profile.co_resident_routes | default([]) -%}
+  {%- set ns.models = ns.models + [profile | combine(route)] -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.models }}
+_llm_router_gpu_audio_deployment_targets_source: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- for member in llm_router_gpu_audio_members -%}
+  {%- for m in llm_router_gpu_audio_models if m.profile in member.co_resident -%}
+  {%- set ns.out = ns.out + [{
+        'profile': m.profile,
+        'client_model_id': m.client_model_id,
+        'mode': m.mode,
+        'host': member.host,
+        'port': member.speech_port,
+        'accelerator': member.accelerator,
+        'api_base': 'http://' ~ member.endpoint_host ~ ':' ~ (member.speech_port | string) ~ '/v1'}] -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.out }}
+llm_router_gpu_audio_deployment_targets: "{{ _llm_router_gpu_audio_deployment_targets_source }}"
 # One deployment per (llm_gpu_group member, shared or direct GPU entry it serves). Port: the
 # entry's api_port_key when it declares one; otherwise the member's serving port,
 # plus one for a co-resident profile on that member.

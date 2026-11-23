@@ -61,6 +61,29 @@ llm_router_gpu_active_profiles: "{{ llm_router_gpu_members | map(attribute='acti
 llm_router_gpu_co_resident_profiles: >-
   {{ llm_router_gpu_members | map(attribute='co_resident') | flatten | unique | list }}
 
+# Audio routes have their own inventory opt-in because Ada is intentionally
+# excluded from the ordinary GPU member pool. Only a host explicitly marked
+# for audio and declaring speech as a co-resident profile contributes here.
+_llm_router_gpu_audio_members_source: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- for host in groups.get('llm_gpu_group', [])
+       if hostvars[host].get('llm_router_gpu_audio_member', false) | bool
+       and 'speech' in hostvars[host].get('llm_gpu_serving_co_resident_profiles', []) -%}
+  {%- set _port = (tofu_data.constants.service_ports[hostvars[host].llm_gpu_serving_api_port_key]
+        if hostvars[host].llm_gpu_serving_api_port_key is defined
+        else hostvars[host].get('llm_gpu_serving_api_port', llm_router_light_port)) | int -%}
+  {%- set ns.out = ns.out + [{
+        'host': host,
+        'endpoint_host': host ~ '.' ~ llm_router_apex_domain,
+        'serving_port': _port,
+        'speech_port': _port + 1,
+        'accelerator': hostvars[host].llm_gpu_accelerator,
+        'active': hostvars[host].get('llm_active_profile', llm_active_profile | default('')),
+        'co_resident': hostvars[host].get('llm_gpu_serving_co_resident_profiles', [])}] -%}
+  {%- endfor -%}
+  {{ ns.out }}
+llm_router_gpu_audio_members: "{{ _llm_router_gpu_audio_members_source }}"
+
 # Only active entries reach the rendered config or any derived contract. The
 # GPU candidates stay hidden until the single switch above is true; when active,
 # the projection includes the active profile and explicitly selected
@@ -73,7 +96,15 @@ _llm_router_registry_enabled_source: >-
   {%- for m in llm_router_model_registry -%}
   {%- if m | llm_model_policy_allowed(llm_model_trial_policy_data | default({}), llm_router_local_registry_tiers) -%}
   {%- if m.tier == 'gpu' -%}
-  {%- if llm_router_gpu_profiles_enabled | bool
+  {%- if m.profile == 'speech' -%}
+  {%- if (m.mode | default('')) in ['audio_transcription', 'audio_speech']
+       and llm_router_gpu_profiles_enabled | bool
+       and llm_router_4080_profiles_enabled | bool
+       and (llm_router_gpu_audio_members | length) > 0
+       and 'speech' in (llm_router_gpu_audio_members | map(attribute='co_resident') | flatten | unique | list) -%}
+  {%- set ns.out = ns.out + [m | combine({'enabled': true, 'servable': true})] -%}
+  {%- endif -%}
+  {%- elif llm_router_gpu_profiles_enabled | bool
        and (groups['llm_gpu_group'] | default([]) | length) > 0
        and m.route_group is defined
        and (m.profile in llm_router_gpu_active_profiles
@@ -259,4 +290,6 @@ llm_router_registry_enabled_route_names: >-
   {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
   {%- endif -%}
   {%- endfor -%}
-  {{ (ns.names + llm_router_direct_route_aliases) | unique | list }}
+  {{ (ns.names + llm_router_direct_route_aliases
+      + (llm_router_gpu_audio_models | default([]) | map(attribute='client_model_id') | list))
+      | unique | list }}

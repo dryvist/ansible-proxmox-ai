@@ -27,6 +27,28 @@
     llm_router_registry_gpu_profiles: >-
       {{ _llm_registry_gpu + _llm_registry_gpu_sweeps + _llm_registry_gpu_matrix }}
 
+- name: Find GPU members opted into audio serving
+  ansible.builtin.set_fact:
+    _llm_router_gpu_audio_hosts: >-
+      {%- set ns = namespace(hosts=[]) -%}
+      {%- for host in groups.get('llm_gpu_group', [])
+            if hostvars[host].get('llm_router_gpu_audio_member', false) | bool -%}
+      {%- set ns.hosts = ns.hosts + [host] -%}
+      {%- endfor -%}
+      {{ ns.hosts }}
+
+- name: Require audio members to co-reside the speech profile
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'speech' in hostvars[item].get('llm_gpu_serving_co_resident_profiles', [])"
+    fail_msg: >-
+      Every GPU member opted into audio serving must declare speech as a
+      co-resident serving profile.
+  loop: "{{ _llm_router_gpu_audio_hosts }}"
+  loop_control:
+    label: audio profile membership
+
 - name: Load model-specific GPU artifact shards
   ansible.builtin.include_role:
     name: llm_gpu_serving
@@ -82,6 +104,7 @@
       {%- set model = model | combine({
             'enabled': lookup('vars', model.enabled_var, default=false) | bool}) -%}
       {%- endif -%}
+      {%- set artifact = llm_router_model_artifacts_by_id.get(model.artifact_id | default(''), {}) -%}
       {%- set overrides = model.catalog_limit_overrides | default([]) -%}
       {%- set allowed_overrides = ['context_window', 'max_output_tokens'] -%}
       {%- set invalid_overrides = overrides | difference(allowed_overrides) -%}
@@ -114,6 +137,14 @@
       {%- for candidate in llm_model_catalog_models -%}
       {%- if candidate.name == model.upstream_model_id
             or model.upstream_model_id in (candidate.aliases | default([])) -%}
+      {%- set matches.entries = matches.entries + [candidate] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- if matches.entries | length == 0 and artifact.gguf_file is defined -%}
+      {%- for candidate in llm_model_catalog_models -%}
+      {%- if candidate.hf_repo | default('') == artifact.hf_repo
+            and candidate.gguf | default('') == artifact.gguf_file -%}
       {%- set matches.entries = matches.entries + [candidate] -%}
       {%- endif -%}
       {%- endfor -%}
@@ -201,6 +232,94 @@
 - name: Replace the raw registry with its catalog limit projection
   ansible.builtin.set_fact:
     llm_router_model_registry: "{{ (_llm_router_catalog_projection | from_json).entries }}"
+
+- name: Project nested co-resident routes from their artifact catalog records
+  ansible.builtin.set_fact:
+    _llm_router_co_resident_route_projection: >-
+      {%- set ns = namespace(entries=[], errors=[]) -%}
+      {%- for profile in llm_router_model_registry -%}
+      {%- set routes = namespace(entries=[]) -%}
+      {%- for route in profile.co_resident_routes | default([]) -%}
+      {%- set artifact = llm_router_model_artifacts_by_id.get(route.artifact_id | default(''), {}) -%}
+      {%- set matches = namespace(entries=[]) -%}
+      {%- for candidate in llm_model_catalog_models
+            if artifact.hf_repo is defined and artifact.gguf_file is defined
+            and candidate.hf_repo | default('') == artifact.hf_repo
+            and candidate.gguf | default('') == artifact.gguf_file -%}
+      {%- set matches.entries = matches.entries + [candidate] -%}
+      {%- endfor -%}
+      {%- if matches.entries | length != 1 -%}
+      {%- set ns.errors = ns.errors + [
+        route.client_model_id ~ ': expected one artifact-linked catalog entry, found '
+        ~ (matches.entries | length | string)
+      ] -%}
+      {%- set routes.entries = routes.entries + [route] -%}
+      {%- else -%}
+      {%- set source = matches.entries[0] -%}
+      {%- set target_name = source.catalog_model | default(source.name) -%}
+      {%- set targets = llm_model_catalog_models | selectattr('name', 'equalto', target_name) | list -%}
+      {%- if targets | length != 1 -%}
+      {%- set ns.errors = ns.errors + [
+        route.client_model_id ~ ': catalog target ' ~ target_name ~ ' is missing or ambiguous'
+      ] -%}
+      {%- set routes.entries = routes.entries + [route] -%}
+      {%- else -%}
+      {%- set target = targets[0] -%}
+      {%- set profile_name = route.catalog_profile | default('') -%}
+      {%- set profiles = target.profiles | default({}) -%}
+      {%- if profile_name and profile_name not in profiles -%}
+      {%- set ns.errors = ns.errors + [
+        route.client_model_id ~ ': catalog profile ' ~ profile_name
+        ~ ' is missing from ' ~ target.name
+      ] -%}
+      {%- set routes.entries = routes.entries + [route] -%}
+      {%- else -%}
+      {%- set profile = profiles.get(profile_name, {}) -%}
+      {%- set limits = namespace(values={}) -%}
+      {%- for field in [
+            'context_window', 'max_output_tokens', 'max_parallel_requests',
+            'request_timeout', 'stream_timeout', 'max_queue_size', 'queue_size',
+            'num_retries', 'allowed_fails', 'cooldown_time'
+          ] -%}
+      {%- if profile[field] is defined -%}
+      {%- set _ = limits.values.update({field: profile[field]}) -%}
+      {%- elif target[field] is defined -%}
+      {%- set _ = limits.values.update({field: target[field]}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set projected = limits.values | combine({
+        'upstream_model_id': artifact.hf_repo,
+        'catalog_model_name': target.name,
+        'catalog_profile_name': profile_name,
+        'max_parallel_source': 'catalog'
+      }) -%}
+      {%- set routes.entries = routes.entries + [route | combine(projected)] -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set ns.entries = ns.entries + [
+        profile | combine({'co_resident_routes': routes.entries})
+      ] -%}
+      {%- endfor -%}
+      {{ {'entries': ns.entries, 'errors': ns.errors} | to_json }}
+  when: llm_router_model_registry | selectattr('co_resident_routes', 'defined') | list | length > 0
+
+- name: Assert nested co-resident routes resolve to one catalog entry
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - (_llm_router_co_resident_route_projection | from_json).errors | length == 0
+    fail_msg: >-
+      Every nested co-resident route must resolve through its registered artifact
+      to exactly one model-catalog record:
+      {{ (_llm_router_co_resident_route_projection | from_json).errors }}
+  when: _llm_router_co_resident_route_projection is defined
+
+- name: Attach catalog projections to nested co-resident routes
+  ansible.builtin.set_fact:
+    llm_router_model_registry: "{{ (_llm_router_co_resident_route_projection | from_json).entries }}"
+  when: _llm_router_co_resident_route_projection is defined
 
 # The policy records repositories. An artifact reference wins because it names
 # what this entry serves; a catalog row covers entries with no artifact.
