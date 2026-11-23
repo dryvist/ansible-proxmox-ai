@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.72.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.1...v2.72.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** keep the co-resident path off the active profile unit ([#2806](https://github.com/dryvist/ansible-proxmox-ai/issues/2806)) ([d93437e](https://github.com/dryvist/ansible-proxmox-ai/commit/d93437e43b2ac24b1358b215f74f1ccfa3b2bfa3))
+
 ## [2.72.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.0...v2.72.1) (2026-11-23)
 
 
