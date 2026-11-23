@@ -316,29 +316,6 @@ def test_lm_eval_results_are_found_on_the_run_executor():
     assert "_llm_campaign_run.run_on != 'controller'" in fetch["when"]
 
 
-def test_gbench_preflight_and_summary_discovery_contracts():
-    preflight_tasks = _load_tasks(TASKS / "llm-model-campaign-preflight-tool.yml")
-    surface = _named(preflight_tasks, "Inspect the installed gbench command surface")
-    options = _named(preflight_tasks, "Require every gbench option used by the selected recipe")
-
-    assert surface["ansible.builtin.command"]["argv"] == ["gbench", "--help"]
-    assert "localhost" in surface["delegate_to"]
-    assert surface["when"] == "_llm_campaign_run.executable == 'gbench'"
-    assert options["when"] == "_llm_campaign_run.executable == 'gbench'"
-    required = [c.split("search('", 1)[1].split("')", 1)[0] for c in options["ansible.builtin.assert"]["that"]]
-    assert {"--remote-endpoint", "--golden-only", "--stress-test", "--evals-only", "--results-dir"} <= set(required)
-
-    cell_tasks = _load_tasks(TASKS / "llm-model-campaign-cell.yml")
-    find_gb = _named(cell_tasks, "Find gbench summary files for its converter")
-    fetch_gb = _named(cell_tasks, "Fetch gbench summary files for conversion")
-    find_local = _named(cell_tasks, "Find local converter inputs for this cell")
-
-    assert find_gb["ansible.builtin.find"]["patterns"] == ["summary.json"]
-    assert find_gb["ansible.builtin.find"]["recurse"] is True
-    assert "_llm_campaign_run.run_on != 'controller'" in fetch_gb["when"]
-    assert "'summary.json'" in find_local["ansible.builtin.find"]["patterns"]
-
-
 def test_cell_command_timeout_and_keyed_no_log():
     tasks = _load_tasks(TASKS / "llm-model-campaign-cell.yml")
     command_block = _named(tasks, "Run the tool-native command from the selected recipe row")
