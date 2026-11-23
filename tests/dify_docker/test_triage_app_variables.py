@@ -23,6 +23,10 @@ SECRET = {"OPENBAO_ROLE_ID", "OPENBAO_SECRET_ID", "SLACK_AGENT_BOT_TOKEN", "DIFY
           "ZAMMAD_TOKEN"}
 APPROLE = {"vikunja-triage": "agent-vikunja-triage", "zammad-triage": "agent-zammad-triage"}
 LEAF = "{{ dify_docker_openbao_path }}/{{ dify_docker_agent_app_leaf_segment }}/"
+# The one workspace dataset key, created by ensure_dataset_api_key.yml.
+WORKSPACE_KEY = {"path": "{{ dify_docker_openbao_path }}", "field": "DIFY_DATASET_API_KEY"}
+# Shadow-mode triage posts nothing, so its Slack token and digest fields may be empty.
+OPTIONAL = {"SLACK_AGENT_BOT_TOKEN", "AGENT_DIGEST_CHANNEL", "AGENT_FAILURE_CHANNEL", "AGENT_DASHBOARD_URL"}
 
 
 def entries(app):
@@ -51,7 +55,11 @@ def test_secrets_come_from_the_apps_own_leaf_or_approle_never_env():
             if entry["name"] not in SECRET:
                 continue
             assert "value" not in entry, (app, entry["name"])
-            if "kv" in entry:
+            if entry["name"] == "DIFY_DATASET_API_KEY":
+                assert entry["kv"] == WORKSPACE_KEY, app
+            elif entry["name"] == "LITELLM_ROUTER_KEY":
+                assert entry["kv"] == {"path": "apps/" + app, "field": app.replace("-", "_") + "_llm_router_key"}, app
+            elif "kv" in entry:
                 assert entry["kv"]["path"] == LEAF + app, (app, entry["name"])
             else:
                 source = entry.get("approle_role_id") or entry.get("approle_secret_id")
@@ -64,3 +72,14 @@ def test_no_entry_reads_a_converge_env_key_for_credentials_or_addresses():
             value = str(entry.get("value", ""))
             assert "DIFY_TRIAGE_" not in value and "DIFY_ZAMMAD_TRIAGE_" not in value, (app, entry["name"])
             assert "_OPENBAO_" not in value, (app, entry["name"])
+
+
+def test_only_the_slack_and_digest_fields_of_the_triage_apps_are_optional():
+    for app in EXPECTED:
+        optional = {entry["name"] for entry in entries(app) if entry.get("optional") is True}
+        assert optional == (OPTIONAL if app.endswith("-triage") else set()), app
+
+
+def test_zammad_triage_reads_its_token_from_its_runtime_leaf():
+    path = {entry["name"]: entry for entry in entries("zammad-triage")}["ZAMMAD_TOKEN_PATH"]
+    assert path["value"] == "{{ dify_docker_openbao_path }}/agent-runtime/zammad-triage"
