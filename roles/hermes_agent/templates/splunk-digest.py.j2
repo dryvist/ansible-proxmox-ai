@@ -563,8 +563,11 @@ def load_ledger_entries(state, now):
             at = dt.datetime.fromisoformat(entry.get("at") or day_at)
         except (TypeError, ValueError):
             continue
-        if isinstance(entry.get("k"), str) and (cutoff is None or at > cutoff):
-            out.append({"k": entry["k"], "t": entry.get("t", ""), "at": at.isoformat()})
+        k = entry.get("k")
+        if isinstance(k, str) and not entry.get("at") and k.startswith("stale:"):
+            k = ":".join(k.split(":")[:2])  # old keys had an age bucket
+        if isinstance(k, str) and (cutoff is None or at > cutoff):
+            out.append({"k": k, "t": entry.get("t", ""), "at": at.isoformat()})
     return out
 
 
@@ -767,9 +770,9 @@ def failure_report(root, state, now):
 
 
 def suppression_of(state, today):
-    """Today's suppression counter, reset on a new UTC day."""
+    """Repeats suppressed since the last failure post; never reset at UTC midnight."""
     s = (state or {}).get("suppressed")
-    if not isinstance(s, dict) or s.get("day") != today:
+    if not isinstance(s, dict):
         return {"day": today, "count": 0, "since_hhmm": None}
     return dict(s)
 

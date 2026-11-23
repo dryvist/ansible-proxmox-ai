@@ -324,13 +324,15 @@ def build_findings(current, baseline, have_baseline, seen=None, today=None):
     count.
 
     A signature missing from the previous run's baseline is called NEW —
-    unless it was already observed on today's UTC day. TOP_N truncation makes a
+    unless it was already observed today or yesterday (UTC). TOP_N truncation makes a
     mid-band signature oscillate in and out of the baseline window, so "absent
     from the previous run" is not proof the signature is new; the per-day
-    seen-map is. new: is reserved for signatures never seen before today; a
+    seen-map is. new: is reserved for signatures not seen since yesterday; a
     signature that reappears after dropping out of the window is steady.
     """
     seen = seen or {}
+    # The seen-map holds UTC days, so "seen within the routine window" is today or yesterday.
+    recent = (dt.date.fromisoformat(today) - dt.timedelta(days=1)).isoformat() if today else None
     findings = []
     for key, entry in current.items():
         bucket = band(entry.count)
@@ -339,9 +341,10 @@ def build_findings(current, baseline, have_baseline, seen=None, today=None):
             findings.append(Finding(
                 f"steady:{key}",
                 sig_line(entry, "", f"{fmt(entry.count)} events"), False))
-        elif previous is None and seen.get(key) == today:
+        elif previous is None and (seen.get(key) == today
+                                   or (recent and seen.get(key, "") >= recent)):
             # Dropped out of the previous run's truncated baseline but was
-            # already seen today: steady, not a re-flagged critical.
+            # seen today or yesterday: steady, not a re-flagged critical.
             findings.append(Finding(
                 f"steady:{key}",
                 sig_line(entry, "", f"{fmt(entry.count)} events "
@@ -452,6 +455,19 @@ def composition_findings(cur, prev, have_baseline):
     return out
 
 
+def legacy_key(key):
+    """Map a pre-rolling-window key to its band-free identity, so the upgrade
+    never re-posts an issue only because its old key carried a band."""
+    parts = key.split(":")
+    if parts[0] == "share" and len(parts) == 3 and parts[2].lstrip("-").isdigit():
+        return f"share:{parts[1]}:{'down' if int(parts[2]) < 0 else 'up'}"
+    banded = (parts[0] in ("steady", "spike")
+              or (parts[0] in ("host", "stype") and parts[-2:-1] in (["up"], ["down"])))
+    if len(parts) > 2 and banded and parts[-1].isdigit():
+        return ":".join(parts[:-1])
+    return key
+
+
 def load_ledger(state, now):
     """{key: posted_at} for every key presented within the routine window.
 
@@ -477,7 +493,7 @@ def load_ledger(state, now):
             except ValueError:
                 continue
         elif isinstance(entry, str) and legacy_at is not None:
-            entry, at = {"k": entry}, legacy_at
+            entry, at = {"k": legacy_key(entry)}, legacy_at
         else:
             continue
         if at > cutoff:

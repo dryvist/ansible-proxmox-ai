@@ -108,6 +108,7 @@ def test_a_still_broken_digest_is_re_reported_once_per_routine_window():
     assert quiet == DIGEST.SILENT, "a UTC day boundary must not shorten the 24h floor"
     again, _ = DIGEST.failure_report(boom, state, day1 + dt.timedelta(hours=24))
     assert again != DIGEST.SILENT, "24h on, a still-failing digest is re-reported"
+    assert "2 identical repeat(s) suppressed since 23:00" in again, "the count spans midnight"
 
 
 def test_recovery_is_announced_once():

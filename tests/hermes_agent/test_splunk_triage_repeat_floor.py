@@ -66,6 +66,25 @@ def test_an_older_day_scoped_ledger_still_suppresses_after_the_upgrade():
     assert "storage.raft" not in text, "keys from the old ledger shape still count as posted"
 
 
+def test_band_suffixed_keys_from_before_the_upgrade_still_count_as_posted():
+    data = rows({RAFT: {"openbao-02": 400}})
+    _, state = TRIAGE.build_report(data, at(1), None)
+    state["ledger"]["keys"] = [f"{entry['k']}:2" for entry in state["ledger"]["keys"]]
+    text, _ = TRIAGE.build_report(data, at(2), state)
+    assert "storage.raft" not in text, "an old band suffix must not make it a new issue"
+    assert TRIAGE.legacy_key("share:syslog:-2") == "share:syslog:down"
+    assert TRIAGE.legacy_key("host:openbao-02:up:50") == "host:openbao-02:up"
+    assert TRIAGE.legacy_key("host:openbao-02:up") == "host:openbao-02:up"
+
+
+def test_a_signature_seen_yesterday_is_not_new_after_midnight():
+    both = rows({RAFT: {"openbao-02": 400}, OTLP: {"open-webui": 90}})
+    _, state = TRIAGE.build_report(both, at(22), None)
+    _, state = TRIAGE.build_report(rows({RAFT: {"openbao-02": 400}}), at(23), state)
+    text, _ = TRIAGE.build_report(both, at(1, day=25), state)
+    assert "*NEW*" not in text, "a known fault must not post as new because the date changed"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
