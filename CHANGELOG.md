@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.69.8](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.7...v2.69.8) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm_router:** add member keys' direct and speech routes to their team allowlist ([#2777](https://github.com/dryvist/ansible-proxmox-ai/issues/2777)) ([72b3aa8](https://github.com/dryvist/ansible-proxmox-ai/commit/72b3aa84483331b03efe28fa889d9872f9a185a2))
+
+## [2.69.7](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.6...v2.69.7) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm_router:** let the workstation key call the direct chat and speech routes ([#2772](https://github.com/dryvist/ansible-proxmox-ai/issues/2772)) ([a4aef6c](https://github.com/dryvist/ansible-proxmox-ai/commit/a4aef6c441b643c344f78fcbac640fa0c3374819))
+
 ## [2.69.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.5...v2.69.6) (2026-11-23)
 
 
