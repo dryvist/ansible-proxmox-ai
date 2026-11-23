@@ -1,4 +1,4 @@
-## Tier2 rotation webhook wiring
+# Tier2 rotation webhook wiring
 
 After the agent DSL import, the role wires the `tier2-rotation` catalog
 workflow (`dify_docker_rotation_app_name`) to the agent apps it fans out to.
