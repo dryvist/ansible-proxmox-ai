@@ -16,7 +16,7 @@ Deploys the Dify LLMOps platform as a Docker Compose stack in an LXC.
 | `dify_docker_internal_trigger_url` | `http://nginx:80` | per-agent `<AGENT>_TRIGGER_URL` variables, the compose-internal webhook base |
 | `dify_docker_otel_endpoint` | `ai_orchestration_otel_endpoint` | `OTLP_BASE_ENDPOINT`, the Cribl OpenTelemetry collector base URL |
 | `dify_docker_agent_app_leaf_segment` | `agent-apps` | the OpenBao path segment of each catalog agent app's leaves, under `dify_docker_openbao_path` |
-| `dify_docker_min_free_bytes_before_pull` | `10737418240` (10 GiB) | free-bytes floor on the Docker data filesystem, checked before image pulls |
+| `dify_docker_min_free_bytes_before_pull` | 10 GiB | free-space floor before image pulls |
 
 Celery concurrency applies per worker container across its subscribed queues.
 Additional worker replicas multiply the active task capacity. `GRAPH_ENGINE_MAX_WORKERS`
