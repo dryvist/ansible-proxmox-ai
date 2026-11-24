@@ -235,15 +235,36 @@ def test_co_resident_health_failure_reads_each_unit_status_and_journal():
     assert block["rescue"][-1]["ansible.builtin.fail"]
 
 
-def test_audio_cpp_engine_installs_the_nccl_runtime_its_server_links():
-    # The release's only Linux CUDA server build links libnccl.so.2; its archives do not ship it.
+def test_audio_cpp_uses_the_portable_vulkan_build_and_its_loader():
+    # audio.cpp publishes no general Linux CUDA build; its Vulkan backend uses the NVIDIA ICD.
     tasks = _load("roles/llm_gpu_serving/tasks/inspect-install-engine-assets.yml")
-    nccl = next(task for task in tasks if task.get("ansible.builtin.apt", {}).get("name") == "libnccl2")
+    loader = next(task for task in tasks if task.get("ansible.builtin.apt", {}).get("name") == "libvulkan1")
     defaults = _load("roles/llm_gpu_serving/defaults/main/00-core.yml")
+    config = (REPO_ROOT / "roles/llm_gpu_serving/templates/audio-cpp-server.json.j2").read_text(encoding="utf-8")
 
-    assert "'audio_cpp' in llm_gpu_serving_selected_engines" in nccl["when"]
-    assert nccl["ansible.builtin.apt"]["state"] == "present"
-    assert "cuda12.8-colab" in defaults["llm_gpu_serving_audio_cpp_server_asset_name"]
+    assert loader["when"] == "'audio_cpp' in llm_gpu_serving_selected_engines"
+    assert defaults["llm_gpu_serving_audio_cpp_server_asset_name"].strip().endswith(
+        "-bin-ubuntu-x64-vulkan-portable.tar.gz"
+    )
+    assert defaults["llm_gpu_serving_audio_cpp_backend"] == "vulkan"
+    assert "llm_gpu_serving_audio_cpp_runtime_asset_name" not in defaults
+    assert '"backend": {{ llm_gpu_serving_audio_cpp_backend | to_json }}' in config
+    assert not any(task.get("ansible.builtin.apt", {}).get("name") == "libnccl2" for task in tasks)
+
+
+def test_co_resident_audio_cpp_reinstall_restarts_only_its_own_units():
+    install = _load("roles/llm_gpu_serving/tasks/install-audio-cpp-release.yml")[0]["block"][1]["block"]
+    copy = next(task for task in install if task.get("register") == "llm_gpu_serving_audio_cpp_install")
+    queue = next(task for task in install if "notify" in task)
+    co_resident = _load("roles/llm_gpu_serving/tasks/co-resident.yml")
+    include = next(task for task in co_resident if "inspect-install-engine-assets.yml" in str(task))
+    start = next(task for task in co_resident if task.get("name", "").startswith("Start each co-resident unit"))
+
+    assert "notify" not in copy
+    assert queue["when"] == "llm_gpu_serving_audio_cpp_install_notify | default(true) | bool"
+    assert "Start the active GPU serving profile" in queue["notify"]
+    assert include["vars"]["llm_gpu_serving_audio_cpp_install_notify"] is False
+    assert "(llm_gpu_serving_audio_cpp_install | default({})) is changed" in start["ansible.builtin.systemd"]["state"]
 
 
 def test_ada_speech_listens_on_the_llama_cpp_port_plus_one():
