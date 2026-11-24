@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.72.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.2...v2.72.3) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** install the NCCL runtime the audio.cpp CUDA server links ([#2810](https://github.com/dryvist/ansible-proxmox-ai/issues/2810)) ([c8a47fe](https://github.com/dryvist/ansible-proxmox-ai/commit/c8a47fe56c3c91ef61f92944fcd48e9165f3e163))
+
 ## [2.72.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.1...v2.72.2) (2026-11-23)
 
 
