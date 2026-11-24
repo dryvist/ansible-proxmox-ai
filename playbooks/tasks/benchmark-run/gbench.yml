@@ -1,6 +1,17 @@
 ---
 # Run zero-Gemini-key gbench suites (gbench-golden, gbench-stress-agentic,
 # gbench-capability-unsat) in the tagged benchmark client and collect summary.json.
+- name: Validate optional gbench execution flags
+  ansible.builtin.assert:
+    that:
+      - (text_only | default(false) | string | lower) in ['true', 'false']
+      - (stress_reps | default(0) | string) is match('^[0-9]+$')
+      - (stress_certify | default('') | string) in ['', 'auto', 'always', 'off']
+    fail_msg: >-
+      Optional gbench flags require boolean text_only, non-negative integer
+      stress_reps, and stress_certify in auto, always, or off.
+    quiet: true
+
 - name: Record whether gbench uses a secret-store endpoint key
   ansible.builtin.set_fact:
     _benchmark_run_gbench_has_key: >-
@@ -55,7 +66,12 @@
         + (['--golden-only']
            if benchmark_run_request.suite == 'gbench-golden' else [])
         + (['--stress-test', '--campaign', 'agentic']
+           + (['--stress-reps', stress_reps | int | string]
+              if (stress_reps | default(0) | int) > 0 else [])
+           + (['--stress-certify', stress_certify | string]
+              if (stress_certify | default('') | string | length > 0) else [])
            if benchmark_run_request.suite == 'gbench-stress-agentic' else [])
+        + (['--text-only'] if (text_only | default(false) | bool) else [])
         + (['--evals-only', '--evals', 'ifeval', 'lcb', 'bigcodebench', 'bfcl', 'aime',
             '--eval-concurrency', benchmark_run_request.concurrency | string,
             '--max-output-tokens', benchmark_run_request.max_tokens | string]
