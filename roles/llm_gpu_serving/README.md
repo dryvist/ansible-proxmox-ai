@@ -8,7 +8,7 @@ and Tofu selector determine the serving group and router profile.
 
 Deploys profile-based GPU inference with vLLM packages for vLLM profiles and a
 prebuilt CUDA release binary for llama.cpp profiles. Audio.cpp profiles use the
-pinned CUDA 12.8 release for speech inference. Each enabled profile receives
+pinned portable Vulkan release for speech inference. Each enabled profile receives
 its own systemd unit; the role keeps `llm_active_profile` and the selected
 co-resident profiles running on their registered listeners.
 
@@ -65,9 +65,12 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
   package for SM120 kernel support in one uv command for vLLM profiles.
 - Installs the Renovate-pinned llama.cpp CUDA assets from the shared
   `llamacpp_release` contract only when the recorded asset changes.
-- Installs the pinned audio.cpp v0.9.6 CUDA 12.8 server and runtime archives
-  with SHA256 verification when an active or selected co-resident profile uses
-  `audio_cpp`.
+- Installs the pinned audio.cpp v0.9.6 portable Vulkan server archive with
+  SHA256 verification, plus the `libvulkan1` loader, when an active or selected
+  co-resident profile uses `audio_cpp`. audio.cpp publishes no general Linux
+  CUDA build; its Vulkan backend uses the NVIDIA ICD installed above. The
+  co-resident path restarts its own units after a reinstall and never notifies
+  the handlers that start the active profile.
 - Seeds `model_store: true` artifacts from the model registry into the declared
   origin with immutable Hub revisions. The GLM shard is not seeded. The seed playbook
   checks for running GPU compute applications before each download and verifies
@@ -105,9 +108,13 @@ legacy role indexes only its own profiles.
 
 An `audio_cpp` profile reads its list of `{id, family, path, task}` models from
 the resolved profile registry's `audio_cpp_models` field. The loader supplies
-each model's pinned GGUF cache path. The role renders one audio.cpp configuration
-per profile and sets `max_loaded_models` to the number of registered models.
-Audio profiles are checked at `/health`.
+each model's pinned GGUF cache path, and serves each model under its artifact's
+`hf_repo`, the upstream id the router sends. The role renders one audio.cpp
+configuration per profile and sets `max_loaded_models` to the number of
+registered models. Audio profiles are checked at `/health`, then with one short
+speech request, so a server that cannot load a model on the GPU fails the check.
+The co-resident path adds the serving user to the groups that own the NVIDIA
+device nodes, never `root`.
 
 `small`, `medium-b`, `max`, and `glm-flash` run llama.cpp (GGUF) from the
 installed release binary; `medium-a` runs vLLM (safetensors). A vLLM

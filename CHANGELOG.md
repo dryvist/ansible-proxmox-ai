@@ -1,5 +1,62 @@
 # Changelog
 
+## [2.72.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.4...v2.72.5) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** run audio.cpp on its portable Vulkan build ([#2817](https://github.com/dryvist/ansible-proxmox-ai/issues/2817)) ([b2cfe33](https://github.com/dryvist/ansible-proxmox-ai/commit/b2cfe3327686d9f1c1db7aa98e5594db7b1778bc))
+
+## [2.72.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.3...v2.72.4) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** serve audio.cpp on the GPU under the router's model ids ([#2814](https://github.com/dryvist/ansible-proxmox-ai/issues/2814)) ([3ce1042](https://github.com/dryvist/ansible-proxmox-ai/commit/3ce1042db12381baca1579e6ae4d31481dfef35f))
+
+## [2.72.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.2...v2.72.3) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** install the NCCL runtime the audio.cpp CUDA server links ([#2810](https://github.com/dryvist/ansible-proxmox-ai/issues/2810)) ([c8a47fe](https://github.com/dryvist/ansible-proxmox-ai/commit/c8a47fe56c3c91ef61f92944fcd48e9165f3e163))
+
+## [2.72.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.1...v2.72.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** keep the co-resident path off the active profile unit ([#2806](https://github.com/dryvist/ansible-proxmox-ai/issues/2806)) ([d93437e](https://github.com/dryvist/ansible-proxmox-ai/commit/d93437e43b2ac24b1358b215f74f1ccfa3b2bfa3))
+
+## [2.72.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.0...v2.72.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **inventory:** keep the GPU serving cache writable on the NVIDIA llama.cpp guest ([#2801](https://github.com/dryvist/ansible-proxmox-ai/issues/2801)) ([2a19fff](https://github.com/dryvist/ansible-proxmox-ai/commit/2a19fffd7db93eb679862415d827a25c300d8a95))
+* **llm_gpu_serving:** let a co-resident download run beside named GPU processes ([#2802](https://github.com/dryvist/ansible-proxmox-ai/issues/2802)) ([687cdf0](https://github.com/dryvist/ansible-proxmox-ai/commit/687cdf0e9760275fae88b10fb2e8c6a78abdda58))
+
+## [2.72.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.71.0...v2.72.0) (2026-11-23)
+
+
+### Features
+
+* **llm_gpu_serving:** serve co-resident speech beside llama.cpp on the NVIDIA guest ([#2791](https://github.com/dryvist/ansible-proxmox-ai/issues/2791)) ([2590b78](https://github.com/dryvist/ansible-proxmox-ai/commit/2590b7806dd9cd6120ca30d0f50e6752d30498ba))
+
+## [2.71.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.70.0...v2.71.0) (2026-11-23)
+
+
+### Features
+
+* **benchmark-run:** add gbench runner suites ([#2796](https://github.com/dryvist/ansible-proxmox-ai/issues/2796)) ([c31bb49](https://github.com/dryvist/ansible-proxmox-ai/commit/c31bb490742269643dbec62e54c6a67d8fdb80a7))
+
+## [2.70.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.8...v2.70.0) (2026-11-23)
+
+
+### Features
+
+* **campaign:** support gbench recipes in llm-model-campaign ([#2793](https://github.com/dryvist/ansible-proxmox-ai/issues/2793)) ([7bc7b2c](https://github.com/dryvist/ansible-proxmox-ai/commit/7bc7b2c0d9beab114a4d427646e35574a9d7407b))
+
 ## [2.69.8](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.7...v2.69.8) (2026-11-23)
 
 

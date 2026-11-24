@@ -25,6 +25,10 @@
       ansible.builtin.import_tasks: tau2.yml
       when: benchmark_run_request.suite == 'tau2-banking-knowledge'
 
+    - name: Run the selected gbench suite
+      ansible.builtin.import_tasks: gbench.yml
+      when: benchmark_run_request.suite is match('^gbench-')
+
   always:
     - name: Find cache-cell telemetry snapshots on the selected node
       ansible.builtin.find:
@@ -186,6 +190,21 @@
         - benchmark_run_request.suite == 'tau2-banking-knowledge'
         - _benchmark_run_suite.rc | default(1) == 0
 
+    - name: Read a safe gbench summary from summary.json
+      ansible.builtin.command:
+        argv:
+          - jq
+          - --raw-output
+          - >-
+            "models=\(.models | length) failures=\(.failures | length)
+            types=\([.models[] | .benchmark_type] | unique | join(","))"
+          - "{{ _benchmark_run_node_scratch }}/gbench-summary.json"
+      register: _benchmark_run_gbench_summary
+      changed_when: false
+      when:
+        - benchmark_run_request.suite is match('^gbench-')
+        - _benchmark_run_suite.rc | default(2) in [0, 1]
+
     - name: Emit a safe suite summary to the Semaphore task log
       ansible.builtin.debug:
         msg:
@@ -203,6 +222,10 @@
           tau2_summary: >-
             {{ (_benchmark_run_tau2_summary.stdout | default('not reported', true))
                if benchmark_run_request.suite == 'tau2-banking-knowledge'
+               else 'not applicable' }}
+          gbench_summary: >-
+            {{ (_benchmark_run_gbench_summary.stdout | default('not reported', true))
+               if benchmark_run_request.suite is match('^gbench-')
                else 'not applicable' }}
       when: _benchmark_run_suite is defined
 
