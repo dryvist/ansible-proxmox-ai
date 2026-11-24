@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.72.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.5...v2.72.6) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** pin audio.cpp to the newest build Debian 13 can load ([#2820](https://github.com/dryvist/ansible-proxmox-ai/issues/2820)) ([4a748f2](https://github.com/dryvist/ansible-proxmox-ai/commit/4a748f22e7bd4204cc73c144aa619c7c8fd79d7f))
+
 ## [2.72.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.4...v2.72.5) (2026-11-24)
 
 
