@@ -47,12 +47,15 @@
 # One idempotent task: virtualenv_command builds the venv with the stdlib `venv`
 # module (no `virtualenv` pip package needed on a minimal Debian LXC), then pip
 # populates it. Re-runs are no-ops once the packages are present.
+# Skipped in check mode: the module cannot create the venv there, and a missing
+# venv hard-fails it before any preview ("Unable to find pip in the virtualenv").
 - name: Create the venv and install the agent runtime + OpenLLMetry packages
   ansible.builtin.pip:
     name: "{{ agent_exec_pip_packages }}"
     state: present
     virtualenv: "{{ agent_exec_venv }}"
     virtualenv_command: python3 -m venv
+  when: not ansible_check_mode
 
 - name: Deploy the OpenLLMetry tracing bootstrap
   ansible.builtin.template:
@@ -96,6 +99,9 @@
 # can pass a service that crashes a moment later. Poll until ActiveState settles
 # (mirrors roles/hermes_agent). The placeholder entrypoint idles, so a healthy
 # converge stays active; real agent code that crashes on boot fails loud here.
+# Skipped in check mode like the hermes_agent verify: check mode never starts
+# the service or flushes handlers, so the poll would fail on every host where
+# the unit is not already active.
 - name: Verify the agent-exec service is active
   ansible.builtin.systemd:
     name: "{{ agent_exec_service }}"
@@ -103,3 +109,4 @@
   until: agent_exec_service_state.status.ActiveState | default('') == 'active'
   retries: 5
   delay: 2
+  when: not ansible_check_mode
