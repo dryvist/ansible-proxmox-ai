@@ -106,9 +106,11 @@ def test_speech_profile_aggregates_the_two_pinned_audio_cpp_models():
     profile = _loaded_profiles()["speech"]
     models = profile["audio_cpp_models"]
     speech_record = next(item for item in _registry_entries() if item["profile"] == "speech")
+    artifacts_by_id = {item["artifact_id"]: item for item in _artifacts()}
+    # audio.cpp serves the upstream id the router sends: each route's artifact hf_repo.
     expected_model_ids = {
-        speech_record["client_model_id"],
-        *(route["client_model_id"] for route in speech_record.get("co_resident_routes", [])),
+        artifacts_by_id[route["artifact_id"]]["hf_repo"]
+        for route in [speech_record, *speech_record.get("co_resident_routes", [])]
     }
 
     assert host["llm_gpu_serving_co_resident_profiles"] == ["speech"]
@@ -168,7 +170,41 @@ def test_co_resident_entry_point_never_touches_the_llama_cpp_server():
     assert active_unit["ansible.builtin.systemd"]["state"] == "stopped"
     assert active_unit["ansible.builtin.systemd"]["enabled"] is False
     assert active_unit["ansible.builtin.systemd"]["name"].endswith("-{{ llm_active_profile }}.service")
-    assert all(task["loop"] == "{{ llm_gpu_serving_co_resident_profiles }}" for task in tasks if "loop" in task)
+    assert all(
+        task["loop"] == "{{ llm_gpu_serving_co_resident_profiles }}"
+        for task in tasks
+        if "loop" in task and "ansible.builtin.stat" not in task
+    )
+
+
+def test_co_resident_path_grants_the_serving_user_nvidia_device_access_and_restarts_on_change():
+    tasks = _load("roles/llm_gpu_serving/tasks/co-resident.yml")
+    nodes = next(task for task in tasks if "ansible.builtin.stat" in task)
+    groups = next(task for task in tasks if "ansible.builtin.user" in task)
+    start = next(task for task in tasks if task.get("name", "").startswith("Start each co-resident unit"))
+    render = _jinja().from_string(groups["ansible.builtin.user"]["groups"])
+    results = [
+        {"stat": {"exists": True, "gr_name": "video"}},
+        {"stat": {"exists": True, "gr_name": "root"}},
+        {"stat": {"exists": False}},
+    ]
+
+    assert "/dev/nvidiactl" in nodes["loop"] and "/dev/nvidia-uvm" in nodes["loop"]
+    assert groups["ansible.builtin.user"]["append"] is True
+    assert render.render(llm_gpu_serving_co_resident_gpu_nodes={"results": results}).strip() == "['video']"
+    assert "llm_gpu_serving_co_resident_gpu_groups is changed" in start["ansible.builtin.systemd"]["state"]
+
+
+def test_co_resident_health_check_synthesizes_speech_on_audio_cpp_profiles():
+    block = _load("roles/llm_gpu_serving/tasks/health-check-co-resident.yml")[0]
+    synth = next(task for task in block["block"] if task.get("name", "").startswith("Synthesize"))
+    pick = _jinja().from_string(synth["vars"]["llm_gpu_serving_co_resident_tts_models"])
+    registry = {"speech": {"audio_cpp_models": [{"id": "asr-repo", "task": "asr"}, {"id": "tts-repo", "task": "tts"}]}}
+
+    assert synth["ansible.builtin.uri"]["url"].strip().endswith("'/v1/audio/speech' }}")
+    assert synth["ansible.builtin.uri"]["status_code"] == 200
+    assert pick.render(item="speech", llm_gpu_serving_registry_by_profile=registry).strip() == "['tts-repo']"
+    assert "llm_gpu_serving_profiles[item].engine == 'audio_cpp'" in synth["when"]
 
 
 def test_co_resident_health_failure_reads_each_unit_status_and_journal():

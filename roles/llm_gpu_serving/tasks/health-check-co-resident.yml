@@ -23,6 +23,33 @@
       loop: "{{ llm_gpu_serving_co_resident_profiles }}"
       loop_control:
         label: "{{ item }}"
+
+    # audio.cpp loads models lazily, so /health answers before any GPU use;
+    # one synthesis proves a model loads on the configured backend.
+    - name: Synthesize a short phrase on each co-resident audio.cpp profile
+      vars:
+        llm_gpu_serving_co_resident_tts_models: >-
+          {{ llm_gpu_serving_registry_by_profile[item].audio_cpp_models | default([])
+             | selectattr('task', 'equalto', 'tts') | map(attribute='id') | list }}
+      ansible.builtin.uri:
+        url: >-
+          {{ 'http://' ~ llm_gpu_serving_health_host ~ ':' ~ llm_gpu_serving_profiles[item].port
+             ~ '/v1/audio/speech' }}
+        method: POST
+        body_format: json
+        body:
+          model: "{{ llm_gpu_serving_co_resident_tts_models | first }}"
+          input: Ready.
+          voice: alloy
+          response_format: wav
+        status_code: 200
+        timeout: 300
+      loop: "{{ llm_gpu_serving_co_resident_profiles }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - llm_gpu_serving_profiles[item].engine == 'audio_cpp'
+        - llm_gpu_serving_co_resident_tts_models | length > 0
   rescue:
     - name: Read each co-resident unit status and recent journal
       ansible.builtin.command:

@@ -106,9 +106,13 @@ legacy role indexes only its own profiles.
 
 An `audio_cpp` profile reads its list of `{id, family, path, task}` models from
 the resolved profile registry's `audio_cpp_models` field. The loader supplies
-each model's pinned GGUF cache path. The role renders one audio.cpp configuration
-per profile and sets `max_loaded_models` to the number of registered models.
-Audio profiles are checked at `/health`.
+each model's pinned GGUF cache path, and serves each model under its artifact's
+`hf_repo`, the upstream id the router sends. The role renders one audio.cpp
+configuration per profile and sets `max_loaded_models` to the number of
+registered models. Audio profiles are checked at `/health`, then with one short
+speech request, so a server that cannot load a model on the GPU fails the check.
+The co-resident path adds the serving user to the groups that own the NVIDIA
+device nodes, never `root`.
 
 `small`, `medium-b`, `max`, and `glm-flash` run llama.cpp (GGUF) from the
 installed release binary; `medium-a` runs vLLM (safetensors). A vLLM
