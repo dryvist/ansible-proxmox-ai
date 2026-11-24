@@ -43,19 +43,16 @@
     - "'audio_cpp' in llm_gpu_serving_selected_engines"
     - llm_gpu_serving_audio_cpp_marker_stat.stat.exists
 
-- name: Install the audio.cpp CUDA release binary
-  ansible.builtin.include_tasks: install-audio-cpp-release.yml
-  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
-
-# The release's only Linux CUDA server build links libnccl.so.2, and neither
-# release archive ships it; the NVIDIA apt repository the userspace tasks add does.
-- name: Install the NCCL runtime the audio.cpp CUDA server links
+# audio.cpp's Vulkan backend library links the system Vulkan loader; the NVIDIA
+# userspace tasks install the vendor ICD it discovers.
+- name: Install the Vulkan loader the audio.cpp server's backend links
   ansible.builtin.apt:
-    name: libnccl2
+    name: libvulkan1
     state: present
     install_recommends: false
-  when:
-    - "'audio_cpp' in llm_gpu_serving_selected_engines"
-    # Check mode does not write the repository, so its packages cannot resolve yet.
-    - not (ansible_check_mode and (nvidia_gpu_guest_nvidia_repo | default({})).changed | default(false))
+  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
   environment: "{{ llamacpp_release_proxy_environment }}"
+
+- name: Install the audio.cpp release binary
+  ansible.builtin.include_tasks: install-audio-cpp-release.yml
+  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
