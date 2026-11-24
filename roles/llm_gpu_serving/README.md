@@ -65,7 +65,7 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
   package for SM120 kernel support in one uv command for vLLM profiles.
 - Installs the Renovate-pinned llama.cpp CUDA assets from the shared
   `llamacpp_release` contract only when the recorded asset changes.
-- Installs the pinned audio.cpp v0.9.6 portable Vulkan server archive with
+- Installs the pinned audio.cpp v0.9.3 portable Vulkan server archive with
   SHA256 verification, plus the `libvulkan1` loader, when an active or selected
   co-resident profile uses `audio_cpp`. audio.cpp publishes no general Linux
   CUDA build; its Vulkan backend uses the NVIDIA ICD installed above. The
