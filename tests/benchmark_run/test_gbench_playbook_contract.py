@@ -33,6 +33,11 @@ def test_gbench_suites_preflight_prepare_and_execute() -> None:
     assert dispatch["when"] == "benchmark_run_request.suite is match('^gbench-')"
 
     gbench_tasks = load_tasks("gbench.yml")
+    args_task = next(t for t in gbench_tasks if t.get("name") == "Build gbench CLI arguments for the selected suite")
+    args_expr = str(args_task["ansible.builtin.set_fact"]["_benchmark_run_gbench_args"])
+    for flag in ("--text-only", "--stress-reps", "--stress-certify"):
+        assert flag in args_expr
+
     run_task = next(t for t in gbench_tasks if t.get("name") == "Run the pinned gbench suite in the client")
     assert run_task["no_log"] is True
     assert run_task["failed_when"] == "_benchmark_run_suite.rc not in [0, 1]"

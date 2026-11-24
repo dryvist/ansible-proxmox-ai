@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.73.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.7...v2.73.0) (2026-11-24)
+
+
+### Features
+
+* **benchmark-run:** add optional gbench text-only and stress controls ([#2825](https://github.com/dryvist/ansible-proxmox-ai/issues/2825)) ([edc70f8](https://github.com/dryvist/ansible-proxmox-ai/commit/edc70f8ae2802b25b34f65523c348eb5b168535b))
+
+## [2.72.7](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.6...v2.72.7) (2026-11-24)
+
+
+### Bug Fixes
+
+* **agent_exec:** skip the venv and verify tasks in check mode ([#2787](https://github.com/dryvist/ansible-proxmox-ai/issues/2787)) ([da6d88a](https://github.com/dryvist/ansible-proxmox-ai/commit/da6d88aa86f566ed9658032ae6e20f87d21bfc02))
+
 ## [2.72.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.5...v2.72.6) (2026-11-24)
 
 
