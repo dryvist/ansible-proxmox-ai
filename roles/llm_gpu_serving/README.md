@@ -8,7 +8,7 @@ and Tofu selector determine the serving group and router profile.
 
 Deploys profile-based GPU inference with vLLM packages for vLLM profiles and a
 prebuilt CUDA release binary for llama.cpp profiles. Audio.cpp profiles use the
-pinned CUDA 12.8 release for speech inference. Each enabled profile receives
+pinned portable Vulkan release for speech inference. Each enabled profile receives
 its own systemd unit; the role keeps `llm_active_profile` and the selected
 co-resident profiles running on their registered listeners.
 
@@ -65,10 +65,12 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
   package for SM120 kernel support in one uv command for vLLM profiles.
 - Installs the Renovate-pinned llama.cpp CUDA assets from the shared
   `llamacpp_release` contract only when the recorded asset changes.
-- Installs the pinned audio.cpp v0.9.6 CUDA 12.8 server and runtime archives
-  with SHA256 verification when an active or selected co-resident profile uses
-  `audio_cpp`. It also installs `libnccl2` from the NVIDIA apt repository,
-  because that server build links NCCL and neither archive ships it.
+- Installs the pinned audio.cpp v0.9.6 portable Vulkan server archive with
+  SHA256 verification, plus the `libvulkan1` loader, when an active or selected
+  co-resident profile uses `audio_cpp`. audio.cpp publishes no general Linux
+  CUDA build; its Vulkan backend uses the NVIDIA ICD installed above. The
+  co-resident path restarts its own units after a reinstall and never notifies
+  the handlers that start the active profile.
 - Seeds `model_store: true` artifacts from the model registry into the declared
   origin with immutable Hub revisions. The GLM shard is not seeded. The seed playbook
   checks for running GPU compute applications before each download and verifies

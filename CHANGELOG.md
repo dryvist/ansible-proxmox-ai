@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.72.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.4...v2.72.5) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** run audio.cpp on its portable Vulkan build ([#2817](https://github.com/dryvist/ansible-proxmox-ai/issues/2817)) ([b2cfe33](https://github.com/dryvist/ansible-proxmox-ai/commit/b2cfe3327686d9f1c1db7aa98e5594db7b1778bc))
+
 ## [2.72.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.3...v2.72.4) (2026-11-24)
 
 
