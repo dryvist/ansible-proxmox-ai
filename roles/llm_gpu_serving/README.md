@@ -67,7 +67,8 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
   `llamacpp_release` contract only when the recorded asset changes.
 - Installs the pinned audio.cpp v0.9.6 CUDA 12.8 server and runtime archives
   with SHA256 verification when an active or selected co-resident profile uses
-  `audio_cpp`.
+  `audio_cpp`. It also installs `libnccl2` from the NVIDIA apt repository,
+  because that server build links NCCL and neither archive ships it.
 - Seeds `model_store: true` artifacts from the model registry into the declared
   origin with immutable Hub revisions. The GLM shard is not seeded. The seed playbook
   checks for running GPU compute applications before each download and verifies
