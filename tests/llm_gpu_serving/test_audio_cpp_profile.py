@@ -199,6 +199,17 @@ def test_co_resident_health_failure_reads_each_unit_status_and_journal():
     assert block["rescue"][-1]["ansible.builtin.fail"]
 
 
+def test_audio_cpp_engine_installs_the_nccl_runtime_its_server_links():
+    # The release's only Linux CUDA server build links libnccl.so.2; its archives do not ship it.
+    tasks = _load("roles/llm_gpu_serving/tasks/inspect-install-engine-assets.yml")
+    nccl = next(task for task in tasks if task.get("ansible.builtin.apt", {}).get("name") == "libnccl2")
+    defaults = _load("roles/llm_gpu_serving/defaults/main/00-core.yml")
+
+    assert "'audio_cpp' in llm_gpu_serving_selected_engines" in nccl["when"]
+    assert nccl["ansible.builtin.apt"]["state"] == "present"
+    assert "cuda12.8-colab" in defaults["llm_gpu_serving_audio_cpp_server_asset_name"]
+
+
 def test_ada_speech_listens_on_the_llama_cpp_port_plus_one():
     # The router derives speech_port from the same key, plus one.
     host = _load("inventory/host_vars/llm-ada-lovelace-6X-16GB-embed.yml")
