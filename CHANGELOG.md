@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.72.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.3...v2.72.4) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** serve audio.cpp on the GPU under the router's model ids ([#2814](https://github.com/dryvist/ansible-proxmox-ai/issues/2814)) ([3ce1042](https://github.com/dryvist/ansible-proxmox-ai/commit/3ce1042db12381baca1579e6ae4d31481dfef35f))
+
 ## [2.72.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.2...v2.72.3) (2026-11-24)
 
 
