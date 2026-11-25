@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.75.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.0...v2.75.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **hermes_agent:** keep narrow tag runs working on isolated guests ([#2837](https://github.com/dryvist/ansible-proxmox-ai/issues/2837)) ([5f5e8fe](https://github.com/dryvist/ansible-proxmox-ai/commit/5f5e8fe386a667cac4b32015015126d14c62951f))
+
 ## [2.75.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.74.0...v2.75.0) (2026-11-25)
 
 
