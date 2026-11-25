@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.79.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.78.0...v2.79.0) (2026-11-25)
+
+
+### Features
+
+* **langfuse_docker:** expire blob storage logs after 90 days ([12a7a7a](https://github.com/dryvist/ansible-proxmox-ai/commit/12a7a7ac783471dccc0c9a779b96c2ae8abcfb56))
+* **langfuse_docker:** expire blob-storage file-log rows after 90 days ([#2857](https://github.com/dryvist/ansible-proxmox-ai/issues/2857)) ([12a7a7a](https://github.com/dryvist/ansible-proxmox-ai/commit/12a7a7ac783471dccc0c9a779b96c2ae8abcfb56))
+
 ## [2.78.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.77.0...v2.78.0) (2026-11-25)
 
 
