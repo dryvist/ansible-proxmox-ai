@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.77.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.76.0...v2.77.0) (2026-11-25)
+
+
+### Features
+
+* **agent:** autonomous zcode run j-6e4b372205d9570a ([#2498](https://github.com/dryvist/ansible-proxmox-ai/issues/2498)) ([3d39715](https://github.com/dryvist/ansible-proxmox-ai/commit/3d39715e1f7cacd4752a18adc610c1557d5f006c))
+
+
+### Bug Fixes
+
+* **llm_router:** source the agent-quota bearer from the secret store and gate its route ([#2849](https://github.com/dryvist/ansible-proxmox-ai/issues/2849)) ([c8c1afb](https://github.com/dryvist/ansible-proxmox-ai/commit/c8c1afbd07f1afd9ad3df943122c11c803eb7a08))
+
 ## [2.76.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.4...v2.76.0) (2026-11-25)
 
 
