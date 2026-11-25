@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import yaml
 from jinja2 import Environment
 
-from _role_files import role_defaults
+from _role_files import direct_plan_var, role_defaults
 from test_context_limits import ROLE_ROOT
 
 EXPECTED_LARGE_CRONS = {
@@ -20,12 +19,7 @@ EXPECTED_LARGE_CRONS = {
 
 def test_only_selected_direct_crons_render_the_large_role() -> None:
     defaults = role_defaults(ROLE_ROOT)
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/reconcile_direct_cron.yml").read_text())
-    resolver = next(
-        task for task in tasks
-        if task["name"].startswith("Direct cron | Resolve deliver target")
-    )
-    model_expression = resolver["ansible.builtin.set_fact"]["hermes_agent_direct_model"]
+    model_expression = direct_plan_var(ROLE_ROOT, "hermes_agent_direct_model")
     env = Environment()
     env.filters["bool"] = bool
     render_model = env.from_string(model_expression)
