@@ -20,6 +20,7 @@ from jinja2 import Environment
 from _alert_routing_shared import (
     CONFIGURED,
     DEFAULTS,
+    DIRECT_TASKS,
     MAIN_TASKS,
     ROLE,
     _direct_deliver,
@@ -114,7 +115,7 @@ def test_the_footer_task_picks_the_catalog_footer_by_outcome_split() -> None:
     that the append task loads the quiet-when-healthy catalog footer for a
     job with channel_when_healthy and the plain one otherwise, and fills the
     two envsubst variables those footers declare."""
-    task = (ROLE / "tasks" / "reconcile_direct_cron.yml").read_text()
+    task = DIRECT_TASKS
     assert "hermes-direct-cron-footer-quiet.md' if item.channel_when_healthy is defined" in task
     assert "else 'hermes-direct-cron-footer.md'" in task
     assert "replace('${DELIVER}', hermes_agent_direct_deliver)" in task

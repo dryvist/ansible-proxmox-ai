@@ -126,11 +126,6 @@ def test_every_hermes_binary_task_pins_root_and_leaves_profile_homes_unpinned() 
                 calls.append((path, task, task[action_key]))
     assert calls
 
-    direct_create_builder = yaml.safe_load(
-        (ROLE / "tasks/reconcile_direct_cron.yml").read_text()
-    )
-    builder = next(task for task in direct_create_builder if task["name"].startswith("Direct cron | Build create argv"))
-
     for path, task, action in calls:
         environment = task.get("environment", {})
         assert "HERMES_HOME" in environment, task["name"]
@@ -141,25 +136,11 @@ def test_every_hermes_binary_task_pins_root_and_leaves_profile_homes_unpinned() 
             static_context = _home_context(task, ROOT)
             static_home = _render(environment["HERMES_HOME"], static_context)
             homes = (static_home,)
-        if task["name"].startswith("Direct cron | Create "):
-            assert action.get("argv") == "{{ hermes_agent_direct_argv }}"
-            assert "[hermes_agent_bin] + hermes_agent_cli_profile_args" in str(
-                builder["ansible.builtin.set_fact"]["hermes_agent_direct_argv"]
-            )
-
         for home in homes:
             context = _home_context(task, home)
             selected_home = _render(environment["HERMES_HOME"], context)
             assert selected_home == home, (path.name, task["name"], selected_home)
-            if task["name"].startswith("Direct cron | Create "):
-                assert dynamic
-                builder_context = dict(context)
-                rendered = _render(
-                    builder["ansible.builtin.set_fact"]["hermes_agent_direct_argv"],
-                    builder_context,
-                )
-                context["hermes_agent_direct_argv"] = ast.literal_eval(rendered)
-            elif dynamic or home == ROOT:
+            if dynamic or home == ROOT:
                 assert _pinned_args_are_immediate(action), (path.name, task["name"])
             argv = _action_argv(action, context)
             assert argv[0] == BIN, (path.name, task["name"], argv)

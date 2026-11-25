@@ -6,16 +6,13 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment
 
+from _role_files import direct_plan_var
+
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 
 
 def _assemble(item: dict) -> str:
-    tasks = yaml.safe_load((ROLE / "tasks" / "reconcile_direct_cron.yml").read_text())
-    expression = next(
-        task["ansible.builtin.set_fact"]["hermes_agent_direct_prompt"]
-        for task in tasks
-        if str(task.get("name", "")).startswith("Direct cron | Load prompt + append")
-    )
+    expression = direct_plan_var(ROLE, "hermes_agent_direct_prompt_text")
     environment = Environment(autoescape=False)
     environment.filters["regex_replace"] = lambda value, pattern, replacement="": re.sub(
         pattern, replacement, value

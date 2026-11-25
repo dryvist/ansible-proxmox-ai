@@ -8,7 +8,7 @@ from pathlib import Path
 from jinja2 import Environment
 import yaml
 
-from _role_files import include_file, role_defaults
+from _role_files import include_file, role_defaults, role_tasks_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
@@ -31,13 +31,18 @@ SPLUNK_JOBS = {
 
 def _task_items(task_file: str) -> list[dict]:
     tasks = yaml.safe_load((ROLE / "tasks" / task_file).read_text())
-    return [
-        task["vars"]["item"]
-        for task in tasks
-        if include_file(task)
-        in ("reconcile_direct_cron.yml", "reconcile_enqueuer_cron.yml")
-        and "item" in task.get("vars", {})
-    ]
+    items: list[dict] = []
+    for task in tasks:
+        if include_file(task) not in ("reconcile_direct_cron.yml", "reconcile_enqueuer_cron.yml"):
+            continue
+        task_vars = task.get("vars", {})
+        if "item" in task_vars:
+            items.append(task_vars["item"])
+        # A literal job list passed to the direct reconcile (the main table is a variable).
+        jobs = task_vars.get("hermes_agent_direct_reconcile_jobs")
+        if isinstance(jobs, list):
+            items += jobs
+    return items
 
 
 def _jobs() -> list[dict]:
@@ -181,7 +186,7 @@ def test_splunk_owner_takes_only_splunk_jobs() -> None:
 
     # The direct-cron ownership decision is the shared definition in defaults,
     # which is where the identities are read; the enqueuer path reads them itself.
-    direct = (ROLE / "tasks" / "reconcile_direct_cron.yml").read_text()
+    direct = role_tasks_text(ROLE, "reconcile_direct_cron.yml")
     assert "hermes_agent_direct_job_wanted" in direct
     assert "hermes_agent_job_identities" in DEFAULTS["hermes_agent_direct_job_wanted"]
     enqueuer = (ROLE / "tasks" / "reconcile_enqueuer_cron.yml").read_text()

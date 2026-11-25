@@ -32,7 +32,7 @@ def test_pr_reconcile_is_a_no_agent_script_enqueuer():
 def test_repo_crawl_is_a_monitor_mode_direct_cron():
     task = _task("Reconcile the repo-crawl cron")
     assert include_file(task) == "reconcile_direct_cron.yml"
-    item = task["vars"]["item"]
+    [item] = task["vars"]["hermes_agent_direct_reconcile_jobs"]
     assert item["name"] == "{{ hermes_agent_repo_crawl_cron_name }}"
     assert item["script"] == "{{ hermes_agent_repo_crawl_script_name }}"
     assert item["skill"] == "{{ hermes_agent_repo_crawl_skill }}"

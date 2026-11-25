@@ -1,6 +1,5 @@
 """Run the role's prompt tasks on localhost, returning hashes only."""
 
-from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -8,7 +7,7 @@ import subprocess
 
 import yaml
 
-from _role_files import role_defaults
+from _role_files import direct_plan_var, role_defaults
 
 ROOT = Path(__file__).resolve().parents[2]
 ROLE = ROOT / "roles/hermes_agent"
@@ -38,12 +37,11 @@ def render_hashes(tmp_path, catalog_path, *, role=ROLE, identity="fixture", over
     tasks = yaml.safe_load((role / "tasks/prompt_catalog.yml").read_text())
     loaders = [task for task in tasks if "ansible.builtin.set_fact" in task
                and "hermes_agent_prompts_path" not in task["ansible.builtin.set_fact"]]
-    direct = next(task for task in yaml.safe_load(
-        (role / "tasks/reconcile_direct_cron.yml").read_text())
-        if "hermes_agent_direct_prompt" in task.get("ansible.builtin.set_fact", {}))
-    direct = deepcopy(direct)
-    direct.pop("when", None)
-    direct["no_log"] = True
+    direct = {"name": "Render one cron body", "no_log": True,
+              "ansible.builtin.set_fact": {
+                  "hermes_agent_direct_prompt": direct_plan_var(role, "hermes_agent_direct_prompt_text")},
+              "vars": {"hermes_agent_direct_prompt_paths":
+                       direct_plan_var(role, "hermes_agent_direct_prompt_paths")}}
     (tmp_path / "direct.yml").write_text(yaml.safe_dump([
         direct,
         {"name": "Hash rendered cron body", "ansible.builtin.set_fact": {

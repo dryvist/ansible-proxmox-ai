@@ -105,6 +105,33 @@ def _resolve(task, context):
     return context
 
 
+def _rule_checks(context):
+    """The main-channel rule's two checks, from the refuse_* values in `context`."""
+    for name in ("hermes_agent_refuse_bad_entries", "hermes_agent_refuse_footer_unprovable"):
+        context[name] = _value(DEFAULTS[name], context)
+    return context
+
+
+# The plan values the main-channel rule reads. The prompt, argv and checksum come after
+# them and need the prompt catalog, so the plan helper stops at the last of these.
+PLAN_TARGET_VARS = "refuse_footer"
+PLAN_TARGET_ENTRIES = ("wanted", "deliver", "failure_deliver", "guard")
+
+
+def _plan_targets(context):
+    """Run the plan task's target values for `item`, and index them as the plan does."""
+    plan = _task("reconcile_direct_cron_plan.yml", "Direct cron | Plan every job")
+    for name, value in plan["vars"].items():
+        context[name] = _value(value, context)
+        if name == PLAN_TARGET_VARS:
+            break
+    context = _rule_checks(context)
+    entry = plan["ansible.builtin.set_fact"]["hermes_agent_direct_plan_entry"]
+    context["hermes_agent_direct_plan"] = {
+        context["item"]["name"]: {k: _value(entry[k], context) for k in PLAN_TARGET_ENTRIES}}
+    return context
+
+
 def _guard_run(caller_file, include_prefix, context, store=None, edit_rc=0, reads=None):
     """Run the caller's include gate, then the guard's tasks in order.
 
@@ -117,7 +144,7 @@ def _guard_run(caller_file, include_prefix, context, store=None, edit_rc=0, read
     include = _task(caller_file, include_prefix)
     if not all(_value(c, context) for c in _conditions(include)):
         return None, context
-    context = {**context, **{k: _value(v, context) for k, v in include["vars"].items()}}
+    context = _rule_checks({**context, **{k: _value(v, context) for k, v in include["vars"].items()}})
     state = {"reads": list(reads) if reads is not None else [store], "edit_rc": edit_rc}
     message = _run_tasks(_tasks(GUARD_FILE), context, state)
     return message, context
@@ -194,8 +221,7 @@ def _shipped_job(name, identity=FIXTURE, home=MAIN):
 def _direct(job, identity=FIXTURE, home=MAIN, failure=f"slack:{ISSUES}", profiles=None, listing="",
             check_mode=False, refuse=None, store=None, edit_rc=0, reads=None):
     context = _base(job, identity, home, failure, {}, profiles or {}, listing, check_mode, refuse)
-    context = _resolve(_task("reconcile_direct_cron.yml", "Direct cron | Decide agent ownership"), context)
-    context = _resolve(_task("reconcile_direct_cron.yml", "Direct cron | Resolve deliver target"), context)
+    context = _plan_targets(context)
     return _guard_run("reconcile_direct_cron.yml", "Direct cron | Refuse the main channel", context,
                       store=store, edit_rc=edit_rc, reads=reads)
 

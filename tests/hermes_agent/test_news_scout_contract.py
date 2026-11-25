@@ -214,7 +214,7 @@ def test_innovation_log_writes_use_the_locked_append_helper() -> None:
     assert "if the helper fails, stop and report the failure" in p
     assert "Deploy the innovation-log append helper" in MAIN_TASKS
     assert MAIN_TASKS.index("Deploy the innovation-log append helper") < MAIN_TASKS.index(
-        "Direct cron | Decide agent ownership"
+        "Direct cron | Plan every job"
     )
 
 

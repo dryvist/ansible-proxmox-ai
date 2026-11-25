@@ -9,7 +9,7 @@ import yaml
 from jinja2 import Environment
 from jinja2.nativetypes import NativeEnvironment
 
-from _role_files import role_defaults
+from _role_files import direct_plan_var, role_defaults
 from test_context_limits import ROLE_ROOT, _render, _sample_limits
 
 
@@ -30,10 +30,8 @@ def _projection():
 
 
 def _provider_expression() -> tuple[str, str]:
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/reconcile_direct_cron.yml").read_text())
-    resolver = next(task for task in tasks if task["name"].startswith("Direct cron | Resolve deliver target"))
-    facts = resolver["ansible.builtin.set_fact"]
-    return facts["hermes_agent_direct_model_provider"], facts["hermes_agent_direct_model"]
+    return (direct_plan_var(ROLE_ROOT, "hermes_agent_direct_model_provider"),
+            direct_plan_var(ROLE_ROOT, "hermes_agent_direct_model"))
 
 
 def test_every_model_backed_direct_cron_gets_a_metadata_only_provider():

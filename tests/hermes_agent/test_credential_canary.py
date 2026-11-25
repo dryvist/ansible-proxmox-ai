@@ -12,6 +12,8 @@ from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 from jinja2 import Environment, StrictUndefined
 
+from _role_files import direct_plan_var
+
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 SCRIPT_TEMPLATE = ROLE / "templates/hermes-credential-canary.py.j2"
 DEFAULTS = yaml.safe_load((ROLE / "defaults/main/197-credential-canary.yml").read_text())
@@ -152,9 +154,7 @@ def test_canary_names_a_missing_profile_route(tmp_path: Path) -> None:
 
 
 def test_direct_cron_can_create_no_agent_script_jobs_without_changing_agentic_jobs() -> None:
-    tasks = yaml.safe_load((ROLE / "tasks/reconcile_direct_cron.yml").read_text())
-    build = next(task for task in tasks if task.get("name") == "Direct cron | Build create argv for {{ item.name }}")
-    expression = build["ansible.builtin.set_fact"]["hermes_agent_direct_argv"]
+    expression = direct_plan_var(ROLE, "hermes_agent_direct_argv")
 
     def argv_for(item: dict, prompt: str, model: str) -> list[str]:
         templar = Templar(loader=DataLoader())
@@ -212,10 +212,7 @@ DEVELOP_CHECKSUM = (
 
 
 def test_existing_direct_cron_checksums_stay_stable() -> None:
-    tasks = yaml.safe_load((ROLE / "tasks/reconcile_direct_cron.yml").read_text())
-    calc = next(task for task in tasks
-                if task.get("name") == "Direct cron | Calculate desired state for {{ item.name }}")
-    expression = calc["ansible.builtin.set_fact"]["hermes_agent_direct_checksum"]
+    expression = direct_plan_var(ROLE, "hermes_agent_direct_checksum")
 
     def checksum(template: str, item: dict) -> str:
         templar = Templar(loader=DataLoader())
