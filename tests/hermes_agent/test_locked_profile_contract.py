@@ -103,7 +103,8 @@ def test_app_agent_profile_branch_preserves_vikunja_output() -> None:
     url: "https://router.example.invalid/mcp"
     headers:
       Authorization: "Bearer ${HERMES_AGENT_MODEL_API_KEY}"
-      x-mcp-servers: "vikunja_write"""
+      x-mcp-servers: "vikunja_write"
+"""
     assert expected in rendered
 
 
