@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.75.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.2...v2.75.3) (2026-11-25)
+
+
+### Bug Fixes
+
+* **hermes:** hold each Splunk issue to a 4h critical / 24h routine repeat floor ([#2803](https://github.com/dryvist/ansible-proxmox-ai/issues/2803)) ([38c74b7](https://github.com/dryvist/ansible-proxmox-ai/commit/38c74b728399684224efca0a5c89d95caa2422dd))
+
 ## [2.75.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.1...v2.75.2) (2026-11-25)
 
 
