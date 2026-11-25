@@ -46,8 +46,7 @@ def test_locked_profile_renders_local_single_server_lockdown() -> None:
     assert config["platform_toolsets"] == {"api_server": ["todo"], "cli": ["todo"]}
     assert LOCKED_TOOLSETS <= set(config["agent"]["disabled_toolsets"])
     assert config["tools"]["tool_search"]["enabled"] == "off"
-    assert "plugins" not in config
-    assert "a2a_agents" not in config
+    assert not {"plugins", "a2a_agents", "web", "browser"} & set(config)
     assert set(config["mcp_servers"]) == {"youtrack_write"}
     assert config["mcp_servers"]["youtrack_write"] == {
         "timeout": 180,
@@ -73,6 +72,12 @@ def test_locked_profile_env_contains_its_own_api_key_and_config_variables() -> N
     )
     referenced = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)\}", live_lines))
     assert referenced <= set(env_values)
+
+
+def test_profile_env_template_defaults_a_missing_env_list() -> None:
+    # Ansible fails on an undefined attribute; the Jinja helper here does not.
+    source = (ROLE_ROOT / "templates/hermes-env-profile.j2").read_text()
+    assert "hermes_agent_profile.env" not in source.replace("(hermes_agent_profile.env | default([]))", "")
 
 
 def test_gateway_enables_profile_multiplexing_for_a_locked_profile() -> None:

@@ -119,12 +119,10 @@ def _effective(key: str) -> int:
 
 
 def _profiles() -> list[dict[str, Any]]:
-    inventory = _group_vars_all()
+    gates = _group_vars_all()
     return [
-        profile
-        for profile in _defaults()["hermes_agent_profiles"]
-        if not profile.get("feature_gate")
-        or inventory.get(profile["feature_gate"], False)
+        p for p in _defaults()["hermes_agent_profiles"]
+        if not p.get("feature_gate") or gates.get(p["feature_gate"], False)
     ]
 
 
