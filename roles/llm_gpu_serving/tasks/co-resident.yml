@@ -27,11 +27,30 @@
     name: nvidia_gpu_guest
     tasks_from: install-nvidia-userspace.yml
 
+# A GPU LXC binds the NVIDIA nodes in with the host's group ids, as llama_cpp's
+# gpu_access.yml handles for its user; CUDA sees no device without access.
+- name: Stat the NVIDIA device nodes to learn their owning groups
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: [/dev/nvidia0, /dev/nvidiactl, /dev/nvidia-uvm, /dev/nvidia-uvm-tools]
+  register: llm_gpu_serving_co_resident_gpu_nodes
+
+- name: Add the serving user to the NVIDIA device-owning groups
+  ansible.builtin.user:
+    name: "{{ llm_gpu_serving_user }}"
+    groups: >-
+      {{ llm_gpu_serving_co_resident_gpu_nodes.results | selectattr('stat.exists')
+         | map(attribute='stat.gr_name') | reject('equalto', 'root') | unique | list }}
+    append: true
+  register: llm_gpu_serving_co_resident_gpu_groups
+
 - name: Create serving directories, uv and the pinned Hugging Face CLI
   ansible.builtin.include_tasks: install-model-cache-cli.yml
 
 - name: Inspect and install the co-resident engine assets
   ansible.builtin.include_tasks: inspect-install-engine-assets.yml
+  vars:
+    llm_gpu_serving_audio_cpp_install_notify: false
 
 - name: Resolve the co-resident health host
   ansible.builtin.set_fact:
@@ -47,7 +66,18 @@
     loop_var: llm_gpu_serving_cache_sync_profile
     label: "{{ llm_gpu_serving_cache_sync_profile }}"
   vars:
-    llm_gpu_serving_cache_sync_notify_service: false
+    llm_gpu_serving_cache_sync_profile_notify: false
+
+# The active profile belongs to the other role; this role's unit for it must not hold the port.
+- name: Keep this role's unit for the active profile stopped and disabled
+  ansible.builtin.systemd:
+    name: "{{ llm_gpu_serving_unit_prefix }}-{{ llm_active_profile }}.service"
+    state: stopped
+    enabled: false
+  register: llm_gpu_serving_co_resident_active_unit
+  failed_when:
+    - llm_gpu_serving_co_resident_active_unit.failed | default(false)
+    - "'Could not find the requested service' not in (llm_gpu_serving_co_resident_active_unit.msg | default(''))"
 
 - name: Render each co-resident audio.cpp configuration
   ansible.builtin.template:
@@ -90,7 +120,9 @@
     name: "{{ llm_gpu_serving_unit_prefix }}-{{ item }}.service"
     state: >-
       {{ 'restarted'
-         if (llm_gpu_serving_co_resident_configs.results + llm_gpu_serving_co_resident_units.results)
+         if llm_gpu_serving_co_resident_gpu_groups is changed
+            or (llm_gpu_serving_audio_cpp_install | default({})) is changed
+            or (llm_gpu_serving_co_resident_configs.results + llm_gpu_serving_co_resident_units.results)
             | selectattr('item', 'equalto', item) | selectattr('changed', 'defined')
             | selectattr('changed') | list | length > 0
          else 'started' }}

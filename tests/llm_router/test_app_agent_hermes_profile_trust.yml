@@ -21,15 +21,18 @@
           vikunja-read: {router_key_class: standard}
           vikunja-write: {router_key_class: standard, trust_tier: trusted}
           zammad-write: {router_key_class: standard, trust_tier: trusted}
+          youtrack-write: {router_key_class: standard, trust_tier: trusted}
         ai_agent_owner:
           vikunja-read: vikunja-read
           vikunja-write: vikunja-write
           zammad-write: zammad-write
+          youtrack-write: youtrack-write
         openbao_secrets_by_domain:
           llm-router-agent-keys:
             vikunja_read_llm_router_key: fixture-vikunja-read-key
             vikunja_write_llm_router_key: fixture-vikunja-write-key
             zammad_write_llm_router_key: fixture-zammad-write-key
+            youtrack_write_llm_router_key: fixture-youtrack-write-key
         bao_local_llm_secrets: {}
       no_log: true
 
@@ -42,13 +45,15 @@
       ansible.builtin.set_fact:
         _llm_router_hermes_profile_keys:
           - {alias: hermes-vikunja-pm, enabled: true, object_permission: {mcp_servers: [vikunja_write]}}
+          - {alias: hermes-youtrack-clerk, enabled: true, object_permission: {mcp_servers: [youtrack_write]}}
 
     - name: Refuse a write-tier server on a profile key under an untrusted Hermes identity
       block:
         - name: Run the app-agent gate with an untrusted Hermes identity
           ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
           vars:
-            ai_agents: "{{ _app_agent_trusted_roster | combine({'hermes': {'trust_tier': 'untrusted'}}) }}"
+            ai_agents: "{{ _app_agent_trusted_roster }}"
+            ai_callers: {hermes: {trust_tier: untrusted}}
 
         - name: Fail if the gate admitted a write-tier server under an untrusted identity
           ansible.builtin.fail:
@@ -66,4 +71,88 @@
     - name: Admit a write-tier server on a profile key under a trusted Hermes identity
       ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
       vars:
-        ai_agents: "{{ _app_agent_trusted_roster | combine({'hermes': {'trust_tier': 'trusted'}}) }}"
+        ai_agents: "{{ _app_agent_trusted_roster }}"
+        ai_callers: {hermes: {trust_tier: trusted}}
+
+    # Another repo's play publishes a tier token before anything here holds a key for it.
+    - name: Seed tier tokens that no roster entry or locked profile holds
+      ansible.builtin.set_fact:
+        ai_agents: {}
+        openbao_secrets_by_domain:
+          app-agent-vikunja-read:
+            VIKUNJA_AGENT_READ_TOKEN: fixture-vikunja-read-token
+            VIKUNJA_AGENT_READ_ALLOWLIST: "[64]"
+          app-agent-vikunja-write:
+            VIKUNJA_AGENT_WRITE_TOKEN: fixture-vikunja-write-token
+        _llm_router_hermes_profile_keys: []
+      no_log: true
+
+    - name: Keep a tier off while nothing holds a key for it
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_app_agent_matrix | selectattr('enabled') | list | length == 0
+          - "'vikunja_read' not in llm_router_mcp_registered_server_ids"
+          - "'vikunja_write' not in llm_router_mcp_registered_server_ids"
+        fail_msg: A seeded tier token turned a tier on with no key holder.
+
+    - name: Admit unheld tier tokens without a read-tier probe target
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
+      vars:
+        llm_router_app_agent_probe_vikunja_forbidden_project_id: ""
+
+    - name: Let a locked profile hold the write tier beside a wider profile grant
+      ansible.builtin.set_fact:
+        hermes_agent_profiles:
+          - {name: vikunja-pm}
+          - {name: vikunja-clerk, locked: true, mcp: [vikunja_write]}
+        _llm_router_hermes_profile_keys:
+          - alias: hermes-vikunja-pm
+            enabled: true
+            value: fixture-pm-router-key
+            object_permission: {mcp_servers: [vikunja_write, zammad]}
+          - alias: hermes-vikunja-clerk
+            enabled: true
+            value: fixture-clerk-router-key
+            object_permission: {mcp_servers: [vikunja_write]}
+      no_log: true
+
+    - name: Turn on only the held tier and probe it with the locked profile's key
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _on | map(attribute='id') | list == ['vikunja-write']
+          - _on | map(attribute='holder') | list == ['profile']
+          - _llm_router_app_agent_profile_holder_keys | dict2items | map(attribute='key') | list == ['vikunja-write']
+          - _llm_router_app_agent_profile_holder_keys['vikunja-write'] == 'fixture-clerk-router-key'
+        fail_msg: A locked profile must hold its tier, and the unheld read tier must stay off.
+      vars:
+        _on: "{{ _llm_router_app_agent_matrix | selectattr('enabled') | list }}"
+      no_log: true
+
+    - name: Admit a profile-held write tier under a trusted Hermes identity
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
+      vars:
+        ai_callers: {hermes: {trust_tier: trusted}}
+        llm_router_app_agent_probe_vikunja_forbidden_project_id: ""
+
+    - name: Refuse a profile-held tier whose profile key is not seeded
+      block:
+        - name: Run the app-agent gate with no seeded profile key
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
+          vars:
+            ai_callers: {hermes: {trust_tier: trusted}}
+            _llm_router_hermes_profile_keys: []
+
+        - name: Fail if the gate admitted a tier with no key holder
+          ansible.builtin.fail:
+            msg: The app-agent gate let a profile-held tier run with no seeded profile key.
+      rescue:
+        - name: Require the profile key gate to be the refusal
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - >-
+                ansible_failed_task.name
+                == 'Require a seeded locked profile key for each profile-held app-agent tier'
+            fail_msg: The app-agent gate failed for a reason other than the missing profile key.

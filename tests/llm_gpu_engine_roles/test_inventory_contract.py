@@ -169,7 +169,7 @@ def test_ada_small_profile_keeps_the_light_lane_and_selects_its_cache():
     groups = HOST_GROUP_TEMPLATE.read_text(encoding="utf-8")
 
     assert host_vars["llm_active_profile"] == "small"
-    assert host_vars["llm_gpu_serving_model_cache_mount_path"] == "/var/lib/llm"
+    assert host_vars["llm_gpu_serving_model_cache_mount_path"] == "/var/cache"
     assert groups.count("'llm-gpu-small-router' in (item.value.tags | default([]))") == 2
     assert "['llm_gpu_legacy_group', 'llm_gpu_group']" in groups
     assert "'llm-gpu' not in (item.value.tags | default([]))" in groups

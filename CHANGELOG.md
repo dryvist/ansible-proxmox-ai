@@ -1,5 +1,90 @@
 # Changelog
 
+## [2.75.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.1...v2.75.2) (2026-11-25)
+
+
+### Bug Fixes
+
+* **hermes_agent:** drop code_execution from the cron toolsets ([#2675](https://github.com/dryvist/ansible-proxmox-ai/issues/2675)) ([b4a9734](https://github.com/dryvist/ansible-proxmox-ai/commit/b4a9734101cd6a13803df35e4b00895aa6a53eec))
+
+## [2.75.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.0...v2.75.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **hermes_agent:** keep narrow tag runs working on isolated guests ([#2837](https://github.com/dryvist/ansible-proxmox-ai/issues/2837)) ([5f5e8fe](https://github.com/dryvist/ansible-proxmox-ai/commit/5f5e8fe386a667cac4b32015015126d14c62951f))
+
+## [2.75.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.74.0...v2.75.0) (2026-11-25)
+
+
+### Features
+
+* **llm_router:** let a locked Hermes profile hold an app-agent tier ([#2834](https://github.com/dryvist/ansible-proxmox-ai/issues/2834)) ([291e8cc](https://github.com/dryvist/ansible-proxmox-ai/commit/291e8cca7a197f86472e84c1f7fd4a6bbeb52b26))
+
+## [2.74.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.73.0...v2.74.0) (2026-11-25)
+
+
+### Features
+
+* **hermes_agent:** locked clerk profiles published as router agent models ([#2830](https://github.com/dryvist/ansible-proxmox-ai/issues/2830)) ([13507f8](https://github.com/dryvist/ansible-proxmox-ai/commit/13507f86076ddc81968632df4997107f079b45bc))
+
+## [2.73.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.7...v2.73.0) (2026-11-24)
+
+
+### Features
+
+* **benchmark-run:** add optional gbench text-only and stress controls ([#2825](https://github.com/dryvist/ansible-proxmox-ai/issues/2825)) ([edc70f8](https://github.com/dryvist/ansible-proxmox-ai/commit/edc70f8ae2802b25b34f65523c348eb5b168535b))
+
+## [2.72.7](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.6...v2.72.7) (2026-11-24)
+
+
+### Bug Fixes
+
+* **agent_exec:** skip the venv and verify tasks in check mode ([#2787](https://github.com/dryvist/ansible-proxmox-ai/issues/2787)) ([da6d88a](https://github.com/dryvist/ansible-proxmox-ai/commit/da6d88aa86f566ed9658032ae6e20f87d21bfc02))
+
+## [2.72.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.5...v2.72.6) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** pin audio.cpp to the newest build Debian 13 can load ([#2820](https://github.com/dryvist/ansible-proxmox-ai/issues/2820)) ([4a748f2](https://github.com/dryvist/ansible-proxmox-ai/commit/4a748f22e7bd4204cc73c144aa619c7c8fd79d7f))
+
+## [2.72.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.4...v2.72.5) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** run audio.cpp on its portable Vulkan build ([#2817](https://github.com/dryvist/ansible-proxmox-ai/issues/2817)) ([b2cfe33](https://github.com/dryvist/ansible-proxmox-ai/commit/b2cfe3327686d9f1c1db7aa98e5594db7b1778bc))
+
+## [2.72.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.3...v2.72.4) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** serve audio.cpp on the GPU under the router's model ids ([#2814](https://github.com/dryvist/ansible-proxmox-ai/issues/2814)) ([3ce1042](https://github.com/dryvist/ansible-proxmox-ai/commit/3ce1042db12381baca1579e6ae4d31481dfef35f))
+
+## [2.72.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.2...v2.72.3) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** install the NCCL runtime the audio.cpp CUDA server links ([#2810](https://github.com/dryvist/ansible-proxmox-ai/issues/2810)) ([c8a47fe](https://github.com/dryvist/ansible-proxmox-ai/commit/c8a47fe56c3c91ef61f92944fcd48e9165f3e163))
+
+## [2.72.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.1...v2.72.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** keep the co-resident path off the active profile unit ([#2806](https://github.com/dryvist/ansible-proxmox-ai/issues/2806)) ([d93437e](https://github.com/dryvist/ansible-proxmox-ai/commit/d93437e43b2ac24b1358b215f74f1ccfa3b2bfa3))
+
+## [2.72.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.0...v2.72.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **inventory:** keep the GPU serving cache writable on the NVIDIA llama.cpp guest ([#2801](https://github.com/dryvist/ansible-proxmox-ai/issues/2801)) ([2a19fff](https://github.com/dryvist/ansible-proxmox-ai/commit/2a19fffd7db93eb679862415d827a25c300d8a95))
+* **llm_gpu_serving:** let a co-resident download run beside named GPU processes ([#2802](https://github.com/dryvist/ansible-proxmox-ai/issues/2802)) ([687cdf0](https://github.com/dryvist/ansible-proxmox-ai/commit/687cdf0e9760275fae88b10fb2e8c6a78abdda58))
+
 ## [2.72.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.71.0...v2.72.0) (2026-11-23)
 
 
