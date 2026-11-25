@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 {{ ansible_managed | comment }}
-"""Deterministic, no-LLM Splunk status digest with a per-day novelty gate.
+"""Deterministic, no-LLM Splunk status digest with a repeat-floor novelty gate.
 
 STDOUT is delivered verbatim to Slack (cron runs `--no-agent --deliver slack:<ch>`),
 so everything printed here must be TRUE. Never invent data. Missing / zero / stale
 data is ALWAYS an explicit anomaly, never summarized as "no anomalies".
 
-THE PER-DAY NOVELTY CONTRACT (operator requirement; supersedes the always-post
-full table this file used to emit): routine information may be presented ONCE per
-UTC day. A later run with nothing genuinely new to say about routine conditions
-must not re-present them. CRITICAL conditions are exempt and repeat every run for
-as long as they persist.
-
-Mechanics: every observation becomes a discrete *finding* carrying a stable
-identity key. A day-scoped ledger in the state file records which keys have been
-posted today and resets at the UTC day boundary. A routine finding whose key is in
-the ledger is suppressed; critical findings ignore the ledger entirely.
+THE REPEAT-FLOOR CONTRACT (operator rule, 2026-11-23): the SAME finding posts at
+most once per ROUTINE_REPEAT_MIN (rolling 24h), or once per CRITICAL_REPEAT_MIN
+(4h) when critical. A critical condition posts once while it persists; one that
+clears and recurs inside its floor stays silent. Every observation is a *finding*
+with a stable identity key, and the ledger records when each key last posted.
 
 When nothing routine is novel at the index level the search ESCALATES rather than
 falling back to boilerplate: host level, then sourcetype/composition level. Only a
@@ -94,8 +89,11 @@ BASELINE_HOURS = 24
 MAX_NAMED_HOSTS = 5
 # Per-run cap on routine findings. Overflow stays unledgered and surfaces next run.
 MAX_FINDINGS = 8
-# Ledger size cap; oldest keys drop first. Only ever holds one day of keys.
+# Ledger size cap; oldest keys drop first. Holds one routine window of keys.
 LEDGER_MAX = 500
+# Repeat floors, one definition in defaults (hermes_agent_alert_*_repeat_minutes).
+CRITICAL_REPEAT_MIN = {{ hermes_agent_alert_critical_repeat_minutes }}
+ROUTINE_REPEAT_MIN = {{ hermes_agent_alert_routine_repeat_minutes }}
 # Net host-fleet shrink at or above this is critical, not routine per-host movement.
 HOST_DROP_CRIT = 3
 # Fully quiet and unchanged runs return SILENT; only newly observed findings post.
@@ -486,9 +484,9 @@ def host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last, now_epo
         last = host_last.get(host, 0)
         age = (now_epoch - last) / 60.0 if last > 0 else float("inf")
         if age > STALENESS_MIN:
-            # Bucketed by whole hours: one finding per hour of staleness, not per run.
-            bucket = "inf" if age == float("inf") else int(age // 60)
-            out.append(Finding(f"stale:{host}:{bucket}",
+            # One identity per host: the day ledger posts it at most once per UTC day while it
+            # stays stale. Keying on the age (it was once bucketed by hour) reposted it hourly.
+            out.append(Finding(f"stale:{host}",
                                f":hourglass: host {host} has data in the {WINDOW} window but its "
                                f"newest event is {fmt_age(age)} old"))
     return out
@@ -548,31 +546,34 @@ def stability_finding(state, fingerprint, now):
                     f"Health state unchanged — Day {day_n} since {first_short}."), first_seen_iso)
 
 
-def load_ledger_entries(state, today):
-    """Today's reported finding records as {"k": key, "t": text} entries.
-
-    Tolerates the pre-2026-07-29 shape (a bare list of key strings) by carrying
-    the key with empty text.
-    """
+def load_ledger_entries(state, now):
+    """{"k", "t", "at"} records posted inside the routine window before `now`
+    (every stored record when `now` is None). Older shapes (bare key strings, or
+    records without "at") count as posted at their ledger day's midnight."""
     ledger = (state or {}).get("ledger")
-    if not isinstance(ledger, dict) or ledger.get("day") != today:
-        return []
-    keys = ledger.get("keys")
+    keys = ledger.get("keys") if isinstance(ledger, dict) else None
     if not isinstance(keys, list):
         return []
+    day_at = f"{ledger.get('day')}T00:00:00+00:00"
+    cutoff = now and now - dt.timedelta(minutes=ROUTINE_REPEAT_MIN)
     out = []
     for entry in keys:
-        if isinstance(entry, dict) and entry.get("k"):
-            out.append({"k": entry["k"], "t": entry.get("t", "")})
-        elif isinstance(entry, str):
-            out.append({"k": entry, "t": ""})
+        entry = entry if isinstance(entry, dict) else {"k": entry}
+        try:
+            at = dt.datetime.fromisoformat(entry.get("at") or day_at)
+        except (TypeError, ValueError):
+            continue
+        k = entry.get("k")
+        if isinstance(k, str) and not entry.get("at") and k.startswith("stale:"):
+            k = ":".join(k.split(":")[:2])  # old keys had an age bucket
+        if isinstance(k, str) and (cutoff is None or at > cutoff):
+            out.append({"k": k, "t": entry.get("t", ""), "at": at.isoformat()})
     return out
 
 
-def load_ledger(state, today):
-    """Today's already-presented finding keys. A new UTC day resets it to empty,
-    and a state file predating the ledger simply carries none."""
-    return [entry["k"] for entry in load_ledger_entries(state, today)]
+def load_ledger(state, now):
+    """Finding keys already presented inside the routine window."""
+    return [entry["k"] for entry in load_ledger_entries(state, now)]
 
 
 def baseline_from(state):
@@ -595,7 +596,7 @@ def build_digest(results, now, state, backup_outcomes=None, hourly=None):
     now_epoch = now.timestamp()
     today = now.strftime("%Y-%m-%d")
     prev = baseline_from(state)
-    ledger_entries = load_ledger_entries(state, today)
+    ledger_entries = load_ledger_entries(state, now)
     previously_reported = set((state or {}).get("reported_findings") or [])
     previously_reported.update(entry["k"] for entry in ledger_entries)
     # Critical conditions are judged on their own record, not the ledger. A cleared one
@@ -656,6 +657,11 @@ def build_digest(results, now, state, backup_outcomes=None, hourly=None):
     for _, found in tiers:
         current_keys.update(finding.key for finding in found)
     current_keys.update(finding.key for finding in backup_findings)
+    # A critical that cleared and recurs inside its floor is held, and held stays
+    # reported while it persists — it never posts twice in CRITICAL_REPEAT_MIN.
+    floor = now - dt.timedelta(minutes=CRITICAL_REPEAT_MIN)
+    recent = {e["k"] for e in ledger_entries if dt.datetime.fromisoformat(e["at"]) > floor}
+    reported_critical |= {f.key for f in critical if f.key in recent}
     new_critical = [finding for finding in critical if finding.key not in reported_critical]
     new_backup_findings = [finding for finding in backup_findings
                            if finding.key not in previously_reported]
@@ -685,7 +691,7 @@ def build_digest(results, now, state, backup_outcomes=None, hourly=None):
         lines.extend(f"• {finding.text}" for finding in new_backup_findings)
 
     last_post_iso = now.isoformat() if emitted else (state or {}).get("last_post_iso")
-    ledgered = {entry["k"] for entry in ledger_entries}
+    fresh = {finding.key for finding in emitted}
     payload = {"schema": STATE_SCHEMA, "fingerprint": fingerprint,
                "last_post_date": today, "captured_iso": now.isoformat(),
                "last_post_iso": last_post_iso,
@@ -695,9 +701,9 @@ def build_digest(results, now, state, backup_outcomes=None, hourly=None):
                "backup_outcome_findings": sorted(finding.key for finding in backup_findings),
                "down_streak": streak,
                "ledger": {"day": today,
-                          "keys": (ledger_entries
-                                   + [{"k": finding.key, "t": finding.text} for finding in emitted
-                                      if finding.key not in ledgered])[-LEDGER_MAX:]}}
+                          "keys": ([e for e in ledger_entries if e["k"] not in fresh]
+                                   + [{"k": f.key, "t": f.text, "at": now.isoformat()}
+                                      for f in emitted])[-LEDGER_MAX:]}}
     if backup_outcomes is not None:
         payload["backup_outcome_checked_date"] = today
     elif (state or {}).get("backup_outcome_checked_date"):
@@ -719,24 +725,17 @@ def failure_key(root):
 
 
 def failure_report(root, state, now):
-    """A digest failure, gated by the SAME day ledger as every other finding.
+    """A digest failure, gated by the SAME ledger as every other finding.
 
-    Until 2026-07-29 this path printed unconditionally: outside the ledger,
-    outside the SILENT contract, and outside the per-day novelty rule every
-    other finding in this file obeys. A fault that persists is not news after
-    the first post, so an hourly cron turned one outage into 24 identical Slack
-    messages a day — the flood that made the channel unreadable.
-
-    Failure is still ALWAYS delivered the first time it is seen each day, and a
-    changed cause is a new key and posts immediately. Only verbatim repetition
-    is suppressed, and the suppression is COUNTED so it can be reported rather
-    than silently swallowed.
+    A persisting fault is not news after its first post (printing it every run
+    once turned one outage into 24 posts a day). A changed cause is a new key and
+    posts at once; verbatim repeats are suppressed and COUNTED, never swallowed.
 
     Returns (text, payload) exactly like build_digest, so main() treats both
     paths identically.
     """
     today = now.strftime("%Y-%m-%d")
-    ledger_entries = load_ledger_entries(state, today)
+    ledger_entries = load_ledger_entries(state, now)
     ledger = [entry["k"] for entry in ledger_entries]
     key = failure_key(root)
     detail = f"{type(root).__name__}: {str(root)[:200]}"
@@ -762,17 +761,18 @@ def failure_report(root, state, now):
     # Keep the report text with the key so recovery can summarize suppressed repeats.
     payload["ledger"] = {"day": today,
                          "keys": (ledger_entries
-                                  + [{"k": key, "t": f":warning: Splunk digest failing — {detail}"}]
+                                  + [{"k": key, "t": f":warning: Splunk digest failing — {detail}",
+                                      "at": now.isoformat()}]
                                   )[-LEDGER_MAX:]}
     return (f"{ISSUES_MARKER} {prefix}:warning: Splunk digest FAILED: {detail}\n"
-            f"(identical repeats are suppressed until the cause changes or the "
-            f"UTC day rolls; a different cause posts immediately)"), payload
+            f"(identical repeats are suppressed for {ROUTINE_REPEAT_MIN // 60}h; "
+            f"a different cause posts immediately)"), payload
 
 
 def suppression_of(state, today):
-    """Today's suppression counter, reset on a new UTC day."""
+    """Repeats suppressed since the last failure post; never reset at UTC midnight."""
     s = (state or {}).get("suppressed")
-    if not isinstance(s, dict) or s.get("day") != today:
+    if not isinstance(s, dict):
         return {"day": today, "count": 0, "since_hhmm": None}
     return dict(s)
 
