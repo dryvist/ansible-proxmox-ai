@@ -66,14 +66,15 @@ profile.
 | `youtrack-clerk` | Narrow YouTrack requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
 | `vikunja-clerk` | Narrow Vikunja task requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
 | `zammad-clerk` | Narrow Zammad ticket requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
+| `semaphore-converge` | Previews and confirmed runs of existing Semaphore templates | One router run tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP, template edits |
 | `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |
 
 The `tracker-reporter` profile and its two report jobs exist only while
 `llm_router_hermes_tracker_reporter_key_enabled` is on. The `vikunja-pm`
 profile exists only while `llm_router_hermes_vikunja_pm_key_enabled` is on.
-Each clerk profile (`youtrack-clerk`, `vikunja-clerk`, `zammad-clerk`) and its
-router model exist only while its `llm_router_hermes_<name>_key_enabled` switch
-is on. Its own `.env` carries its API-server key, and the router serves it
+Each clerk profile (`youtrack-clerk`, `vikunja-clerk`, `zammad-clerk`,
+`semaphore-converge`) and its router model exist only while its
+`llm_router_hermes_<name>_key_enabled` switch is on. Its own `.env` carries its API-server key, and the router serves it
 under the profile prefix with a separate bearer. A clerk uses the local review
 model, exposes one app-agent MCP server, and has built-in memory disabled.
 The clerk's router key is the key that holds its tier: the router turns an

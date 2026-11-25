@@ -69,3 +69,23 @@ Generated from `llm_router_app_agent_tiers`; a test fails when this file drifts.
   - get_article
   - create_article
   - update_article
+
+## semaphore-run
+
+- App: semaphore
+- Tier: write
+- MCP server: semaphore_run
+- OpenBao token field: SEMAPHORE_AGENT_RUN_TOKEN
+- Allowed tools:
+  - list_projects
+  - list_templates
+  - get_template
+  - list_tasks
+  - filter_tasks
+  - get_task
+  - get_task_raw_output
+  - get_waiting_tasks
+  - get_latest_failed_task
+  - analyze_task_failure
+  - run_task
+  - stop_task
