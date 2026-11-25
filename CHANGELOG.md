@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.75.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.3...v2.75.4) (2026-11-25)
+
+
+### Performance
+
+* **hermes_agent:** reconcile the direct crons in one pass ([#2844](https://github.com/dryvist/ansible-proxmox-ai/issues/2844)) ([4972030](https://github.com/dryvist/ansible-proxmox-ai/commit/49720309cf4a4f587ef11ddf0b837af0b501f66c))
+
 ## [2.75.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.2...v2.75.3) (2026-11-25)
 
 
