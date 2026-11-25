@@ -74,3 +74,41 @@ def test_external_langfuse_password_projects_the_clickhouse_openbao_field():
     external_password = group_vars["langfuse_docker_clickhouse_external_password"]
     assert "bao_clickhouse_secrets" in external_password
     assert "APP_PASSWORD" in external_password
+
+
+def test_blob_storage_file_log_gets_a_90_day_ttl_and_skips_when_set():
+    main_tasks = yaml.safe_load((ROOT / "roles/langfuse_docker/tasks/main.yml").read_text())
+    retention_include = next(
+        task for task in main_tasks
+        if task.get("name") == "Set Langfuse blob-storage log retention"
+    )
+    retention_tasks = yaml.safe_load(
+        (ROOT / "roles/langfuse_docker/tasks/clickhouse_blob_storage_retention.yml").read_text()
+    )
+    definition_read = next(
+        task for task in retention_tasks
+        if task.get("name") == "Read the Langfuse blob-storage file-log table definition"
+    )
+    ttl_task = next(
+        task for task in retention_tasks
+        if task.get("name") == "Set a 90-day TTL on Langfuse blob-storage file-log rows"
+    )
+    read_argv = definition_read["ansible.builtin.command"]["argv"]
+    alter_argv = ttl_task["ansible.builtin.command"]["argv"]
+
+    assert retention_include["ansible.builtin.include_tasks"] == (
+        "clickhouse_blob_storage_retention.yml"
+    )
+    assert retention_include["when"] == [
+        "not ansible_check_mode",
+        "langfuse_docker_clickhouse_endpoint == 'embedded'",
+    ]
+    assert "FROM system.tables" in read_argv[-1]
+    assert "name = 'blob_storage_file_log'" in read_argv[-1]
+    assert definition_read["changed_when"] is False
+    assert definition_read["no_log"] is True
+    assert "ALTER TABLE {{ langfuse_docker_clickhouse_db }}.blob_storage_file_log" in alter_argv[-1]
+    assert "MODIFY TTL created_at + INTERVAL 90 DAY DELETE" in alter_argv[-1]
+    assert "TTL created_at + toIntervalDay(90) DELETE" in ttl_task["when"]
+    assert ttl_task["changed_when"] is True
+    assert ttl_task["no_log"] is True
