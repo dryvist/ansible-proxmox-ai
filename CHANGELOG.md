@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.75.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.1...v2.75.2) (2026-11-25)
+
+
+### Bug Fixes
+
+* **hermes_agent:** drop code_execution from the cron toolsets ([#2675](https://github.com/dryvist/ansible-proxmox-ai/issues/2675)) ([b4a9734](https://github.com/dryvist/ansible-proxmox-ai/commit/b4a9734101cd6a13803df35e4b00895aa6a53eec))
+
 ## [2.75.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.0...v2.75.1) (2026-11-25)
 
 
