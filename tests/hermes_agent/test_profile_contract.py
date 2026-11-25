@@ -72,6 +72,7 @@ def _jinja_env() -> Environment:
     env = Environment(autoescape=False, loader=FileSystemLoader(ROLE_ROOT / "templates"))
     env.filters["to_json"] = json.dumps
     env.filters["bool"] = bool
+    env.filters["combine"] = lambda left, right, recursive=False: {**left, **right}
     env.filters["comment"] = lambda v: f"# {v}"
     # Passthrough: this module isn't testing router-key selection (that's
     # test_profile_router_key_selection.py), just credential blanking, so a
@@ -118,7 +119,11 @@ def _effective(key: str) -> int:
 
 
 def _profiles() -> list[dict[str, Any]]:
-    return _defaults()["hermes_agent_profiles"]
+    gates = _group_vars_all()
+    return [
+        p for p in _defaults()["hermes_agent_profiles"]
+        if not p.get("feature_gate") or gates.get(p["feature_gate"], False)
+    ]
 
 
 # Cron jobs select their store through HERMES_HOME; Kanban workers use assignee.
@@ -225,7 +230,7 @@ def test_llm_wiki_skill_is_materializable_into_any_profile_that_opts_in() -> Non
     assert "Materialize the llm-wiki skill for profile" in profiles_tasks
     assert "{{ hermes_agent_install_dir }}/optional-skills/research/llm-wiki" in profiles_tasks
     assert (
-        "- hermes_agent_wiki_enabled | bool and 'research/llm-wiki' in item.skills"
+        "- hermes_agent_wiki_enabled | bool and 'research/llm-wiki' in (item.skills | default([]))"
         in profiles_tasks
     )
 

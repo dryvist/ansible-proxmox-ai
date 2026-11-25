@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.75.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.0...v2.75.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **hermes_agent:** keep narrow tag runs working on isolated guests ([#2837](https://github.com/dryvist/ansible-proxmox-ai/issues/2837)) ([5f5e8fe](https://github.com/dryvist/ansible-proxmox-ai/commit/5f5e8fe386a667cac4b32015015126d14c62951f))
+
+## [2.75.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.74.0...v2.75.0) (2026-11-25)
+
+
+### Features
+
+* **llm_router:** let a locked Hermes profile hold an app-agent tier ([#2834](https://github.com/dryvist/ansible-proxmox-ai/issues/2834)) ([291e8cc](https://github.com/dryvist/ansible-proxmox-ai/commit/291e8cca7a197f86472e84c1f7fd4a6bbeb52b26))
+
+## [2.74.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.73.0...v2.74.0) (2026-11-25)
+
+
+### Features
+
+* **hermes_agent:** locked clerk profiles published as router agent models ([#2830](https://github.com/dryvist/ansible-proxmox-ai/issues/2830)) ([13507f8](https://github.com/dryvist/ansible-proxmox-ai/commit/13507f86076ddc81968632df4997107f079b45bc))
+
 ## [2.73.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.7...v2.73.0) (2026-11-24)
 
 

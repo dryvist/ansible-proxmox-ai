@@ -21,5 +21,5 @@ def test_bundle_skill_copy_only_takes_skills_the_bundle_ships() -> None:
     assert all(takes(hermes_agent_profile_skill=s) for s in BUNDLE_SKILLS)
     assert not any(takes(hermes_agent_profile_skill=s) for s in LOCAL_SKILLS)
     for profile in role_defaults(ROLE_ROOT)["hermes_agent_profiles"]:
-        taken = {s for s in profile["skills"] if takes(hermes_agent_profile_skill=s)}
+        taken = {s for s in profile.get("skills", []) if takes(hermes_agent_profile_skill=s)}
         assert taken <= BUNDLE_SKILLS

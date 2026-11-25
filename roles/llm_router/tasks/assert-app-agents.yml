@@ -1,7 +1,7 @@
 ---
 # Fail the converge before any key is seeded when an enabled app-agent tier
-# lacks exactly one single-server key, a write or admin tier would be issued to
-# a roster entry that is not trusted, or the read-tier probe has no target.
+# lacks its single-server key, a write or admin tier would be issued to an
+# identity that is not trusted, or the read-tier probe has no target.
 - name: Require exactly one single-server key per enabled app-agent tier
   ansible.builtin.assert:
     quiet: true
@@ -11,13 +11,61 @@
     fail_msg: >-
       App-agent tier {{ _row.id }} has an enabled server but {{ _keys | length }}
       roster keys; add exactly one roster entry named {{ _row.id }}.
-  loop: "{{ _llm_router_app_agent_matrix | selectattr('enabled') | list }}"
+  loop: >-
+    {{ _llm_router_app_agent_matrix | selectattr('enabled')
+       | selectattr('holder', 'equalto', 'roster') | list }}
   loop_control:
     loop_var: _row
     label: "{{ _row.id }}"
   vars:
     _keys: "{{ _llm_router_agent_keys | selectattr('alias', 'equalto', _row.id) | list }}"
   no_log: true
+
+- name: Require a seeded locked profile key for each profile-held app-agent tier
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_app_agent_profile_holder_keys[_row.id] | default('') | length > 0
+    fail_msg: >-
+      App-agent tier {{ _row.id }} is held by a locked Hermes profile whose router
+      key is not seeded; seed that profile's key.
+  loop: >-
+    {{ _llm_router_app_agent_matrix | selectattr('enabled')
+       | selectattr('holder', 'equalto', 'profile') | list }}
+  loop_control:
+    loop_var: _row
+    label: "{{ _row.id }}"
+  no_log: true
+
+- name: Require an endpoint for each enabled HTTP app-agent tier
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _row.url_value | length > 0
+    fail_msg: >-
+      HTTP app-agent tier {{ _row.id }} is enabled but its endpoint is empty.
+  loop: >-
+    {{ _llm_router_app_agent_matrix
+       | selectattr('enabled')
+       | selectattr('transport', 'defined')
+       | selectattr('transport', 'equalto', 'http') | list }}
+  loop_control:
+    loop_var: _row
+    label: "{{ _row.id }}"
+  no_log: true
+
+- name: Require every enabled locked profile MCP server to be registered
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _profile.mcp | length == 1
+      - _profile.mcp | difference(llm_router_mcp_registered_server_ids) | length == 0
+    fail_msg: >-
+      Locked profile {{ _profile.name }} needs one enabled router MCP server; verify its app-agent tier token.
+  loop: "{{ _llm_router_hermes_locked_profiles }}"
+  loop_control:
+    loop_var: _profile
+    label: "{{ _profile.name }}"
 
 - name: Issue write and admin tier keys only to trusted roster entries
   ansible.builtin.assert:
@@ -40,10 +88,10 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - (ai_agents | default({})).get(hermes_agent_identity | default('hermes'), {}).get('trust_tier', '') == 'trusted'
+      - (ai_callers | default({})).get(hermes_agent_identity | default('hermes'), {}).get('trust_tier', '') == 'trusted'
     fail_msg: >-
       Hermes profile key {{ _key.alias }} holds a write or admin app-agent tier
-      server, but the Hermes identity's roster entry is not trust_tier trusted.
+      server, but the Hermes identity is not a trust_tier trusted caller.
   loop: "{{ _llm_router_hermes_profile_keys | selectattr('enabled') | list }}"
   loop_control:
     loop_var: _key

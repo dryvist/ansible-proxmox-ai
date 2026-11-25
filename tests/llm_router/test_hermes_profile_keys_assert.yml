@@ -58,15 +58,16 @@
     - name: Load the profile list through the shared loader
       ansible.builtin.import_tasks: "{{ playbook_dir }}/../../playbooks/tasks/load_hermes_profiles.yml"
 
-    - name: Only each profile's name reaches the router host
+    - name: Only each enabled profile name reaches the router host by default
       ansible.builtin.assert:
         quiet: true
         that:
           - hermes_agent_profiles | length > 0
           - hermes_agent_profiles | map(attribute='name') | list
-            == _hermes_fleet_health_defaults.hermes_agent_profiles | map(attribute='name') | list
+            == _hermes_fleet_health_defaults.hermes_agent_profiles
+               | rejectattr('feature_gate', 'defined') | map(attribute='name') | list
           - hermes_agent_profiles | map('length') | unique | list == [1]
+          - hermes_agent_profiles | selectattr('name', 'equalto', 'youtrack-clerk') | list | length == 0
         fail_msg: >-
-          The loader published more than the profile names; a field that
-          references a variable only the hermes_agent role defines would then
-          fail the router play.
+          The loader published a gated profile or more than each enabled
+          profile's name; role-only fields must not resolve in the router play.

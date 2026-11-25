@@ -35,9 +35,9 @@ each profile's `mcp_servers:` block from that profile's own `mcp:` list in
 its assignee's profile entry, or the worker runs with the tool silently
 absent rather than inherited.
 
-**The isolation boundary is tools and credentials — memory is NOT part of
-it.** Profiles point at the same Hindsight bank for their agent: the
-static `bank_id` derives from `hermes_agent_id`, and no profile sets
+**Memory is shared only by memory-enabled profiles.** Ordinary profiles point
+at the same Hindsight bank for their agent: the static `bank_id` derives from
+`hermes_agent_id`, and no profile sets
 `bank_id_template`, so `_resolve_bank_id_template` falls back to that one
 agent bank. Different Hermes agents receive distinct banks. This is
 deliberate — it is what lets `daily-summary` on the `default` profile recall a
@@ -47,14 +47,14 @@ shares one Splunk bank (`hermes_agent_splunk_memory_bank_id`). `homelab-admin`,
 `github-maint` and `orchestrator` each get their own `<agent>-<profile>` bank,
 so they do not read the agent bank. That shared-continuity path no longer
 covers these three profiles. A profile with
-`memory_enabled: false` (`eval`) gets neither a bank nor a Hindsight config. On
-the agent that owns the `splunk` system that bank is the agent bank itself. Within a
+`memory_enabled: false` (`eval`) and locked profiles get neither a bank nor a
+Hindsight config. On the agent that owns the `splunk` system that bank is the
+agent bank itself. Within a
 bank, a worker can `memory recall` anything another profile of that bank ever
-wrote. The "Must NOT have" column is a **tools/MCP/skills boundary only**; it
-is not a data boundary, and nothing written to memory by any profile should be
-treated as private to it.
+wrote. Nothing written to a shared bank should be treated as private to one
+profile.
 
-| Profile | Mission | Has | Must NOT have (tools/MCP/skills — memory is shared across every profile, see above) |
+| Profile | Mission | Has | Must NOT have |
 | --- | --- | --- | --- |
 | `default` | Cross-domain, board-meta, write-bearing GitHub | broad tool scope; no ordinary-call Kanban | — |
 | `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Docs MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
@@ -63,11 +63,22 @@ treated as private to it.
 | `orchestrator` | Kanban decomposition and assignment | Vikunja + Docs MCP; follow-up card creation | Operational MCP servers and credentials |
 | `tracker-reporter` | Change-only task and incident summaries | Vikunja + router incident MCP; own bank | Kanban, env, skills, other MCP |
 | `vikunja-pm` | Task filing, updates, labels, relations and comments | Router Vikunja write tier (no delete); own bank | Kanban, env, skills, other MCP |
+| `youtrack-clerk` | Narrow YouTrack requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
+| `vikunja-clerk` | Narrow Vikunja task requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
+| `zammad-clerk` | Narrow Zammad ticket requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
 | `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |
 
 The `tracker-reporter` profile and its two report jobs exist only while
 `llm_router_hermes_tracker_reporter_key_enabled` is on. The `vikunja-pm`
 profile exists only while `llm_router_hermes_vikunja_pm_key_enabled` is on.
+Each clerk profile (`youtrack-clerk`, `vikunja-clerk`, `zammad-clerk`) and its
+router model exist only while its `llm_router_hermes_<name>_key_enabled` switch
+is on. Its own `.env` carries its API-server key, and the router serves it
+under the profile prefix with a separate bearer. A clerk uses the local review
+model, exposes one app-agent MCP server, and has built-in memory disabled.
+The clerk's router key is the key that holds its tier: the router turns an
+app-agent tier on only when the tier's token is seeded and a roster entry or a
+locked profile holds a key for it. A seeded token that nothing holds stays off.
 
 `github-maint` is the one profile whose headline constraint is enforced by a
 **credential** rather than by tool availability. It renders the read-only
@@ -85,8 +96,11 @@ credential-bound jobs keep their own profile and receive Kanban only for that
 job.
 
 **Adding a new profile**: add an entry to `hermes_agent_profiles`
-(`mcp`/`env`/`skills`/optional `toolsets` and SOUL addendum source). Profile
-addenda ship in the pinned nix-hermes bundle under `soul/profiles/`; the
+(`mcp`/`env`/`skills`/optional `toolsets` and SOUL addendum source). A locked
+clerk declares its name, description, one MCP server, `locked: true`, its
+switch and a prompt that extends `soul-clerk.md.j2` with its own rules; shared
+defaults supply the rest. Profile addenda
+ship in the pinned nix-hermes bundle under `soul/profiles/`; the
 orchestrator keeps its role-local addendum. Scope each profile by what it must
 **not** reach, not by what it might someday need — a new capability is a new
 profile decision made in the PR that adds the work, not a widened existing one.
