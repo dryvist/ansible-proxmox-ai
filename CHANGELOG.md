@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.76.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.4...v2.76.0) (2026-11-25)
+
+
+### Features
+
+* **dify_docker:** check free space before pulling images ([#2755](https://github.com/dryvist/ansible-proxmox-ai/issues/2755)) ([23ed3ff](https://github.com/dryvist/ansible-proxmox-ai/commit/23ed3ffc11bbb610c291bdaa738e9199c5a28dbd))
+
 ## [2.75.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.3...v2.75.4) (2026-11-25)
 
 
