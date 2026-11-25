@@ -5,11 +5,16 @@
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     _app_agent_read_allowlist_ids: [64]
+    llm_router_hermes_youtrack_clerk_key_enabled: true
     _tofu_fixture:
       constants:
         service_ports:
           llm_router_api: 4000
           next_ai_drawio_mcp: 3071
+      hermes_agents:
+        hermes-agent:
+          api_url: "http://hermes.example.invalid/v1"
+          model_name: hermes-agent
     openbao_secrets_by_domain:
       app-agent-vikunja-read:
         VIKUNJA_AGENT_READ_TOKEN: fixture-vikunja-read-token
@@ -18,6 +23,8 @@
         VIKUNJA_AGENT_WRITE_TOKEN: fixture-vikunja-write-token
       app-agent-zammad-write:
         ZAMMAD_AGENT_WRITE_TOKEN: fixture-zammad-write-token
+      app-agent-youtrack-write:
+        YOUTRACK_AGENT_WRITE_TOKEN: fixture-youtrack-write-token
   tasks:
     - name: Add the fixture guest selected by the production inventory tag
       ansible.builtin.add_host:
@@ -31,6 +38,8 @@
         llm_router_mcp_next_ai_drawio_port_ready: true
         bao_apps_secrets:
           next_ai_drawio_llm_router_key: fixture-next-ai-drawio-key
+          hermes_youtrack_clerk_api_server_key: fixture-clerk-api-server-key
+          hermes_youtrack_clerk_llm_router_key: fixture-clerk-router-key
         bao_local_llm_secrets:
           ZAMMAD_MCP_URL: test-zammad-url
           ZAMMAD_MCP_TOKEN: test-zammad-token
@@ -39,12 +48,44 @@
           SLACK_BOT_TOKEN: test-slack-token
       no_log: true
 
+    - name: Publish the enabled profile to both role renders
+      ansible.builtin.import_tasks: "{{ playbook_dir }}/../../playbooks/tasks/load_hermes_profiles.yml"
+
     - name: Load the router defaults
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
     - name: Reuse the pinned Vikunja MCP package version
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/load-app-agent-package-pin.yml"
+
+    - name: Render the locked profile deployment and process environment
+      ansible.builtin.set_fact:
+        _clerk_deployments: >-
+          {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/model-list-hermes-agents.yaml.j2')
+             | from_yaml }}
+        _clerk_environment: >-
+          {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/litellm.env.j2') }}
+      no_log: true
+
+    - name: Publish the clerk through its multiplexed profile route
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _clerk_deployment.model_name == 'agent-youtrack-clerk'
+          - _clerk_deployment.litellm_params.model == 'hosted_vllm/youtrack-clerk'
+          - _clerk_deployment.litellm_params.api_base == 'http://hermes.example.invalid/p/youtrack-clerk/v1'
+          - _clerk_deployment.litellm_params.api_key == 'os.environ/HERMES_AGENT_BEARER_TOKEN_YOUTRACK_CLERK'
+          - _clerk_deployment.litellm_params.num_retries == 0
+          - _clerk_deployment.model_info.disable_background_health_check == true
+          - >-
+            ['local', 'zdr', 'sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii']
+            | difference(_clerk_deployment.litellm_params.tags) | length == 0
+          - "'HERMES_AGENT_BEARER_TOKEN_YOUTRACK_CLERK=fixture-clerk-api-server-key' in _clerk_environment"
+        fail_msg: The clerk deployment must use its own profile prefix, bearer, and local-sensitive tags.
+      vars:
+        _clerk_deployment: >-
+          {{ _clerk_deployments | selectattr('model_name', 'equalto', 'agent-youtrack-clerk') | first }}
+      no_log: true
 
     - name: Render only the MCP server block from the production template
       ansible.builtin.set_fact:
@@ -91,6 +132,9 @@
           - "'test-zammad-token' not in (_mcp_servers | to_json)"
           - "'test-slack-token' not in (_mcp_servers | to_json)"
           - "'fixture-next-ai-drawio-key' not in (_mcp_servers | to_json)"
+          - "'fixture-youtrack-write-token' not in (_mcp_servers | to_json)"
+          - "('youtrack.' ~ llm_router_subdomain) not in (_mcp_servers | to_json)"
+          - "'HERMES_AGENT_BEARER_TOKEN_YOUTRACK_CLERK' in _environment_template"
           - "'drawio' not in (_mcp_servers_disabled.mcp_servers | to_json)"
         fail_msg: The MCP credentials or stdio switch escaped their process environment boundary.
       no_log: true
@@ -130,6 +174,19 @@
             == ['start_session', 'create_new_diagram', 'edit_diagram', 'get_diagram',
                 'get_drawing_guide', 'get_shape_library']
           - "'stdio' != _mcp_servers.mcp_servers.drawio.transport"
+          - _mcp_servers.mcp_servers.youtrack_write.transport == 'http'
+          - _mcp_servers.mcp_servers.youtrack_write.server_id == 'youtrack_write'
+          - _mcp_servers.mcp_servers.youtrack_write.url == 'os.environ/LLM_ROUTER_APP_YOUTRACK_WRITE_URL'
+          - _mcp_servers.mcp_servers.youtrack_write.auth_type == 'bearer'
+          - _mcp_servers.mcp_servers.youtrack_write.auth_value == 'os.environ/LLM_ROUTER_APP_YOUTRACK_WRITE_TOKEN'
+          - _mcp_servers.mcp_servers.youtrack_write.allow_all_keys == false
+          - >-
+            _mcp_servers.mcp_servers.youtrack_write.allowed_tools
+            == ['search_issues', 'get_issue', 'get_issue_comments', 'add_issue_comment',
+                'create_issue', 'update_issue', 'change_issue_assignee', 'get_issue_fields_schema',
+                'find_projects', 'get_project', 'find_user', 'link_issues', 'manage_issue_tags',
+                'log_work', 'get_saved_issue_searches', 'get_current_user', 'search_articles',
+                'get_article', 'create_article', 'update_article']
         fail_msg: MCP server config did not match the pinned, read-only contract.
 
     - name: Assert app servers match the matrix
@@ -139,14 +196,20 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _server.transport == 'stdio'
+          - _server.transport == (_row.transport | default('stdio'))
           - _server.server_id == _row.server_id
-          - _server.command == _row.command
-          - _server.args == _row.args
           - _server.allow_all_keys == false
           - _server.allowed_tools == _row.allowed_tools
-          - _server.env[_row.url_env] == 'os.environ/' ~ _row.url_env_key
-          - _server.env[_row.token_env] == 'os.environ/' ~ _row.token_env_key
+          - >-
+            ((_row.transport | default('stdio')) == 'http'
+             and _server.url == 'os.environ/' ~ _row.url_env_key
+             and _server.auth_type == 'bearer'
+             and _server.auth_value == 'os.environ/' ~ _row.token_env_key)
+            or ((_row.transport | default('stdio')) == 'stdio'
+                and _server.command == _row.command
+                and _server.args == _row.args
+                and _server.env[_row.url_env] == 'os.environ/' ~ _row.url_env_key
+                and _server.env[_row.token_env] == 'os.environ/' ~ _row.token_env_key)
         fail_msg: An app-agent MCP server drifted from its tier definition.
       loop: "{{ _llm_router_app_agent_matrix | selectattr('enabled') | list }}"
       loop_control:

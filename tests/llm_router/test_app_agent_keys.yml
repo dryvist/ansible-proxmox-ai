@@ -12,6 +12,16 @@
          | from_yaml).llm_router_app_agent_probe_vikunja_forbidden_project_id }}
     llm_router_subdomain: pve.example.test
     ai_orchestration_otel_endpoint: "http://otel.example.test:4318"
+    hermes_agent_profiles:
+      - {name: splunk-admin}
+      - {name: homelab-admin}
+      - {name: github-maint}
+      - name: youtrack-clerk
+        description: Narrow tracker profile
+        mcp: [youtrack_write]
+        locked: true
+        feature_gate: llm_router_hermes_youtrack_clerk_key_enabled
+        soul_standalone_file: soul-youtrack-clerk.md.j2
   tasks:
     - name: Reuse the pinned Vikunja MCP package version
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/load-app-agent-package-pin.yml"
@@ -58,13 +68,16 @@
     - name: Set the app-agent roster, keys, and per-tier app credentials
       ansible.builtin.set_fact:
         ai_agents:
+          hermes: {trust_tier: trusted}
           vikunja-read: {router_key_class: standard}
           vikunja-write: {router_key_class: standard}
           zammad-write: {router_key_class: standard}
+          youtrack-write: {router_key_class: standard, trust_tier: trusted}
         ai_agent_owner:
           vikunja-read: vikunja-read
           vikunja-write: vikunja-write
           zammad-write: zammad-write
+          youtrack-write: youtrack-write
         openbao_secrets_by_domain:
           llm-router-agent-keys:
             vikunja_read_llm_router_key: fixture-vikunja-read-key
@@ -77,11 +90,23 @@
             VIKUNJA_AGENT_WRITE_TOKEN: fixture-vikunja-write-token
           app-agent-zammad-write:
             ZAMMAD_AGENT_WRITE_TOKEN: fixture-zammad-write-token
+          app-agent-youtrack-write:
+            YOUTRACK_AGENT_WRITE_TOKEN: fixture-youtrack-write-token
         bao_local_llm_secrets: >-
           {{ bao_local_llm_secrets | combine({
             'VIKUNJA_MCP_URL': 'fixture-vikunja-url',
             'VIKUNJA_MCP_TOKEN_RW': 'fixture-vikunja-shared-rw-token',
             'ZAMMAD_MCP_URL': 'fixture-zammad-url'
+          }) }}
+        bao_apps_secrets: >-
+          {{ bao_apps_secrets | combine({
+            'hermes_youtrack_clerk_api_server_key': 'fixture-clerk-api-server-key',
+            'hermes_youtrack_clerk_llm_router_key': 'fixture-clerk-router-key',
+            'cursor_llm_router_key': 'fixture-cursor-key',
+            'zcode_llm_router_key': 'fixture-zcode-key',
+            'ZCODE_ROUTER_KEY': 'fixture-zcode-key',
+            'OPENCODE_ROUTER_KEY': bao_apps_secrets.opencode_llm_router_key,
+            'QWEN_CODE_ROUTER_KEY': bao_apps_secrets.qwen_code_llm_router_key
           }) }}
       no_log: true
 
@@ -93,6 +118,38 @@
         _app_agent_roster_keys: "{{ _llm_router_agent_keys }}"
         _app_agent_projected_keys: "{{ llm_router_virtual_keys }}"
         _credentialed_environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+      no_log: true
+
+    - name: Ensure clerk callers receive only the agent model grant
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _clerk_caller_keys | map(attribute='alias') | sort == llm_router_hermes_clerk_caller_key_aliases | sort
+          - >-
+            _clerk_caller_keys | selectattr('models', 'contains', 'agent-youtrack-clerk')
+            | list | length == _clerk_caller_keys | length
+          - >-
+            _clerk_caller_keys | selectattr('object_permission.mcp_servers', 'contains', 'youtrack_write')
+            | list | length == 0
+          - >-
+            _clerk_caller_team_ids | difference(_clerk_team_ids) | length == 0
+          - _clerk_profile_key.object_permission.mcp_servers == ['youtrack_write']
+          - _clerk_profile_key.models == [llm_router_review_aliases.local]
+          - "'agent-youtrack-clerk' not in _clerk_profile_key.models"
+        fail_msg: Clerk caller keys must receive the model through their team without receiving its MCP server.
+      vars:
+        _clerk_caller_keys: >-
+          {{ _app_agent_projected_keys
+             | selectattr('alias', 'in', llm_router_hermes_clerk_caller_key_aliases) | list }}
+        _clerk_caller_team_ids: >-
+          {{ _clerk_caller_keys | map(attribute='team_id') | unique | list }}
+        _clerk_team_ids: >-
+          {{ llm_router_priority_team_settings
+             | selectattr('models', 'contains', 'agent-youtrack-clerk')
+             | map(attribute='team_id') | list }}
+        _clerk_profile_key: >-
+          {{ _app_agent_projected_keys
+             | selectattr('alias', 'equalto', 'hermes-youtrack-clerk') | first }}
       no_log: true
 
     - name: Keep each app-agent key on exactly its owned tier server

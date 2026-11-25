@@ -17,6 +17,11 @@ llm_router_app_agent_apps:
     url_env: ZAMMAD_URL
     url_field: ZAMMAD_MCP_URL
     token_env: ZAMMAD_HTTP_TOKEN
+  # The tracker serves its own remote MCP endpoint, so the address is derived, not stored.
+  youtrack:
+    transport: http
+    url: "https://youtrack.{{ llm_router_subdomain }}/mcp"
+    token_env: YOUTRACK_MCP_TOKEN
 
 llm_router_app_agent_tiers:
   - id: vikunja-read
@@ -49,6 +54,31 @@ llm_router_app_agent_tiers:
       - zammad_update_ticket
       - zammad_add_article
       - zammad_add_ticket_tag
+  - id: youtrack-write
+    app: youtrack
+    tier: write
+    token_field: YOUTRACK_AGENT_WRITE_TOKEN
+    allowed_tools:
+      - search_issues
+      - get_issue
+      - get_issue_comments
+      - add_issue_comment
+      - create_issue
+      - update_issue
+      - change_issue_assignee
+      - get_issue_fields_schema
+      - find_projects
+      - get_project
+      - find_user
+      - link_issues
+      - manage_issue_tags
+      - log_work
+      - get_saved_issue_searches
+      - get_current_user
+      - search_articles
+      - get_article
+      - create_article
+      - update_article
 
 # Tiers whose keys may only go to roster entries with trust_tier trusted.
 llm_router_app_agent_trusted_tiers: [write, admin]
@@ -80,7 +110,8 @@ _llm_router_app_agent_matrix: >-
         'token_value': token,
         'token_env_key': token_env_key,
         'url_env_key': url_env_key,
-        'url_value': (bao_local_llm_secrets | default({}, true)).get(app.url_field, '')
+        'url_value': (app.url if app.url is defined
+                      else (bao_local_llm_secrets | default({}, true)).get(app.url_field, ''))
           | default('', true) | string | trim,
         'enabled': token | length > 0,
       }, recursive=true) -%}
@@ -102,6 +133,9 @@ llm_router_app_agent_matrix_markdown: |-
   - Tier: {{ row.tier }}
   - MCP server: {{ row.id | replace('-', '_') }}
   - OpenBao token field: {{ row.token_field }}
+  {% if row.transport | default('stdio') == 'http' %}
+  - Transport: HTTP
+  {% endif %}
   - Allowed tools:
   {% for tool in row.allowed_tools %}
     - {{ tool }}
