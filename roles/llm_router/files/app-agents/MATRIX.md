@@ -70,12 +70,12 @@ Generated from `llm_router_app_agent_tiers`; a test fails when this file drifts.
   - create_article
   - update_article
 
-## semaphore-run
+## semaphore-write
 
 - App: semaphore
 - Tier: write
-- MCP server: semaphore_run
-- OpenBao token field: SEMAPHORE_AGENT_RUN_TOKEN
+- MCP server: semaphore_write
+- OpenBao token field: SEMAPHORE_AGENT_WRITE_TOKEN
 - Allowed tools:
   - list_projects
   - list_templates

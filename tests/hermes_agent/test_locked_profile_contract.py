@@ -116,6 +116,11 @@ def test_locked_profile_renders_local_single_server_lockdown() -> None:
     assert "allowed_tools" not in config["mcp_servers"]["youtrack_write"]
 
 
+@pytest.mark.parametrize("profile", _locked(), ids=lambda p: p["name"])
+def test_every_clerk_renders_its_one_router_server(profile: dict) -> None:
+    assert set(_render_config(profile, "hindsight")["mcp_servers"]) == set(profile["mcp"])
+
+
 def test_locked_profile_env_contains_its_own_api_key_and_config_variables() -> None:
     profile = _clerk()
     rendered_config = _render_locked_config(profile)
