@@ -317,3 +317,10 @@ def role_tasks_text(role_root: Path, entry: str = "main.yml") -> str:
         if target:
             parts.append(role_tasks_text(role_root, target))
     return "\n".join(parts)
+
+
+def direct_plan_var(role_root: Path, name: str):
+    """One per-job value of the direct-cron plan task (a task var)."""
+    tasks = yaml.safe_load((role_root / "tasks" / "reconcile_direct_cron_plan.yml").read_text())
+    plan = next(t for t in tasks if t.get("name") == "Direct cron | Plan every job")
+    return plan["vars"][name]

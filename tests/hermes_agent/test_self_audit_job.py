@@ -92,19 +92,16 @@ def test_enabled_gate_requires_its_inputs():
 
 def test_create_guards_match_the_complete_cron_name_field():
     tasks = yaml.safe_load((ROLE / "tasks" / "reconcile_direct_cron.yml").read_text())
+    plan = next(task for task in yaml.safe_load((ROLE / "tasks" / "reconcile_direct_cron_plan.yml").read_text())
+                if task["name"] == "Direct cron | Plan every job")
+    installed = plan["ansible.builtin.set_fact"]["hermes_agent_direct_plan_entry"]["installed"]
+    assert all(token in installed for token in ("regex_search", "regex_escape", "Name:", "^", "$"))
     create_tasks = [
         task for task in tasks if task["name"].startswith("Direct cron | Create")
     ]
     assert len(create_tasks) == 2
     assert all(
-        any(
-            "regex_search" in condition
-            and "regex_escape" in condition
-            and "Name:" in condition
-            and "^" in condition
-            and "$" in condition
-            for condition in task["when"]
-        )
+        any("hermes_agent_direct_plan[item.name].installed" in condition for condition in task["when"])
         for task in create_tasks
     )
 

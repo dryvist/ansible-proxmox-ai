@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import yaml
 
+from _role_files import role_tasks_text
 from test_profile_contract import (
     ROLE_ROOT,
     _RENDER_CONTEXT,
@@ -115,7 +116,7 @@ def test_card_crons_get_kanban_only_through_their_per_job_toolsets() -> None:
         profile_name = home.rsplit("/", 1)[-1]
         assert profile_name in profiles
 
-    reconciler = (ROLE_ROOT / "tasks" / "reconcile_direct_cron.yml").read_text()
+    reconciler = role_tasks_text(ROLE_ROOT, "reconcile_direct_cron.yml")
     assert "item.hermes_home | default(hermes_agent_hermes_home)" in reconciler
     assert "from tools.cronjob_tools import cronjob" in reconciler
     assert "enabled_toolsets: \"{{ item.enabled_toolsets | default([]) }}\"" in reconciler

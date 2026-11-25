@@ -44,7 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
 DEFAULTS = role_defaults(ROLE)
 MAIN_TASKS = role_tasks_text(ROLE)
-DIRECT_TASKS = (ROLE / "tasks" / "reconcile_direct_cron.yml").read_text()
+DIRECT_TASKS = role_tasks_text(ROLE, "reconcile_direct_cron.yml")
 
 _ENV = Environment(autoescape=False)
 _ENV.filters["regex_replace"] = lambda value, pattern, replacement="": re.sub(

@@ -87,8 +87,8 @@ def test_profile_deliver_targets_are_the_first_report_channel() -> None:
 def _resolve_deliver(item: dict, channels: dict | None = None, digest_channel: str = "C0HOME") -> str:
     """Evaluate the reconcile task's deliver expressions as Ansible would."""
     task = next(
-        t for t in yaml.safe_load((ROLE_ROOT / "tasks" / "reconcile_direct_cron.yml").read_text())
-        if t["name"].startswith("Direct cron | Resolve deliver target")
+        t for t in yaml.safe_load((ROLE_ROOT / "tasks" / "reconcile_direct_cron_plan.yml").read_text())
+        if t["name"] == "Direct cron | Plan every job"
     )
     env = Environment()
     env.tests["match"] = lambda v, p: re.match(p, str(v)) is not None
@@ -100,7 +100,7 @@ def _resolve_deliver(item: dict, channels: dict | None = None, digest_channel: s
     }
     for key in ("_deliver", "_home", "_profile"):
         ctx[key] = env.from_string(task["vars"][key]).render(**ctx).strip()
-    return env.from_string(task["ansible.builtin.set_fact"]["hermes_agent_direct_deliver"]).render(**ctx).strip()
+    return env.from_string(task["vars"]["hermes_agent_direct_deliver"]).render(**ctx).strip()
 
 
 def test_named_profile_slack_target_moves_to_its_channel() -> None:
