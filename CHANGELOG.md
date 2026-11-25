@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.78.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.77.0...v2.78.0) (2026-11-25)
+
+
+### Features
+
+* **llm_router:** add a large role for the Hermes reasoning crons ([#2612](https://github.com/dryvist/ansible-proxmox-ai/issues/2612)) ([4bd4e5d](https://github.com/dryvist/ansible-proxmox-ai/commit/4bd4e5d282a3c6e6f6ae9dcfa942603ff4f6d0ac))
+
 ## [2.77.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.76.0...v2.77.0) (2026-11-25)
 
 
