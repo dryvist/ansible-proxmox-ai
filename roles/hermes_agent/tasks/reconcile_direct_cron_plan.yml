@@ -1,0 +1,165 @@
+---
+# The direct-cron plan (reconcile_direct_cron.yml imports it): one entry per job
+# in hermes_agent_direct_reconcile_jobs, indexed by job name. The reconcile's
+# remote steps read only this index, so each of them is one task over all jobs.
+
+# One plan entry per job. The vars are templated per item and only when the
+# entry reads them, so an unwanted job never renders its prompt.
+- name: "Direct cron | Plan every job"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_plan_entry:
+      wanted: "{{ hermes_agent_direct_wanted }}"
+      deliver: "{{ hermes_agent_direct_deliver }}"
+      failure_deliver: "{{ hermes_agent_direct_failure_deliver }}"
+      # The main-channel rule acts only on a target it refuses or a footer it
+      # cannot prove is another channel; any other job skips its include.
+      guard: >-
+        {{ hermes_agent_direct_wanted
+           and (hermes_agent_refuse_main_channel_targets | bool)
+           and ((hermes_agent_slack_home_channel | trim | length == 0)
+                or (hermes_agent_refuse_bad_entries | length > 0)
+                or (hermes_agent_refuse_footer_unprovable | bool)) }}
+      installed: >-
+        {{ (hermes_agent_direct_cron_list.stdout
+            | regex_search('(?m)^[ \\t]*Name:[ \\t]*'
+                           ~ (item.name | regex_escape) ~ '[ \\t]*$')) is not none }}
+      # A missing marker reads as '', so a job never recorded is drift.
+      changed: >-
+        {{ hermes_agent_direct_wanted
+           and (hermes_agent_direct_markers | default({})).get(item.name, '')
+               != hermes_agent_direct_checksum }}
+      checksum: "{{ hermes_agent_direct_checksum if hermes_agent_direct_wanted else '' }}"
+      argv: "{{ hermes_agent_direct_argv if hermes_agent_direct_wanted else [] }}"
+      spec: "{{ hermes_agent_direct_cronjob_spec if hermes_agent_direct_wanted else {} }}"
+  vars:
+    hermes_agent_direct_no_agent: "{{ item.no_agent | default(false) | bool }}"
+    hermes_agent_direct_wanted: "{{ hermes_agent_direct_job_wanted | bool }}"
+    hermes_agent_cli_home: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+    # A named profile's single Slack target moves to that profile's routed
+    # report channel when one is configured (152-profile-slack-routes.yml).
+    _deliver: "{{ item.deliver | default('slack:' ~ hermes_agent_digest_slack_channel) | trim }}"
+    _home: "{{ item.hermes_home | default('') }}"
+    _profile: "{{ _home.split('/profiles/')[-1] if '/profiles/' in _home else '' }}"
+    # The profile's report channels, first the shared list default and, when
+    # it is not in context, rebuilt from the single channel of the old map.
+    # A target that is already one of the profile's channels is kept; every
+    # other single Slack target moves to the profile's first channel.
+    hermes_agent_direct_deliver: >-
+      {%- set _chan = (hermes_agent_slack_profile_channel_lists[_profile] | list)
+         if (hermes_agent_slack_profile_channel_lists is defined
+             and _profile in hermes_agent_slack_profile_channel_lists)
+         else (([hermes_agent_slack_profile_channels[_profile]]
+                if hermes_agent_slack_profile_channels[_profile] is string
+                else (hermes_agent_slack_profile_channels[_profile] | list))
+               if (_profile in (hermes_agent_slack_profile_channels | default({}, true)))
+               else []) -%}
+      {{ _deliver if ((_deliver is match('slack:[^,]+$'))
+                      and (_profile in (hermes_agent_slack_profile_channels | default({}, true)))
+                      and (_deliver.replace('slack:', '') in _chan))
+         else (('slack:' ~ _chan[0])
+               if ((_deliver is match('slack:[^,]+$'))
+                   and (_profile in (hermes_agent_slack_profile_channels | default({}, true))))
+               else _deliver) }}
+    hermes_agent_direct_model: >-
+      {{ '' if hermes_agent_direct_no_agent
+         else item.model | default(hermes_agent_cron_model) }}
+    hermes_agent_direct_model_provider: >-
+      {%- set _provider = item.model_provider | default(hermes_agent_cron_model_provider) -%}
+      {{ '' if hermes_agent_direct_no_agent
+         else ('custom:' ~ hermes_agent_direct_cron_telemetry[item.name].provider)
+              if _provider == hermes_agent_model_provider else _provider }}
+    hermes_agent_direct_failure_deliver: "{{ item.failure_deliver | default(hermes_agent_cron_failure_deliver) }}"
+    # The main-channel rule's inputs, read by the guard entry above through
+    # hermes_agent_refuse_bad_entries and hermes_agent_refuse_footer_unprovable.
+    refuse_deliver: "{{ hermes_agent_direct_deliver }}"
+    refuse_failure: "{{ hermes_agent_direct_failure_deliver }}"
+    refuse_footer: "{{ item.channel_when_healthy | default('') }}"
+    # item.prompt_tail is the job's run-specific text. It goes last so that
+    # jobs sharing a prompt also share everything before it.
+    hermes_agent_direct_prompt: "{{ '' if hermes_agent_direct_no_agent else hermes_agent_direct_prompt_text }}"
+    hermes_agent_direct_prompt_text: >-
+      {{ (([lookup('vars', item.prompt_var)] if item.prompt_var is defined else
+           query('ansible.builtin.template', *hermes_agent_direct_prompt_paths,
+                 keep_trailing_newline=true))
+          | map('regex_replace', '(?s)^---\n.*?\n---\n', '') | join('') | trim)
+         ~ '\n\n' ~
+         (lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+             ~ ('hermes-direct-cron-footer-quiet.md' if item.channel_when_healthy is defined
+                else 'hermes-direct-cron-footer.md'), rstrip=false)
+          | regex_replace('(?s)^---\n.*?\n---\n', '')
+          | replace('${DELIVER}', hermes_agent_direct_deliver)
+          | replace('${CHANNEL_WHEN_HEALTHY}', item.channel_when_healthy | default(''))
+          | trim)
+         ~ (('\n\n' ~ item.prompt_tail | trim) if item.prompt_tail is defined else '') }}
+    hermes_agent_direct_prompt_paths: >-
+      {{ (item.prompt_files | default([item.prompt_file | default('')]))
+         | map('regex_replace', '^', hermes_agent_prompts_path ~ '/') | list }}
+    # Cron runs detached from the gateway cwd, so --workdir matches HERMES_HOME.
+    # The CLI omits enabled_toolsets; jobs declaring it use the native handler.
+    hermes_agent_direct_argv: >-
+      {{ [hermes_agent_bin] + hermes_agent_cli_profile_args + ['cron', 'create', item.schedule]
+         + ([hermes_agent_direct_prompt] if not hermes_agent_direct_no_agent else [])
+         + ['--name', item.name]
+         + (['--skill', item.skill] if (item.skill | default('') | length > 0) else [])
+         + (['--script', item.script] if (item.script | default('') | length > 0) else [])
+         + (['--no-agent'] if hermes_agent_direct_no_agent else [])
+         + (['--model', hermes_agent_direct_model]
+            if hermes_agent_direct_model | length > 0 else [])
+         + (['--provider', hermes_agent_direct_model_provider]
+            if hermes_agent_direct_model | length > 0 else [])
+         + ['--deliver', hermes_agent_direct_deliver,
+            '--workdir', item.hermes_home | default(hermes_agent_hermes_home)]
+         + (['--failure-deliver', hermes_agent_direct_failure_deliver]
+            if (hermes_agent_direct_failure_deliver | length > 0) else []) }}
+    hermes_agent_direct_cronjob_spec:
+      action: create
+      schedule: "{{ item.schedule }}"
+      prompt: "{{ hermes_agent_direct_prompt }}"
+      name: "{{ item.name }}"
+      deliver: "{{ hermes_agent_direct_deliver }}"
+      skill: "{{ item.skill | default('') }}"
+      script: "{{ item.script | default('') }}"
+      model: "{{ hermes_agent_direct_model }}"
+      provider: >-
+        {{ hermes_agent_direct_model_provider
+           if hermes_agent_direct_model | length > 0 else '' }}
+      failure_deliver: "{{ hermes_agent_direct_failure_deliver }}"
+      workdir: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+      enabled_toolsets: "{{ item.enabled_toolsets | default([]) }}"
+    # The list comes from the single `cron list` per HERMES_HOME that
+    # cron_reconcile_direct_batch.yml ran, so a job costs no CLI process here.
+    hermes_agent_direct_cron_list:
+      stdout: >-
+        {{ (hermes_agent_direct_cron_lists | default({}))
+           .get(item.hermes_home | default(hermes_agent_hermes_home), '') }}
+    # 'workdir' is IN the checksum, not just the create argv, so a guest
+    # converged before --workdir was added sees this as drift and gets its
+    # existing (no-workdir) job removed and re-created below — a converge is
+    # what heals an already broken job, not just what stops new ones from
+    # breaking.
+    hermes_agent_direct_checksum: >-
+      {{ ({'schedule': item.schedule, 'prompt': hermes_agent_direct_prompt,
+          'skill': item.skill | default(''),
+          'script': item.script | default(''),
+          'deliver': hermes_agent_direct_deliver,
+          'workdir': item.hermes_home | default(hermes_agent_hermes_home),
+          'failure_deliver': hermes_agent_direct_failure_deliver}
+         | combine({'model': hermes_agent_direct_model}
+                  if hermes_agent_direct_model | length > 0 else {})
+         | combine({'model_provider': hermes_agent_direct_model_provider}
+                  if hermes_agent_direct_model | length > 0 else {})
+         | combine({'enabled_toolsets': item.enabled_toolsets}
+                  if item.enabled_toolsets is defined else {})
+         | combine({'no_agent': true} if hermes_agent_direct_no_agent else {}))
+         | to_json | hash('sha256') }}
+  loop: "{{ hermes_agent_direct_reconcile_jobs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: hermes_agent_direct_plan_raw
+
+- name: "Direct cron | Index the plan by job name"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_plan: >-
+      {{ dict(hermes_agent_direct_plan_raw.results | map(attribute='item.name')
+              | zip(hermes_agent_direct_plan_raw.results
+                    | map(attribute='ansible_facts.hermes_agent_direct_plan_entry'))) }}

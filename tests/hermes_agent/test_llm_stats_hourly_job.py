@@ -16,7 +16,7 @@ import yaml
 from jinja2 import Environment
 
 from _alert_routing_shared import _direct_job
-from _role_files import role_defaults
+from _role_files import direct_plan_var, role_defaults
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
@@ -67,12 +67,7 @@ def test_prompt_carries_the_memory_and_feedback_protocol() -> None:
 
 
 def test_seed_queries_survive_the_cron_prompt_delivery_path() -> None:
-    tasks = yaml.safe_load((ROLE / "tasks" / "reconcile_direct_cron.yml").read_text())
-    load_prompt = next(
-        task["ansible.builtin.set_fact"]["hermes_agent_direct_prompt"]
-        for task in tasks
-        if str(task.get("name", "")).startswith("Direct cron | Load prompt + append")
-    )
+    load_prompt = direct_plan_var(ROLE, "hermes_agent_direct_prompt_text")
     environment = Environment(autoescape=False)
     environment.filters["regex_replace"] = lambda value, pattern, replacement="": re.sub(
         pattern, replacement, value
@@ -101,18 +96,15 @@ def test_seed_queries_survive_the_cron_prompt_delivery_path() -> None:
     for query in SEED_QUERIES:
         assert query in delivered
 
-    build_argv = next(
-        task["ansible.builtin.set_fact"]["hermes_agent_direct_argv"]
-        for task in tasks
-        if str(task.get("name", "")).startswith("Direct cron | Build create argv")
-    )
+    build_argv = direct_plan_var(ROLE, "hermes_agent_direct_argv")
+    tasks = yaml.safe_load((ROLE / "tasks" / "reconcile_direct_cron.yml").read_text())
     create = next(
         task["ansible.builtin.command"]
         for task in tasks
-        if str(task.get("name", "")).startswith("Direct cron | Create {{ item.name }}")
+        if task.get("name") == "Direct cron | Create jobs"
     )
     assert "hermes_agent_direct_prompt" in build_argv
-    assert create["argv"] == "{{ hermes_agent_direct_argv }}"
+    assert create["argv"] == "{{ hermes_agent_direct_plan[item.name].argv }}"
 
 
 def test_prompt_budgets_queries_and_report_time() -> None:

@@ -32,15 +32,27 @@ def _load(name: str) -> list[dict]:
     return yaml.safe_load((TASKS / name).read_text())
 
 
+def _conditions(task: dict) -> list:
+    when = task.get("when", [])
+    return [when] if isinstance(when, str) else list(when)
+
+
 def _direct_tasks() -> list[dict]:
-    """reconcile_direct_cron.yml in run order, with the withdraw include spliced in."""
+    """reconcile_direct_cron.yml in run order, with the withdraw include spliced in under its gate."""
     tasks: list[dict] = []
     for task in _load("reconcile_direct_cron.yml"):
         if include_file(task) == "reconcile_direct_cron_withdraw.yml":
-            tasks += _load("reconcile_direct_cron_withdraw.yml")
+            tasks += [{**inner, "when": _conditions(task) + _conditions(inner)}
+                      for inner in _load("reconcile_direct_cron_withdraw.yml")]
         else:
             tasks.append(task)
     return tasks
+
+
+def _plan_entry(name: str) -> dict:
+    """One value template of the plan task's entry."""
+    plan = _named(_load("reconcile_direct_cron_plan.yml"), "Direct cron | Plan every job")
+    return plan["ansible.builtin.set_fact"]["hermes_agent_direct_plan_entry"][name]
 
 
 def _batch() -> list[dict]:
@@ -102,25 +114,27 @@ def _batch_facts(jobs: list[dict], *, host: str, existing: set[str]):
 
 
 def _take_list_fails(job: dict, *, host: str, lists: dict[str, str]) -> bool:
-    """Whether the per-job 'Take the installed job list' task fails for one job."""
-    task = next(
-        t for t in _load("reconcile_direct_cron.yml")
-        if t.get("name", "").startswith("Direct cron | Take the installed job list")
-    )
-    return bool(ENV.compile_expression(task["failed_when"])(
-        item=job,
-        ansible_check_mode=False,
-        hermes_agent_install={"changed": False},
-        hermes_agent_hermes_home=HOME,
-        hermes_agent_direct_cron_lists=lists,
-        hermes_agent_direct_wanted=_wanted(job, host=host),
-    ))
+    """Whether the reconcile's 'home has no job list' fail task rejects one job."""
+    task = _named(_load("reconcile_direct_cron.yml"),
+                  "Direct cron | Fail when a wanted job's home has no job list")
+    context = {
+        "item": job,
+        "ansible_check_mode": False,
+        "hermes_agent_install": {"changed": False},
+        "hermes_agent_hermes_home": HOME,
+        "hermes_agent_direct_cron_lists": lists,
+        "hermes_agent_direct_plan": {job["name"]: {"wanted": _wanted(job, host=host)}},
+    }
+    return all(ENV.compile_expression(str(c))(**context) for c in _conditions(task))
 
 
 def _ran(
     *, wanted: bool, listed: bool | str, marker: str | None, changed: bool, name: str = "job-a"
 ) -> set[str]:
-    """Names of the remote/CLI tasks whose `when` passes for one job."""
+    """Names of the remote/CLI tasks whose `when` passes for one job.
+
+    `installed` comes from the plan task's own exact-name match over the listing.
+    """
     ctx = {
         "item": {"name": name},
         "hermes_agent_direct_wanted": wanted,
@@ -129,16 +143,17 @@ def _ran(
             else f"Name: {name}" if listed else ""
         },
         "hermes_agent_direct_markers": {name: marker} if marker else {},
-        "hermes_agent_direct_marker_probe": {"changed": changed},
         "ansible_check_mode": False,
+    }
+    installed = _value(_plan_entry("installed"), **ctx)
+    ctx["hermes_agent_direct_plan"] = {
+        name: {"wanted": wanted, "installed": installed, "changed": changed}
     }
     ran = set()
     for task in _direct_tasks():
         if not any(m in task for m in REMOTE_MODULES):
             continue
-        conds = task.get("when", [])
-        conds = [conds] if isinstance(conds, str) else conds
-        if all(ENV.compile_expression(str(c))(**ctx) for c in conds):
+        if all(ENV.compile_expression(str(c))(**ctx) for c in _conditions(task)):
             ran.add(task["name"].split(" {{")[0])
     return ran
 
@@ -149,9 +164,9 @@ def test_matching_marker_makes_no_cli_or_remote_call():
 
 def test_drifted_job_is_removed_recreated_and_recorded():
     assert _ran(wanted=True, listed=True, marker="old", changed=True) == {
-        "Direct cron | Remove drifted",
-        "Direct cron | Create",
-        "Direct cron | Record desired state for",
+        "Direct cron | Remove drifted jobs",
+        "Direct cron | Create jobs",
+        "Direct cron | Record desired state",
     }
 
 
@@ -159,23 +174,23 @@ def test_a_cleared_marker_on_an_installed_job_is_removed_and_recreated_with_the_
     # The refused job's marker is cleared only after the read-back proves it is no longer
     # posting. With the corrected declared target the next converge takes this same path.
     assert _ran(wanted=True, listed=True, marker=None, changed=True) == {
-        "Direct cron | Remove drifted",
-        "Direct cron | Create",
-        "Direct cron | Record desired state for",
+        "Direct cron | Remove drifted jobs",
+        "Direct cron | Create jobs",
+        "Direct cron | Record desired state",
     }
 
 
 def test_absent_job_is_created_and_recorded_without_a_remove():
     assert _ran(wanted=True, listed=False, marker=None, changed=True) == {
-        "Direct cron | Create",
-        "Direct cron | Record desired state for",
+        "Direct cron | Create jobs",
+        "Direct cron | Record desired state",
     }
 
 
 def test_job_name_substring_does_not_count_as_an_exact_match():
     assert _ran(wanted=True, listed="job-ab", marker=None, changed=True) == {
-        "Direct cron | Create",
-        "Direct cron | Record desired state for",
+        "Direct cron | Create jobs",
+        "Direct cron | Record desired state",
     }
 
 
@@ -237,8 +252,8 @@ def test_enabled_job_on_an_existing_profile_home_is_listed_and_reconciled():
     assert failing == []
     assert _take_list_fails(job, host="hermes", lists={HOME: "", SPLUNK_ADMIN: ""}) is False
     assert _ran(wanted=_wanted(job, host="hermes"), listed=False, marker=None, changed=True) == {
-        "Direct cron | Create",
-        "Direct cron | Record desired state for",
+        "Direct cron | Create jobs",
+        "Direct cron | Record desired state",
     }
 
 
@@ -291,8 +306,8 @@ def test_zammad_review_is_reconciled_in_its_profile_home_when_ready():
     assert _ran(
         name="zammad-review", wanted=True, listed=False, marker=None, changed=True
     ) == {
-        "Direct cron | Create",
-        "Direct cron | Record desired state for",
+        "Direct cron | Create jobs",
+        "Direct cron | Record desired state",
     }
 
 
