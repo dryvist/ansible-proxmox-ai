@@ -76,6 +76,9 @@ router model exist only while its `llm_router_hermes_<name>_key_enabled` switch
 is on. Its own `.env` carries its API-server key, and the router serves it
 under the profile prefix with a separate bearer. A clerk uses the local review
 model, exposes one app-agent MCP server, and has built-in memory disabled.
+The clerk's router key is the key that holds its tier: the router turns an
+app-agent tier on only when the tier's token is seeded and a roster entry or a
+locked profile holds a key for it. A seeded token that nothing holds stays off.
 
 `github-maint` is the one profile whose headline constraint is enforced by a
 **credential** rather than by tool availability. It renders the read-only
