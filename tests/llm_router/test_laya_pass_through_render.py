@@ -9,13 +9,13 @@ import yaml
 
 TEMPLATE = Path(__file__).resolve().parents[2] / "roles/llm_router/templates/general-settings.yaml.j2"
 
-# The agent-quota route renders unconditionally, so every render context must
-# carry its (non-secret) variables; only the bearer value is optional.
+# The agent-quota route renders only with its bearer set; these contexts set it.
 QUOTA_CONTEXT = {
     "llm_router_agent_quota_path": "/agent-quota",
     "llm_router_agent_quota_upstream_base_url": "https://vmauth.example",
     "llm_router_agent_quota_upstream_path": "/agent-quota",
     "llm_router_agent_quota_reader_token_env": "AGENT_QUOTA_READER_TOKEN",
+    "llm_router_agent_quota_reader_token": "reader-placeholder",
 }
 
 QUOTA_ENDPOINT = {
@@ -104,7 +104,7 @@ def test_zcode_usage_pass_through_render():
         },
     ]
     # Neither optional route active (no llm_router_zcode_usage_* vars at all,
-    # as today): only the core agent-quota entry renders.
+    # as today): only the agent-quota entry renders.
     text = template.render(
         groups={},
         llm_router_enforce_fallback_model_access=True,
@@ -113,3 +113,29 @@ def test_zcode_usage_pass_through_render():
     )
     assert "query=" not in text
     assert yaml.safe_load(text)["general_settings"]["pass_through_endpoints"] == [QUOTA_ENDPOINT]
+
+
+def test_agent_quota_route_needs_its_bearer():
+    env = jinja2.Environment()
+    env.filters["bool"] = bool
+    env.filters["to_json"] = json.dumps
+    template = env.from_string(TEMPLATE.read_text())
+    base = {
+        "llm_router_enforce_fallback_model_access": True,
+        "llm_router_background_health_checks": False,
+        **QUOTA_CONTEXT,
+        "llm_router_agent_quota_reader_token": "",
+    }
+    # No bearer and no other route: no pass-through key, so no header names an unset env var.
+    text = template.render(groups={}, **base)
+    assert "AGENT_QUOTA_READER_TOKEN" not in text
+    assert "pass_through_endpoints" not in yaml.safe_load(text)["general_settings"]
+    # No bearer beside an active route: that route renders alone.
+    text = template.render(
+        groups={"llm_classify": ["classifier"]},
+        llm_router_classifier_url="http://classifier.domain:1234/v1/systemone",
+        **base,
+    )
+    assert "AGENT_QUOTA_READER_TOKEN" not in text
+    paths = [e["path"] for e in yaml.safe_load(text)["general_settings"]["pass_through_endpoints"]]
+    assert paths == ["/v1/systemone"]
