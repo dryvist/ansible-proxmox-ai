@@ -40,11 +40,11 @@ so everything printed here must be TRUE. Never invent data. Zero rows, a missing
 baseline, and a failed query are ALWAYS stated as themselves, never smoothed into
 "no errors".
 
-THE PER-DAY NOVELTY CONTRACT: routine information may be presented ONCE per UTC
-day. A steady signature already reported today is suppressed on later runs.
-CRITICAL findings — a signature absent from the previous run, or one that climbed
-an order of magnitude — bypass that ledger, so they still report when the SAME
-delta recurs later the same day. Every finding here is a delta against the
+THE REPEAT-FLOOR CONTRACT (operator rule, 2026-11-23): the SAME finding posts at
+most once per ROUTINE_REPEAT_MIN (24h, rolling), or once per CRITICAL_REPEAT_MIN
+(4h) when it is critical — a signature absent from the previous run, or one that
+climbed an order of magnitude. A finding's identity is the fault, never the band
+its count landed in, so a count wobbling across a band edge is not a new issue. Every finding here is a delta against the
 previous run: the baseline advances each run, so nothing restates itself while a
 condition merely persists. A run with nothing left to say escalates to the host
 and sourcetype rollups, then prints its one "nothing new" line for the day and
@@ -152,6 +152,9 @@ SILENT = "[SILENT]"
 # rather than lost), which the runner reads as success — the marker is how
 # it says otherwise. Value comes from Ansible: one definition, two consumers.
 ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
+# Repeat floors, one definition in defaults (hermes_agent_alert_*_repeat_minutes).
+CRITICAL_REPEAT_MIN = {{ hermes_agent_alert_critical_repeat_minutes }}
+ROUTINE_REPEAT_MIN = {{ hermes_agent_alert_routine_repeat_minutes }}
 # Label for rows Splunk returned without a `host` field. Naming them beats
 # dropping them: unset host is itself worth seeing, and a dropped row would
 # quietly shrink the totals printed beside it.
@@ -161,9 +164,8 @@ NO_SOURCETYPE = "(no sourcetype)"
 # one number, one consumer, and they only mean anything against each other.
 # A series smaller than this can't produce a percentage worth reporting.
 MIN_MOVER_COUNT = 20
-# Percent bands a move must clear to count at all. The band a move lands in is
-# part of its ledger key, so a wobble that keeps landing in the same band is
-# reported once a day rather than every run.
+# Percent bands a move must clear to count at all. The band is NOT part of the
+# ledger key: a move is one issue per direction, whichever band it lands in.
 PCT_BANDS = (25, 50, 100, 300)
 # Percentage POINTS of mix shift that make a sourcetype's share change critical.
 SHARE_SHIFT_PP = 15
@@ -322,26 +324,29 @@ def build_findings(current, baseline, have_baseline, seen=None, today=None):
     count.
 
     A signature missing from the previous run's baseline is called NEW —
-    unless it was already observed on today's UTC day. TOP_N truncation makes a
+    unless it was already observed today or yesterday (UTC). TOP_N truncation makes a
     mid-band signature oscillate in and out of the baseline window, so "absent
     from the previous run" is not proof the signature is new; the per-day
-    seen-map is. new: is reserved for signatures never seen before today; a
+    seen-map is. new: is reserved for signatures not seen since yesterday; a
     signature that reappears after dropping out of the window is steady.
     """
     seen = seen or {}
+    # The seen-map holds UTC days, so "seen within the routine window" is today or yesterday.
+    recent = (dt.date.fromisoformat(today) - dt.timedelta(days=1)).isoformat() if today else None
     findings = []
     for key, entry in current.items():
         bucket = band(entry.count)
         previous = baseline.get(key)
         if not have_baseline:
             findings.append(Finding(
-                f"steady:{key}:{bucket}",
+                f"steady:{key}",
                 sig_line(entry, "", f"{fmt(entry.count)} events"), False))
-        elif previous is None and seen.get(key) == today:
+        elif previous is None and (seen.get(key) == today
+                                   or (recent and seen.get(key, "") >= recent)):
             # Dropped out of the previous run's truncated baseline but was
-            # already seen today: steady, not a re-flagged critical.
+            # seen today or yesterday: steady, not a re-flagged critical.
             findings.append(Finding(
-                f"steady:{key}:{bucket}",
+                f"steady:{key}",
                 sig_line(entry, "", f"{fmt(entry.count)} events "
                                     f"(reappeared after dropping out of the "
                                     f"truncated baseline)"), False))
@@ -353,17 +358,17 @@ def build_findings(current, baseline, have_baseline, seen=None, today=None):
                          f"absent from the previous run"), True))
         elif band(previous) > bucket:
             findings.append(Finding(
-                f"steady:{key}:{bucket}",
+                f"steady:{key}",
                 sig_line(entry, "", f"{fmt(entry.count)} events, down from "
                                     f"{fmt(previous)}"), False))
         elif band(previous) < bucket:
             findings.append(Finding(
-                f"spike:{key}:{bucket}",
+                f"spike:{key}",
                 sig_line(entry, ":chart_with_upwards_trend: *ESCALATING* ",
                          f"{fmt(entry.count)} events, up from {fmt(previous)}"), True))
         else:
             findings.append(Finding(
-                f"steady:{key}:{bucket}",
+                f"steady:{key}",
                 sig_line(entry, "", f"{fmt(entry.count)} events "
                                     f"(was {fmt(previous)})"), False))
     return findings
@@ -416,7 +421,7 @@ def host_findings(cur, prev, have_baseline):
         # only let a host oscillating across a band edge re-post the same key all
         # day. That is precisely the noise the per-day gate exists to stop.
         out.append(Finding(
-            f"host:{host}:{move[0]}:{move[1]}",
+            f"host:{host}:{move[0]}",
             f"Host {host} {move[0]} {move[2]:+.0f}% — "
             f"{fmt(prev[host])} -> {fmt(count)} events.", False))
     return out
@@ -433,7 +438,7 @@ def composition_findings(cur, prev, have_baseline):
         if move:
             # Routine: a sourcetype's raw volume tracks overall traffic.
             out.append(Finding(
-                f"stype:{stype}:{move[0]}:{move[1]}",
+                f"stype:{stype}:{move[0]}",
                 f"Sourcetype {stype} {move[0]} {move[2]:+.0f}% — "
                 f"{fmt(prev[stype])} -> {fmt(count)} events.", False))
         if not (total and prev_total):
@@ -443,21 +448,67 @@ def composition_findings(cur, prev, have_baseline):
             # Critical: the MIX changing is how a new failure mode announces
             # itself while the totals stay flat — exactly what volume misses.
             out.append(Finding(
-                f"share:{stype}:{int(shift // SHARE_SHIFT_PP)}",
+                f"share:{stype}:{'up' if shift > 0 else 'down'}",
                 f":twisted_rightwards_arrows: Sourcetype {stype} now "
                 f"{count * 100.0 / total:.0f}% of all matching events "
                 f"({shift:+.0f} points).", True))
     return out
 
 
-def load_ledger(state, today):
-    """Today's already-presented keys. A new UTC day resets it to empty, and a
-    state file predating the ledger simply carries none."""
+def legacy_key(key):
+    """Map a pre-rolling-window key to its band-free identity, so the upgrade
+    never re-posts an issue only because its old key carried a band."""
+    parts = key.split(":")
+    if parts[0] == "share" and len(parts) > 2 and parts[-1].lstrip("-").isdigit():
+        stype = ":".join(parts[1:-1])  # a sourcetype may contain colons
+        return f"share:{stype}:{'down' if int(parts[-1]) < 0 else 'up'}"
+    banded = (parts[0] in ("steady", "spike")
+              or (parts[0] in ("host", "stype") and parts[-2:-1] in (["up"], ["down"])))
+    if len(parts) > 2 and banded and parts[-1].isdigit():
+        return ":".join(parts[:-1])
+    return key
+
+
+def load_ledger(state, now):
+    """{key: posted_at} for every key presented within the routine window.
+
+    Entries are {"k": key, "at": iso}. A state file from before the rolling
+    window carried bare key strings for one UTC day; those count as posted at
+    that day's midnight, so the upgrade never re-posts what was already said.
+    """
     ledger = (state or {}).get("ledger")
-    if not isinstance(ledger, dict) or ledger.get("day") != today:
-        return []
-    keys = ledger.get("keys")
-    return list(keys) if isinstance(keys, list) else []
+    if not isinstance(ledger, dict) or not isinstance(ledger.get("keys"), list):
+        return {}
+    legacy_at = None
+    try:
+        legacy_at = dt.datetime.strptime(ledger.get("day") or "", "%Y-%m-%d").replace(
+            tzinfo=dt.timezone.utc)
+    except ValueError:
+        pass
+    cutoff = now - dt.timedelta(minutes=ROUTINE_REPEAT_MIN)
+    out = {}
+    for entry in ledger["keys"]:
+        if isinstance(entry, dict) and entry.get("k"):
+            try:
+                at = dt.datetime.fromisoformat(entry.get("at") or "")
+            except ValueError:
+                continue
+        elif isinstance(entry, str) and legacy_at is not None:
+            entry, at = {"k": legacy_key(entry)}, legacy_at
+        else:
+            continue
+        if at > cutoff:
+            out[entry["k"]] = at
+    return out
+
+
+def due(finding, ledger, now):
+    """True when `finding` may post now: never posted inside its repeat window."""
+    last = ledger.get(finding.key)
+    if last is None:
+        return True
+    window = CRITICAL_REPEAT_MIN if finding.critical else ROUTINE_REPEAT_MIN
+    return now - last >= dt.timedelta(minutes=window)
 
 
 def prune_seen(seen, today, max_age_days=7, max_keys=512):
@@ -503,7 +554,7 @@ def build_report(results, now, state):
     seen = (prior or {}).get("seen") or {}
     if not isinstance(seen, dict):
         seen = {}
-    ledger = load_ledger(prior, today)
+    ledger = load_ledger(prior, now)
 
     cur_hosts, cur_stypes = rollup(current, "hosts"), rollup(current, "sourcetypes")
 
@@ -512,11 +563,14 @@ def build_report(results, now, state):
                                   seen=seen, today=today):
         if len(shown) >= MAX_FINDINGS:
             break
-        if finding.critical or finding.key not in ledger:
+        if due(finding, ledger, now):
             shown.append(finding)
 
     lines = [f.text for f in shown]
-    posted = list(ledger)
+    posted = dict(ledger)
+
+    def mark(key):
+        posted[key] = now
 
     def payload(keys):
         # seen: every key observed this run is stamped with today's UTC day, so
@@ -528,7 +582,9 @@ def build_report(results, now, state):
                 "counts": {k: e.count for k, e in current.items()},
                 "hosts": cur_hosts, "sourcetypes": cur_stypes,
                 "seen": prune_seen(merged_seen, today),
-                "ledger": {"day": today, "keys": keys}}
+                "ledger": {"day": today,
+                           "keys": [{"k": k, "at": at.isoformat()}
+                                    for k, at in sorted(keys.items())]}}
 
     if not current:
         # Zero matching rows is a fact, not an all-clear: it is equally
@@ -539,7 +595,7 @@ def build_report(results, now, state):
             f"Zero rows matching {'/'.join(TERMS)} in {', '.join(INDEXES)} over the "
             f"{WINDOW} window — either a genuinely quiet hour or ingest has "
             f"stopped; this run cannot tell which.")
-        posted.append("zero-rows")
+        mark("zero-rows")
     elif not lines:
         # ESCALATE rather than emit boilerplate: nothing novel at the signature
         # level does not mean nothing happened. Roll up to hosts, then to the
@@ -549,27 +605,52 @@ def build_report(results, now, state):
             for finding in tier:
                 if len(shown) >= MAX_FINDINGS:
                     break
-                if finding.critical or finding.key not in ledger:
+                if due(finding, ledger, now):
                     shown.append(finding)
             if shown:
                 break
         lines = [f.text for f in shown]
         if lines:
-            posted.extend(f.key for f in shown)
+            for finding in shown:
+                mark(finding.key)
         elif "quiet" in ledger:
             return SILENT, payload(posted)
         else:
             lines.append(
                 f"No new signatures — all {len(current)} error signature(s) in "
                 f"{', '.join(INDEXES)} over the {WINDOW} window, their host and "
-                f"sourcetype rollups included, were already reported today.")
-            posted.append("quiet")
+                f"sourcetype rollups included, were already reported in the last "
+                f"{ROUTINE_REPEAT_MIN // 60}h.")
+            mark("quiet")
     else:
-        posted.extend(f.key for f in shown)
+        for finding in shown:
+            mark(finding.key)
         lines.append(scope_line(current, total_sigs))
 
     header = f"*{TITLE} — last {WINDOW}*"
     return "\n".join([header] + lines), payload(posted)
+
+
+def failure_report(detail, state, now):
+    """(text, payload) for a failed run, under the same repeat floor as findings.
+
+    Printing every failure unconditionally turned one MCP outage into an [ISSUES]
+    post every run. The same cause now posts once per routine window; a changed
+    cause is a new key and posts at once. The baseline is carried over untouched
+    so the first successful run still reports real deltas.
+    """
+    key = "failure:" + hashlib.sha1(detail.encode("utf-8", "replace")).hexdigest()[:12]  # noqa: S324
+    ledger = load_ledger(state, now)
+    if key in ledger:
+        return SILENT, None
+    payload = dict(state or {})
+    ledger[key] = now
+    payload["ledger"] = {"day": now.date().isoformat(),
+                         "keys": [{"k": k, "at": at.isoformat()}
+                                  for k, at in sorted(ledger.items())]}
+    return (f"{ISSUES_MARKER} :warning: {TITLE} FAILED: {detail}\n"
+            f"(the same failure is not repeated for {ROUTINE_REPEAT_MIN // 60}h; "
+            f"a different cause posts immediately)"), payload
 
 
 def load_state():
@@ -609,7 +690,11 @@ def main():
             if not sub:
                 break
             root = sub[0]
-        print(f"{ISSUES_MARKER} :warning: {TITLE} FAILED: {type(root).__name__}: {str(root)[:200]}")
+        text, payload = failure_report(f"{type(root).__name__}: {str(root)[:200]}",
+                                       load_state(), dt.datetime.now(dt.timezone.utc))
+        if payload is not None:
+            save_state(payload)
+        print(text)
         return 0
 
     text, payload = build_report(results, dt.datetime.now(dt.timezone.utc), load_state())

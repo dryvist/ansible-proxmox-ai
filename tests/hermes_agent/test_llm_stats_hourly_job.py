@@ -44,14 +44,16 @@ def test_job_is_a_splunk_profile_job_delivered_to_the_splunk_channel() -> None:
     assert "hermes_agent_splunk_mcp_url" in job["enabled"]
 
 
-def test_job_runs_hourly_off_the_board_digest_tick() -> None:
+def test_job_runs_once_a_day_off_the_board_digest_tick() -> None:
+    """Daily: the routine repeat floor allows the same report once per 24h."""
     job = _direct_job(NAME_VAR)
     schedule = DEFAULTS["hermes_agent_llm_stats_hourly_cron_schedule"]
     assert job["schedule"] == "{{ hermes_agent_llm_stats_hourly_cron_schedule }}"
-    assert schedule == "54 * * * *"
+    assert schedule == "54 12 * * *"
     assert job["system"] == "splunk"
     assert "model" not in job
-    assert re.fullmatch(r"[0-5]?\d \* \* \* \*", schedule)
+    assert re.fullmatch(r"[0-5]?\d [0-2]?\d \* \* \*", schedule)
+    assert int(DEFAULTS["hermes_agent_alert_routine_repeat_minutes"]) >= 1440
     digest_ticks = range(0, 60, int(DEFAULTS["hermes_agent_kanban_digest_interval_minutes"]))
     assert int(schedule.split()[0]) not in digest_ticks
 

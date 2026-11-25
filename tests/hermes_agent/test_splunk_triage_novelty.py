@@ -6,11 +6,11 @@ test_splunk_triage_guard.py for the markup-guard and job-config contract, and
 test_splunk_triage_ladder.py for the tier 2/3 escalation ladder this leaves
 behind.
 
-Per-day novelty: a steady stream is presented ONCE per UTC day. Findings are
-deltas against the PREVIOUS run, so the baseline advances and no finding
-restates itself; `critical` means "bypass the ledger", which shows up when
-the same delta RECURS within a day, not as a line repeating every run. Never
-fabricate: zero rows and an absent baseline are stated as themselves.
+Novelty: a steady stream is presented once per routine floor (24h). Findings
+are deltas against the PREVIOUS run, so the baseline advances and no finding
+restates itself; `critical` only shortens the floor to 4h (see
+test_splunk_triage_repeat_floor.py). Never fabricate: zero rows and an absent
+baseline are stated as themselves.
 
 Runs bare (`python3 tests/hermes_agent/test_splunk_triage_novelty.py`) or
 under pytest. Plain asserts, no fixtures, no framework.

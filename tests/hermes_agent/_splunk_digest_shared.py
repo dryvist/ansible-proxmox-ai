@@ -28,6 +28,8 @@ FIXTURE_CONFIG = {
     "EARLIEST": "-24h",
     "BACKUP_OUTCOME_AFTER_HOUR_UTC": 10,
     "ISSUES_MARKER": "[ISSUES]",
+    "CRITICAL_REPEAT_MIN": 240,
+    "ROUTINE_REPEAT_MIN": 1440,
 }
 
 
@@ -62,8 +64,7 @@ def ledger_keys(state):
     what is still holding instead of only counting it. Assertions that reached
     into ["ledger"]["keys"] directly were pinning that layout, not the contract,
     and broke the moment text was added alongside the key."""
-    day = (state or {}).get("ledger", {}).get("day")
-    return DIGEST.load_ledger(state, day)
+    return DIGEST.load_ledger(state, None)
 
 
 DAY = dt.datetime(2026, 7, 24, 0, 52, tzinfo=dt.timezone.utc)

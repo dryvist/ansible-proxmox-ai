@@ -91,6 +91,18 @@ def test_an_exhausted_routine_search_escalates_before_it_gives_up():
     assert exhausted == DIGEST.SILENT
 
 
+def test_a_stale_host_posts_once_per_day_as_it_keeps_ageing():
+    _, s0 = step(BASE, None, 0)
+    first, s1 = step(with_stale_host(1, "host-b", hours=3), s0, 1)
+    assert "host host-b" in first
+
+    # The same host, an hour staler each run: still one issue, not a new one per hour.
+    state = s1
+    for hour, age in ((2, 4), (3, 5), (6, 8)):
+        text, state = step(with_stale_host(hour, "host-b", hours=age), state, hour)
+        assert "host host-b" not in text, f"stale host reposted at {age}h old"
+
+
 def test_fully_quiet_runs_remain_silent_without_a_heartbeat():
     """Quiet runs stay silent regardless of elapsed time; findings still post."""
     baseline, s0 = step(BASE, None, 0)
