@@ -28,6 +28,7 @@ def _render_config(profile: dict[str, Any], memory_provider: str) -> dict[str, A
     defaults = _defaults()
     context = dict(_RENDER_CONTEXT)
     context["hermes_agent_memory_provider"] = memory_provider
+    context["hermes_agent_locked_profile_model"] = "local-review-fixture"
     context["hermes_agent_langfuse_enabled"] = True
     context["hermes_agent_plugins_enabled"] = ["dryvist-guardrails", "hindsight", "langfuse"]
     context["hermes_agent_disabled_toolsets"] = defaults["hermes_agent_disabled_toolsets"]

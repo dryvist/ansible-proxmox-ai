@@ -1,0 +1,39 @@
+---
+- name: Verify locked profile configuration fails closed
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/hermes_agent"
+    hermes_agent_slack_profile_channels: {}
+    hermes_agent_kanban_orchestrator_profile: orchestrator
+    hermes_agent_profile_webhook_routes: []
+    hermes_agent_direct_cron_jobs: []
+    _locked_profile:
+      name: youtrack-clerk
+      description: Narrow tracker profile
+      mcp: [youtrack_write]
+      locked: true
+      feature_gate: llm_router_hermes_youtrack_clerk_key_enabled
+      soul_standalone_file: soul-youtrack-clerk.md.j2
+  tasks:
+    - name: Accept the single-declaration locked profile
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
+      vars:
+        item: "{{ _locked_profile }}"
+
+    - name: Refuse a profile with a toolset override
+      block:
+        - name: Run the locked-profile guard with a loosening field
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
+          vars:
+            item: "{{ _locked_profile | combine({'toolsets': {'api_server': ['terminal']}}) }}"
+
+        - name: Fail if the guard admitted a toolset override
+          ansible.builtin.fail:
+            msg: The locked-profile guard admitted a toolset override.
+      rescue:
+        - name: Require the locked-profile assertion to refuse the override
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - ansible_failed_task.name == 'Assert locked profile has no extra configuration fields'

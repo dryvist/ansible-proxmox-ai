@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.74.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.73.0...v2.74.0) (2026-11-25)
+
+
+### Features
+
+* **hermes_agent:** locked clerk profiles published as router agent models ([#2830](https://github.com/dryvist/ansible-proxmox-ai/issues/2830)) ([13507f8](https://github.com/dryvist/ansible-proxmox-ai/commit/13507f86076ddc81968632df4997107f079b45bc))
+
 ## [2.73.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.7...v2.73.0) (2026-11-24)
 
 

@@ -117,8 +117,11 @@ def test_http_mcp_bridge_does_not_receive_the_router_key() -> None:
 
     assert "SUPERGATEWAY_API_KEY" not in compose
     assert "NEXT_AI_DRAWIO_LLM_ROUTER_KEY" in compose
-    assert "auth_type: none" in router_mcp
-    assert "auth_value" not in router_mcp
-    assert "static_headers" not in router_mcp
+    # Other servers may carry their own bearer; only the Draw.io entry is checked.
+    drawio = router_mcp.split("  drawio:\n", 1)[1].split("{% endif %}", 1)[0]
+
+    assert "auth_type: none" in drawio
+    assert "auth_value" not in drawio
+    assert "static_headers" not in drawio
     assert "LLM_ROUTER_NEXT_AI_DRAWIO_MCP_API_KEY" not in router_env
     assert "public: true" in tasks

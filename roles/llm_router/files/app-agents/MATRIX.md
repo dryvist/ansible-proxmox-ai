@@ -40,3 +40,32 @@ Generated from `llm_router_app_agent_tiers`; a test fails when this file drifts.
   - zammad_update_ticket
   - zammad_add_article
   - zammad_add_ticket_tag
+
+## youtrack-write
+
+- App: youtrack
+- Tier: write
+- MCP server: youtrack_write
+- OpenBao token field: YOUTRACK_AGENT_WRITE_TOKEN
+- Transport: HTTP
+- Allowed tools:
+  - search_issues
+  - get_issue
+  - get_issue_comments
+  - add_issue_comment
+  - create_issue
+  - update_issue
+  - change_issue_assignee
+  - get_issue_fields_schema
+  - find_projects
+  - get_project
+  - find_user
+  - link_issues
+  - manage_issue_tags
+  - log_work
+  - get_saved_issue_searches
+  - get_current_user
+  - search_articles
+  - get_article
+  - create_article
+  - update_article
