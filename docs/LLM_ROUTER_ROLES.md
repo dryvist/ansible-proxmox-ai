@@ -10,12 +10,12 @@ Authority is split, and the split follows how often each half changes.
 | **Catalog** — which models exist, their cost, context, credentials | `llm-models.d/` → `config.yaml` | this role, per converge | rarely |
 | **Roles** — which model a caller-facing name resolves to, and its fallback order | the router database | the Admin UI | often |
 
-Callers name a capability — `small`, `medium`, `large`, `embed`, `ocr` — or a
-seeded role such as `judge` or `recorder`, never a physical model, so a routing
-change reaches every client at once with no client edit and no release. The first seed is declared in
+Callers name a capability (`small`, `medium`, `embed`, `ocr`) or a seeded role
+(`large`, `judge`, `recorder`), never a physical model. A routing change reaches
+every client without a client edit or release. The first seed is declared in
 `defaults/main/55-roles.yml`; `tasks/seed-roles.yml` writes a role only when the
 running proxy carries no deployment by that name, so **a converge never
-overwrites an edit made in the UI**. Change a role in the UI, not in git —
+overwrites an edit made in the UI**. Change a role in the UI, not in git;
 editing the seed affects only a proxy that has never carried the role before.
 
 Roles require the database (`llm_router_db_host`) and
@@ -44,9 +44,11 @@ escapes through `context_window_fallbacks`
 (`defaults/main/37-fallback-entry-points.yml`) rather than walking the ordinary
 chain. `judge`, `recorder`, `fast-subagent` and `recorder-medium` are seeded as
 database roles (`defaults/main/55-roles.yml`) and copy the first member of their
-capability. A role may instead target one exact member by its id: `sensitivity`
-targets the local 4080 member (`llm_router_hermes_local_4080_id`) with no
-fallback and message logging off, and is seeded only while that member's
+capability. `large` is seeded as a database role too: it targets
+`llm_router_primary_serving_model` and falls back to
+`llm_router_primary_model`. A role may instead target one exact member by its id:
+`sensitivity` targets the local 4080 member (`llm_router_hermes_local_4080_id`)
+with no fallback and message logging off, and is seeded only while that member's
 capability is live. The workstation proxy key carries it.
 
 ## Swap a role
