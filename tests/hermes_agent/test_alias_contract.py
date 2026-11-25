@@ -40,13 +40,14 @@ def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> 
     projected_aliases = set(aliases)
     assert projected_aliases.isdisjoint(excluded_non_servable_aliases)
     assert declared_aliases == projected_aliases | excluded_non_servable_aliases
-    assert len(aliases) == 18, aliases
+    assert len(aliases) == 17, aliases
+    assert "large" not in aliases
     assert set(aliases.values()) <= capabilities
 
     defaults = role_defaults(REPO_ROOT / "roles" / "llm_router")
     # The public name reads the once-evaluated fact; the data is defined under the _source name.
     seeded = {entry["role"]: entry for entry in defaults["_llm_router_role_deployments_source"]}
-    assert set(seeded) == {"judge", "recorder", "fast-subagent", "recorder-medium", "sensitivity"}
+    assert set(seeded) == {"judge", "recorder", "fast-subagent", "large", "recorder-medium", "sensitivity"}
     small_group = next(entry["route_group"] for entry in local_entries if entry["tier"] == "cpu-9b")
     assert aliases["fast"] == small_group
     assert aliases["cheap"] == small_group
@@ -57,6 +58,9 @@ def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> 
     assert seeded["recorder"]["litellm_params"]["turn_off_message_logging"] is True
     assert seeded["fast-subagent"]["model"] == "{{ llm_router_small_model }}"
     assert seeded["fast-subagent"]["fallbacks"] == seeded["judge"]["fallbacks"]
+    assert seeded["large"]["model"] == "{{ llm_router_primary_serving_model }}"
+    assert seeded["large"]["fallbacks"] == ["{{ llm_router_primary_model }}"]
+    assert seeded["large"]["litellm_params"] == {}
     assert seeded["recorder-medium"]["model"] == "{{ llm_router_primary_model }}"
     assert seeded["recorder-medium"]["fallbacks"] == []
     assert seeded["recorder-medium"]["litellm_params"]["turn_off_message_logging"] is True
