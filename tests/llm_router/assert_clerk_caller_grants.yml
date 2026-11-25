@@ -1,0 +1,31 @@
+---
+- name: Ensure clerk callers receive only the agent model grant
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _clerk_caller_keys | map(attribute='alias') | sort == llm_router_hermes_clerk_caller_key_aliases | sort
+      - >-
+        _clerk_caller_keys | selectattr('models', 'contains', 'agent-youtrack-clerk')
+        | list | length == _clerk_caller_keys | length
+      - "'youtrack_write' not in (_clerk_caller_keys | map(attribute='object_permission', default={}) | list | to_json)"
+      - >-
+        _clerk_caller_team_ids | difference(_clerk_team_ids) | length == 0
+      - _clerk_profile_key.object_permission.mcp_servers == ['youtrack_write']
+      - _clerk_profile_key.models == [llm_router_review_aliases.local]
+      - "'agent-youtrack-clerk' not in _clerk_profile_key.models"
+      - "'HERMES_AGENT_BEARER_TOKEN_YOUTRACK_CLERK=fixture-clerk-api-server-key' in _credentialed_environment"
+    fail_msg: Clerk caller keys must receive the model through their team without receiving its MCP server.
+  vars:
+    _clerk_caller_keys: >-
+      {{ _app_agent_projected_keys
+         | selectattr('alias', 'in', llm_router_hermes_clerk_caller_key_aliases) | list }}
+    _clerk_caller_team_ids: >-
+      {{ _clerk_caller_keys | map(attribute='team_id') | unique | list }}
+    _clerk_team_ids: >-
+      {{ llm_router_priority_team_settings
+         | selectattr('models', 'contains', 'agent-youtrack-clerk')
+         | map(attribute='team_id') | list }}
+    _clerk_profile_key: >-
+      {{ _app_agent_projected_keys
+         | selectattr('alias', 'equalto', 'hermes-youtrack-clerk') | first }}
+  no_log: true

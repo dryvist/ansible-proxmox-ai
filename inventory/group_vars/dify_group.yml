@@ -26,6 +26,122 @@ dify_docker_agent_app_variables:
     - name: VIKUNJA_INBOX_PROJECT_ID
       secret: true
       value: "{{ lookup('env', 'DIFY_VIKUNJA_CLERK_INBOX_PROJECT_ID') | default('0', true) }}"
+  # Triage apps stay in their DSL's shadow mode. Each agent reads its own per-app leaf and
+  # its own AppRole; nothing is shared with the clerks.
+  vikunja-triage:
+    - name: VIKUNJA_TRIAGE_ALLOWED_PROJECTS
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_TRIAGE_ALLOWED_PROJECTS') | default('[]', true) }}"
+    - name: VIKUNJA_TRIAGE_READONLY_PROJECTS
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_TRIAGE_READONLY_PROJECTS') | default('[]', true) }}"
+    - name: VIKUNJA_TRIAGE_RANK_ONLY_PROJECTS
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_TRIAGE_RANK_ONLY_PROJECTS') | default('[]', true) }}"
+    - name: VIKUNJA_TRIAGE_DENIED_PROJECTS
+      secret: true
+      value: "{{ lookup('env', 'DIFY_VIKUNJA_TRIAGE_DENIED_PROJECTS') | default('[]', true) }}"
+    - &triage_openbao_addr
+      name: OPENBAO_ADDR
+      secret: false
+      value: >-
+        {{ lookup('env', 'SECRET_STORE_ADDR') | default(lookup('env', 'BAO_ADDR'), true) }}
+    - {name: OPENBAO_ROLE_ID, secret: true, approle_role_id: {approle: agent-vikunja-triage}}
+    - {name: OPENBAO_SECRET_ID, secret: true, approle_secret_id: {approle: agent-vikunja-triage}}
+    - {name: GITHUB_READ_TOKEN_PATH, secret: false, value: github-token/vikunja-triage}
+    - {name: GITHUB_API_BASE, secret: false, value: "https://api.github.com"}
+    - {name: GITHUB_WEB_HOST, secret: false, value: github.com}
+    - {name: DIFY_API_BASE, secret: false, value: "{{ dify_docker_internal_trigger_url }}/v1"}
+    - name: DIFY_DATASET_API_KEY
+      secret: true
+      kv: {path: "{{ dify_docker_openbao_path }}", field: DIFY_DATASET_API_KEY}
+    - name: TRIAGE_EMBEDDING_PROVIDER
+      secret: false
+      kv:
+        path: &vt_leaf "{{ dify_docker_openbao_path }}/{{ dify_docker_agent_app_leaf_segment }}/vikunja-triage"
+        field: embedding_provider
+    - name: TRIAGE_EMBEDDING_MODEL
+      secret: false
+      kv:
+        path: *vt_leaf
+        field: embedding_model
+    - name: SLACK_AGENT_BOT_TOKEN
+      secret: true
+      optional: true
+      kv:
+        path: *vt_leaf
+        field: slack_agent_bot_token
+    - &triage_slack_base {name: SLACK_API_BASE, secret: false, value: "https://slack.com/api"}
+    - name: AGENT_DIGEST_CHANNEL
+      secret: false
+      optional: true
+      kv:
+        path: *vt_leaf
+        field: digest_channel
+    - name: AGENT_FAILURE_CHANNEL
+      secret: false
+      optional: true
+      kv:
+        path: *vt_leaf
+        field: failure_channel
+    - name: AGENT_DASHBOARD_URL
+      secret: false
+      optional: true
+      kv:
+        path: *vt_leaf
+        field: dashboard_url
+  zammad-triage:
+    - name: ZAMMAD_API_BASE
+      secret: false
+      value: >-
+        https://zammad.{{ lookup('env', 'PROXMOX_SUBDOMAIN') or undef('PROXMOX_SUBDOMAIN required (Doppler)') }}
+    - *triage_openbao_addr
+    - {name: OPENBAO_ROLE_ID, secret: true, approle_role_id: {approle: agent-zammad-triage}}
+    - {name: OPENBAO_SECRET_ID, secret: true, approle_secret_id: {approle: agent-zammad-triage}}
+    - name: ZAMMAD_TOKEN_PATH
+      secret: false
+      # The app reads /v1/<path> itself, so the path names the KV mount and its data segment.
+      value: "{{ openbao_secrets_kv_mount }}/data/{{ dify_docker_openbao_path }}/agent-runtime/zammad-triage"
+    # The agent roster's router key: one source for every roster agent.
+    - name: LITELLM_ROUTER_KEY
+      secret: true
+      kv: {path: apps/zammad-triage, field: zammad_triage_llm_router_key}
+    - name: SLACK_AGENT_BOT_TOKEN
+      secret: true
+      optional: true
+      kv:
+        path: &zt_leaf "{{ dify_docker_openbao_path }}/{{ dify_docker_agent_app_leaf_segment }}/zammad-triage"
+        field: slack_agent_bot_token
+    - *triage_slack_base
+    - name: AGENT_DIGEST_CHANNEL
+      secret: false
+      optional: true
+      kv:
+        path: *zt_leaf
+        field: digest_channel
+    - name: AGENT_FAILURE_CHANNEL
+      secret: false
+      optional: true
+      kv:
+        path: *zt_leaf
+        field: failure_channel
+    - name: AGENT_DASHBOARD_URL
+      secret: false
+      optional: true
+      kv:
+        path: *zt_leaf
+        field: dashboard_url
+  # The Zammad clerk uses its own Zammad user's token from its per-app leaf.
+  zammad-clerk:
+    - name: ZAMMAD_BASE_URL
+      secret: false
+      value: >-
+        https://zammad.{{ lookup('env', 'PROXMOX_SUBDOMAIN') or undef('PROXMOX_SUBDOMAIN required (Doppler)') }}
+    - name: ZAMMAD_TOKEN
+      secret: true
+      kv:
+        path: &zc_leaf "{{ dify_docker_openbao_path }}/{{ dify_docker_agent_app_leaf_segment }}/zammad-clerk"
+        field: zammad_token
 
 # Session/credential-protection key, bao-first (ai/dify) with an env fallback —
 # same shape as the other ai-domain consumers. bao_local_llm_secrets defaults to
@@ -58,6 +174,8 @@ dify_docker_console_api_base: "http://{{ container_ip }}:{{ dify_docker_web_port
 # Each public value below is extended from an env-doc JSON key (see the end of this file).
 dify_public_agent_tool_providers:
   vikunja-clerk:
+    VIKUNJA_MCP_PROVIDER_ID: vikunja
+  vikunja-triage:
     VIKUNJA_MCP_PROVIDER_ID: vikunja
 dify_public_agent_mcp_providers:
   - name: vikunja

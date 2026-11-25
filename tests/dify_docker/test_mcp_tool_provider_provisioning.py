@@ -31,6 +31,9 @@ def test_vikunja_mcp_provider_is_declared_and_resolves_the_dsl_placeholder():
     assert group_vars["dify_public_agent_tool_providers"]["vikunja-clerk"] == {
         "VIKUNJA_MCP_PROVIDER_ID": "vikunja"
     }
+    assert group_vars["dify_public_agent_tool_providers"]["vikunja-triage"] == {
+        "VIKUNJA_MCP_PROVIDER_ID": "vikunja"
+    }
 
 
 def test_mcp_provider_reconciliation_precedes_catalog_import():

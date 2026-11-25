@@ -30,6 +30,9 @@ DECLARED_CONFIGS = (
     "lm-eval/coding",
     "lm-eval/reasoning",
     "evalscope/livecodebench",
+    "gbench/golden-smoke",
+    "gbench/stress-agentic",
+    "gbench/capability-unsat",
 )
 EVALSCOPE_OPTIONS = (
     "--model",

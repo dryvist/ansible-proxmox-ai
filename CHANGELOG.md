@@ -1,5 +1,274 @@
 # Changelog
 
+## [2.75.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.75.0...v2.75.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **hermes_agent:** keep narrow tag runs working on isolated guests ([#2837](https://github.com/dryvist/ansible-proxmox-ai/issues/2837)) ([5f5e8fe](https://github.com/dryvist/ansible-proxmox-ai/commit/5f5e8fe386a667cac4b32015015126d14c62951f))
+
+## [2.75.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.74.0...v2.75.0) (2026-11-25)
+
+
+### Features
+
+* **llm_router:** let a locked Hermes profile hold an app-agent tier ([#2834](https://github.com/dryvist/ansible-proxmox-ai/issues/2834)) ([291e8cc](https://github.com/dryvist/ansible-proxmox-ai/commit/291e8cca7a197f86472e84c1f7fd4a6bbeb52b26))
+
+## [2.74.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.73.0...v2.74.0) (2026-11-25)
+
+
+### Features
+
+* **hermes_agent:** locked clerk profiles published as router agent models ([#2830](https://github.com/dryvist/ansible-proxmox-ai/issues/2830)) ([13507f8](https://github.com/dryvist/ansible-proxmox-ai/commit/13507f86076ddc81968632df4997107f079b45bc))
+
+## [2.73.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.7...v2.73.0) (2026-11-24)
+
+
+### Features
+
+* **benchmark-run:** add optional gbench text-only and stress controls ([#2825](https://github.com/dryvist/ansible-proxmox-ai/issues/2825)) ([edc70f8](https://github.com/dryvist/ansible-proxmox-ai/commit/edc70f8ae2802b25b34f65523c348eb5b168535b))
+
+## [2.72.7](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.6...v2.72.7) (2026-11-24)
+
+
+### Bug Fixes
+
+* **agent_exec:** skip the venv and verify tasks in check mode ([#2787](https://github.com/dryvist/ansible-proxmox-ai/issues/2787)) ([da6d88a](https://github.com/dryvist/ansible-proxmox-ai/commit/da6d88aa86f566ed9658032ae6e20f87d21bfc02))
+
+## [2.72.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.5...v2.72.6) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** pin audio.cpp to the newest build Debian 13 can load ([#2820](https://github.com/dryvist/ansible-proxmox-ai/issues/2820)) ([4a748f2](https://github.com/dryvist/ansible-proxmox-ai/commit/4a748f22e7bd4204cc73c144aa619c7c8fd79d7f))
+
+## [2.72.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.4...v2.72.5) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** run audio.cpp on its portable Vulkan build ([#2817](https://github.com/dryvist/ansible-proxmox-ai/issues/2817)) ([b2cfe33](https://github.com/dryvist/ansible-proxmox-ai/commit/b2cfe3327686d9f1c1db7aa98e5594db7b1778bc))
+
+## [2.72.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.3...v2.72.4) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** serve audio.cpp on the GPU under the router's model ids ([#2814](https://github.com/dryvist/ansible-proxmox-ai/issues/2814)) ([3ce1042](https://github.com/dryvist/ansible-proxmox-ai/commit/3ce1042db12381baca1579e6ae4d31481dfef35f))
+
+## [2.72.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.2...v2.72.3) (2026-11-24)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** install the NCCL runtime the audio.cpp CUDA server links ([#2810](https://github.com/dryvist/ansible-proxmox-ai/issues/2810)) ([c8a47fe](https://github.com/dryvist/ansible-proxmox-ai/commit/c8a47fe56c3c91ef61f92944fcd48e9165f3e163))
+
+## [2.72.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.1...v2.72.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** keep the co-resident path off the active profile unit ([#2806](https://github.com/dryvist/ansible-proxmox-ai/issues/2806)) ([d93437e](https://github.com/dryvist/ansible-proxmox-ai/commit/d93437e43b2ac24b1358b215f74f1ccfa3b2bfa3))
+
+## [2.72.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.72.0...v2.72.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **inventory:** keep the GPU serving cache writable on the NVIDIA llama.cpp guest ([#2801](https://github.com/dryvist/ansible-proxmox-ai/issues/2801)) ([2a19fff](https://github.com/dryvist/ansible-proxmox-ai/commit/2a19fffd7db93eb679862415d827a25c300d8a95))
+* **llm_gpu_serving:** let a co-resident download run beside named GPU processes ([#2802](https://github.com/dryvist/ansible-proxmox-ai/issues/2802)) ([687cdf0](https://github.com/dryvist/ansible-proxmox-ai/commit/687cdf0e9760275fae88b10fb2e8c6a78abdda58))
+
+## [2.72.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.71.0...v2.72.0) (2026-11-23)
+
+
+### Features
+
+* **llm_gpu_serving:** serve co-resident speech beside llama.cpp on the NVIDIA guest ([#2791](https://github.com/dryvist/ansible-proxmox-ai/issues/2791)) ([2590b78](https://github.com/dryvist/ansible-proxmox-ai/commit/2590b7806dd9cd6120ca30d0f50e6752d30498ba))
+
+## [2.71.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.70.0...v2.71.0) (2026-11-23)
+
+
+### Features
+
+* **benchmark-run:** add gbench runner suites ([#2796](https://github.com/dryvist/ansible-proxmox-ai/issues/2796)) ([c31bb49](https://github.com/dryvist/ansible-proxmox-ai/commit/c31bb490742269643dbec62e54c6a67d8fdb80a7))
+
+## [2.70.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.8...v2.70.0) (2026-11-23)
+
+
+### Features
+
+* **campaign:** support gbench recipes in llm-model-campaign ([#2793](https://github.com/dryvist/ansible-proxmox-ai/issues/2793)) ([7bc7b2c](https://github.com/dryvist/ansible-proxmox-ai/commit/7bc7b2c0d9beab114a4d427646e35574a9d7407b))
+
+## [2.69.8](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.7...v2.69.8) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm_router:** add member keys' direct and speech routes to their team allowlist ([#2777](https://github.com/dryvist/ansible-proxmox-ai/issues/2777)) ([72b3aa8](https://github.com/dryvist/ansible-proxmox-ai/commit/72b3aa84483331b03efe28fa889d9872f9a185a2))
+
+## [2.69.7](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.6...v2.69.7) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm_router:** let the workstation key call the direct chat and speech routes ([#2772](https://github.com/dryvist/ansible-proxmox-ai/issues/2772)) ([a4aef6c](https://github.com/dryvist/ansible-proxmox-ai/commit/a4aef6c441b643c344f78fcbac640fa0c3374819))
+
+## [2.69.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.5...v2.69.6) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm-models:** route the 4080 small lane by the model id llama.cpp serves ([#2767](https://github.com/dryvist/ansible-proxmox-ai/issues/2767)) ([25539eb](https://github.com/dryvist/ansible-proxmox-ai/commit/25539eb46deeb39a7889a40da467b4eb399d4f40))
+
+## [2.69.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.4...v2.69.5) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** zammad-triage token path names the KV mount ([#2752](https://github.com/dryvist/ansible-proxmox-ai/issues/2752)) ([8960a9e](https://github.com/dryvist/ansible-proxmox-ai/commit/8960a9ea6c2ab2c420111f82383f448f5d0baafa))
+
+## [2.69.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.3...v2.69.4) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llm_router:** disable go-longcat-2.0, which the provider no longer lists ([#2759](https://github.com/dryvist/ansible-proxmox-ai/issues/2759)) ([8f92cc2](https://github.com/dryvist/ansible-proxmox-ai/commit/8f92cc2f02b8e320ef15b35b272dad5df8fe5139))
+
+## [2.69.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.2...v2.69.3) (2026-11-23)
+
+
+### Bug Fixes
+
+* **llama_cpp:** accept an already-running model in the residency load ([#2756](https://github.com/dryvist/ansible-proxmox-ai/issues/2756)) ([f89a654](https://github.com/dryvist/ansible-proxmox-ai/commit/f89a654f5c97e7b2a6fa84dfba189d0756b2819c))
+
+## [2.69.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.1...v2.69.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** optional declared variables; tracker key sources ([#2700](https://github.com/dryvist/ansible-proxmox-ai/issues/2700)) ([98a1f5b](https://github.com/dryvist/ansible-proxmox-ai/commit/98a1f5bbed1390f74cdbaa7ec7417ff5fa9ab5aa))
+
+## [2.69.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.69.0...v2.69.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **nvidia_gpu_guest:** skip the DCGM exporter file when the pinned version is installed ([#2748](https://github.com/dryvist/ansible-proxmox-ai/issues/2748)) ([d88f445](https://github.com/dryvist/ansible-proxmox-ai/commit/d88f44523a06c558fc833927b6388fb2d59acb15))
+
+## [2.69.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.68.1...v2.69.0) (2026-11-23)
+
+
+### Features
+
+* **llm-gpu-serving:** serve MiMo 9B and speech models on the light GPU lane ([#2740](https://github.com/dryvist/ansible-proxmox-ai/issues/2740)) ([72a7510](https://github.com/dryvist/ansible-proxmox-ai/commit/72a7510e2c5dc1c7a18efba6a876e195d4f40874))
+
+## [2.68.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.68.0...v2.68.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** return the stack to 1.19.0 ([#2735](https://github.com/dryvist/ansible-proxmox-ai/issues/2735)) ([9557cbc](https://github.com/dryvist/ansible-proxmox-ai/commit/9557cbc536a151cc0d1a527132ecb4943d068798))
+
+## [2.68.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.2...v2.68.0) (2026-11-23)
+
+
+### Features
+
+* **dify_docker:** pin the stack to Dify 1.20.0 ([#2727](https://github.com/dryvist/ansible-proxmox-ai/issues/2727)) ([acdae4e](https://github.com/dryvist/ansible-proxmox-ai/commit/acdae4e68d4093cd2cf0cce7caf0492502de2fda))
+
+## [2.67.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.1...v2.67.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** tracker app credentials from each app's own leaf and AppRole ([#2696](https://github.com/dryvist/ansible-proxmox-ai/issues/2696)) ([f338c6d](https://github.com/dryvist/ansible-proxmox-ai/commit/f338c6dcc5ae28f515bd63861c77285d8a42c2fb))
+
+## [2.67.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.67.0...v2.67.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dify_docker:** pin the agent DSL catalog to ai-llm-prompts v1.134.2 ([#2721](https://github.com/dryvist/ansible-proxmox-ai/issues/2721)) ([4a8a2b4](https://github.com/dryvist/ansible-proxmox-ai/commit/4a8a2b4f5e2758c0d264da20d329a985aa03b720))
+* **renovate:** hold LiteLLM updates for 7 days ([#2705](https://github.com/dryvist/ansible-proxmox-ai/issues/2705)) ([960022a](https://github.com/dryvist/ansible-proxmox-ai/commit/960022a966223265bc53996cac9804378f28927a))
+
+## [2.67.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.9...v2.67.0) (2026-11-22)
+
+
+### Features
+
+* **hermes_agent:** read the vikunja-task webhook secret from the apps domain ([#2651](https://github.com/dryvist/ansible-proxmox-ai/issues/2651)) ([70af42f](https://github.com/dryvist/ansible-proxmox-ai/commit/70af42f6096f9baa90e6a4fb6f3bf2421cd61bac))
+
+## [2.66.9](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.8...v2.66.9) (2026-11-22)
+
+
+### Bug Fixes
+
+* **llm_router:** mark a tagged key local-route when it names a role with only local members ([#2712](https://github.com/dryvist/ansible-proxmox-ai/issues/2712)) ([ae28a9d](https://github.com/dryvist/ansible-proxmox-ai/commit/ae28a9df5a2af0aaf0e19a54c8705eed1b0542ef))
+
+## [2.66.8](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.7...v2.66.8) (2026-11-22)
+
+
+### Bug Fixes
+
+* **llm_router:** render every role fallback ladder from Git and sync it on each converge ([#2710](https://github.com/dryvist/ansible-proxmox-ai/issues/2710)) ([dbc2e49](https://github.com/dryvist/ansible-proxmox-ai/commit/dbc2e494ee23413176121e46c885e403690709f7))
+
+## [2.66.7](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.6...v2.66.7) (2026-11-22)
+
+
+### Bug Fixes
+
+* **renovate:** hold LiteLLM updates for seven days ([#2706](https://github.com/dryvist/ansible-proxmox-ai/issues/2706)) ([28f2709](https://github.com/dryvist/ansible-proxmox-ai/commit/28f2709e734ca73b6d20d2b96fcbed61fdeddbe0))
+
+## [2.66.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.5...v2.66.6) (2026-11-21)
+
+
+### Bug Fixes
+
+* **dify_docker:** pin the agent DSL catalog to ai-llm-prompts v1.129.0 ([#2702](https://github.com/dryvist/ansible-proxmox-ai/issues/2702)) ([70902e3](https://github.com/dryvist/ansible-proxmox-ai/commit/70902e3ca41ae2203b781a02e9eb5e5584e1ab43))
+
+## [2.66.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.4...v2.66.5) (2026-11-21)
+
+
+### Bug Fixes
+
+* **dify_docker:** pin the agent DSL catalog to ai-llm-prompts v1.128.1 ([#2693](https://github.com/dryvist/ansible-proxmox-ai/issues/2693)) ([617d393](https://github.com/dryvist/ansible-proxmox-ai/commit/617d3932627eb21494c7cf22e2d367fda1f65d8c))
+
+## [2.66.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.3...v2.66.4) (2026-11-21)
+
+
+### Bug Fixes
+
+* **dify_docker:** declare the triage apps environment variables with inert defaults ([#2690](https://github.com/dryvist/ansible-proxmox-ai/issues/2690)) ([cfd1395](https://github.com/dryvist/ansible-proxmox-ai/commit/cfd139524ddfe2aa6184a1b3c79057800273a5b7))
+* **dify_docker:** declare the triage apps' environment variables with inert defaults ([cfd1395](https://github.com/dryvist/ansible-proxmox-ai/commit/cfd139524ddfe2aa6184a1b3c79057800273a5b7))
+
+## [2.66.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.2...v2.66.3) (2026-11-21)
+
+
+### Bug Fixes
+
+* **dify_docker:** pin the agent DSL catalog to ai-llm-prompts v1.128.0 ([#2687](https://github.com/dryvist/ansible-proxmox-ai/issues/2687)) ([8fc663d](https://github.com/dryvist/ansible-proxmox-ai/commit/8fc663d1d71046b9be0ebfc8e8f060f5a6ab8e2a))
+
+## [2.66.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.1...v2.66.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **dify_docker:** map the vikunja-triage MCP provider placeholder ([#2684](https://github.com/dryvist/ansible-proxmox-ai/issues/2684)) ([c5b1ea2](https://github.com/dryvist/ansible-proxmox-ai/commit/c5b1ea27654c6a810411cad69f8265d6ac383549))
+
+## [2.66.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.66.0...v2.66.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **llm_router:** keep the github-actions key on local models only ([#2677](https://github.com/dryvist/ansible-proxmox-ai/issues/2677)) ([d6eff0f](https://github.com/dryvist/ansible-proxmox-ai/commit/d6eff0fbf8139c9f672db4caa82d3b5ab03e181a))
+
+## [2.66.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.65.1...v2.66.0) (2026-11-21)
+
+
+### Features
+
+* **dify_docker:** pin the stack to Dify 1.19.0 with the Compose preflight and dump check ([#2676](https://github.com/dryvist/ansible-proxmox-ai/issues/2676)) ([1422aaa](https://github.com/dryvist/ansible-proxmox-ai/commit/1422aaa0d0d502d6c864bce7106ed15b33676d6e))
+
 ## [2.65.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.65.0...v2.65.1) (2026-11-21)
 
 

@@ -202,3 +202,32 @@
   when:
     - _llm_campaign_run.run_on == 'controller'
     - _llm_campaign_run.executable == 'uv'
+
+- name: Inspect the installed gbench command surface
+  ansible.builtin.command:
+    argv: [gbench, --help]
+  register: _llm_campaign_gbench_help
+  changed_when: false
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+  vars:
+    ansible_become: "{{ _llm_campaign_run.run_on != 'controller' }}"
+  when: _llm_campaign_run.executable == 'gbench'
+
+- name: Require every gbench option used by the selected recipe
+  ansible.builtin.assert:
+    that:
+      - _llm_campaign_gbench_help.stdout is search('--remote-endpoint')
+      - _llm_campaign_gbench_help.stdout is search('--models')
+      - _llm_campaign_gbench_help.stdout is search('--served-model-id')
+      - _llm_campaign_gbench_help.stdout is search('--tokenizer')
+      - _llm_campaign_gbench_help.stdout is search('--results-dir')
+      - _llm_campaign_gbench_help.stdout is search('--golden-only')
+      - _llm_campaign_gbench_help.stdout is search('--stress-test')
+      - _llm_campaign_gbench_help.stdout is search('--campaign')
+      - _llm_campaign_gbench_help.stdout is search('--evals-only')
+      - _llm_campaign_gbench_help.stdout is search('--evals')
+      - _llm_campaign_gbench_help.stdout is search('--eval-concurrency')
+      - _llm_campaign_gbench_help.stdout is search('--max-output-tokens')
+    fail_msg: "The installed gbench lacks one or more options declared by the recipe."
+    quiet: true
+  when: _llm_campaign_run.executable == 'gbench'

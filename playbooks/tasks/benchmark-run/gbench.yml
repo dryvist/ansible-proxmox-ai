@@ -1,0 +1,155 @@
+---
+# Run zero-Gemini-key gbench suites (gbench-golden, gbench-stress-agentic,
+# gbench-capability-unsat) in the tagged benchmark client and collect summary.json.
+- name: Validate optional gbench execution flags
+  ansible.builtin.assert:
+    that:
+      - (text_only | default(false) | string | lower) in ['true', 'false']
+      - (stress_reps | default(0) | string) is match('^[0-9]+$')
+      - (stress_certify | default('') | string) in ['', 'auto', 'always', 'off']
+    fail_msg: >-
+      Optional gbench flags require boolean text_only, non-negative integer
+      stress_reps, and stress_certify in auto, always, or off.
+    quiet: true
+
+- name: Record whether gbench uses a secret-store endpoint key
+  ansible.builtin.set_fact:
+    _benchmark_run_gbench_has_key: >-
+      {{ (benchmark_run_request.api_key_kv_path | default('') | trim | length > 0)
+         and (benchmark_run_request.api_key_kv_field | default('') | trim | length > 0) }}
+
+- name: Read optional endpoint bearer key for gbench from OpenBao
+  community.hashi_vault.vault_kv2_get:
+    url: "{{ lookup('ansible.builtin.env', 'BAO_ADDR') | default('', true) }}"
+    auth_method: token
+    token: "{{ openbao_secrets_converge_writer_token }}"
+    engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+    path: "{{ benchmark_run_request.api_key_kv_path }}"
+    validate_certs: true
+  register: _benchmark_run_gbench_key_read
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  no_log: true
+  when: _benchmark_run_gbench_has_key | bool
+
+- name: Require a readable non-empty bearer key when configured for gbench
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_gbench_key_read is not failed
+      - >-
+        _benchmark_run_gbench_key_read.data.data[benchmark_run_request.api_key_kv_field]
+        | default('') | string | length > 0
+    fail_msg: >-
+      gbench could not read a non-empty bearer key from
+      benchmark_run_request.api_key_kv_path and api_key_kv_field.
+    quiet: true
+  no_log: true
+  when: _benchmark_run_gbench_has_key | bool
+
+- name: Build gbench CLI arguments for the selected suite
+  ansible.builtin.set_fact:
+    _benchmark_run_gbench_args: >-
+      {{
+        [
+          '--remote-endpoint', benchmark_run_request.engine_url,
+          '--models', benchmark_run_request.model,
+          '--served-model-id', benchmark_run_request.model,
+          '--tokenizer', benchmark_run_request.tokenizer,
+          '--results-dir', _benchmark_run_client_result,
+        ]
+        + (['--golden-only']
+           if benchmark_run_request.suite == 'gbench-golden' else [])
+        + (['--stress-test', '--campaign', 'agentic']
+           + (['--stress-reps', stress_reps | int | string]
+              if (stress_reps | default(0) | int) > 0 else [])
+           + (['--stress-certify', stress_certify | string]
+              if (stress_certify | default('') | string | length > 0) else [])
+           if benchmark_run_request.suite == 'gbench-stress-agentic' else [])
+        + (['--text-only'] if (text_only | default(false) | bool) else [])
+        + (['--evals-only', '--evals', 'ifeval', 'lcb', 'bigcodebench', 'bfcl', 'aime',
+            '--eval-concurrency', benchmark_run_request.concurrency | string,
+            '--max-output-tokens', benchmark_run_request.max_tokens | string]
+           + (['--eval-thinking'] if benchmark_run_request.reasoning_arm != 'off' else [])
+           if benchmark_run_request.suite == 'gbench-capability-unsat' else [])
+      }}
+
+- name: Run the pinned gbench suite in the client
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          'pct', 'exec', benchmark_run_request.client_vmid | string, '--',
+          '/usr/bin/env',
+          '-u', 'OPENAI_API_KEY',
+          '-u', 'VLLM_API_KEY',
+          'BENCH_HAS_KEY=' ~ ('1' if (_benchmark_run_gbench_has_key | bool) else '0'),
+          'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+          '/bin/bash', '-c',
+          _benchmark_run_gbench_wrapper,
+          'gbench',
+        ] + _benchmark_run_gbench_args
+      }}
+    stdin: >-
+      {{ _benchmark_run_gbench_key_read.data.data[benchmark_run_request.api_key_kv_field]
+         if (_benchmark_run_gbench_has_key | bool) else '' }}
+  vars:
+    _benchmark_run_gbench_wrapper: >-
+      if [ "${BENCH_HAS_KEY}" = "1" ]; then
+        IFS= read -r k;
+        export OPENAI_API_KEY="$k" VLLM_API_KEY="$k";
+      else
+        export OPENAI_API_KEY=EMPTY VLLM_API_KEY=EMPTY;
+      fi;
+      exec /usr/local/bin/gbench "$@"
+  register: _benchmark_run_suite
+  no_log: true
+  changed_when: true
+  failed_when: _benchmark_run_suite.rc not in [0, 1]
+
+- name: Find the gbench summary.json produced for this run
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ benchmark_run_request.client_vmid }}"
+      - --
+      - /usr/bin/find
+      - "{{ _benchmark_run_client_result }}"
+      - -type
+      - f
+      - -name
+      - summary.json
+  register: _benchmark_run_gbench_results
+  changed_when: false
+
+- name: Require exactly one gbench summary.json for this run
+  ansible.builtin.assert:
+    that:
+      - _benchmark_run_gbench_results.stdout_lines | length == 1
+    fail_msg: >-
+      The gbench run did not produce exactly one summary.json under
+      {{ _benchmark_run_client_result }}.
+    quiet: true
+
+- name: Collect gbench summary.json into node scratch
+  ansible.builtin.command:
+    argv:
+      - pct
+      - pull
+      - "{{ benchmark_run_request.client_vmid }}"
+      - "{{ _benchmark_run_gbench_results.stdout_lines | first }}"
+      - "{{ _benchmark_run_node_scratch }}/gbench-summary.json"
+  changed_when: true
+
+- name: Persist gbench summary.json beside the run archive on the node
+  ansible.builtin.copy:
+    src: "{{ _benchmark_run_node_scratch }}/gbench-summary.json"
+    dest: "{{ _benchmark_run_node_artifact }}/{{ benchmark_run_request.run_id }}-gbench-summary.json"
+    remote_src: true
+    mode: "0640"

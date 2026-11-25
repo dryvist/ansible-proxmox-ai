@@ -1,0 +1,58 @@
+---
+- name: Inspect the llama.cpp server binary
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_llamacpp_server_bin }}"
+  register: llm_gpu_serving_llamacpp_server_stat
+  when: "'llama_cpp' in llm_gpu_serving_selected_engines"
+
+- name: Inspect the installed llama.cpp asset marker
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
+  register: llm_gpu_serving_llamacpp_marker_stat
+  when: "'llama_cpp' in llm_gpu_serving_selected_engines"
+
+- name: Read the installed llama.cpp asset name
+  ansible.builtin.slurp:
+    src: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
+  register: llm_gpu_serving_llamacpp_marker
+  when:
+    - "'llama_cpp' in llm_gpu_serving_selected_engines"
+    - llm_gpu_serving_llamacpp_marker_stat.stat.exists
+
+- name: Install the llama.cpp CUDA release binary
+  ansible.builtin.include_tasks: install-llamacpp-release.yml
+  when: "'llama_cpp' in llm_gpu_serving_selected_engines"
+
+- name: Inspect the audio.cpp server binary
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_audio_cpp_server_bin }}"
+  register: llm_gpu_serving_audio_cpp_server_stat
+  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
+
+- name: Inspect the installed audio.cpp asset marker
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_audio_cpp_asset_marker }}"
+  register: llm_gpu_serving_audio_cpp_marker_stat
+  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
+
+- name: Read the installed audio.cpp asset marker
+  ansible.builtin.slurp:
+    src: "{{ llm_gpu_serving_audio_cpp_asset_marker }}"
+  register: llm_gpu_serving_audio_cpp_marker
+  when:
+    - "'audio_cpp' in llm_gpu_serving_selected_engines"
+    - llm_gpu_serving_audio_cpp_marker_stat.stat.exists
+
+# audio.cpp's Vulkan backend library links the system Vulkan loader; the NVIDIA
+# userspace tasks install the vendor ICD it discovers.
+- name: Install the Vulkan loader the audio.cpp server's backend links
+  ansible.builtin.apt:
+    name: libvulkan1
+    state: present
+    install_recommends: false
+  when: "'audio_cpp' in llm_gpu_serving_selected_engines"
+  environment: "{{ llamacpp_release_proxy_environment }}"
+
+- name: Install the audio.cpp release binary
+  ansible.builtin.include_tasks: install-audio-cpp-release.yml
+  when: "'audio_cpp' in llm_gpu_serving_selected_engines"

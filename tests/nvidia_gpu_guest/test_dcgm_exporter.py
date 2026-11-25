@@ -21,11 +21,14 @@ def _when_holds(task: dict, context: dict) -> bool:
     return all(bool(env.compile_expression(item)(**context)) for item in conditions)
 
 
-def _selected_tasks(major: str, check_mode: bool = False) -> list[dict]:
+def _selected_tasks(major: str, check_mode: bool = False, installed: str = "") -> list[dict]:
+    defaults = _load(ROLE / "defaults/main/20-dcgm-exporter.yml")
     context = {
         "ansible_facts": {"distribution": "Debian", "distribution_major_version": major},
         "ansible_check_mode": check_mode,
         "nvidia_gpu_guest_nvidia_repo": {"changed": True},
+        "nvidia_gpu_guest_dcgm_exporter_installed": {"stdout": installed},
+        "nvidia_gpu_guest_dcgm_exporter_deb12_filename": defaults["nvidia_gpu_guest_dcgm_exporter_deb12_filename"],
     }
     tasks = _load(ROLE / "tasks/install-dcgm-exporter.yml")
     return [task for task in tasks if "when" in task and _when_holds(task, context)]
@@ -157,9 +160,11 @@ def test_debian13_installs_core_from_apt_and_the_pinned_exporter_file():
     selected = _selected_tasks("13")
     assert [task["name"] for task in selected] == [
         "Install the DCGM core package on Debian 13",
+        "Read the installed DCGM exporter version on Debian 13",
         "Download the pinned Debian 12 DCGM exporter package",
         "Install the pinned Debian 12 DCGM exporter package on Debian 13",
     ]
+    selected = [selected[0], *selected[2:]]
     core = selected[0]["ansible.builtin.apt"]
     assert core["name"] == [
         "{{ nvidia_gpu_guest_dcgm_core_package }}",
@@ -181,6 +186,19 @@ def test_debian13_does_not_fetch_or_install_the_exporter_file_in_check_mode():
     names = [task["name"] for task in _selected_tasks("13", check_mode=True)]
     assert "Download the pinned Debian 12 DCGM exporter package" not in names
     assert "Install the pinned Debian 12 DCGM exporter package on Debian 13" not in names
+
+
+def test_debian13_skips_the_exporter_file_when_the_pinned_version_is_installed():
+    names = [task["name"] for task in _selected_tasks("13", installed="4.9.0.8414-1")]
+    assert "Read the installed DCGM exporter version on Debian 13" in names
+    assert "Download the pinned Debian 12 DCGM exporter package" not in names
+    assert "Install the pinned Debian 12 DCGM exporter package on Debian 13" not in names
+
+
+def test_debian13_fetches_the_exporter_file_when_another_version_is_installed():
+    names = [task["name"] for task in _selected_tasks("13", installed="4.8.0.1234-1")]
+    assert "Download the pinned Debian 12 DCGM exporter package" in names
+    assert "Install the pinned Debian 12 DCGM exporter package on Debian 13" in names
 
 
 def test_no_dcgm_task_adds_or_writes_an_apt_source():

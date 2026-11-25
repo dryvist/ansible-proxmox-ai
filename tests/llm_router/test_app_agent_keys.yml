@@ -19,57 +19,31 @@
     - name: Prepare role-backed rendered contract
       ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
 
-    - name: Read the app-agent tier readers from inventory
-      ansible.builtin.set_fact:
-        _app_agent_reader_domains: >-
-          {{ (lookup('file', playbook_dir ~
-              '/../../inventory/group_vars/all/openbao_secrets/10-domains-identities.yml')
-              | from_yaml).openbao_app_agent_tier_reader_domains }}
-        _app_agent_local_llm_paths: >-
-          {{ ((lookup('file', playbook_dir ~
-              '/../../inventory/group_vars/all/openbao_secrets/10-domains-identities.yml')
-              | from_yaml)._openbao_secrets_static_domains_identities
-             | selectattr('name', 'equalto', 'local-llm') | first).paths }}
-
     - name: Require one optional reader domain per exact tier leaf
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - >-
-            _app_agent_reader_domains | map(attribute='name') | list | sort
-            == ['app-agent-vikunja-read', 'app-agent-vikunja-write', 'app-agent-zammad-write']
-          - >-
-            _app_agent_reader_domains | map(attribute='path') | list | sort
-            == ['vikunja-read', 'vikunja-write', 'zammad-write']
-          - >-
-            _app_agent_reader_domains | map(attribute='name') | list
-            == ['app-agent-vikunja-read', 'app-agent-vikunja-write', 'app-agent-zammad-write']
-          - >-
-            _app_agent_reader_domains | map(attribute='name')
-            | zip(_app_agent_reader_domains | map(attribute='tier')) | list
-            == [('app-agent-vikunja-read', 'vikunja-read'),
-                ('app-agent-vikunja-write', 'vikunja-write'),
-                ('app-agent-zammad-write', 'zammad-write')]
-          - >-
-            _app_agent_local_llm_paths | select('mapping')
-            | selectattr('mount', 'defined') | map(attribute='path') | list
-            | intersect(['vikunja-read', 'vikunja-write', 'zammad-write']) | length == 0
+      ansible.builtin.import_tasks: assert_app_agent_reader_domains.yml
 
     - name: Set the app-agent roster, keys, and per-tier app credentials
       ansible.builtin.set_fact:
+        # The shape load_hermes_profiles.yml publishes for an enabled locked profile.
+        hermes_agent_profiles: >-
+          {{ hermes_agent_profiles + [{'name': 'youtrack-clerk', 'locked': true, 'mcp': ['youtrack_write']}] }}
+        ai_callers: "{{ ai_callers | default({}) | combine({'hermes': {'trust_tier': 'trusted'}}) }}"
         ai_agents:
           vikunja-read: {router_key_class: standard}
           vikunja-write: {router_key_class: standard}
           zammad-write: {router_key_class: standard}
+          youtrack-write: {router_key_class: standard, trust_tier: trusted}
         ai_agent_owner:
           vikunja-read: vikunja-read
           vikunja-write: vikunja-write
           zammad-write: zammad-write
+          youtrack-write: youtrack-write
         openbao_secrets_by_domain:
           llm-router-agent-keys:
             vikunja_read_llm_router_key: fixture-vikunja-read-key
             vikunja_write_llm_router_key: fixture-vikunja-write-key
             zammad_write_llm_router_key: fixture-zammad-write-key
+            youtrack_write_llm_router_key: fixture-youtrack-write-key
           app-agent-vikunja-read:
             VIKUNJA_AGENT_READ_TOKEN: fixture-vikunja-read-token
             VIKUNJA_AGENT_READ_ALLOWLIST: "{{ _app_agent_read_allowlist_ids | to_json }}"
@@ -77,11 +51,23 @@
             VIKUNJA_AGENT_WRITE_TOKEN: fixture-vikunja-write-token
           app-agent-zammad-write:
             ZAMMAD_AGENT_WRITE_TOKEN: fixture-zammad-write-token
+          app-agent-youtrack-write:
+            YOUTRACK_AGENT_WRITE_TOKEN: fixture-youtrack-write-token
         bao_local_llm_secrets: >-
           {{ bao_local_llm_secrets | combine({
             'VIKUNJA_MCP_URL': 'fixture-vikunja-url',
             'VIKUNJA_MCP_TOKEN_RW': 'fixture-vikunja-shared-rw-token',
             'ZAMMAD_MCP_URL': 'fixture-zammad-url'
+          }) }}
+        bao_apps_secrets: >-
+          {{ bao_apps_secrets | combine({
+            'hermes_youtrack_clerk_api_server_key': 'fixture-clerk-api-server-key',
+            'hermes_youtrack_clerk_llm_router_key': 'fixture-clerk-router-key',
+            'cursor_llm_router_key': 'fixture-cursor-key',
+            'zcode_llm_router_key': 'fixture-zcode-key',
+            'ZCODE_ROUTER_KEY': 'fixture-zcode-key',
+            'OPENCODE_ROUTER_KEY': bao_apps_secrets.opencode_llm_router_key,
+            'QWEN_CODE_ROUTER_KEY': bao_apps_secrets.qwen_code_llm_router_key
           }) }}
       no_log: true
 
@@ -94,6 +80,9 @@
         _app_agent_projected_keys: "{{ llm_router_virtual_keys }}"
         _credentialed_environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
       no_log: true
+
+    - name: Ensure clerk callers receive only the agent model grant
+      ansible.builtin.import_tasks: assert_clerk_caller_grants.yml
 
     - name: Keep each app-agent key on exactly its owned tier server
       ansible.builtin.assert:
@@ -111,6 +100,9 @@
           - >-
             _app_agent_projected_keys | selectattr('alias', 'equalto', 'zammad-write')
             | map(attribute='object_permission.mcp_servers') | first == ['zammad_write']
+          - >-
+            _app_agent_projected_keys | selectattr('alias', 'equalto', 'youtrack-write')
+            | map(attribute='object_permission.mcp_servers') | first == ['youtrack_write']
           - >-
             _app_agent_projected_keys | selectattr('alias', 'in',
               llm_router_app_agent_tiers | map(attribute='id') | list)
@@ -279,7 +271,8 @@
           {{ openbao_secrets_by_domain | combine({
              'app-agent-vikunja-read': {},
              'app-agent-vikunja-write': {},
-             'app-agent-zammad-write': {}}) }}
+             'app-agent-zammad-write': {},
+             'app-agent-youtrack-write': {}}) }}
       no_log: true
 
     - name: Refresh router projections without app tokens
@@ -305,5 +298,6 @@
           - "'LLM_ROUTER_APP_VIKUNJA_READ_TOKEN=' not in _bare_environment"
           - "'LLM_ROUTER_APP_VIKUNJA_WRITE_TOKEN=' not in _bare_environment"
           - "'LLM_ROUTER_APP_ZAMMAD_WRITE_TOKEN=' not in _bare_environment"
+          - "'LLM_ROUTER_APP_YOUTRACK_WRITE_TOKEN=' not in _bare_environment"
         fail_msg: An absent app token must remove its MCP process credential and deny the corresponding key.
       no_log: true

@@ -128,6 +128,53 @@
             | flatten | select('equalto', llm_router_ci_luna_groups[0]) | list | length == 0
         fail_msg: "gha={{ _gha }} other model scopes={{ _keys | map(attribute='models') | list }}"
 
+    # OpenHands and the other org CI workflows send this key. Walk its models
+    # through the key's own fallback and context-window chains.
+    - name: The github-actions key and its chains reach only local deployments
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gha_reach.names | length > 0
+          - _gha_reach.nonlocal == []
+        fail_msg: "github-actions non-local reach={{ _gha_reach.nonlocal }}"
+      vars:
+        _gha_reach: >-
+          {%- set _settings = llm_router_review_key_router_settings[_gha.router_settings_ref] -%}
+          {%- set _maps = namespace(fb={}, cw={}) -%}
+          {%- for _entry in _settings.fallbacks -%}
+          {%- set _ = _maps.fb.update(_entry) -%}
+          {%- endfor -%}
+          {%- for _entry in _settings.context_window_fallbacks
+                | default(_config.router_settings.context_window_fallbacks | default([])) -%}
+          {%- set _ = _maps.cw.update(_entry) -%}
+          {%- endfor -%}
+          {#- LiteLLM keeps default_fallbacks as a '*' entry in the router's own
+              fallbacks list, which a key's fallbacks list replaces. -#}
+          {%- set _defaults = [] if _settings.fallbacks is defined
+                else _config.router_settings.default_fallbacks | default([]) -%}
+          {%- set _aliases = _config.router_settings.model_group_alias | default({}) -%}
+          {%- set ns = namespace(names=_gha.models | list, frontier=_gha.models | list, bad=[]) -%}
+          {%- for _hop in range(12) -%}
+          {%- set _next = namespace(names=[]) -%}
+          {%- for _name in ns.frontier -%}
+          {%- for _target in (_maps.fb.get(_name, _defaults) | list) + (_maps.cw.get(_name, []) | list)
+                if _target not in ns.names -%}
+          {%- set ns.names = ns.names + [_target] -%}
+          {%- set _next.names = _next.names + [_target] -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {%- set ns.frontier = _next.names -%}
+          {%- endfor -%}
+          {%- for _name in ns.names -%}
+          {%- for _d in _config.model_list
+                | selectattr('model_name', 'equalto', _aliases.get(_name, _name)) -%}
+          {%- if 'local' not in (_d.litellm_params.tags | default([])) -%}
+          {%- set ns.bad = ns.bad + [_name ~ ' -> ' ~ _d.litellm_params.model] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ {'names': ns.names, 'nonlocal': ns.bad | unique | list} }}
+
     - name: The context-window escape for private review targets only CI Luna
       ansible.builtin.assert:
         quiet: true

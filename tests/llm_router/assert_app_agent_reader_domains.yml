@@ -1,0 +1,28 @@
+---
+- name: Read the app-agent tier readers from inventory
+  ansible.builtin.set_fact:
+    _app_agent_reader_domains: >-
+      {{ (lookup('file', playbook_dir ~
+          '/../../inventory/group_vars/all/openbao_secrets/10-domains-identities.yml')
+          | from_yaml).openbao_app_agent_tier_reader_domains }}
+    _app_agent_local_llm_paths: >-
+      {{ ((lookup('file', playbook_dir ~
+          '/../../inventory/group_vars/all/openbao_secrets/10-domains-identities.yml')
+          | from_yaml)._openbao_secrets_static_domains_identities
+         | selectattr('name', 'equalto', 'local-llm') | first).paths }}
+
+- name: Require one optional reader domain per exact tier leaf
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _app_agent_reader_domains | map(attribute='path') | list | sort == _tiers | sort
+      - >-
+        _app_agent_reader_domains | map(attribute='name')
+        | zip(_app_agent_reader_domains | map(attribute='tier')) | list
+        == _tiers | map('regex_replace', '^', 'app-agent-') | zip(_tiers) | list
+      - >-
+        _app_agent_local_llm_paths | select('mapping')
+        | selectattr('mount', 'defined') | map(attribute='path') | list
+        | intersect(_tiers) | length == 0
+  vars:
+    _tiers: [vikunja-read, vikunja-write, zammad-write, youtrack-write]

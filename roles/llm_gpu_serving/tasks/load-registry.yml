@@ -1,4 +1,10 @@
 ---
+- name: Apply host-specific GPU profile overrides
+  ansible.builtin.set_fact:
+    llm_gpu_serving_profiles: >-
+      {{ llm_gpu_serving_profiles
+         | combine(llm_gpu_serving_profile_overrides | default({}), recursive=true) }}
+
 - name: Load shared GPU profile references
   ansible.builtin.include_vars:
     file: "{{ llm_gpu_serving_registry_file }}"
@@ -157,7 +163,7 @@
       - item.model_size is not defined or item.model_task is defined
       - >-
         item.use == 'benchmark-only'
-        or item.engines | difference(['vllm', 'llama_cpp', 'sglang', 'mlx_lm', 'strata']) | length == 0
+        or item.engines | difference(['vllm', 'llama_cpp', 'sglang', 'mlx_lm', 'strata', 'audio_cpp']) | length == 0
       - item.model_size is not defined or item.model_size | length > 0
       - item.context_window_tokens is not defined or item.context_window_tokens | int > 0
       - >-
@@ -180,11 +186,38 @@
       {%- set ns = namespace(by_profile={}) -%}
       {%- for profile in llm_gpu_serving_registry_profiles
             if profile.profile in llm_gpu_serving_profiles -%}
-      {%- set artifact = llm_gpu_serving_artifacts_by_id.get(profile.artifact_id) -%}
+      {%- set selected_artifact_id =
+            (llm_gpu_serving_profile_artifact_overrides | default({})).get(
+              profile.profile, profile.artifact_id) -%}
+      {%- set artifact = llm_gpu_serving_artifacts_by_id.get(selected_artifact_id) -%}
       {%- if artifact is not none -%}
-      {%- set _ = ns.by_profile.update({profile.profile: profile | combine({
-            'artifact': artifact, 'upstream_model_id': artifact.hf_repo
-          })}) -%}
+      {%- set entry = profile | combine({
+            'artifact_id': selected_artifact_id,
+            'artifact': artifact,
+            'upstream_model_id': artifact.hf_repo
+          }) -%}
+      {%- if profile.profile == 'speech' -%}
+      {%- set audio_routes = [{
+            'client_model_id': profile.client_model_id,
+            'artifact_id': selected_artifact_id
+          }] + (profile.co_resident_routes | default([])) -%}
+      {%- set audio_models = namespace(items=[]) -%}
+      {%- for route in audio_routes -%}
+      {%- set route_artifact = llm_gpu_serving_artifacts_by_id.get(route.artifact_id) -%}
+      {%- if route_artifact is not none -%}
+      {#- The served id is the upstream id the router sends, as --served-model-name and --alias are. -#}
+      {%- set model = {
+            'id': route_artifact.hf_repo,
+            'family': route_artifact.audio_family,
+            'path': llm_gpu_serving_model_cache_path ~ '/' ~ route_artifact.hf_repo ~ '/' ~ route_artifact.gguf_file,
+            'task': route_artifact.audio_task
+          } -%}
+      {%- set _ = audio_models.items.append(model) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set entry = entry | combine({'audio_cpp_models': audio_models.items}) -%}
+      {%- endif -%}
+      {%- set _ = ns.by_profile.update({profile.profile: entry}) -%}
       {%- endif -%}
       {%- endfor -%}
       {{ ns.by_profile }}
@@ -199,6 +232,15 @@
         item.value.required_artifact_ids | default([])
         | difference(llm_gpu_serving_model_artifacts | map(attribute='artifact_id') | list)
         | length == 0
+      - >-
+        item.value.co_resident_routes | default([])
+        | map(attribute='artifact_id')
+        | difference(llm_gpu_serving_model_artifacts | map(attribute='artifact_id') | list)
+        | length == 0
+      - >-
+        item.value.co_resident_routes | default([])
+        | selectattr('client_model_id', 'defined') | list | length
+        == item.value.co_resident_routes | default([]) | length
       - >-
         not (llm_gpu_serving_profiles[item.key].enabled | default(true))
         or (item.value.artifact.use == 'serving'

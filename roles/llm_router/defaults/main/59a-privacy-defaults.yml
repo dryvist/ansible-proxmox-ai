@@ -7,7 +7,9 @@ llm_router_default_team_id: default-settings
 # Priority teams share the registry's ZDR scope unless their input declares models.
 # Each team and its -public twin also carry the role names their member keys are
 # scoped to: LiteLLM checks the team allowlist as well as the key, and a role is a
-# DB deployment, never a rendered group. The key scope stays the per-key limit.
+# DB deployment, never a rendered group. They also carry the direct and speech route
+# names their member keys hold, which no ZDR group names. The key scope stays the
+# per-key limit.
 llm_router_priority_team_settings: >-
   {%- set out = [] -%}
   {%- for team in llm_router_priority_tiers -%}
@@ -18,7 +20,10 @@ llm_router_priority_team_settings: >-
   {%- set _member_models = _llm_router_virtual_keys_without_values | default([]) | selectattr('team_id', 'defined')
         | selectattr('team_id', 'in', [team.team_id, team.team_id ~ '-public'])
         | map(attribute='models', default=[]) | flatten | unique | list -%}
-  {%- set _member_roles = (_member_models | select('in', llm_router_role_deployments | map(attribute='role') | list)
+  {%- set _member_roles = (_member_models | select('in', (llm_router_role_deployments | map(attribute='role') | list)
+        + llm_router_direct_route_aliases
+        + (llm_router_gpu_audio_models | map(attribute='client_model_id') | list)
+        + (_llm_router_hermes_locked_profile_models | default([])))
         | list) if _member_models else [] -%}
   {%- set _ = out.append(team | combine({
         'models': ((team.models | default(llm_router_zdr_asserted_group_names)) + _member_roles) | unique | list,

@@ -1,0 +1,64 @@
+---
+# Load and resolve GPU model artifacts before catalog projection.
+- name: Load the fabric model registry
+  ansible.builtin.include_vars:
+    dir: "{{ llm_router_registry_dir }}"
+    files_matching: '^(?!.*artifacts.*\.yml$).*\.yml$'
+
+- name: Combine the GPU profile registry shards
+  ansible.builtin.set_fact:
+    llm_router_registry_gpu_profiles: >-
+      {{ _llm_registry_gpu + _llm_registry_gpu_sweeps + _llm_registry_gpu_matrix }}
+
+- name: Find GPU members opted into audio serving
+  ansible.builtin.set_fact:
+    _llm_router_gpu_audio_hosts: >-
+      {%- set ns = namespace(hosts=[]) -%}
+      {%- for host in groups.get('llm_gpu_group', [])
+            if hostvars[host].get('llm_router_gpu_audio_member', false) | bool -%}
+      {%- set ns.hosts = ns.hosts + [host] -%}
+      {%- endfor -%}
+      {{ ns.hosts }}
+
+- name: Require audio members to co-reside the speech profile
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'speech' in hostvars[item].get('llm_gpu_serving_co_resident_profiles', [])"
+    fail_msg: >-
+      Every GPU member opted into audio serving must declare speech as a
+      co-resident serving profile.
+  loop: "{{ _llm_router_gpu_audio_hosts }}"
+  loop_control:
+    label: audio profile membership
+
+- name: Load model-specific GPU artifact shards
+  ansible.builtin.include_role:
+    name: llm_gpu_serving
+    tasks_from: load-artifacts.yml
+  vars:
+    llm_gpu_serving_artifact_files_matching: '^(?!.*-mlx).*artifacts.*\.yml$'
+
+- name: Share the registered model artifacts with the router
+  ansible.builtin.set_fact:
+    llm_router_model_artifacts: "{{ llm_gpu_serving_model_artifacts }}"
+
+- name: Index campaign model artifacts
+  ansible.builtin.set_fact:
+    llm_router_model_artifacts_by_id: >-
+      {{ dict(llm_router_model_artifacts | map(attribute='artifact_id')
+              | zip(llm_router_model_artifacts)) }}
+
+- name: Assert every GPU router profile resolves its upstream id from an artifact
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_model_artifacts_by_id | length == llm_router_model_artifacts | length
+      - item.artifact_id in llm_router_model_artifacts_by_id
+      - llm_router_model_artifacts_by_id[item.artifact_id].hf_repo | length > 0
+    fail_msg: >-
+      Every shared GPU router profile must reference a known model artifact in
+      the GPU artifact registry shards.
+  loop: "{{ llm_router_registry_gpu_profiles }}"
+  loop_control:
+    label: "{{ item.profile }}"

@@ -24,8 +24,13 @@ def _resolve_eval_api_server_key(secrets: dict[str, str]) -> str:
 def _render_profile_env(profile: dict, eval_api_server_key: str) -> str:
     context = dict(_RENDER_CONTEXT)
     profile_key = f"hermes_{profile['name'].replace('-', '_')}_llm_router_key"
+    profile_secrets = {profile_key: "router-key-fixture"}
+    if profile.get("locked", False):
+        profile_secrets[
+            f"hermes_{profile['name'].replace('-', '_')}_api_server_key"
+        ] = eval_api_server_key
     context.update(
-        bao_apps_secrets={profile_key: "router-key-fixture"},
+        bao_apps_secrets=profile_secrets,
         hermes_agent_eval_api_server_key=eval_api_server_key,
         hermes_agent_api_server_key=DEFAULT_API_SERVER_KEY,
         hermes_agent_owned_mcp_slugs=[],
