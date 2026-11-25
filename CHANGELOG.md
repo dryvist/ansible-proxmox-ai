@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.75.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.74.0...v2.75.0) (2026-11-25)
+
+
+### Features
+
+* **llm_router:** let a locked Hermes profile hold an app-agent tier ([#2834](https://github.com/dryvist/ansible-proxmox-ai/issues/2834)) ([291e8cc](https://github.com/dryvist/ansible-proxmox-ai/commit/291e8cca7a197f86472e84c1f7fd4a6bbeb52b26))
+
 ## [2.74.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.73.0...v2.74.0) (2026-11-25)
 
 

@@ -94,10 +94,17 @@ llm_router_app_agent_vikunja_read_allowlist: >-
 
 # Private resolved credentials are only consumed by the process env template
 # and key permission projection. Public docs derive names and fields only.
+# A tier is on only with its token and a key holder: its own roster entry, or
+# a locked Hermes profile. A token nobody holds a key for leaves the tier off.
 _llm_router_app_agent_matrix: >-
   {%- set ns = namespace(rows=[]) -%}
+  {%- set _profile_servers = hermes_agent_profiles | default([])
+        | selectattr('locked', 'defined') | selectattr('locked')
+        | map(attribute='mcp') | flatten | list -%}
   {%- for tier in llm_router_app_agent_tiers -%}
   {%- set app = llm_router_app_agent_apps[tier.app] -%}
+  {%- set holder = 'roster' if tier.id in (ai_agents | default({}))
+        else ('profile' if (tier.id | replace('-', '_')) in _profile_servers else '') -%}
   {%- set reader_domain = 'app-agent-' ~ tier.id -%}
   {%- set reader_secrets = (openbao_secrets_by_domain | default({}, true)).get(reader_domain, {}) -%}
   {%- set token = reader_secrets.get(tier.token_field, '')
@@ -113,11 +120,23 @@ _llm_router_app_agent_matrix: >-
         'url_value': (app.url if app.url is defined
                       else (bao_local_llm_secrets | default({}, true)).get(app.url_field, ''))
           | default('', true) | string | trim,
-        'enabled': token | length > 0,
+        'holder': holder,
+        'enabled': token | length > 0 and holder | length > 0,
       }, recursive=true) -%}
   {%- set ns.rows = ns.rows + [row] -%}
   {%- endfor -%}
   {{ ns.rows }}
+
+# Tier id -> the router key of the locked profile that holds it. The boundary
+# probes call a profile-held tier with this key.
+_llm_router_app_agent_profile_holder_keys: >-
+  {%- set out = {} -%}
+  {%- for row in _llm_router_app_agent_matrix | selectattr('holder', 'equalto', 'profile') -%}
+  {%- set _keys = _llm_router_hermes_profile_keys | selectattr('enabled')
+        | selectattr('object_permission.mcp_servers', 'equalto', [row.server_id]) | list -%}
+  {%- if _keys -%}{%- set _ = out.update({row.id: _keys[0].value}) -%}{%- endif -%}
+  {%- endfor -%}
+  {{ out }}
 
 # The committed Markdown table is a projection of the same tier rows used by
 # the templates and keys. It deliberately contains no resolved credentials.
