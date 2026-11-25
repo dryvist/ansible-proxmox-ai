@@ -1,0 +1,59 @@
+---
+# ClickHouse keeps one metadata row for each blob stored by Langfuse. Langfuse
+# migrations create this table before the worker health check succeeds.
+
+- name: Read the Langfuse blob-storage file-log table definition
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ langfuse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ langfuse_docker_clickhouse_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ langfuse_docker_clickhouse_user }}"
+      - --password
+      - "{{ langfuse_docker_clickhouse_password }}"
+      - --query
+      - >-
+        SELECT create_table_query FROM system.tables
+        WHERE database = '{{ langfuse_docker_clickhouse_db }}'
+        AND name = 'blob_storage_file_log' FORMAT TSVRaw
+  register: langfuse_docker_blob_storage_file_log_definition
+  changed_when: false
+  no_log: true
+
+- name: Require the Langfuse blob-storage file-log table to exist
+  ansible.builtin.assert:
+    that:
+      - langfuse_docker_blob_storage_file_log_definition.stdout | trim | length > 0
+    fail_msg: ClickHouse has no definition for the Langfuse blob-storage file-log table.
+  no_log: true
+
+- name: Set a 90-day TTL on Langfuse blob-storage file-log rows
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ langfuse_docker_data_dir }}/docker-compose.yml"
+      - exec
+      - -T
+      - "{{ langfuse_docker_clickhouse_service }}"
+      - clickhouse-client
+      - --user
+      - "{{ langfuse_docker_clickhouse_user }}"
+      - --password
+      - "{{ langfuse_docker_clickhouse_password }}"
+      - --query
+      - >-
+        ALTER TABLE {{ langfuse_docker_clickhouse_db }}.blob_storage_file_log
+        MODIFY TTL created_at + INTERVAL 90 DAY DELETE
+  when: >-
+    'TTL created_at + toIntervalDay(90) DELETE'
+    not in (langfuse_docker_blob_storage_file_log_definition.stdout | default(''))
+  changed_when: true
+  no_log: true
