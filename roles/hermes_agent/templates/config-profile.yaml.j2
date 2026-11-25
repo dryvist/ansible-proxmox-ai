@@ -1,6 +1,8 @@
 {{ ansible_managed | comment }}
 {% import 'config-context-limits.yaml.j2' as context_limits %}
-{% set hermes_agent_model = hermes_agent_profile.model | default(hermes_agent_model) %}
+{% set _profile_locked = hermes_agent_profile.locked | default(false) | bool %}
+{% set hermes_agent_model = hermes_agent_locked_profile_model if _profile_locked else hermes_agent_profile.model | default(hermes_agent_model) %}
+{% set _profile_context_limits = hermes_agent_context_limits | combine({'tools': {}}, recursive=true) if _profile_locked else hermes_agent_context_limits %}
 # Hermes Agent profile config: {{ hermes_agent_profile.name }} — {{ hermes_agent_profile.description }}
 # A named operating profile (see hermes_agent_profiles in defaults/main.yml).
 # Scoped subset of the default profile's config.yaml: same brain/agent/session
@@ -19,6 +21,7 @@ model:
 {{ context_limits.top_level(hermes_agent_context_limits) }}
 
 {% set _memory_on = hermes_agent_profile.memory_enabled | default(true) | bool %}
+{% set _memory_on = _memory_on and not _profile_locked %}
 memory:
   # A profile with memory_enabled: false (hermes_agent_profiles) gets the built-in
   # provider with built-in memory and the user profile off, whatever the fleet provider.
@@ -31,6 +34,7 @@ logging:
   level: {{ hermes_agent_log_level }}
 
 {% set _lifted_toolsets = (hermes_agent_profile.enable_toolsets | default([])) | select('in', hermes_agent_profile_toolsets_open | default([])) | list %}
+{% set _locked_toolsets = ['web', 'browser', 'terminal', 'file', 'code_execution', 'vision', 'video', 'image_gen', 'video_gen', 'x_search', 'tts', 'stt', 'skills', 'kanban', 'memory', 'context_engine', 'session_search', 'connections', 'clarify', 'delegation', 'cronjob', 'discord', 'discord_admin', 'yuanbao', 'computer_use', 'homeassistant', 'spotify'] %}
 agent:
   max_turns: {{ hermes_agent_max_turns }}
   run_budget_seconds: {{ hermes_agent_run_budget_seconds }}
@@ -39,10 +43,16 @@ agent:
   # H-17 global deny floor — same list every profile inherits, less the toolsets this profile lifts
   # (enable_toolsets, open per hermes_agent_profile_toolsets_open); see
   # hermes_agent_disabled_toolsets in defaults/main.yml for the rationale.
-  disabled_toolsets: {{ hermes_agent_disabled_toolsets | reject('in', _lifted_toolsets) | list | to_json }}
-{{ context_limits.tool_output_tools_delegation(hermes_agent_context_limits) }}
+  disabled_toolsets: {{ (hermes_agent_disabled_toolsets + _locked_toolsets) | unique | list | to_json if _profile_locked else hermes_agent_disabled_toolsets | reject('in', _lifted_toolsets) | list | to_json }}
+{{ context_limits.tool_output_tools_delegation(_profile_context_limits) }}
+{% if _profile_locked %}
+tools:
+  tool_search:
+    enabled: "off"
+{% endif %}
 
 {% set _profile_a2a_on = (hermes_agent_a2a_delegation_enabled | default(false) | bool)
+    and not hermes_agent_profile.locked | default(false)
     and hermes_agent_profile.name != 'eval'
     and hermes_agent_profile.name in (hermes_agent_a2a_delegating_profiles | default([])) %}
 {% include 'config-profile-a2a.yaml.j2' %}
@@ -53,6 +63,10 @@ platform_toolsets:
 {% for platform, additions in hermes_agent_profile.toolsets | dictsort %}
   {{ platform }}: {{ ((hermes_agent_cron_toolsets + additions if platform == 'cron' else additions) + _a2a_tools) | unique | list | to_json }}
 {% endfor %}
+{% elif hermes_agent_profile.locked | default(false) %}
+platform_toolsets:
+  api_server: [todo]
+  cli: [todo]
 {% endif %}
 
 terminal:
@@ -83,10 +97,10 @@ security:
 compression:
   enabled: {{ hermes_agent_context_compression_enabled | to_json }}
   threshold: {{ hermes_agent_context_compression_threshold }}
-  summary_model: {{ hermes_agent_profile.model | default(hermes_agent_compression_model) | to_json }}
+  summary_model: {{ hermes_agent_model | to_json if _profile_locked else hermes_agent_profile.model | default(hermes_agent_compression_model) | to_json }}
 {{ context_limits.compression(hermes_agent_context_limits) }}
 
-{% if hermes_agent_kanban_goal_mode | bool %}
+{% if hermes_agent_kanban_goal_mode | bool and not _profile_locked %}
 # A card assigned to this profile is judged from ITS OWN config.yaml (the
 # spawned worker reads the assignee's HERMES_HOME) — this block must exist
 # here too, identical to the default profile's, or goal-mode completion
@@ -112,7 +126,7 @@ compression:
 {% endif %}
 auxiliary:
 {% include 'config-auxiliary-tasks.yaml.j2' %}
-{% if hermes_agent_kanban_goal_mode | bool %}
+{% if hermes_agent_kanban_goal_mode | bool and not _profile_locked %}
   transient_retries: 1
   goal_judge:
     provider: {{ hermes_agent_model_shared_provider }}
@@ -124,8 +138,8 @@ auxiliary:
 
 {% include 'config-session-reset.yaml.j2' %}
 
-{% include 'config-plugins.yaml.j2' %}
-{% if 'homeassistant' in (hermes_agent_profile.plugins | default([])) | select('in', hermes_agent_profile_plugins_open | default([])) | list %}
+{% if not _profile_locked %}{% include 'config-plugins.yaml.j2' %}{% endif %}
+{% if not _profile_locked and 'homeassistant' in (hermes_agent_profile.plugins | default([])) | select('in', hermes_agent_profile_plugins_open | default([])) | list %}
 
 # The profile uses the plugin's tools only. The plugin's platform adapter stays off, so the profile
 # keeps delivering through the primary gateway's routes. An explicit `enabled` wins over HASS_TOKEN.
@@ -149,9 +163,15 @@ kanban:
 {% set _mcp_vikunja = ('vikunja' in hermes_agent_profile.mcp) and (hermes_agent_vikunja_mcp_enabled | bool) %}
 {% set _mcp_crawl4ai = ('crawl4ai' in hermes_agent_profile.mcp) and (hermes_agent_crawl4ai_mcp_enabled | default(false) | bool) %}
 {% set _mcp_zammad = ('zammad' in hermes_agent_profile.mcp) and (hermes_agent_router_zammad_mcp_enabled | default(true) | bool) %}
-{% set _mcp_vikunja_write = ('vikunja_write' in hermes_agent_profile.mcp) and (hermes_agent_router_vikunja_write_mcp_enabled | default(true) | bool) %}
+{% set _mcp_app_agent_servers = [] %}
+{% for _mcp_name in hermes_agent_profile.mcp | default([]) %}
+{% if _mcp_name.endswith(('_read', '_write', '_admin'))
+    and (_mcp_name != 'vikunja_write' or hermes_agent_router_vikunja_write_mcp_enabled | default(true) | bool) %}
+{% set _ = _mcp_app_agent_servers.append(_mcp_name) %}
+{% endif %}
+{% endfor %}
 {% set _mcp_nautobot = ('nautobot' in hermes_agent_profile.mcp) and (hermes_agent_nautobot_mcp_enabled | bool) %}
-{% if _mcp_splunk or _mcp_docs or _mcp_grep or _mcp_vikunja or _mcp_crawl4ai or _mcp_nautobot or _mcp_zammad or _mcp_vikunja_write %}
+{% if _mcp_splunk or _mcp_docs or _mcp_grep or _mcp_vikunja or _mcp_crawl4ai or _mcp_nautobot or _mcp_zammad or _mcp_app_agent_servers %}
 # MCP servers this profile is scoped to reach. ${VARS} resolve from THIS
 # profile's own .env at connect time — never the default profile's.
 mcp_servers:
@@ -197,14 +217,14 @@ mcp_servers:
       Authorization: "Bearer ${HERMES_AGENT_MODEL_API_KEY}"
       x-mcp-servers: "zammad"
 {% endif %}
-{% if _mcp_vikunja_write %}
-  vikunja_write:
+{% for _mcp_server_id in _mcp_app_agent_servers %}
+  {{ _mcp_server_id }}:
     timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
     url: "{{ hermes_agent_model_base_url.removesuffix('/v1') }}/mcp"
     headers:
       Authorization: "Bearer ${HERMES_AGENT_MODEL_API_KEY}"
-      x-mcp-servers: "vikunja_write"
-{% endif %}
+      x-mcp-servers: "{{ _mcp_server_id }}"
+{% endfor %}
 {% if _mcp_nautobot %}
   nautobot:
     timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}

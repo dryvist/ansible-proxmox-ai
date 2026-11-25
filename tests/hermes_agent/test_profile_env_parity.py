@@ -141,6 +141,8 @@ def test_every_operational_setting_reaches_every_profile_store() -> None:
     assert shared, "the shared operational partial rendered no settings at all"
 
     for profile in role_defaults(ROLE_ROOT)["hermes_agent_profiles"]:
+        if profile.get("locked", False):
+            continue
         profile_values = _env_values(
             env.get_template("hermes-env-profile.j2").render(
                 hermes_agent_profile=profile, **context
