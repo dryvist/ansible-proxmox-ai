@@ -51,6 +51,7 @@
         llm_router_gpu_profiles_enabled: true
         llm_active_profile: small
         llm_router_studio_precheck_passed: true
+        _llm_router_live_models: ['medium']
 
     # The defaults are projections of the registry, so both have to be in scope
     # for the contract to mean anything. Loaded through the role's own task file
@@ -165,6 +166,29 @@
         success_msg: "recorder-medium keeps its logging policy on the medium capability"
       vars:
         _recorder_medium: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'recorder-medium') | first }}"
+
+    - name: The large role targets the primary serving entry and falls back to medium
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _large_role.model == llm_router_primary_serving_model
+          - _large_role.model == (_primary_entry | first).client_model_id
+          - _large_role.fallbacks == [llm_router_primary_model]
+          - _large_role.fallbacks == ['medium']
+          - llm_router_primary_serving_model in _llm_router_role_available_targets
+          - _llm_router_role_params[_large_role.model].model == _expected_upstream_model
+          - >-
+            _llm_router_role_model_info[_large_role.model].max_input_tokens | int
+            == (_primary_entry | first).context_window | int
+        success_msg: "large targets the primary serving entry and falls back to medium"
+      vars:
+        _large_role: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'large') | first }}"
+        _primary_entry: >-
+          {{ (llm_router_large_models + llm_router_gpu_models)
+             | selectattr('client_model_id', 'equalto', llm_router_primary_serving_model) | list }}
+        _expected_upstream_model: >-
+          {{ (_primary_entry | first).litellm_model_name
+             | default(((_primary_entry | first).provider ~ '/') ~ (_primary_entry | first).upstream_model_id) }}
 
     - name: Every per-caller virtual key scopes only names the router advertises
       # WHY THIS EXISTS. A key's `models` list is an allowlist enforced by the
