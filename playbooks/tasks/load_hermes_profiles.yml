@@ -12,13 +12,25 @@
     file: "{{ _hermes_agent_role_dir }}/defaults/main/150-fleet-health-profiles.yml"
     name: _hermes_fleet_health_defaults
 
-# Only the name crosses into this play: a profile field may reference a
-# variable that only the hermes_agent role defines, and set_fact would resolve
-# every field of every entry here, where that variable does not exist.
+# Only the name and the router-facing security markers cross into this play:
+# other profile fields may reference a variable only hermes_agent defines.
 - name: Publish hermes_agent_profiles to this play
   ansible.builtin.set_fact:
     hermes_agent_profiles: >-
-      {{ [] if (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) in ['hermes-private', 'pepper']
-              or hermes_agent_isolated | default(false) | bool
-         else _hermes_fleet_health_defaults.hermes_agent_profiles
-              | map(attribute='name') | map('community.general.dict_kv', 'name') | list }}
+      {%- if (hermes_agent_identity | default(hermes_agent_id | default('hermes'))) in ['hermes-private', 'pepper']
+            or hermes_agent_isolated | default(false) | bool -%}
+      {{ [] }}
+      {%- else -%}
+      {%- set ns = namespace(profiles=[]) -%}
+      {%- for profile in _hermes_fleet_health_defaults.hermes_agent_profiles -%}
+      {%- set _gate = profile.feature_gate | default('') -%}
+      {%- if not _gate or lookup('vars', _gate, default=false) | bool -%}
+      {%- set _public_profile = {'name': profile.name} -%}
+      {%- if profile.locked | default(false) -%}
+      {%- set _public_profile = _public_profile | combine({'locked': true, 'mcp': profile.mcp}) -%}
+      {%- endif -%}
+      {%- set ns.profiles = ns.profiles + [_public_profile] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.profiles }}
+      {%- endif -%}

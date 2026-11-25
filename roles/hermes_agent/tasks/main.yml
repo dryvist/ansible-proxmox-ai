@@ -67,9 +67,15 @@
     hermes_agent_profiles: "{{ hermes_agent_profiles | rejectattr('name', 'in', _gated_off) | list }}"
   vars:
     _gated_off: >-
+      {%- set off = [] -%}
+      {%- for p in hermes_agent_profiles
+            if p.feature_gate is defined and not lookup('vars', p.feature_gate, default=false) | bool -%}
+      {%- set _ = off.append(p.name) -%}
+      {%- endfor -%}
       {{ ([] if llm_router_hermes_tracker_reporter_key_enabled | default(false) | bool else ['tracker-reporter'])
-         + ([] if llm_router_hermes_vikunja_pm_key_enabled | default(false) | bool else ['vikunja-pm']) }}
-  # Profiles guard, as above: every profile reader sees the list without the gated profiles.
+         + ([] if llm_router_hermes_vikunja_pm_key_enabled | default(false) | bool else ['vikunja-pm'])
+         + off }}
+  # Profiles guard.
   tags: always
 
 - name: Reject inherited Pepper profile homes before any runtime changes

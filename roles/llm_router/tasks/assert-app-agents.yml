@@ -19,6 +19,36 @@
     _keys: "{{ _llm_router_agent_keys | selectattr('alias', 'equalto', _row.id) | list }}"
   no_log: true
 
+- name: Require an endpoint for each enabled HTTP app-agent tier
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _row.url_value | length > 0
+    fail_msg: >-
+      HTTP app-agent tier {{ _row.id }} is enabled but its endpoint is empty.
+  loop: >-
+    {{ _llm_router_app_agent_matrix
+       | selectattr('enabled')
+       | selectattr('transport', 'defined')
+       | selectattr('transport', 'equalto', 'http') | list }}
+  loop_control:
+    loop_var: _row
+    label: "{{ _row.id }}"
+  no_log: true
+
+- name: Require every enabled locked profile MCP server to be registered
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _profile.mcp | length == 1
+      - _profile.mcp | difference(llm_router_mcp_registered_server_ids) | length == 0
+    fail_msg: >-
+      Locked profile {{ _profile.name }} needs one enabled router MCP server; verify its app-agent tier token.
+  loop: "{{ _llm_router_hermes_locked_profiles }}"
+  loop_control:
+    loop_var: _profile
+    label: "{{ _profile.name }}"
+
 - name: Issue write and admin tier keys only to trusted roster entries
   ansible.builtin.assert:
     quiet: true

@@ -52,3 +52,28 @@
       max_tokens: {{ llm_router_hermes_agent_context_window }}
 {% endif %}
 {% endfor %}
+{% for _profile in hermes_agent_profiles | default([]) if _profile.locked | default(false) %}
+{% set _field = 'hermes_' ~ (_profile.name | replace('-', '_')) ~ '_api_server_key' %}
+{% set _bearer = (bao_apps_secrets | default({})).get(_field, '') | default('', true) | string | trim %}
+{% set _guest = llm_router_hermes_agents.get('hermes-agent', {}) %}
+{% if _bearer | length > 0 and _guest.api_url is defined %}
+  - model_name: agent-{{ _profile.name }}
+    litellm_params:
+      model: hosted_vllm/{{ _profile.name }}
+      tags: {{ (['local', 'zdr', 'sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii']
+                + (llm_router_priority_tiers | map(attribute='team_id') | list)
+                + (['default'] if 'tier-1' in (llm_router_priority_tiers | map(attribute='team_id') | list) else [])) | unique | to_json }}
+      api_base: {{ _guest.api_url | regex_replace('/v1$', '/p/' ~ _profile.name ~ '/v1') }}
+      api_key: os.environ/HERMES_AGENT_BEARER_TOKEN_{{ _profile.name | upper | regex_replace('[^A-Z0-9]', '_') }}
+      timeout: {{ llm_router_hermes_agent_timeout }}
+      stream_timeout: {{ llm_router_hermes_agent_timeout }}
+      num_retries: 0
+    model_info:
+      accelerator: agent
+      allow_fail_open: false
+      disable_background_health_check: true
+      mode: chat
+      max_input_tokens: {{ llm_router_hermes_agent_context_window }}
+      max_tokens: {{ llm_router_hermes_agent_context_window }}
+{% endif %}
+{% endfor %}

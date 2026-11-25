@@ -21,6 +21,17 @@ _llm_router_consumer_classes_standard: [local, sub, paid-zdr, free]
 _llm_router_consumer_classes_zdr: [local, sub, paid-zdr]
 _llm_router_consumer_classes_local: [local]
 _llm_router_consumer_classes_public: [retains, free]
+
+# Interactive coding clients and the default Hermes profile may call a locked
+# clerk model; these keys receive model access without a clerk MCP grant.
+llm_router_hermes_clerk_caller_key_aliases:
+  - claude-code
+  - codex
+  - cursor
+  - opencode
+  - qwen-code
+  - zcode
+  - hermes-default
 _llm_router_agent_excluded_groups: >-
   {%- set ns = namespace(names=[]) -%}
   {%- for m in llm_router_registry_enabled
@@ -98,10 +109,18 @@ _llm_router_local_overlay:
   router_settings:
     enable_tag_filtering: true
 
-# Named profiles whose key is local-only: the one local review alias, no MCP
-# grant and a low request rate, instead of the shared shape below. Names must
-# match hermes_agent_profiles (150-fleet-health-profiles.yml).
-_llm_router_hermes_local_only_profiles: [eval]
+# Named profiles whose key is local-only. Locked profile MCP access is declared
+# on the profile itself; every other local-only profile gets the default deny.
+_llm_router_hermes_locked_profiles: >-
+  {{ hermes_agent_profiles | default([])
+     | selectattr('locked', 'defined') | selectattr('locked') | list }}
+_llm_router_hermes_locked_profile_names: >-
+  {{ _llm_router_hermes_locked_profiles | map(attribute='name') | list }}
+_llm_router_hermes_locked_profile_models: >-
+  {{ _llm_router_hermes_locked_profile_names
+     | map('regex_replace', '^', 'agent-') | list }}
+_llm_router_hermes_local_only_profiles: >-
+  {{ ['eval'] + _llm_router_hermes_locked_profile_names }}
 
 _llm_router_hermes_profile_keys: >-
   {%- set _items = [] -%}
@@ -110,6 +129,8 @@ _llm_router_hermes_profile_keys: >-
   {%- set _field = 'hermes_' ~ (_name | replace('-', '_'))
      ~ '_llm_router_key' -%}
   {%- set _value = (bao_apps_secrets | default({})).get(_field, '') -%}
+  {%- set _locked_profile = (_llm_router_hermes_locked_profiles
+        | selectattr('name', 'equalto', _name) | list | first) | default({}) -%}
   {%- set _profile = {
         'alias': 'hermes-' ~ _name,
         'trust_caller': hermes_agent_identity | default('hermes'),
@@ -153,7 +174,8 @@ _llm_router_hermes_profile_keys: >-
   {%- set _profile = _profile | combine({
         'allowed_classes': ['local'],
         'models': [llm_router_review_aliases.local],
-        'object_permission': llm_router_mcp_default_object_permission,
+        'object_permission': ({'mcp_servers': _locked_profile.mcp | unique | list}
+          if _locked_profile else llm_router_mcp_default_object_permission),
         'rpm_limit': 30,
       }) -%}
   {%- endif -%}

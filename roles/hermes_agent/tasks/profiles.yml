@@ -21,6 +21,23 @@
     fail_msg: Eval calls must use the local review model granted to its router key.
   when: item.name == 'eval'
 
+- name: Refuse capability overrides on locked profiles
+  ansible.builtin.import_tasks: assert-locked-profile.yml
+  when: item.locked | default(false) | bool
+
+- name: Require a locked profile's own API server key
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (bao_apps_secrets | default({})).get(
+        'hermes_' ~ (item.name | replace('-', '_')) ~ '_api_server_key', '')
+        | string | length > 0
+    fail_msg: >-
+      Locked profile {{ item.name }} requires its own API_SERVER_KEY in the apps secret leaf.
+  when: item.locked | default(false) | bool
+  no_log: true
+
 - name: "Create profile directory for {{ item.name }}"
   ansible.builtin.command:
     cmd: >-
@@ -83,7 +100,7 @@
 # agents receive different static bank IDs through hermes_agent_id; profiles
 # without `memory_bank_id` share their agent's bank so daily-summary can read a
 # moved card's findings without losing continuity. A profile with
-# memory_enabled: false (the eval profile) gets no hindsight config at all.
+# memory_enabled: false and locked profiles get no hindsight config.
 - name: "Ensure the hindsight config dir exists for profile {{ item.name }}"
   ansible.builtin.file:
     path: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/hindsight"
@@ -91,7 +108,10 @@
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0750"
-  when: hermes_agent_memory_provider == 'hindsight' and (item.memory_enabled | default(true) | bool)
+  when:
+    - not (item.locked | default(false) | bool)
+    - hermes_agent_memory_provider == 'hindsight'
+    - item.memory_enabled | default(true) | bool
 
 - name: "Refuse a profile memory bank that the agentgateway key would override"
   ansible.builtin.assert:
@@ -101,7 +121,10 @@
       Profile {{ item.name }} sets memory_bank_id, but the agentgateway key is set, and the gateway
       serves one bank per agent to every profile. Remove the profile's memory_bank_id or the gateway key.
     quiet: true
-  when: hermes_agent_memory_provider == 'hindsight' and (item.memory_enabled | default(true) | bool)
+  when:
+    - not (item.locked | default(false) | bool)
+    - hermes_agent_memory_provider == 'hindsight'
+    - item.memory_enabled | default(true) | bool
 
 - name: "Deploy the hindsight provider config for profile {{ item.name }}"
   ansible.builtin.template:
@@ -112,23 +135,27 @@
     mode: "0640"
   vars:
     hermes_agent_profile_memory_bank_id: "{{ item.memory_bank_id | default(hermes_agent_memory_bank_id) }}"
-  when: hermes_agent_memory_provider == 'hindsight' and (item.memory_enabled | default(true) | bool)
+  when:
+    - not (item.locked | default(false) | bool)
+    - hermes_agent_memory_provider == 'hindsight'
+    - item.memory_enabled | default(true) | bool
 
-# SOUL.md = the shared bundle persona plus this profile's addendum. Profile
-# addenda come from the bundle except the orchestrator's own role-local
-# template; its Kanban lifecycle addendum also comes from the bundle.
+# SOUL.md uses a standalone role-local prompt when declared, otherwise the
+# shared bundle persona plus this profile's addendum.
 - name: "Deploy composed SOUL.md (shared base + addendum) for profile {{ item.name }}"
   ansible.builtin.copy:
     content: >-
-      {{ (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/SOUL.md')
-          ~ "\n\n" ~
-          (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/soul/profiles/' ~ item.name ~ '.md')
-           if item.soul_addendum_bundle | default(false)
-           else lookup('ansible.builtin.template', role_path ~ '/templates/' ~ item.soul_addendum_file))
-          ~ ("\n\n" ~ lookup(
-              'ansible.builtin.file',
-              hermes_agent_bundle_path ~ '/soul/profiles/' ~ item.soul_addendum_bundle_extra_file
-            ) if item.soul_addendum_bundle_extra_file is defined else "")) }}
+      {{ lookup('ansible.builtin.template', role_path ~ '/templates/' ~ item.soul_standalone_file)
+         if item.soul_standalone_file is defined else
+           (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/SOUL.md')
+            ~ "\n\n" ~
+            (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/soul/profiles/' ~ item.name ~ '.md')
+             if item.soul_addendum_bundle | default(false)
+             else lookup('ansible.builtin.template', role_path ~ '/templates/' ~ item.soul_addendum_file))
+            ~ ("\n\n" ~ lookup(
+                'ansible.builtin.file',
+                hermes_agent_bundle_path ~ '/soul/profiles/' ~ item.soul_addendum_bundle_extra_file
+              ) if item.soul_addendum_bundle_extra_file is defined else "")) }}
     dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/SOUL.md"
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
@@ -148,7 +175,7 @@
     mode: "0640"
     directory_mode: "0750"
   when: hermes_agent_profile_skill.startswith('dryvist/')
-  loop: "{{ item.skills }}"
+  loop: "{{ item.skills | default([]) }}"
   loop_control:
     loop_var: hermes_agent_profile_skill
     label: "{{ hermes_agent_profile_skill }}"
@@ -161,7 +188,7 @@
     group: "{{ hermes_agent_user }}"
     mode: "0640"
     directory_mode: "0750"
-  when: "'hermes_agent/github-issues-api' in item.skills"
+  when: "'hermes_agent/github-issues-api' in (item.skills | default([]))"
 
 # research/llm-wiki ships from the hermes-agent install itself
 # (hermes_agent_install_dir), not the nix-hermes dryvist bundle above, so it
@@ -180,5 +207,5 @@
     group: "{{ hermes_agent_user }}"
     mode: preserve
   when:
-    - hermes_agent_wiki_enabled | bool and 'research/llm-wiki' in item.skills
+    - hermes_agent_wiki_enabled | bool and 'research/llm-wiki' in (item.skills | default([]))
     - not (ansible_check_mode and (hermes_agent_install.changed | default(false)))
