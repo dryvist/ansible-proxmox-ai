@@ -66,7 +66,7 @@ profile.
 | `youtrack-clerk` | Narrow YouTrack requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
 | `vikunja-clerk` | Narrow Vikunja task requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
 | `zammad-clerk` | Narrow Zammad ticket requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
-| `semaphore-converge` | Previews and confirmed runs of existing Semaphore templates | One router run tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP, template edits |
+| `semaphore-converge` | Previews and confirmed runs | One router run tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
 | `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |
 
 The `tracker-reporter` profile and its two report jobs exist only while
