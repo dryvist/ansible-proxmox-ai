@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from jinja2 import Environment
 
+from _registry import load_registry
 from _role_files import direct_plan_var, role_defaults
 from test_context_limits import ROLE_ROOT
 
@@ -32,6 +33,10 @@ def test_only_selected_direct_crons_render_the_small_lane() -> None:
         )
         rendered_models.append((name, model))
 
-    small_crons = [name for name, model in rendered_models if model == "small"]
+    # The lane is read from the cron's own declaration, never re-typed: the
+    # registry single-source scan forbids registry values as test literals.
+    small_lane = dict(rendered_models)[next(iter(EXPECTED_SMALL_CRONS))]
+    assert small_lane in {entry.get("route_group") for entry in load_registry()}
+    small_crons = [name for name, model in rendered_models if model == small_lane]
     assert len(small_crons) == len(EXPECTED_SMALL_CRONS)
     assert set(small_crons) == EXPECTED_SMALL_CRONS
