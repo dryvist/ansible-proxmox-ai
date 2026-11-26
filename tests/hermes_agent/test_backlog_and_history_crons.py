@@ -69,6 +69,18 @@ def test_every_backlog_job_runs_on_the_vikunja_pm_profile() -> None:
         assert job["hermes_home"].endswith("/profiles/vikunja-pm"), job["name"]
 
 
+def test_every_backlog_job_delivers_locally() -> None:
+    for job in _backlog_jobs():
+        assert job["deliver"] == "local", job["name"]
+        assert job["failure_deliver"] == "local", job["name"]
+
+
+def test_backlog_gate_is_the_vikunja_pm_profile_key() -> None:
+    gate = role_defaults(ROLE_ROOT)["hermes_agent_vikunja_backlog_review_enabled"]
+    assert "llm_router_hermes_vikunja_pm_key_enabled" in gate
+    assert "hermes_agent_id == 'hermes'" in gate
+
+
 def test_backlog_prompt_stays_advisory_only() -> None:
     prompt = " ".join(
         role_defaults(ROLE_ROOT)["hermes_agent_vikunja_backlog_review_cron_prompt"].split()
