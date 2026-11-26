@@ -221,12 +221,10 @@ def test_profiles_tasks_are_wired_before_the_direct_cron_reconcile() -> None:
 
 
 def test_llm_wiki_skill_is_materializable_into_any_profile_that_opts_in() -> None:
-    # research/llm-wiki ships from hermes_agent_install_dir (the hermes-agent
-    # install itself), not the nix-hermes dryvist bundle the "scoped dryvist
-    # skills" loop below copies from — so it needs its OWN copy task, or a
-    # profile naming it in `skills` would get no error and no skill (silent
-    # gap, not a loud one). Gated on the same hermes_agent_wiki_enabled flag
-    # as the default profile's copy in tasks/main.yml.
+    # research/llm-wiki ships from hermes_agent_install_dir, not the dryvist
+    # bundle the scoped-skills loop copies from, so it needs its own copy task
+    # or a profile naming it would silently get no skill. Gated on
+    # hermes_agent_wiki_enabled like the default profile's copy.
     profiles_tasks = (ROLE_ROOT / "tasks" / "profiles.yml").read_text()
     assert "Materialize the llm-wiki skill for profile" in profiles_tasks
     assert "{{ hermes_agent_install_dir }}/optional-skills/research/llm-wiki" in profiles_tasks
