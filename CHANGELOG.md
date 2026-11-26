@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.81.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.80.1...v2.81.0) (2026-11-26)
+
+
+### Features
+
+* **hermes_agent:** add Vikunja backlog review and session follow-up crons ([#2862](https://github.com/dryvist/ansible-proxmox-ai/issues/2862)) ([c8bac2d](https://github.com/dryvist/ansible-proxmox-ai/commit/c8bac2dd53824feaf5829e8995cc3c86bfabe82c))
+
 ## [2.80.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.80.0...v2.80.1) (2026-11-26)
 
 
