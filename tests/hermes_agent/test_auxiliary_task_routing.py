@@ -34,6 +34,7 @@ def test_auxiliary_tasks_are_pinned_to_the_router_in_both_configs() -> None:
             "base_url": model["base_url"],
             "api_key": "${HERMES_AGENT_MODEL_API_KEY}",
             "api_mode": model["api_mode"],
+            "timeout": 60.0,
         }
 
         for task in expected_keys - {"goal_judge"}:
