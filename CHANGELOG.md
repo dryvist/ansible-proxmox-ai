@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.83.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.82.1...v2.83.0) (2026-11-26)
+
+
+### Features
+
+* **llm_router:** add a switched-off Semaphore converge agent ([#2856](https://github.com/dryvist/ansible-proxmox-ai/issues/2856)) ([1229fe6](https://github.com/dryvist/ansible-proxmox-ai/commit/1229fe6711e4059fbc6d21945962414b166e8c33))
+
 ## [2.82.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.82.0...v2.82.1) (2026-11-26)
 
 
