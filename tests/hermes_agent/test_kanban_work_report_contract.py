@@ -20,14 +20,21 @@ from _role_files import role_defaults, role_tasks
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
 DEFAULTS = role_defaults(ROLE_ROOT)
+# The loader strips a leading front matter block before it composes the prompt,
+# so the body the worker sees is what the composition has to start with.
+FRONT_MATTER = re.compile(r"(?s)^---\n.*?\n---\n")
+BASE_PROMPT = FRONT_MATTER.sub(
+    "",
+    (ROLE_ROOT / "files" / DEFAULTS["hermes_agent_daily_status_cron_prompt_file"]).read_text(),
+).strip()
+
+
 def test_fabric_status_prompt_uses_the_pinned_shared_report_fragment():
     sources = DEFAULTS["hermes_agent_catalog_prompt_sources"]
     summary_source = sources["hermes_agent_daily_status_kanban_summary"]
     assert summary_source["prompt_file"] == "hermes-daily-status-kanban-summary.md"
 
-    base_prompt = (
-        ROLE_ROOT / "files" / DEFAULTS["hermes_agent_daily_status_cron_prompt_file"]
-    ).read_text().strip()
+    base_prompt = BASE_PROMPT
 
     task = next(
         task for task in role_tasks(ROLE_ROOT, "prompt_catalog.yml")
