@@ -37,6 +37,7 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_compression_model": "hermes-default",
     "hermes_agent_kanban_goal_mode": True,
     "hermes_agent_kanban_goal_judge_model": "judge",
+    "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
     "hermes_agent_session_reset_at_hour": 4,
     "hermes_agent_session_reset_idle_minutes": 1440,
     "hermes_agent_mcp_tool_timeout_seconds": 180,
