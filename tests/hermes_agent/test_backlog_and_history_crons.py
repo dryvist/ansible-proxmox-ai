@@ -1,7 +1,8 @@
-"""Contract checks for the Vikunja backlog-review and session-follow-up crons.
+"""Contract checks for the Vikunja backlog-review, session-follow-up, and stale-work crons.
 
-Both jobs are declared as data in the role's split defaults (149-*.yml) and
-reassembled into hermes_agent_direct_cron_jobs by 43-direct-cron-jobs-core.yml.
+All three job groups are declared as data in the role's split defaults
+(149-*.yml) and reassembled into hermes_agent_direct_cron_jobs by
+43-direct-cron-jobs-core.yml.
 The checks below pin the parts a later edit would silently break: the ten
 per-project backlog jobs and their minutes, the profile each one runs on, the
 advisory-only wording of the prompt, and the two list names the aggregate
@@ -102,6 +103,22 @@ def test_backlog_prompt_stays_advisory_only() -> None:
     prompt = " ".join(prompt.split())
     assert "never change any task field" in prompt
     assert "[SILENT]" in prompt
+
+
+def test_stale_work_job_runs_read_only_on_the_orchestrator_profile() -> None:
+    # The rendered prompt itself is pinned by the catalog render-hash fixture.
+    defaults = role_defaults(ROLE_ROOT)
+    job = next(
+        job for job in defaults["hermes_agent_direct_cron_jobs"]
+        if job["name"] == "orchestrator-stale-work"
+    )
+    assert job["hermes_home"].endswith("/profiles/{{ hermes_agent_kanban_orchestrator_profile }}")
+    assert "hermes_agent_kanban_orchestrator_profile" in job["deliver"]
+    assert "hermes_agent_kanban_orchestrator_profile in" in job["enabled"]
+    assert job["prompt_var"] == "hermes_agent_orchestrator_stale_work_cron_prompt"
+    prompt_file = defaults["hermes_agent_orchestrator_stale_work_cron_prompt_file"]
+    prompt = catalog_files(defaults["hermes_agent_prompts_flake_ref"])[prompt_file]
+    assert "you never change" in " ".join(prompt.split())
 
 
 def test_both_new_lists_are_named_by_the_aggregate_concatenation() -> None:
