@@ -220,8 +220,10 @@ PATCHED_JUDGE_AVAILABLE_SOURCE = _apply_runtime_patch(
     PINNED_JUDGE_AVAILABLE_SOURCE,
 )
 PATCHED_GOAL_JUDGE_SOURCE = (
-    "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
-    + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+    # The judge-timeout patch is retired: upstream reads the timeout from the
+    # auxiliary.goal_judge.timeout config key (#91022), which the role sets in
+    # config.yaml.j2, so no patched constant line belongs in this source.
+    PINNED_JUDGE_ERROR_SENTINEL_SOURCE
     + PATCHED_KANBAN_GOAL_LOOP_SOURCE
     + PATCHED_JUDGE_CALL_SOURCE
 )
