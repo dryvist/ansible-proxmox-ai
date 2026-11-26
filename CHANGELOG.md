@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.83.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.83.1...v2.83.2) (2026-11-26)
+
+
+### Bug Fixes
+
+* **hermes_agent:** resolve the runtime uid in every component run ([#2899](https://github.com/dryvist/ansible-proxmox-ai/issues/2899)) ([6c850f3](https://github.com/dryvist/ansible-proxmox-ai/commit/6c850f3691454bb00cc789f452b1e02c34c56105))
+
 ## [2.83.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.83.0...v2.83.1) (2026-11-26)
 
 
