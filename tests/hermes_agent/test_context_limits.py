@@ -75,6 +75,7 @@ def _render(template: str, limits: dict[str, Any], **overrides: Any) -> tuple[st
         "hermes_agent_dashboard_oidc_client_id": "fixture-client",
         "hermes_agent_kanban_max_in_progress": 8,
         "hermes_agent_kanban_max_in_progress_per_profile": 8,
+        "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
         "hermes_agent_pepper_vault_repo_url": "",
         "hermes_agent_pepper_vault_enabled": False,
     })
