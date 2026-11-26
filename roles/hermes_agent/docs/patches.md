@@ -227,12 +227,33 @@ release at the time of the audit (v0.23.4, 2026-11):
 - Reason: append-only innovation-log helper; no upstream counterpart
 - Evidence: [v0.23.4](https://github.com/NousResearch/hermes-agent/releases/tag/v0.23.4)
 
+## `files/hermes-pepper-vault-git-credential`, `templates/hermes-pepper-vault-refresh.sh.j2`
+
+- Upstream file: —
+- Decision: KEEP
+- Reason: token-minted evidence fetch and a git credential helper on a daily timer; stock helpers persist credentials
+- Evidence: `tasks/pepper_vault.yml`
+
 ## `templates/cron-failure-rollup.py.j2`
 
 - Upstream file: `cron/scheduler.py`
 - Decision: KEEP
 - Reason: deterministic hourly failure rollup read from the cron store; upstream tracks failure streaks but ships no rollup digest
 - Evidence: [scheduler.py](https://github.com/NousResearch/hermes-agent/blob/v0.23.0/cron/scheduler.py)
+
+## `templates/hermes-brain-sync.sh.j2`, `templates/hermes-brain-watchdog-alert.sh.j2`
+
+- Upstream file: —
+- Decision: RETIRE-CANDIDATE
+- Reason: OpenBao brain repoint (alternative: the router alias; disabled by default) and crash page on `OnFailure=` (alternative: the deadman ping)
+- Evidence: `tasks/brain_sync.yml` timer, `tasks/brain_watchdog.yml`
+
+## `templates/hermes-brain-watchdog.sh.j2`, `templates/hermes-unit-alert.sh.j2`
+
+- Upstream file: —
+- Decision: KEEP
+- Reason: brain probe with fleet pause/resume plus an `OnFailure=` pager on a timer; upstream is inactivity-only, systemd has no notifier
+- Evidence: `tasks/brain_watchdog.yml`
 
 ## `templates/hermes-credential-canary.py.j2`
 
