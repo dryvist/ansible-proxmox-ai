@@ -218,6 +218,15 @@ def test_empty_roster_renders_the_existing_config_byte_for_byte(baseline: str) -
     assert hashlib.sha256(baseline.encode()).hexdigest() == BASELINE_SHA256
 
 
+def test_default_splunk_target_uses_the_verified_management_proxy() -> None:
+    splunk = next(t for t in ROLE_DEFAULTS["agentgateway_docker_mcp_targets"] if t["name"] == "splunk")
+    assert "tls_insecure" not in splunk
+    host = ENV.from_string(ROLE_DEFAULTS["agentgateway_docker_splunk_mcp_host"]).render(
+        lookup=lambda kind, key: "example.com" if (kind, key) == ("env", "PROXMOX_SUBDOMAIN") else ""
+    )
+    assert host.strip() == "https://splunk-mgmt.example.com/services/mcp"
+
+
 def test_owned_route_requires_a_key_and_allows_only_its_owner(baseline: str) -> None:
     baseline_routes = _routes(baseline)
     routes = _routes(_render(AGENTS, {"splunk": "splunk-heimdall"}, KEYS))

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.83.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.83.2...v2.83.3) (2026-11-26)
+
+
+### Bug Fixes
+
+* **agentgateway_docker:** reach Splunk MCP through the management proxy ([#2902](https://github.com/dryvist/ansible-proxmox-ai/issues/2902)) ([9fe5705](https://github.com/dryvist/ansible-proxmox-ai/commit/9fe57055a25b39e06c13dc91a88cf74322b59889))
+
 ## [2.83.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.83.1...v2.83.2) (2026-11-26)
 
 
