@@ -194,8 +194,7 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
             retry_source,
             auxiliary_source,
             goal_judge_source=(
-                "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
-                + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+                PINNED_JUDGE_ERROR_SENTINEL_SOURCE
                 + PINNED_KANBAN_GOAL_LOOP_SOURCE
             ),
         )
@@ -210,8 +209,7 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
             retry_source,
             auxiliary_source,
             goal_judge_source=(
-                "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
-                + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+                PINNED_JUDGE_ERROR_SENTINEL_SOURCE
                 + PATCHED_KANBAN_GOAL_LOOP_SOURCE
                 + PINNED_JUDGE_CALL_SOURCE
             ),
@@ -225,8 +223,7 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
             retry_source,
             auxiliary_source,
             goal_judge_source=(
-                "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
-                + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+                PINNED_JUDGE_ERROR_SENTINEL_SOURCE
                 + PATCHED_KANBAN_GOAL_LOOP_SOURCE
                 + PATCHED_JUDGE_CALL_SOURCE * 2
             ),
@@ -252,7 +249,7 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
             retry_source,
             auxiliary_source,
             goal_judge_source=(
-                "DEFAULT_JUDGE_TIMEOUT = 60.0\n" + PATCHED_KANBAN_GOAL_LOOP_SOURCE
+                PATCHED_KANBAN_GOAL_LOOP_SOURCE
             ),
         )
     )

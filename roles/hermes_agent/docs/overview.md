@@ -69,7 +69,7 @@ For focused, single-guest runs, use one entry tag at a time:
 | Entry tag | Converged work |
 | --- | --- |
 | `hermes_runtime_install` | Hermes prerequisites, runtime install, browser support, dashboard build |
-| `hermes_patches` | Hermes source patches and their readback assertions |
+| `hermes_patches` | Hermes source patches and their readback assertions (inventory and retirement status in [patches.md](patches.md)) |
 | `hermes_profiles_env` | Config, skills, profiles, plugin and GitHub identity |
 | `hermes_crons` | SSH/cron drift, prechecks, cron reconciliation |
 | `hermes_content_scripts` | Prompt catalog, curriculum and deployed scripts |
