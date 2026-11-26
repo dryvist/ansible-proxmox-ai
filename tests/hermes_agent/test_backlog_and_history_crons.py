@@ -52,16 +52,19 @@ def test_there_are_exactly_ten_backlog_projects() -> None:
     assert len(set(names)) == PROJECT_COUNT
 
 
-def test_every_backlog_schedule_minute_is_odd_unique_and_not_on_a_quarter() -> None:
-    minutes = []
+def test_every_backlog_schedule_is_odd_off_quarter_and_never_shares_a_start() -> None:
+    starts: set[tuple[int, int]] = set()
     for job in _backlog_jobs():
         fields = job["schedule"].split()
         assert len(fields) == 5, job["name"]
         minute = int(fields[0])
         assert minute % 2 == 1, f"{job['name']} fires on an even minute: {minute}"
         assert minute not in FORBIDDEN_MINUTES, f"{job['name']} fires on :{minute:02d}"
-        minutes.append(minute)
-    assert len(set(minutes)) == PROJECT_COUNT, f"minutes repeat: {sorted(minutes)}"
+        hours = [int(h) for h in fields[1].split(",")]
+        assert len(hours) == 6, f"{job['name']} must run every 4 hours"
+        for hour in hours:
+            assert (hour, minute) not in starts, f"{job['name']} shares {hour:02d}:{minute:02d}"
+            starts.add((hour, minute))
 
 
 def test_every_backlog_job_runs_on_the_vikunja_pm_profile() -> None:
