@@ -177,3 +177,20 @@ fragments precede their consumers. Optional `template_vars` maps catalog templat
 inputs to role variables. Template lookups expand those inputs and strip each file's
 frontmatter; parts join without separators or trimming. Direct cron job entries also
 accept `prompt_files`. Explicit prompt-variable overrides take precedence.
+
+## Model lane for agentic crons
+
+Model selection is native per job: `hermes cron create --model` stores a pin,
+and the scheduler resolves each fire as per-job pin > `cron.model` fleet
+default > the main model. Direct-cron entries expose it as an optional
+per-entry `model` key; an entry without one uses `hermes_agent_cron_model`.
+
+The `small` lane cannot carry agentic crons on the pinned Hermes version:
+agent init refuses any model whose advertised context window is below the
+hardcoded 64,000-token minimum (`agent/model_metadata.py`
+`MINIMUM_CONTEXT_LENGTH`, enforced by `agent/agent_init.py`
+`_enforce_minimum_context`), and every `small`-lane profile advertises at
+most 32,768. The cron fleet was set to `small` once (#2314) and reverted to
+`medium` (#2335) after the refusal; the floor is not configurable and the
+per-job pin carries no window override. Script-only (`--no-agent`) crons
+take no model and are unaffected by the floor.
