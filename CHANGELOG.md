@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.82.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.82.0...v2.82.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **hermes_agent:** derive the small lane in the cron routing test from the registry ([#2884](https://github.com/dryvist/ansible-proxmox-ai/issues/2884)) ([04be211](https://github.com/dryvist/ansible-proxmox-ai/commit/04be21103b7ef1969a454f67e29c720b33c61e8f))
+* **hermes_agent:** keep service-pulse on the fleet cron model ([#2887](https://github.com/dryvist/ansible-proxmox-ai/issues/2887)) ([5912098](https://github.com/dryvist/ansible-proxmox-ai/commit/591209847d1f4fc228d55092a4590ff34e58803e))
+
 ## [2.82.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.81.0...v2.82.0) (2026-11-26)
 
 
