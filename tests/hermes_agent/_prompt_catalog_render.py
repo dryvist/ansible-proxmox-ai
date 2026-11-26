@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import yaml
@@ -35,6 +36,14 @@ def render_hashes(tmp_path, catalog_path, *, role=ROLE, identity="fixture", over
     literal = role_defaults(role)
     keys = json.loads((ROOT / "tests/hermes_agent/fixtures/catalog-prompt-sha256.json").read_text())
     tasks = yaml.safe_load((role / "tasks/prompt_catalog.yml").read_text())
+    # The fabric-status body ships with the role instead of with the pinned
+    # catalog, so its lookup resolves a bare file name against the role's
+    # files/ directory. This play runs outside a role, so the role's search
+    # path is the play's own directory: copy the file where that path looks.
+    owned_prompts = tmp_path / "files"
+    owned_prompts.mkdir(exist_ok=True)
+    for name in (defaults["hermes_agent_daily_status_cron_prompt_file"],):
+        shutil.copyfile(role / "files" / name, owned_prompts / name)
     loaders = [task for task in tasks if "ansible.builtin.set_fact" in task
                and "hermes_agent_prompts_path" not in task["ansible.builtin.set_fact"]]
     direct = {"name": "Render one cron body", "no_log": True,
