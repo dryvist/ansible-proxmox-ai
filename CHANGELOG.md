@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.82.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.81.0...v2.82.0) (2026-11-26)
+
+
+### Features
+
+* **hermes_agent:** run a daily stale-work digest on the orchestrator profile ([#2881](https://github.com/dryvist/ansible-proxmox-ai/issues/2881)) ([a6d2ab7](https://github.com/dryvist/ansible-proxmox-ai/commit/a6d2ab7b8d6ae5bbcfdf9ee83f8b30724003b798))
+* **hermes_agent:** run the light crons on the small lane ([#2873](https://github.com/dryvist/ansible-proxmox-ai/issues/2873)) ([f513f66](https://github.com/dryvist/ansible-proxmox-ai/commit/f513f66f042c36d872ff601e7f8d09708d5fbaf2))
+
 ## [2.81.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.80.1...v2.81.0) (2026-11-26)
 
 
