@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.84.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.83.3...v2.84.0) (2026-11-26)
+
+
+### Features
+
+* **hermes_agent:** prune stored sessions after 90 days ([#2904](https://github.com/dryvist/ansible-proxmox-ai/issues/2904)) ([144a66f](https://github.com/dryvist/ansible-proxmox-ai/commit/144a66fdcb4c0b6a9ee62c5ed287cdd635c06fdb))
+
 ## [2.83.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.83.2...v2.83.3) (2026-11-26)
 
 

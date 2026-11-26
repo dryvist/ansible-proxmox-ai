@@ -40,6 +40,8 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
     "hermes_agent_session_reset_at_hour": 4,
     "hermes_agent_session_reset_idle_minutes": 1440,
+    "hermes_agent_session_auto_prune": True,
+    "hermes_agent_session_retention_days": 90,
     "hermes_agent_mcp_tool_timeout_seconds": 180,
     "hermes_agent_docs_mcp_url": "https://mcp.example.com/docs",
     # Grep dials upstream directly, so use its public fixture URL.
