@@ -1,0 +1,128 @@
+---
+# No automatic fallback chain may target a Claude model.
+#
+# Split out of test_opencode_tier_render.yml, which crossed the repo's per-file
+# token budget. That file is about one tier rendering once per upstream; this one
+# is about which targets every fallback chain may carry. It seeds the same
+# credentialed tier, so the Claude OpenCode groups exist and the guard has
+# something to exclude.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_fallback_model_policy.yml \
+#     -i localhost, -c local
+
+- name: Verify automatic fallback chains never target a Claude model
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - policy_fixture.yml
+    - ../../inventory/group_vars/all/02-gpu-accelerator.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    # Derived, not typed: a play var is lazily evaluated, so this resolves
+    # once the registry has loaded, and a repoint of the primary follows.
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: medium
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Seed the subscription credential and nothing else
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets:
+          OPENCODE_API_KEY: test-opencode-subscription-key
+          # Blank, not absent: an absent field falls through to the runner's
+          # own environment and the metered-tier assertions below would depend
+          # on what the operator happens to export.
+          OPENROUTER_API_KEY: "   "
+          GEMINI_API_KEY: "   "
+          DASHSCOPE_API_KEY: "   "
+
+    - name: Refresh cached router projections after fixture input changes [fallback-model-policy-1]
+      ansible.builtin.import_tasks: tasks/materialize_router_inputs.yml
+
+    - name: Re-evaluate the Hermes cloud projections
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
+    - name: Render the config and environment with the subscription key present
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+        _environment: >-
+          {{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}
+
+    - name: Run the role guard over rendered automatic fallback targets
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-fallback-model-policy.yml"
+
+    - name: Keep Claude OpenCode deployments direct-only while retaining other fallbacks
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_m_resolved_credentials.get('OPENCODE_API_KEY', '') | length > 0
+          - _claude_opencode_groups | length > 0
+          - llm_router_opencode_fallback_groups | intersect(_claude_opencode_groups) | length == 0
+          - llm_router_opencode_fallback_groups | difference(_claude_opencode_groups) | length > 0
+          - _rendered_fallback_targets | intersect(_claude_opencode_groups) | length == 0
+          - >-
+            (llm_router_review_oss_chain + llm_router_review_private_chain)
+            | intersect(_claude_opencode_groups) | length == 0
+        fail_msg: >-
+          Claude OpenCode groups were included in an automatic fallback chain, or
+          the credentialed tier lost all non-Claude fallback targets.
+      vars:
+        _claude_opencode_groups: >-
+          {%- set ns = namespace(groups=[]) -%}
+          {%- for _model in llm_router_opencode_models -%}
+          {%- set _group = _model.route_group | default(_model.client_model_id) -%}
+          {%- set _group_excluded = (_group
+                | regex_search(llm_router_fallback_excluded_model_pattern)) is not none -%}
+          {%- set _client_excluded = (_model.client_model_id
+                | regex_search(llm_router_fallback_excluded_model_pattern)) is not none -%}
+          {%- set _upstream_excluded = (_model.upstream_model_id | default('')
+                | regex_search(llm_router_fallback_excluded_model_pattern)) is not none -%}
+          {%- if _group_excluded or _client_excluded or _upstream_excluded -%}
+          {%- set ns.groups = ns.groups + [_group] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.groups | unique | list }}
+        _rendered_fallback_targets: >-
+          {%- set ns = namespace(targets=[]) -%}
+          {%- for _entry in _config.router_settings.fallbacks | default([]) -%}
+          {%- for _targets in _entry.values() -%}
+          {%- set ns.targets = ns.targets + (_targets | list) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {%- for _entry in _config.router_settings.context_window_fallbacks | default([]) -%}
+          {%- for _targets in _entry.values() -%}
+          {%- set ns.targets = ns.targets + (_targets | list) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {%- set ns.targets = ns.targets + (_config.router_settings.default_fallbacks | default([]) | list) -%}
+          {{ ns.targets | unique | list }}
