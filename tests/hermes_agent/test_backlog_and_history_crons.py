@@ -10,10 +10,12 @@ concatenation must keep naming.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
 
+from _prompt_catalog import catalog_files
 from _role_files import role_defaults
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,8 +42,14 @@ def test_new_defaults_file_parses_and_declares_both_lists() -> None:
     assert BACKLOG_LIST in parsed
     assert FOLLOWUPS_LIST in parsed
     assert "hermes_agent_vikunja_backlog_review_enabled" in parsed
-    assert "hermes_agent_vikunja_backlog_review_cron_prompt" in parsed
-    assert "hermes_agent_session_followups_cron_prompt" in parsed
+    assert (
+        parsed["hermes_agent_vikunja_backlog_review_cron_prompt_file"]
+        == "hermes-vikunja-backlog-review.md"
+    )
+    assert (
+        parsed["hermes_agent_session_followups_cron_prompt_file"]
+        == "hermes-session-followups.md"
+    )
 
 
 def test_there_are_exactly_ten_backlog_projects() -> None:
@@ -85,9 +93,13 @@ def test_backlog_gate_is_the_vikunja_pm_profile_key() -> None:
 
 
 def test_backlog_prompt_stays_advisory_only() -> None:
-    prompt = " ".join(
-        role_defaults(ROLE_ROOT)["hermes_agent_vikunja_backlog_review_cron_prompt"].split()
+    defaults = role_defaults(ROLE_ROOT)
+    prompt_file = defaults["hermes_agent_vikunja_backlog_review_cron_prompt_file"]
+    prompt = re.sub(
+        r"(?s)^---\n.*?\n---\n", "",
+        catalog_files(defaults["hermes_agent_prompts_flake_ref"])[prompt_file],
     )
+    prompt = " ".join(prompt.split())
     assert "never change any task field" in prompt
     assert "[SILENT]" in prompt
 
