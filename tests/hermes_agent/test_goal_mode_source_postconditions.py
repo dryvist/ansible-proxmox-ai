@@ -38,7 +38,10 @@ def test_installed_source_postconditions_fail_closed() -> None:
         and ") == 2" in condition
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
-    assert "DEFAULT_JUDGE_TIMEOUT =" in conditions
+    # The judge-timeout patch is retired (upstream reads
+    # auxiliary.goal_judge.timeout from config, #91022); the combined assert
+    # must not carry its condition any more.
+    assert "DEFAULT_JUDGE_TIMEOUT =" not in conditions
     assert "SELECT id, status FROM tasks" in conditions
     assert (
         'if goal_mode and row["status"] in ("triage", "todo", "scheduled", '

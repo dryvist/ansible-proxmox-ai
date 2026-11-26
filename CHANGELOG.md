@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.80.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.80.0...v2.80.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **hermes_agent:** retire the goal judge timeout patch and list the remaining patches ([#2863](https://github.com/dryvist/ansible-proxmox-ai/issues/2863)) ([a58d57b](https://github.com/dryvist/ansible-proxmox-ai/commit/a58d57b2e797b5869bb30f3d59c03c902e9a05ad))
+
 ## [2.80.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.79.0...v2.80.0) (2026-11-26)
 
 
