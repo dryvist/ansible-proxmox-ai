@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.83.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.83.0...v2.83.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **hermes_agent:** verify bun against the release's SHASUMS256.txt ([#2895](https://github.com/dryvist/ansible-proxmox-ai/issues/2895)) ([83d9435](https://github.com/dryvist/ansible-proxmox-ai/commit/83d94357f2b6d1672334b9a4d381ad6f98a2d34c))
+
 ## [2.83.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.82.1...v2.83.0) (2026-11-26)
 
 
