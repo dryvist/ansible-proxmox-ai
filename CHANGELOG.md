@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.80.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.79.0...v2.80.0) (2026-11-26)
+
+
+### Features
+
+* **llm_model_campaign:** pin the benchmark revision that adds the gbench nightly recipe ([#2866](https://github.com/dryvist/ansible-proxmox-ai/issues/2866)) ([6ee31ee](https://github.com/dryvist/ansible-proxmox-ai/commit/6ee31ee73877d034d697745db110c8c2b6aae93c))
+
 ## [2.79.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.78.0...v2.79.0) (2026-11-25)
 
 
