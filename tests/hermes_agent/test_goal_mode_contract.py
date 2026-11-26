@@ -148,6 +148,9 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert "run_budget_seconds: {{ hermes_agent_run_budget_seconds }}" in config
     assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config
     assert "base_url: '{{ hermes_agent_model_base_url }}'" in config
+    # The judge-timeout source patch is retired: upstream reads this key
+    # (auxiliary.goal_judge.timeout, #91022), so the role owns the key.
+    assert "timeout: {{ hermes_agent_kanban_goal_judge_timeout_seconds | float }}" in config
 
 
 def test_group_vars_reads_canonical_zammad_mcp_pair() -> None:

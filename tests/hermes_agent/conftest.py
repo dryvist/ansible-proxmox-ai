@@ -269,7 +269,6 @@ def _source_postconditions(
         "hermes_agent_goal_completion_source": completion_source,
         "hermes_agent_goal_reconcile_source": reconcile_source,
         "hermes_agent_goal_judge_source": goal_judge_source,
-        "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
         "hermes_agent_retry_source": retry_source,
         "hermes_agent_auxiliary_source": auxiliary_source,
         "hermes_agent_compressor_source": compressor_source,
