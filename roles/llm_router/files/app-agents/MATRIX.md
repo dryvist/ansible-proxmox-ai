@@ -26,6 +26,17 @@ Generated from `llm_router_app_agent_tiers`; a test fails when this file drifts.
   - vikunja_labels
   - vikunja_filters
 
+## vikunja-clerk
+
+- App: vikunja
+- Tier: write
+- MCP server: vikunja_clerk
+- OpenBao token field: VIKUNJA_AGENT_CLERK_TOKEN
+- Allowed tools:
+  - vikunja_tasks
+  - vikunja_projects
+  - vikunja_labels
+
 ## zammad-write
 
 - App: zammad

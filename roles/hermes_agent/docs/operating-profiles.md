@@ -64,7 +64,7 @@ profile.
 | `tracker-reporter` | Change-only task and incident summaries | Vikunja + router incident MCP; own bank | Kanban, env, skills, other MCP |
 | `vikunja-pm` | Task filing, updates, labels, relations and comments | Router Vikunja write tier (no delete); own bank | Kanban, env, skills, other MCP |
 | `youtrack-clerk` | Narrow YouTrack requests | Router write tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
-| `vikunja-clerk` | Narrow Vikunja task requests | Router write tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
+| `vikunja-clerk` | Narrow Vikunja task requests | Router clerk tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
 | `zammad-clerk` | Narrow Zammad ticket requests | Router write tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
 | `semaphore-converge` | Previews and confirmed runs | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
 | `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |
@@ -102,7 +102,9 @@ job.
 **Adding a new profile**: add an entry to `hermes_agent_profiles`
 (`mcp`/`env`/`skills`/optional `toolsets` and SOUL addendum source). A locked
 clerk declares its name, description, one MCP server, `locked: true`, its
-switch and a prompt that extends `soul-clerk.md.j2` with its own rules; shared
+switch and its prompt. A tracker clerk names `<name>.soul.md`, which the role
+reads from the prompt pack at the pinned commit and checks against the pinned
+manifest sha256; any other locked profile extends `soul-clerk.md.j2`. Shared
 defaults supply the rest. Profile addenda
 ship in the pinned nix-hermes bundle under `soul/profiles/`; the
 orchestrator keeps its role-local addendum. Scope each profile by what it must

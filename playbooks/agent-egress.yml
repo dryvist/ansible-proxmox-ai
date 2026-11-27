@@ -12,10 +12,13 @@
     - agent
     - ai
     - llm
+  # The read-only delivery probe needs no proxy inputs, so probe runs skip egress preparation.
   pre_tasks:
     - name: Resolve isolated identity preparation endpoints on the controller
       ansible.builtin.include_tasks: tasks/isolated_egress_endpoints.yml
-      when: inventory_hostname in hermes_agent_isolated_hosts
+      when: >-
+        inventory_hostname in hermes_agent_isolated_hosts and not
+        (hermes_agent_delivery_probe_only | default(false) | bool)
   tasks:
     - name: Prepare the identity-scoped proxy inputs and guest environment
       ansible.builtin.include_role:
@@ -24,7 +27,9 @@
       vars:
         hermes_agent_egress_host_overrides: >-
           {{ squid_isolated_endpoint_hosts_by_identity.get(hermes_agent_identity, {}) }}
-      when: inventory_hostname in hermes_agent_isolated_hosts
+      when: >-
+        inventory_hostname in hermes_agent_isolated_hosts and not
+        (hermes_agent_delivery_probe_only | default(false) | bool)
 
 - name: Configure the agent-plane egress proxy
   hosts: squid_group
@@ -39,6 +44,7 @@
     - llm
   tasks:
     - name: Converge squid (isolated — failure does not abort downstream plays)
+      when: not (hermes_agent_delivery_probe_only | default(false) | bool)
       block:
         - name: Resolve isolated identity proxy endpoints on the controller
           ansible.builtin.include_tasks: tasks/isolated_egress_endpoints.yml

@@ -23,6 +23,18 @@ def test_profile_soul_addendum_sources_are_declared_in_profile_data() -> None:
     )
 
 
+def test_tracker_clerk_soul_is_the_verified_prompt_pack_text(tmp_path: Path) -> None:
+    profile = next(p for p in _defaults()["hermes_agent_profiles"] if p["name"] == "vikunja-clerk")
+
+    rendered = _render_profile_soul(
+        profile,
+        _fake_soul_bundle(tmp_path),
+        hermes_agent_profile_soul_content={"vikunja-clerk.soul.md": "Verified pack soul."},
+    )
+
+    assert rendered == "Verified pack soul."
+
+
 def test_bundle_profile_soul_is_bundle_base_plus_bundle_addendum(tmp_path: Path) -> None:
     profile = next(profile for profile in _profiles() if profile["name"] == "github-maint")
     bundle_path = _fake_soul_bundle(tmp_path)
@@ -56,8 +68,15 @@ def test_orchestrator_soul_includes_local_addendum_and_bundle_lifecycle(tmp_path
 
 def test_only_orchestrator_soul_contains_bundle_lifecycle(tmp_path: Path) -> None:
     bundle_path = _fake_soul_bundle(tmp_path)
+    pack_souls = {
+        profile["soul_standalone_file"]: "Verified pack soul."
+        for profile in _profiles()
+        if profile.get("soul_standalone_file", "").endswith(".soul.md")
+    }
     rendered = {
-        profile["name"]: _render_profile_soul(profile, bundle_path)
+        profile["name"]: _render_profile_soul(
+            profile, bundle_path, hermes_agent_profile_soul_content=pack_souls
+        )
         for profile in _profiles()
     }
 
@@ -80,7 +99,7 @@ def _fake_soul_bundle(bundle_path: Path) -> Path:
     return bundle_path
 
 
-def _render_profile_soul(profile: dict[str, Any], bundle_path: Path) -> str:
+def _render_profile_soul(profile: dict[str, Any], bundle_path: Path, **extra: Any) -> str:
     env = _jinja_env()
     env.trim_blocks = True
     context: dict[str, Any] = {
@@ -91,6 +110,7 @@ def _render_profile_soul(profile: dict[str, Any], bundle_path: Path) -> str:
         "hermes_agent_kanban_eligible_label": _defaults()[
             "hermes_agent_kanban_eligible_label"
         ],
+        **extra,
     }
 
     def lookup(plugin: str, source: str) -> str:

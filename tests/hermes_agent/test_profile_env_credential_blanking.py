@@ -67,7 +67,7 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         for key in always_blank:
             assert values[key] == "", f"{profile['name']}: {key} must always be blank"
         for section, keys in section_keys.items():
-            granted = section in profile["env"]
+            granted = section in profile.get("env", [])
             for key in keys:
                 if granted:
                     assert values[key] != "", f"{profile['name']}: {key} should be set ({section} granted)"
@@ -81,7 +81,7 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         assert values["WIKI_PATH"] == "/var/lib/hermes/wiki", (
             f"{profile['name']}: WIKI_PATH must be set whenever hermes_agent_wiki_enabled is true"
         )
-        expected_github_token = "READTOK" if "github" in profile["env"] else ""
+        expected_github_token = "READTOK" if "github" in profile.get("env", []) else ""
         assert values["GH_PAT_WRITE_PROJECT_ISSUES"] == expected_github_token, (
             f"{profile['name']}: only the read-only GitHub token may reach a github-granted profile"
         )

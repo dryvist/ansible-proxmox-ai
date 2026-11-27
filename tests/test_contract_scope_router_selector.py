@@ -180,6 +180,18 @@ def test_changed_router_pytest_selects_router_contract_job(path: str) -> None:
     assert selection["llm_router_playbooks"]
 
 
+def test_renovate_config_selects_the_router_contract_and_its_readers() -> None:
+    result = run_selector("renovate.json")
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    full = json.loads(run_selector("--full").stdout)
+    assert selection["llm_router_playbooks"] == full["llm_router_playbooks"]
+    assert {"tests/llamacpp_release/", "tests/load/test_tier2_burst.py",
+            "tests/test_ci_workflow_policy.py"} <= set(selection["pytest_targets"])
+    assert selection["run_selector_checks"]
+
+
 @pytest.mark.parametrize("playbook", [
     "tests/llm_router/test_drift_live_keys.yml",
     "tests/llm_router/test_hermes_public_key_alias_brain.yml",

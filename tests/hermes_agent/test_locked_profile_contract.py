@@ -18,6 +18,8 @@ LOCKED_TOOLSETS = {
     "delegation", "cronjob", "discord", "discord_admin", "yuanbao", "computer_use",
     "homeassistant", "spotify",
 }
+# Clerks whose switch is on in the inventory. Every other locked profile stays off.
+ENABLED_CLERKS = {"vikunja-clerk"}
 LOCKED_PROFILE_KEYS = {
     "name", "description", "mcp", "locked", "feature_gate", "soul_standalone_file"
 }
@@ -40,8 +42,12 @@ def test_every_clerk_is_minimal_off_by_default_and_prompted(profile: dict) -> No
     assert len(profile["mcp"]) == 1
     gate = f"llm_router_hermes_{profile['name'].replace('-', '_')}_key_enabled"
     assert profile["feature_gate"] == gate
-    assert _group_vars_all()[gate] is False
+    assert _group_vars_all()[gate] is (profile["name"] in ENABLED_CLERKS)
 
+    if profile["name"].endswith("-clerk"):
+        # The prompt pack owns a tracker clerk's soul text and its tests.
+        assert profile["soul_standalone_file"] == f"{profile['name']}.soul.md"
+        return
     # Ansible's template lookup trims the newline after a block tag.
     env = Environment(loader=FileSystemLoader(ROLE_ROOT / "templates"), trim_blocks=True)
     prompt = env.get_template(profile["soul_standalone_file"]).render()
@@ -58,13 +64,22 @@ def test_the_clerk_set_is_the_declared_four() -> None:
     }
 
 
-def test_tracker_clerks_find_before_they_write() -> None:
-    env = Environment(loader=FileSystemLoader(ROLE_ROOT / "templates"), trim_blocks=True)
-    for profile in _locked():
-        if profile["name"].endswith("-clerk"):
-            prompt = env.get_template(profile["soul_standalone_file"]).render()
-            assert prompt.startswith(f"You are {profile['name']}, a narrow tracker agent.")
-            assert "\nRules:\n- Find before you write" in prompt
+def test_tracker_clerk_souls_are_verified_before_a_profile_uses_them() -> None:
+    defaults = _defaults()
+    assert re.fullmatch(r"[0-9a-f]{40}", defaults["hermes_agent_profile_soul_commit"])
+    assert re.fullmatch(r"[0-9a-f]{64}", defaults["hermes_agent_profile_soul_manifest_sha256"])
+    assert "{{ hermes_agent_profile_soul_commit }}" in defaults["hermes_agent_profile_soul_base"]
+
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/fetch_profile_souls.yml").read_text())
+    kinds = [next(key for key in task if key.startswith("ansible.builtin.")) for task in tasks]
+    assert kinds == ["ansible.builtin.set_fact", "ansible.builtin.uri", "ansible.builtin.assert", "ansible.builtin.set_fact"]
+    manifest_check, soul_check = tasks[2]["ansible.builtin.assert"]["that"]
+    assert "hash('sha256')" in manifest_check and "hermes_agent_profile_soul_manifest_sha256" in manifest_check
+    assert "map('hash', 'sha256')" in soul_check and "hermes_agent_profile_soul_pinned" in soul_check
+    assert "hermes_agent_profile_soul_content" in tasks[3]["ansible.builtin.set_fact"]
+
+    reconcile = (ROLE_ROOT / "tasks/skills_and_profiles.yml").read_text()
+    assert reconcile.index("file: fetch_profile_souls.yml") < reconcile.index("file: profiles.yml")
 
 
 def test_converge_agent_previews_and_never_checks_or_retries() -> None:
@@ -153,10 +168,10 @@ def test_every_clerk_renders_its_one_router_server(profile: dict) -> None:
 def test_locked_profile_env_contains_its_own_api_key_and_config_variables() -> None:
     profile = _clerk()
     rendered_config = _render_locked_config(profile)
-    rendered_env = _render_profile_env(profile, "clerk-api-server-fixture")
+    rendered_env = _render_profile_env(profile, "eval-api-server-fixture")
     env_values = _env_values(rendered_env)
 
-    assert env_values["API_SERVER_KEY"] == "clerk-api-server-fixture"
+    assert env_values["API_SERVER_KEY"] == f"{profile['name']}-api-server-fixture"
     assert env_values["HERMES_AGENT_MODEL_API_KEY"] == "router-key-fixture"
     live_lines = "\n".join(
         line for line in rendered_config.splitlines() if not line.lstrip().startswith("#")
@@ -197,6 +212,14 @@ def test_app_agent_profile_branch_preserves_vikunja_output() -> None:
       x-mcp-servers: "vikunja_write"
 """
     assert expected in rendered
+
+
+def test_vikunja_clerk_reaches_only_its_own_router_tier() -> None:
+    profile = next(p for p in _locked() if p["name"] == "vikunja-clerk")
+    assert profile["mcp"] == ["vikunja_clerk"]
+    rendered = _render_locked_config(profile)
+    assert '      x-mcp-servers: "vikunja_clerk"\n' in rendered
+    assert "vikunja_write" not in rendered
 
 
 def _render_locked_config(profile: dict) -> str:

@@ -1,0 +1,50 @@
+---
+# Tracker clerk souls come from the prompt pack at one pinned commit. The
+# manifest's sha256 is pinned beside that commit, and every soul is checked
+# against the manifest before a profile may use it. The reads run on the
+# controller, in check mode too, so a check run previews the real soul.
+- name: Select the prompt-pack souls the configured profiles use
+  ansible.builtin.set_fact:
+    hermes_agent_profile_soul_files: >-
+      {{ hermes_agent_profiles | selectattr('soul_standalone_file', 'defined')
+         | map(attribute='soul_standalone_file') | select('search', '\.soul\.md$')
+         | unique | list }}
+
+- name: Read the pinned soul manifest and souls on the controller
+  ansible.builtin.uri:
+    url: "{{ hermes_agent_profile_soul_base }}/agents/hermes/{{ item }}"
+    return_content: true
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  check_mode: false
+  loop: "{{ ['manifest.json'] + hermes_agent_profile_soul_files }}"
+  register: hermes_agent_profile_soul_reads
+  when: hermes_agent_profile_soul_files | length > 0
+
+- name: Verify the manifest and every soul against the pinned sha256
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_profile_soul_reads.results[0].content | hash('sha256')
+        == hermes_agent_profile_soul_manifest_sha256
+      - >-
+        hermes_agent_profile_soul_reads.results[1:] | map(attribute='content')
+        | map('hash', 'sha256') | list
+        == hermes_agent_profile_soul_files | map('regex_replace', '^', 'agents/hermes/')
+           | map('extract', hermes_agent_profile_soul_pinned) | list
+    fail_msg: A prompt-pack soul or its manifest does not match the pinned sha256.
+  vars:
+    hermes_agent_profile_soul_pinned: >-
+      {{ hermes_agent_profile_soul_reads.results[0].content | from_json
+         | items2dict(key_name='path', value_name='sha256') }}
+  when: hermes_agent_profile_soul_files | length > 0
+
+- name: Keep the verified souls for the profile reconcile
+  ansible.builtin.set_fact:
+    hermes_agent_profile_soul_content: >-
+      {{ dict(hermes_agent_profile_soul_files
+              | zip(hermes_agent_profile_soul_reads.results[1:] | map(attribute='content'))) }}
+  when: hermes_agent_profile_soul_files | length > 0

@@ -31,12 +31,14 @@
         ai_agents:
           vikunja-read: {router_key_class: standard}
           vikunja-write: {router_key_class: standard}
+          vikunja-clerk: {router_key_class: standard}
           zammad-write: {router_key_class: standard}
           youtrack-write: {router_key_class: standard, trust_tier: trusted}
           semaphore-write: {router_key_class: standard, trust_tier: trusted}
         ai_agent_owner:
           vikunja-read: vikunja-read
           vikunja-write: vikunja-write
+          vikunja-clerk: vikunja-clerk
           zammad-write: zammad-write
           youtrack-write: youtrack-write
           semaphore-write: semaphore-write
@@ -44,6 +46,7 @@
           llm-router-agent-keys:
             vikunja_read_llm_router_key: fixture-vikunja-read-key
             vikunja_write_llm_router_key: fixture-vikunja-write-key
+            vikunja_clerk_llm_router_key: fixture-vikunja-clerk-router-key
             zammad_write_llm_router_key: fixture-zammad-write-key
             youtrack_write_llm_router_key: fixture-youtrack-write-key
             semaphore_write_llm_router_key: fixture-semaphore-write-key
@@ -52,6 +55,8 @@
             VIKUNJA_AGENT_READ_ALLOWLIST: "{{ _app_agent_read_allowlist_ids | to_json }}"
           app-agent-vikunja-write:
             VIKUNJA_AGENT_WRITE_TOKEN: fixture-vikunja-write-token
+          app-agent-vikunja-clerk:
+            VIKUNJA_AGENT_CLERK_TOKEN: fixture-vikunja-clerk-token
           app-agent-zammad-write:
             ZAMMAD_AGENT_WRITE_TOKEN: fixture-zammad-write-token
           app-agent-youtrack-write:
@@ -103,6 +108,9 @@
           - >-
             _app_agent_projected_keys | selectattr('alias', 'equalto', 'vikunja-write')
             | map(attribute='object_permission.mcp_servers') | first == ['vikunja_write']
+          - >-
+            _app_agent_projected_keys | selectattr('alias', 'equalto', 'vikunja-clerk')
+            | map(attribute='object_permission.mcp_servers') | first == ['vikunja_clerk']
           - >-
             _app_agent_projected_keys | selectattr('alias', 'equalto', 'zammad-write')
             | map(attribute='object_permission.mcp_servers') | first == ['zammad_write']
@@ -190,59 +198,25 @@
         fail_msg: The Vikunja write tier must use its own agent token field.
       no_log: true
 
-    - name: Refuse write-tier keys for untrusted roster entries
-      block:
-        - name: Run the app-agent gate with an untrusted write tier
-          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
-          vars:
-            llm_router_app_agent_probe_vikunja_forbidden_project_id: "{{ _app_agent_forbidden_project_id }}"
-            llm_router_app_agent_vikunja_read_allowlist: "{{ _app_agent_read_allowlist_ids }}"
+    - name: Verify gate refusals and admission
+      ansible.builtin.import_tasks: tasks/app_agent_gate_admission.yml
 
-        - name: Fail if the gate admitted an untrusted write tier
-          ansible.builtin.fail:
-            msg: The app-agent gate issued a write-tier key to an untrusted roster entry.
-      rescue:
-        - name: Require the trust gate to be the refusal
-          ansible.builtin.assert:
-            quiet: true
-            that:
-              # The gate is no_log, so its messages are censored; match the task instead.
-              - ansible_failed_task.name == 'Issue write and admin tier keys only to trusted roster entries'
-            fail_msg: The app-agent gate failed for a reason other than the trust gate.
-
-    # A task var cannot reference its own name, so build the trusted roster once.
-    - name: Materialize the roster with both write tiers trusted
-      ansible.builtin.set_fact:
-        _app_agent_trusted_roster: >-
-          {{ ai_agents | combine({'vikunja-write': {'trust_tier': 'trusted'},
-             'zammad-write': {'trust_tier': 'trusted'}}, recursive=true) }}
-
-    - name: Refuse an enabled read tier without its required probe target
-      block:
-        - name: Run the app-agent gate with trusted tiers but no probe project
-          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
-          vars:
-            ai_agents: "{{ _app_agent_trusted_roster }}"
-            llm_router_app_agent_probe_vikunja_forbidden_project_id: ""
-            llm_router_app_agent_vikunja_read_allowlist: "{{ _app_agent_read_allowlist_ids }}"
-
-        - name: Fail if the read tier ran without a probe target
-          ansible.builtin.fail:
-            msg: The app-agent gate let the read tier run without its required probes.
-      rescue:
-        - name: Require the probe-target gate to be the refusal
-          ansible.builtin.assert:
-            quiet: true
-            that:
-              - "'probes are required' in ansible_failed_result.msg | default('')"
-            fail_msg: The app-agent gate failed for a reason other than the missing probe target.
-
-    - name: Admit trusted write tiers with a configured read-tier probe
-      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
-      vars:
-        ai_agents: "{{ _app_agent_trusted_roster }}"
-        llm_router_app_agent_probe_vikunja_forbidden_project_id: "{{ _app_agent_forbidden_project_id }}"
-        llm_router_app_agent_vikunja_read_allowlist: "{{ _app_agent_read_allowlist_ids }}"
+    - name: Keep the clerk tier token on its dedicated leaf field
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'vikunja-clerk')
+            | map(attribute='token_field') | first == 'VIKUNJA_AGENT_CLERK_TOKEN'
+          - >-
+            _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'vikunja-clerk')
+            | map(attribute='token_value') | first == 'fixture-vikunja-clerk-token'
+          - >-
+            _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'vikunja-clerk')
+            | map(attribute='token_value') | first != 'fixture-vikunja-write-token'
+          - "'LLM_ROUTER_APP_VIKUNJA_CLERK_TOKEN=fixture-vikunja-clerk-token' in _credentialed_environment"
+        fail_msg: The Vikunja clerk tier must use its own agent token field.
+      no_log: true
 
     - name: Remove only the Vikunja read app token from the fixture
       ansible.builtin.set_fact:
@@ -280,6 +254,7 @@
           {{ openbao_secrets_by_domain | combine({
              'app-agent-vikunja-read': {},
              'app-agent-vikunja-write': {},
+             'app-agent-vikunja-clerk': {},
              'app-agent-zammad-write': {},
              'app-agent-youtrack-write': {},
              'app-agent-semaphore-write': {}}) }}

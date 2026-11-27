@@ -9,6 +9,7 @@ from test_profile_contract import (
     _defaults,
     _jinja_env,
     _profiles,
+    _regular_profiles,
 )
 
 
@@ -42,7 +43,7 @@ def test_profile_toolsets_are_scoped_and_orchestrator_has_kanban() -> None:
     defaults = _defaults()
     env = _jinja_env()
     template = env.get_template("config-profile.yaml.j2")
-    for profile in _profiles():
+    for profile in _regular_profiles():
         context = dict(_RENDER_CONTEXT)
         context.update(
             hermes_agent_profile=profile,

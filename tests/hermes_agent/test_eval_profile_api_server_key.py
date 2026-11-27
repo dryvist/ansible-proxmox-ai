@@ -28,7 +28,7 @@ def _render_profile_env(profile: dict, eval_api_server_key: str) -> str:
     if profile.get("locked", False):
         profile_secrets[
             f"hermes_{profile['name'].replace('-', '_')}_api_server_key"
-        ] = eval_api_server_key
+        ] = f"{profile['name']}-api-server-fixture"
     context.update(
         bao_apps_secrets=profile_secrets,
         hermes_agent_eval_api_server_key=eval_api_server_key,
@@ -56,7 +56,7 @@ def _render_profile_env(profile: dict, eval_api_server_key: str) -> str:
     )
 
 
-def test_only_eval_profile_renders_its_own_openbao_api_server_key() -> None:
+def test_an_api_server_key_renders_only_from_the_profile_own_leaf() -> None:
     resolved = _resolve_eval_api_server_key(
         {"hermes_eval_api_server_key": EVAL_API_SERVER_KEY}
     )
@@ -68,6 +68,10 @@ def test_only_eval_profile_renders_its_own_openbao_api_server_key() -> None:
         if profile["name"] == "eval":
             assert values["API_SERVER_KEY"] == EVAL_API_SERVER_KEY
             assert values["API_SERVER_KEY"] != DEFAULT_API_SERVER_KEY
+        elif profile.get("locked", False):
+            # A locked profile renders the key from its own leaf, never the eval key.
+            assert values["API_SERVER_KEY"] == f"{profile['name']}-api-server-fixture"
+            assert EVAL_API_SERVER_KEY not in rendered, profile["name"]
         else:
             assert "API_SERVER_KEY" not in values, profile["name"]
             assert EVAL_API_SERVER_KEY not in rendered, profile["name"]
