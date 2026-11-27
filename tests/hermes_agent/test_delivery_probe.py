@@ -50,6 +50,10 @@ def _fixture() -> dict:
             {"item": "homelab-admin", **_b64(json.dumps(jobs))},
             {"item": "splunk-admin", "failed": True},
         ]},
+        "hermes_agent_delivery_probe_root_jobs": _b64(json.dumps({"jobs": [
+            {"id": "root01", "name": "zammad-triage", "deliver": "origin",
+             "prompt": "use Bearer ghp_rootsecret", "env": {"K": "sk-root-secret"}},
+        ]})),
         "hermes_agent_delivery_probe_root": {"stdout": HOME},
         "hermes_agent_delivery_probe_active_profile": _b64("homelab-admin\n"),
         "hermes_agent_delivery_probe_routes": {"results": [
@@ -118,12 +122,31 @@ def test_report_projects_routes_jobs_and_homes() -> None:
         "frames": ["config_loader.py:42"],
     }
     assert admin["jobs"] == [{"id": "abc123", "name": "fabric-status", "deliver": "slack:C0ROUTE1"}]
+    assert report["root_jobs"] == [{"id": "root01", "name": "zammad-triage", "deliver": "origin"}]
+    assert report["root_jobs_readable"] is True
     assert admin["expected_home"] == admin["resolved_home"] == f"{HOME}/profiles/homelab-admin"
     assert splunk["jobs_readable"] is False and splunk["jobs"] == []
 
 
+def test_unreadable_root_jobs_report_empty_list() -> None:
+    fixture = _fixture()
+    fixture["hermes_agent_delivery_probe_root_jobs"] = {"failed": True}
+    report = _render(fixture)
+    assert report["root_jobs"] == []
+    assert report["root_jobs_readable"] is False
+
+
 def test_report_carries_no_token_shaped_string() -> None:
     assert not TOKEN_SHAPES.search(json.dumps(_render(_fixture())))
+
+
+def test_root_jobs_slurp_is_hidden_and_targets_root_cron_file() -> None:
+    task = next(task for task in TASKS if task.get("name") == "Delivery probe | Read the root profile's cron jobs")
+    assert task["failed_when"] is False
+    assert task["no_log"] is True
+    src = task["ansible.builtin.slurp"]["src"]
+    assert src.endswith("/cron/jobs.json")
+    assert "profiles" not in src
 
 
 def test_missing_active_profile_reports_empty_name() -> None:
