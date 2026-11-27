@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.89.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.88.0...v2.89.0) (2026-11-27)
+
+
+### Features
+
+* **hermes_agent:** read tracker clerk souls from the pinned prompt pack ([#2941](https://github.com/dryvist/ansible-proxmox-ai/issues/2941)) ([871570f](https://github.com/dryvist/ansible-proxmox-ai/commit/871570f2bfbd4bfd78c5a6cbf12385014a8d7d16))
+* **inventory:** enable the vikunja-clerk profile and its router publication ([#2938](https://github.com/dryvist/ansible-proxmox-ai/issues/2938)) ([664a1fb](https://github.com/dryvist/ansible-proxmox-ai/commit/664a1fbcf8ad904e914a4d1ed53ec1e5140cc783))
+* **llm_router:** add a dedicated vikunja-clerk MCP tier ([#2929](https://github.com/dryvist/ansible-proxmox-ai/issues/2929)) ([554e54c](https://github.com/dryvist/ansible-proxmox-ai/commit/554e54cfe595aaf2897f6708e9039b568777b0e9))
+* **llm_router:** let the workstation proxy key call locked agent models ([#2947](https://github.com/dryvist/ansible-proxmox-ai/issues/2947)) ([fc8061f](https://github.com/dryvist/ansible-proxmox-ai/commit/fc8061f677eb332d078f600f3c35099b7622820e))
+
+
+### Bug Fixes
+
+* **hermes_agent:** probe root cron jobs and skip egress prep in probe mode ([#2927](https://github.com/dryvist/ansible-proxmox-ai/issues/2927)) ([179eaba](https://github.com/dryvist/ansible-proxmox-ai/commit/179eaba781e89144c90a62c7ec1bce2a7ae76042))
+* **llm_router:** exempt locked-profile agent models from registry parity ([#2948](https://github.com/dryvist/ansible-proxmox-ai/issues/2948)) ([85f2271](https://github.com/dryvist/ansible-proxmox-ai/commit/85f227145fb81573d95bd0ee90ddccf46c7136c1))
+* **renovate:** keep the seven-day hold on LiteLLM releases ([#2939](https://github.com/dryvist/ansible-proxmox-ai/issues/2939)) ([008b6b0](https://github.com/dryvist/ansible-proxmox-ai/commit/008b6b0421c189fe389bf48a924d596cbb183e08))
+
 ## [2.88.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.87.0...v2.88.0) (2026-11-27)
 
 
