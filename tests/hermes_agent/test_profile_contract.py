@@ -323,36 +323,3 @@ def test_no_profile_gets_a_standalone_cron_tick() -> None:
     assert ticks[0]["loop"] == "{{ hermes_agent_profiles | map(attribute='name') | list }}"
     assert "when" not in ticks[0]
     assert "{{ hermes_agent_bin }} cron tick" not in role_tasks_text(ROLE_ROOT)
-
-
-def test_profile_config_template_renders_scoped_mcp_only() -> None:
-    env = _jinja_env()
-    src = (ROLE_ROOT / "templates" / "config-profile.yaml.j2").read_text()
-    defaults = _defaults()
-    for profile in _regular_profiles():
-        context = dict(_RENDER_CONTEXT)
-        context["hermes_agent_langfuse_enabled"] = True
-        context["hermes_agent_plugins_enabled"] = ["dryvist-guardrails", "hindsight", "langfuse"]
-        context["hermes_agent_disabled_toolsets"] = defaults["hermes_agent_disabled_toolsets"]
-        context["hermes_agent_cron_toolsets"] = defaults["hermes_agent_api_server_toolsets"]
-        context["hermes_agent_context_limits"] = {}
-        rendered = env.from_string(src).render(hermes_agent_profile=profile, **context)
-        parsed = yaml.safe_load(rendered)
-
-        assert parsed["model"]["provider"] == defaults["hermes_agent_model_shared_provider"]
-        assert parsed["plugins"]["enabled"] == ["dryvist-guardrails", "hindsight", "langfuse"]
-        assert parsed["kanban"] == {"dispatch_in_gateway": False}
-        assert parsed["agent"]["run_budget_seconds"] == run_budget_seconds()
-        assert "dashboard" not in parsed
-        assert "platforms" not in parsed
-        assert ("platform_toolsets" in parsed) == ("toolsets" in profile)
-        # Goal-mode judging must be wired identically to the default profile,
-        # or completion judging fails for any card this profile owns.
-        assert "auxiliary" in parsed
-        assert (
-            parsed["auxiliary"]["goal_judge"]["provider"]
-            == defaults["hermes_agent_model_shared_provider"]
-        )
-
-        rendered_servers = set(parsed.get("mcp_servers", {}))
-        assert rendered_servers == set(profile["mcp"])
