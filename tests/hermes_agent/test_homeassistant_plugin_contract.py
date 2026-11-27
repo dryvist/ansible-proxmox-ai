@@ -8,7 +8,7 @@ from typing import Any
 import yaml
 
 from _role_files import role_defaults
-from test_profile_contract import _RENDER_CONTEXT, ROLE_ROOT, _jinja_env, _profiles
+from test_profile_contract import _RENDER_CONTEXT, ROLE_ROOT, _jinja_env, _profiles, _regular_profiles
 
 PROFILE = "homelab-admin"
 
@@ -80,7 +80,7 @@ def test_only_homelab_admin_lifts_the_homeassistant_toolset_and_only_while_the_g
     template = _jinja_env().get_template("config-profile.yaml.j2")
     global_denials = _defaults()["hermes_agent_disabled_toolsets"]
     for gate in (False, True):
-        for profile in _profiles():
+        for profile in _regular_profiles():
             parsed = yaml.safe_load(template.render(hermes_agent_profile=profile, **_profile_context(gate)))
             lifted = gate and profile["name"] == PROFILE
             expected = [name for name in global_denials if not (lifted and name == "homeassistant")]
@@ -151,7 +151,7 @@ def test_homeassistant_plugin_is_pinned_to_the_reviewed_commit() -> None:
 def test_the_platform_adapter_is_off_wherever_the_plugin_is_on_and_the_tools_remain() -> None:
     template = _jinja_env().get_template("config-profile.yaml.j2")
     for gate in (False, True):
-        for profile in _profiles():
+        for profile in _regular_profiles():
             parsed = yaml.safe_load(template.render(hermes_agent_profile=profile, **_profile_context(gate)))
             plugin_on = gate and profile["name"] == PROFILE
             assert ("homeassistant" in parsed["plugins"]["enabled"]) is plugin_on, (profile["name"], gate)

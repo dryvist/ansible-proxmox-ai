@@ -20,6 +20,7 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_guardrails_github_readonly_profiles": ["github-maint"],
     "ansible_managed": "managed",
     "hermes_agent_model": "hermes-default",
+    "hermes_agent_locked_profile_model": "local-review-fixture",
     "hermes_agent_model_provider": "custom",
     "hermes_agent_model_shared_provider_name": "hermes-shared",
     "hermes_agent_model_shared_provider": "custom:hermes-shared",
@@ -129,6 +130,11 @@ def _profiles() -> list[dict[str, Any]]:
     ]
 
 
+def _regular_profiles() -> list[dict[str, Any]]:
+    """Enabled profiles with the regular config shape; test_locked_profile_contract.py owns the locked shape."""
+    return [p for p in _profiles() if not p.get("locked", False)]
+
+
 # Cron jobs select their store through HERMES_HOME; Kanban workers use assignee.
 
 
@@ -142,7 +148,7 @@ def test_profile_env_lists_never_grant_a_forbidden_credential_section() -> None:
     }
     for profile in _profiles():
         forbidden = forbidden_sections.get(profile["name"], set())
-        granted = set(profile["env"])
+        granted = set(profile.get("env", []))
         overlap = granted & forbidden
         assert not overlap, (
             f"profile {profile['name']!r} env list {sorted(granted)} grants "
@@ -176,7 +182,7 @@ def test_profile_skill_lists_never_grant_a_forbidden_skill() -> None:
     }
     for profile in _profiles():
         forbidden = forbidden_skills.get(profile["name"], set())
-        granted = set(profile["skills"])
+        granted = set(profile.get("skills", []))
         overlap = granted & forbidden
         assert not overlap, (
             f"profile {profile['name']!r} skill list {sorted(granted)} grants "
@@ -323,7 +329,7 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
     env = _jinja_env()
     src = (ROLE_ROOT / "templates" / "config-profile.yaml.j2").read_text()
     defaults = _defaults()
-    for profile in _profiles():
+    for profile in _regular_profiles():
         context = dict(_RENDER_CONTEXT)
         context["hermes_agent_langfuse_enabled"] = True
         context["hermes_agent_plugins_enabled"] = ["dryvist-guardrails", "hindsight", "langfuse"]
