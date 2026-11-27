@@ -1,0 +1,30 @@
+---
+# The per-row tier assertions that follow the matrix key-shape assert in
+# assert_app_servers_match_matrix.yml; split out to keep the contract playbook
+# under the CI per-file token limit.
+- name: Match each enabled app server to its tier row
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _server.transport == (_row.transport | default('stdio'))
+      - _server.server_id == _row.server_id
+      - _server.allow_all_keys == false
+      - _server.allowed_tools == _row.allowed_tools
+      - >-
+        ((_row.transport | default('stdio')) == 'http'
+         and _server.url == 'os.environ/' ~ _row.url_env_key
+         and _server.auth_type == 'bearer'
+         and _server.auth_value == 'os.environ/' ~ _row.token_env_key)
+        or ((_row.transport | default('stdio')) == 'stdio'
+            and _server.command == _row.command
+            and _server.args == _row.args
+            and _server.env[_row.url_env] == 'os.environ/' ~ _row.url_env_key
+            and _server.env[_row.token_env] == 'os.environ/' ~ _row.token_env_key)
+    fail_msg: An app-agent MCP server drifted from its tier definition.
+  loop: "{{ _llm_router_app_agent_matrix | selectattr('enabled') | list }}"
+  loop_control:
+    loop_var: _row
+    label: "{{ _row.id }}"
+  vars:
+    _server: "{{ _mcp_servers.mcp_servers[_row.server_id] }}"
+  no_log: true
