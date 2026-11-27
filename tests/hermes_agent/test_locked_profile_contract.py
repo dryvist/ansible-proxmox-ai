@@ -19,7 +19,7 @@ LOCKED_TOOLSETS = {
     "homeassistant", "spotify",
 }
 # Clerks whose switch is on in the inventory. Every other locked profile stays off.
-ENABLED_CLERKS = {"vikunja-clerk"}
+ENABLED_CLERKS = {"vikunja-clerk", "youtrack-clerk", "zammad-clerk"}
 LOCKED_PROFILE_KEYS = {
     "name", "description", "mcp", "locked", "feature_gate", "soul_standalone_file"
 }
@@ -34,7 +34,7 @@ def _locked() -> list[dict]:
 
 
 @pytest.mark.parametrize("profile", _locked(), ids=lambda p: p["name"])
-def test_every_clerk_is_minimal_off_by_default_and_prompted(profile: dict) -> None:
+def test_every_locked_profile_is_minimal_and_prompted(profile: dict) -> None:
     expected_keys = LOCKED_PROFILE_KEYS | (
         {"memory_bank_id"} if profile["name"].endswith("-clerk") else set()
     )
@@ -98,14 +98,14 @@ def test_converge_agent_previews_and_never_checks_or_retries() -> None:
         assert rule in prompt, rule
 
 
-def test_clerk_is_declared_once_and_is_off_by_default() -> None:
+def test_the_youtrack_clerk_is_declared_once_and_switched_on() -> None:
     profile = _clerk()
     assert set(profile) == LOCKED_PROFILE_KEYS | {"memory_bank_id"}
     assert profile["mcp"] == ["youtrack_write"]
     assert profile["locked"] is True
     assert profile["feature_gate"] == "llm_router_hermes_youtrack_clerk_key_enabled"
-    assert _group_vars_all()[profile["feature_gate"]] is False
-    assert all(p["name"] != profile["name"] for p in _profiles())
+    assert _group_vars_all()[profile["feature_gate"]] is True
+    assert any(p["name"] == profile["name"] for p in _profiles())
 
 
 def test_tracker_clerks_have_distinct_memory_banks_and_semaphore_has_none() -> None:

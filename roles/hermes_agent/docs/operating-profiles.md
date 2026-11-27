@@ -80,6 +80,10 @@ model, exposes one app-agent MCP server, and has built-in memory disabled. Each
 tracker clerk declares its own Hindsight bank with auto-retain and context mode;
 context mode adds no memory tools. The tracker clerks have no other memory, and
 `semaphore-converge` remains memory-free.
+
+The current inventory enables `youtrack-clerk`, `vikunja-clerk`, and
+`zammad-clerk`; `semaphore-converge` remains off.
+
 The clerk's router key is the key that holds its tier: the router turns an
 app-agent tier on only when the tier's token is seeded and a roster entry or a
 locked profile holds a key for it. A seeded token that nothing holds stays off.
