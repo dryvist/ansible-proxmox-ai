@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.84.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.84.0...v2.84.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **llm_router:** keep Claude models out of fallback chains ([#2910](https://github.com/dryvist/ansible-proxmox-ai/issues/2910)) ([501d339](https://github.com/dryvist/ansible-proxmox-ai/commit/501d3396d909327cae327804ad95cb1e69c1d273))
+
 ## [2.84.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.83.3...v2.84.0) (2026-11-26)
 
 
