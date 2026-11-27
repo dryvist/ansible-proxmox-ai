@@ -23,6 +23,18 @@ def test_profile_soul_addendum_sources_are_declared_in_profile_data() -> None:
     )
 
 
+def test_tracker_clerk_soul_is_the_verified_prompt_pack_text(tmp_path: Path) -> None:
+    profile = next(p for p in _defaults()["hermes_agent_profiles"] if p["name"] == "vikunja-clerk")
+
+    rendered = _render_profile_soul(
+        profile,
+        _fake_soul_bundle(tmp_path),
+        hermes_agent_profile_soul_content={"vikunja-clerk.soul.md": "Verified pack soul."},
+    )
+
+    assert rendered == "Verified pack soul."
+
+
 def test_bundle_profile_soul_is_bundle_base_plus_bundle_addendum(tmp_path: Path) -> None:
     profile = next(profile for profile in _profiles() if profile["name"] == "github-maint")
     bundle_path = _fake_soul_bundle(tmp_path)
@@ -80,7 +92,7 @@ def _fake_soul_bundle(bundle_path: Path) -> Path:
     return bundle_path
 
 
-def _render_profile_soul(profile: dict[str, Any], bundle_path: Path) -> str:
+def _render_profile_soul(profile: dict[str, Any], bundle_path: Path, **extra: Any) -> str:
     env = _jinja_env()
     env.trim_blocks = True
     context: dict[str, Any] = {
@@ -91,6 +103,7 @@ def _render_profile_soul(profile: dict[str, Any], bundle_path: Path) -> str:
         "hermes_agent_kanban_eligible_label": _defaults()[
             "hermes_agent_kanban_eligible_label"
         ],
+        **extra,
     }
 
     def lookup(plugin: str, source: str) -> str:
