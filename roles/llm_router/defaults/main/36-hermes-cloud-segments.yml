@@ -5,6 +5,9 @@
 # alongside it — load order among defaults/main files does not matter,
 # only the dependency each var expresses in its own Jinja.
 
+# Claude models are never a fallback target.
+llm_router_fallback_excluded_model_pattern: '(?i)claude|anthropic'
+
 # The cloud-only set splits on its explicit registry price class. Keeping that
 # class separate from price metadata prevents an absent accounting rate from
 # changing a rung's routing segment.
@@ -89,8 +92,19 @@ llm_router_opencode_zdr_fallback_groups: >-
   {%- if m.route_group is not defined -%}
   {%- set members = [m] -%}
   {%- endif -%}
+  {%- set excluded = namespace(
+        value=(
+          group | regex_search(llm_router_fallback_excluded_model_pattern)
+        ) is not none) -%}
   {%- set all_zdr = namespace(value=true) -%}
   {%- for member in members -%}
+  {%- set member_client_excluded = (member.client_model_id
+        | regex_search(llm_router_fallback_excluded_model_pattern)) is not none -%}
+  {%- set member_upstream_excluded = (member.upstream_model_id | default('')
+        | regex_search(llm_router_fallback_excluded_model_pattern)) is not none -%}
+  {%- if member_client_excluded or member_upstream_excluded -%}
+  {%- set excluded.value = true -%}
+  {%- endif -%}
   {%- if not _llm_router_m_registry_zdr_by_model[member.client_model_id] -%}
   {%- set all_zdr.value = false -%}
   {%- endif -%}
@@ -98,7 +112,7 @@ llm_router_opencode_zdr_fallback_groups: >-
   {%- set all_zdr.value = false -%}
   {%- endif -%}
   {%- endfor -%}
-  {%- if key | length > 0 and all_zdr.value and group not in ns.models -%}
+  {%- if key | length > 0 and all_zdr.value and not excluded.value and group not in ns.models -%}
   {%- set ns.models = ns.models + [group] -%}
   {%- endif -%}
   {%- endfor -%}
@@ -121,8 +135,19 @@ llm_router_opencode_retaining_fallback_groups: >-
   {%- if m.route_group is not defined -%}
   {%- set members = [m] -%}
   {%- endif -%}
+  {%- set excluded = namespace(
+        value=(
+          group | regex_search(llm_router_fallback_excluded_model_pattern)
+        ) is not none) -%}
   {%- set all_retaining = namespace(value=true) -%}
   {%- for member in members -%}
+  {%- set member_client_excluded = (member.client_model_id
+        | regex_search(llm_router_fallback_excluded_model_pattern)) is not none -%}
+  {%- set member_upstream_excluded = (member.upstream_model_id | default('')
+        | regex_search(llm_router_fallback_excluded_model_pattern)) is not none -%}
+  {%- if member_client_excluded or member_upstream_excluded -%}
+  {%- set excluded.value = true -%}
+  {%- endif -%}
   {%- if _llm_router_m_registry_zdr_by_model[member.client_model_id] -%}
   {%- set all_retaining.value = false -%}
   {%- endif -%}
@@ -130,7 +155,7 @@ llm_router_opencode_retaining_fallback_groups: >-
   {%- set all_retaining.value = false -%}
   {%- endif -%}
   {%- endfor -%}
-  {%- if key | length > 0 and all_retaining.value and group not in ns.models
+  {%- if key | length > 0 and all_retaining.value and not excluded.value and group not in ns.models
         and group not in llm_router_training_tier_group_names -%}
   {%- set ns.models = ns.models + [group] -%}
   {%- endif -%}

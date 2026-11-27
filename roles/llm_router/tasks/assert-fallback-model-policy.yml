@@ -1,0 +1,40 @@
+---
+- name: Assert no automatic fallback target names a Claude or Anthropic model
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_excluded_fallback_targets | length == 0
+    fail_msg: >-
+      Automatic fallback targets contain a Claude or Anthropic model:
+      {{ _llm_router_excluded_fallback_targets | unique | join(', ') }}.
+  vars:
+    _llm_router_all_fallback_targets: >-
+      {%- set ns = namespace(targets=(llm_router_opencode_fallback_groups | list)) -%}
+      {%- for _targets in llm_router_fallback_map.values() -%}
+      {%- set ns.targets = ns.targets + (_targets | list) -%}
+      {%- endfor -%}
+      {%- for _entry in llm_router_context_window_fallbacks -%}
+      {%- for _targets in _entry.values() -%}
+      {%- set ns.targets = ns.targets + (_targets | list) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- set ns.targets = ns.targets + (llm_router_default_fallbacks | list) -%}
+      {%- for _chain in [llm_router_review_oss_chain, llm_router_review_private_chain] -%}
+      {%- set ns.targets = ns.targets + (_chain | list) -%}
+      {%- endfor -%}
+      {%- for _lane in llm_router_review_key_router_settings.values() -%}
+      {%- for _entry in _lane.fallbacks | default([]) -%}
+      {%- for _targets in _entry.values() -%}
+      {%- set ns.targets = ns.targets + (_targets | list) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.targets | unique | list }}
+    _llm_router_excluded_fallback_targets: >-
+      {%- set ns = namespace(targets=[]) -%}
+      {%- for _target in _llm_router_all_fallback_targets -%}
+      {%- if (_target | string | regex_search(llm_router_fallback_excluded_model_pattern)) is not none -%}
+      {%- set ns.targets = ns.targets + [_target] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.targets | unique | list }}
