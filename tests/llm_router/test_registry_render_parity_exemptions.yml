@@ -140,3 +140,64 @@
 
     - name: The guard passes anyway, because the hermes-agent exemption holds
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
+
+- name: The guard stays quiet for locked-profile agent models absent from the registry
+  hosts: localhost
+  vars_files:
+    - ../../inventory/group_vars/all/02-gpu-accelerator.yml
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+      hermes_agents:
+        hermes-agent:
+          model_name: hermes-agent
+          api_url: "https://hermes-agent.pve.example.test/v1"
+    bao_local_llm_secrets:
+      HERMES_API_SERVER_KEY: test-hermes-server-key
+    # A locked profile renders agent-<name> only with its own bearer.
+    hermes_agent_profiles:
+      - name: fixture-clerk
+        locked: true
+        mcp: []
+    bao_apps_secrets:
+      hermes_fixture_clerk_api_server_key: test-fixture-clerk-server-key
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: medium
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Confirm the fixture really does render an agent model the registry does not own
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'agent-fixture-clerk' in _rendered"
+          - "'agent-fixture-clerk' not in llm_router_registry_enabled_route_names"
+        fail_msg: >-
+          Expected agent-fixture-clerk to render while owning no registry entry, but
+          got rendered={{ _rendered }}.
+        success_msg: "The locked-profile agent model renders and owns no registry entry."
+      vars:
+        _rendered: >-
+          {{ (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml).model_list
+             | default([]) | map(attribute='model_name') | unique | list }}
+
+    - name: The guard passes anyway, because the locked-profile exemption holds
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
