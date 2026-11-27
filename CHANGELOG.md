@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.84.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.84.1...v2.84.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* **hermes_agent:** stop the test from pinning Hermes release values ([#2915](https://github.com/dryvist/ansible-proxmox-ai/issues/2915)) ([12ce14e](https://github.com/dryvist/ansible-proxmox-ai/commit/12ce14e81ed3c2a10fa293881a9cc09d2a9c2933))
+
 ## [2.84.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.84.0...v2.84.1) (2026-11-27)
 
 
