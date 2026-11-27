@@ -85,13 +85,32 @@
               'allowed_classes': ['local'],
               'models': [llm_router_primary_model, llm_router_embedding_model],
               'models_authoritative': false
+            },
+            {
+              'alias': 'fixture-agent-local',
+              'enabled': true,
+              'allowed_classes': ['local'],
+              'models': [llm_router_primary_model, 'agent-fixture-clerk'],
+              'models_authoritative': true,
+              'tags': ['&local']
+            },
+            {
+              'alias': 'fixture-agent-hosted',
+              'enabled': true,
+              'allowed_classes': ['local', 'paid-zdr'],
+              'models': ['agent-fixture-clerk', _fixture_hosted_group],
+              'models_authoritative': true,
+              'tags': ['&local']
             }
           ] }}
+        _llm_router_hermes_locked_profile_models: ['agent-fixture-clerk']
         ai_callers: >-
           {{ (ai_callers | default({})) | combine({
             'fixture-local-route': {'trust_tier': agent_callers_default_tier},
             'fixture-hosted-route': {'trust_tier': agent_callers_default_tier},
-            'fixture-nonauth-local': {'trust_tier': agent_callers_default_tier}
+            'fixture-nonauth-local': {'trust_tier': agent_callers_default_tier},
+            'fixture-agent-local': {'trust_tier': agent_callers_default_tier},
+            'fixture-agent-hosted': {'trust_tier': agent_callers_default_tier}
           }) }}
 
     - name: Refresh the projection after adding the fixture callers
@@ -126,6 +145,28 @@
         _local_key: "{{ _route_keys | selectattr('alias', 'equalto', 'fixture-local-route') | list }}"
         _hosted_key: "{{ _route_keys | selectattr('alias', 'equalto', 'fixture-hosted-route') | list }}"
         _local_names: "{{ _llm_router_local_tier_group_names }}"
+
+    - name: Locked-profile agents count as local routes but do not hide hosted routes
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _agent_local_key | length == 1
+          - _agent_hosted_key | length == 1
+          - "'agent-fixture-clerk' in _agent_local_key[0].models"
+          - "'agent-fixture-clerk' in _agent_hosted_key[0].models"
+          - _fixture_hosted_group in _agent_hosted_key[0].models
+          - _route_meta['fixture-agent-local'].route_local | bool
+          - not (_route_meta['fixture-agent-hosted'].route_local | bool)
+          - "'fixture-agent-local' in _llm_router_route_local_key_aliases"
+          - "'fixture-agent-hosted' not in _llm_router_route_local_key_aliases"
+        fail_msg: >-
+          Locked-profile agent scope={{ _agent_local_key }},
+          mixed hosted scope={{ _agent_hosted_key }}, markers={{ _route_meta }}.
+      vars:
+        _agent_local_key: >-
+          {{ _route_keys | selectattr('alias', 'equalto', 'fixture-agent-local') | list }}
+        _agent_hosted_key: >-
+          {{ _route_keys | selectattr('alias', 'equalto', 'fixture-agent-hosted') | list }}
 
     - name: A local-only key whose model list is not authoritative is never marked
       ansible.builtin.assert:
