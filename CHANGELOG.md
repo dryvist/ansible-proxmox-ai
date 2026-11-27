@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.85.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.84.2...v2.85.0) (2026-11-27)
+
+
+### Features
+
+* **agent:** opencode-qwen run j-4d00c8d5be194a1d ([f45a26f](https://github.com/dryvist/ansible-proxmox-ai/commit/f45a26f4e9764f85d07ac85edf5a32775d9d970a))
+
+
+### Bug Fixes
+
+* **ci:** list every router contract playbook in the shard weights ([#2903](https://github.com/dryvist/ansible-proxmox-ai/issues/2903)) ([f45a26f](https://github.com/dryvist/ansible-proxmox-ai/commit/f45a26f4e9764f85d07ac85edf5a32775d9d970a))
+
 ## [2.84.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.84.1...v2.84.2) (2026-11-27)
 
 
