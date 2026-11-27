@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
 
 PROJECT_LIST = (
-    "40 (Inbox), 42 (nix), 43 (proxmox), 44 (governance-ci), 45 (observability), "
+    "40 (Inbox), 42 (nix), 43 (proxmox), 44 (ci), 45 (observability), "
     "46 (network), 48 (ai), 49 (hardware), 50 (docs), 71 (secrets-security)"
 )
 PROJECT_IDS = ("40", "42", "43", "44", "45", "46", "48", "49", "50", "71")
