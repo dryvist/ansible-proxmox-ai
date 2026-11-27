@@ -84,14 +84,15 @@
           - >-
             _rendered[item].litellm_settings.custom_prometheus_metadata_labels
             == ['metadata.router_key_class', 'accelerator']
+          # Hermes job tags never become metric labels: one label per job would exceed the per-series
+          # label limit. They stay request tags.
+          - llm_router_hermes_job_tags | length > 0
           - >-
-            llm_router_hermes_job_tags
-            | difference(_rendered[item].litellm_settings.custom_prometheus_tags)
-            | length == 0
+            _rendered[item].litellm_settings.custom_prometheus_tags
+            | select('match', '^telemetry_job_') | list | length == 0
           - >-
-            ['telemetry_job_other', 'telemetry_job_aux']
-            | difference(_rendered[item].litellm_settings.custom_prometheus_tags)
-            | length == 0
+            _rendered[item].litellm_settings.custom_prometheus_tags
+            | select('match', '^telemetry_(tier|billing_class)_') | list | length > 0
           - "'system_merge.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
           - "'request_metrics.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
           - "'hermes_job_tags.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
@@ -102,7 +103,9 @@
           litellm_settings.callbacks rendered ({{ item }} spend store) as
           {{ _rendered[item].litellm_settings.callbacks | type_debug }}:
           {{ _rendered[item].litellm_settings.callbacks }}
-        success_msg: "{{ item }} spend store: callbacks={{ _rendered[item].litellm_settings.callbacks }}"
+        success_msg: >-
+          {{ item }} spend store: callbacks={{ _rendered[item].litellm_settings.callbacks }}
+          custom_prometheus_tags={{ _rendered[item].litellm_settings.custom_prometheus_tags }}
       loop: [without, with]
 
     - name: The retired lock callback is registered in neither render

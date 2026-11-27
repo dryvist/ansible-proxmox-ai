@@ -64,9 +64,6 @@ Generated from `llm_router_app_agent_tiers`; a test fails when this file drifts.
   - get_issue
   - get_issue_comments
   - add_issue_comment
-  - create_issue
-  - update_issue
-  - change_issue_assignee
   - get_issue_fields_schema
   - find_projects
   - get_project
@@ -78,8 +75,6 @@ Generated from `llm_router_app_agent_tiers`; a test fails when this file drifts.
   - get_current_user
   - search_articles
   - get_article
-  - create_article
-  - update_article
 
 ## semaphore-write
 

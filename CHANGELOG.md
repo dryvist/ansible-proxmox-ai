@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.86.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.85.0...v2.86.0) (2026-11-27)
+
+
+### Features
+
+* **llm_router:** limit the youtrack-write tier to clerk v1 tools ([#2919](https://github.com/dryvist/ansible-proxmox-ai/issues/2919)) ([08b48cc](https://github.com/dryvist/ansible-proxmox-ai/commit/08b48ccac8ef311ae4702a1914e31e6484011809))
+
+
+### Bug Fixes
+
+* **llm_router:** state the label limit in present terms ([9cff506](https://github.com/dryvist/ansible-proxmox-ai/commit/9cff5067a56bd1a86c935f484aa16484aa972d88))
+* **llm_router:** state the metric label limit in present terms ([#2922](https://github.com/dryvist/ansible-proxmox-ai/issues/2922)) ([9cff506](https://github.com/dryvist/ansible-proxmox-ai/commit/9cff5067a56bd1a86c935f484aa16484aa972d88))
+* **llm_router:** stop rendering Hermes job tags as Prometheus labels ([#2918](https://github.com/dryvist/ansible-proxmox-ai/issues/2918)) ([ff890ed](https://github.com/dryvist/ansible-proxmox-ai/commit/ff890ed878ec84c23d89c3f5c791b460d22d6100))
+
+## [2.85.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.84.2...v2.85.0) (2026-11-27)
+
+
+### Features
+
+* **agent:** opencode-qwen run j-4d00c8d5be194a1d ([f45a26f](https://github.com/dryvist/ansible-proxmox-ai/commit/f45a26f4e9764f85d07ac85edf5a32775d9d970a))
+
+
+### Bug Fixes
+
+* **ci:** list every router contract playbook in the shard weights ([#2903](https://github.com/dryvist/ansible-proxmox-ai/issues/2903)) ([f45a26f](https://github.com/dryvist/ansible-proxmox-ai/commit/f45a26f4e9764f85d07ac85edf5a32775d9d970a))
+
 ## [2.84.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.84.1...v2.84.2) (2026-11-27)
 
 
