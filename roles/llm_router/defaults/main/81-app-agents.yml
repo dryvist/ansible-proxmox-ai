@@ -137,6 +137,9 @@ llm_router_app_agent_vikunja_read_allowlist: >-
 # and key permission projection. Public docs derive names and fields only.
 # A tier is on only with its token and a key holder: its own roster entry, or
 # a locked Hermes profile. A token nobody holds a key for leaves the tier off.
+# A same-named roster entry that may not hold the tier (a write or admin tier,
+# entry not trusted) yields to a locked profile that claims the tier's server
+# and never receives that server; with no such profile the gate refuses it.
 _llm_router_app_agent_matrix: >-
   {%- set ns = namespace(rows=[]) -%}
   {%- set _profile_servers = hermes_agent_profiles | default([])
@@ -144,8 +147,13 @@ _llm_router_app_agent_matrix: >-
         | map(attribute='mcp') | flatten | list -%}
   {%- for tier in llm_router_app_agent_tiers -%}
   {%- set app = llm_router_app_agent_apps[tier.app] -%}
-  {%- set holder = 'roster' if tier.id in (ai_agents | default({}))
-        else ('profile' if (tier.id | replace('-', '_')) in _profile_servers else '') -%}
+  {%- set _entry = (ai_agents | default({})).get(tier.id) -%}
+  {%- set _entry_may_hold = _entry is not none
+        and (tier.tier not in llm_router_app_agent_trusted_tiers
+             or _entry.get('trust_tier', '') == 'trusted') -%}
+  {%- set holder = 'roster' if _entry_may_hold
+        else ('profile' if (tier.id | replace('-', '_')) in _profile_servers
+              else ('roster' if _entry is not none else '')) -%}
   {%- set reader_domain = 'app-agent-' ~ tier.id -%}
   {%- set reader_secrets = (openbao_secrets_by_domain | default({}, true)).get(reader_domain, {}) -%}
   {%- set token = reader_secrets.get(tier.token_field, '')
