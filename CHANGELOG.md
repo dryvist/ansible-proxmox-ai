@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.90.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.90.0...v2.90.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **hermes_agent:** render one tools block in locked profile config ([#2965](https://github.com/dryvist/ansible-proxmox-ai/issues/2965)) ([73ce16c](https://github.com/dryvist/ansible-proxmox-ai/commit/73ce16c50fe48eca910a3696803885e44efd548f))
+
 ## [2.90.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.89.1...v2.90.0) (2026-11-27)
 
 
