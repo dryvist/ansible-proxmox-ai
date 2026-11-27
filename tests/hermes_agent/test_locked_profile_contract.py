@@ -18,6 +18,9 @@ LOCKED_TOOLSETS = {
     "delegation", "cronjob", "discord", "discord_admin", "yuanbao", "computer_use",
     "homeassistant", "spotify",
 }
+LOCKED_PROFILE_KEYS = {
+    "name", "description", "mcp", "locked", "feature_gate", "soul_standalone_file"
+}
 
 
 def _clerk() -> dict:
@@ -30,9 +33,10 @@ def _locked() -> list[dict]:
 
 @pytest.mark.parametrize("profile", _locked(), ids=lambda p: p["name"])
 def test_every_clerk_is_minimal_off_by_default_and_prompted(profile: dict) -> None:
-    assert set(profile) == {
-        "name", "description", "mcp", "locked", "feature_gate", "soul_standalone_file"
-    }
+    expected_keys = LOCKED_PROFILE_KEYS | (
+        {"memory_bank_id"} if profile["name"].endswith("-clerk") else set()
+    )
+    assert set(profile) == expected_keys
     assert len(profile["mcp"]) == 1
     gate = f"llm_router_hermes_{profile['name'].replace('-', '_')}_key_enabled"
     assert profile["feature_gate"] == gate
@@ -81,14 +85,39 @@ def test_converge_agent_previews_and_never_checks_or_retries() -> None:
 
 def test_clerk_is_declared_once_and_is_off_by_default() -> None:
     profile = _clerk()
-    assert set(profile) == {
-        "name", "description", "mcp", "locked", "feature_gate", "soul_standalone_file"
-    }
+    assert set(profile) == LOCKED_PROFILE_KEYS | {"memory_bank_id"}
     assert profile["mcp"] == ["youtrack_write"]
     assert profile["locked"] is True
     assert profile["feature_gate"] == "llm_router_hermes_youtrack_clerk_key_enabled"
     assert _group_vars_all()[profile["feature_gate"]] is False
     assert all(p["name"] != profile["name"] for p in _profiles())
+
+
+def test_tracker_clerks_have_distinct_memory_banks_and_semaphore_has_none() -> None:
+    profiles = _defaults()["hermes_agent_profiles"]
+    clerks = {
+        profile["name"]: profile
+        for profile in profiles
+        if profile["name"] in {"vikunja-clerk", "youtrack-clerk", "zammad-clerk"}
+    }
+    assert set(clerks) == {"vikunja-clerk", "youtrack-clerk", "zammad-clerk"}
+
+    environment = Environment()
+    banks = {
+        name: environment.from_string(profile["memory_bank_id"]).render(
+            hermes_agent_memory_bank_id="agent-main"
+        )
+        for name, profile in clerks.items()
+    }
+    assert banks == {
+        "vikunja-clerk": "agent-main-vikunja-clerk",
+        "youtrack-clerk": "agent-main-youtrack-clerk",
+        "zammad-clerk": "agent-main-zammad-clerk",
+    }
+    assert len(set(banks.values())) == 3
+
+    semaphore = next(p for p in profiles if p["name"] == "semaphore-converge")
+    assert "memory_bank_id" not in semaphore
 
 
 def test_locked_profile_renders_local_single_server_lockdown() -> None:

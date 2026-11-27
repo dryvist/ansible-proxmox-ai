@@ -10,7 +10,7 @@
       - item.soul_standalone_file is defined
       - >-
         item | dict2items | map(attribute='key')
-        | difference(['name', 'description', 'mcp', 'locked', 'feature_gate', 'soul_standalone_file'])
+        | difference(['name', 'description', 'mcp', 'locked', 'feature_gate', 'soul_standalone_file', 'memory_bank_id'])
         | length == 0
       - item.name not in (hermes_agent_slack_profile_channels | default({})).keys()
       - item.name != hermes_agent_kanban_orchestrator_profile
@@ -28,6 +28,25 @@
         | selectattr('assignee', 'defined')
         | selectattr('assignee', 'equalto', item.name) | list | length == 0
     fail_msg: >-
-      Locked profile {{ item.name }} accepts only name, description, mcp, locked, feature_gate, and
-      soul_standalone_file; remove every other profile field.
+      Locked profile {{ item.name }} accepts only name, description, mcp, locked, feature_gate,
+      soul_standalone_file, and memory_bank_id; remove every other profile field.
   when: item.locked | default(false) | bool
+
+- name: Assert locked profile memory bank is private and unique
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - item.memory_bank_id is string and item.memory_bank_id | trim | length > 0
+      - item.memory_bank_id != hermes_agent_memory_bank_id
+      - >-
+        hermes_agent_profiles
+        | selectattr('memory_bank_id', 'defined')
+        | map(attribute='memory_bank_id')
+        | select('equalto', item.memory_bank_id)
+        | list | length == 1
+    fail_msg: >-
+      Locked profile {{ item.name }} memory_bank_id must be a non-empty string that differs from
+      hermes_agent_memory_bank_id and is unique across hermes_agent_profiles.
+  when:
+    - item.locked | default(false) | bool
+    - item.memory_bank_id is defined
