@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.88.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.87.0...v2.88.0) (2026-11-27)
+
+
+### Features
+
+* **agent:** zcode run j-2ca9b349b6db5fc5 ([b88b9d0](https://github.com/dryvist/ansible-proxmox-ai/commit/b88b9d0c1e880e6fc384f642f564a4c58b2edc4d))
+
 ## [2.87.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.86.0...v2.87.0) (2026-11-27)
 
 
