@@ -285,7 +285,17 @@ def select(paths: list[str], base_ref: str = "", head_ref: str = "") -> Selectio
         elif path == "scripts/verify-pinned-patches.py":
             role_scope("hermes_agent")
         elif path == "renovate.json":
+            # Contract tests read the dependency-bot config: tests/llm_router
+            # the litellm hold, tests/llamacpp_release the llama.cpp rule,
+            # tests/load the prompt-catalog custom manager, and the CI policy
+            # test the Hermes compatibility group.
             run_selector_checks = True
+            role_scope("llm_router")
+            role_scope("llamacpp_release")
+            pytest_targets.update({
+                "tests/load/test_tier2_burst.py",
+                "tests/test_ci_workflow_policy.py",
+            })
         elif path.startswith("inventory/group_vars/hermes_agent_group/"):
             # Hermes-only vars: role, inventory load, and tests loading the file
             role_scope("hermes_agent")
