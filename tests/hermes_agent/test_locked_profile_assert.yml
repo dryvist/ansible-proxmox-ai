@@ -6,8 +6,12 @@
     _role_dir: "{{ playbook_dir }}/../../roles/hermes_agent"
     hermes_agent_slack_profile_channels: {}
     hermes_agent_kanban_orchestrator_profile: orchestrator
+    hermes_agent_memory_bank_id: agent-main
     hermes_agent_profile_webhook_routes: []
     hermes_agent_direct_cron_jobs: []
+    hermes_agent_profiles:
+      - name: youtrack-clerk
+        memory_bank_id: youtrack-clerk-bank
     _locked_profile:
       name: youtrack-clerk
       description: Narrow tracker profile
@@ -15,11 +19,25 @@
       locked: true
       feature_gate: llm_router_hermes_youtrack_clerk_key_enabled
       soul_standalone_file: soul-youtrack-clerk.md.j2
+      memory_bank_id: youtrack-clerk-bank
+    _locked_profile_without_memory:
+      name: semaphore-converge
+      description: Narrow converge profile
+      mcp: [semaphore_write]
+      locked: true
+      feature_gate: llm_router_hermes_semaphore_converge_key_enabled
+      soul_standalone_file: soul-semaphore-converge.md.j2
   tasks:
     - name: Accept the single-declaration locked profile
       ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
       vars:
         item: "{{ _locked_profile }}"
+
+    - name: Accept a locked profile without a memory bank
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
+      vars:
+        item: "{{ _locked_profile_without_memory }}"
+        hermes_agent_profiles: []
 
     - name: Refuse a profile with a toolset override
       block:
@@ -37,3 +55,94 @@
             quiet: true
             that:
               - ansible_failed_task.name == 'Assert locked profile has no extra configuration fields'
+
+    - name: Refuse a locked profile with an unrelated skills key
+      block:
+        - name: Run the locked-profile guard with a skills key
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
+          vars:
+            item: "{{ _locked_profile | combine({'skills': ['unapproved']}) }}"
+
+        - name: Fail if the guard admitted the skills key
+          ansible.builtin.fail:
+            msg: The locked-profile guard admitted a skills override.
+      rescue:
+        - name: Require the locked-profile assertion to refuse the skills key
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - ansible_failed_task.name == 'Assert locked profile has no extra configuration fields'
+
+    - name: Refuse a locked profile that reuses the agent memory bank
+      block:
+        - name: Run the locked-profile guard with the agent bank
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
+          vars:
+            item: "{{ _locked_profile | combine({'memory_bank_id': hermes_agent_memory_bank_id}) }}"
+
+        - name: Fail if the guard admitted the agent bank
+          ansible.builtin.fail:
+            msg: The locked-profile guard admitted the agent memory bank.
+      rescue:
+        - name: Require the memory-bank assertion to refuse the agent bank
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - ansible_failed_task.name == 'Assert locked profile memory bank is private and unique'
+
+    - name: Refuse a locked profile with an empty memory bank
+      block:
+        - name: Run the locked-profile guard with an empty bank
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
+          vars:
+            item: "{{ _locked_profile | combine({'memory_bank_id': ''}) }}"
+
+        - name: Fail if the guard admitted an empty bank
+          ansible.builtin.fail:
+            msg: The locked-profile guard admitted an empty memory bank.
+      rescue:
+        - name: Require the memory-bank assertion to refuse the empty bank
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - ansible_failed_task.name == 'Assert locked profile memory bank is private and unique'
+
+    - name: Refuse a locked profile with a non-string memory bank
+      block:
+        - name: Run the locked-profile guard with a list-valued bank
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
+          vars:
+            item: "{{ _locked_profile | combine({'memory_bank_id': ['not-a-string']}) }}"
+
+        - name: Fail if the guard admitted a non-string bank
+          ansible.builtin.fail:
+            msg: The locked-profile guard admitted a non-string memory bank.
+      rescue:
+        - name: Require the memory-bank assertion to refuse the non-string bank
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - ansible_failed_task.name == 'Assert locked profile memory bank is private and unique'
+
+    - name: Refuse two profiles that share a memory bank
+      vars:
+        hermes_agent_profiles:
+          - name: youtrack-clerk
+            memory_bank_id: youtrack-clerk-bank
+          - name: duplicate-clerk
+            memory_bank_id: youtrack-clerk-bank
+      block:
+        - name: Run the locked-profile guard with duplicated banks
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
+          vars:
+            item: "{{ _locked_profile }}"
+
+        - name: Fail if the guard admitted duplicate memory banks
+          ansible.builtin.fail:
+            msg: The locked-profile guard admitted duplicate memory banks.
+      rescue:
+        - name: Require the memory-bank assertion to refuse duplicate banks
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - ansible_failed_task.name == 'Assert locked profile memory bank is private and unique'

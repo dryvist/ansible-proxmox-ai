@@ -34,7 +34,7 @@ def _verify_task(name: str) -> dict:
     return next(task for task in tasks[0]["block"] if task.get("name") == name)
 
 
-def _render_hindsight_config(
+def _render_hindsight_config_text(
     agent_id: str,
     *,
     mode: str = "local_external",
@@ -42,8 +42,12 @@ def _render_hindsight_config(
     gateway_key: str = "",
     trust_tier: str = "trusted",
     profile_bank_id: str | None = None,
-) -> dict:
-    source = (ROLE_ROOT / "templates" / "hindsight-config.json.j2").read_text()
+    locked: bool = False,
+    template_source: str | None = None,
+) -> str:
+    source = template_source or (
+        ROLE_ROOT / "templates" / "hindsight-config.json.j2"
+    ).read_text()
     defaults = role_defaults(ROLE_ROOT)
     env = Environment(autoescape=False, undefined=StrictUndefined)
     env.filters["to_json"] = json.dumps
@@ -72,6 +76,10 @@ def _render_hindsight_config(
         "ai_callers": {agent_id: {"trust_tier": trust_tier}},
         "hermes_agent_model_base_url": "https://llm.example.test/v1",
         "hermes_agent_memory_llm_model": "fixture-model",
+        "hermes_agent_profile_locked": locked,
+        "hermes_agent_locked_memory_recall_max_tokens": defaults[
+            "hermes_agent_locked_memory_recall_max_tokens"
+        ],
     }
     context["hermes_agent_memory_bank_id"] = env.from_string(
         str(defaults["hermes_agent_memory_bank_id"])
@@ -94,7 +102,30 @@ def _render_hindsight_config(
         context[name] = env.from_string(str(defaults[name])).render(**context)
 
     rendered = env.from_string(source).render(**context)
-    return json.loads(rendered)
+    return rendered
+
+
+def _render_hindsight_config(
+    agent_id: str,
+    *,
+    mode: str = "local_external",
+    include_api_key: bool = True,
+    gateway_key: str = "",
+    trust_tier: str = "trusted",
+    profile_bank_id: str | None = None,
+    locked: bool = False,
+) -> dict:
+    return json.loads(
+        _render_hindsight_config_text(
+            agent_id,
+            mode=mode,
+            include_api_key=include_api_key,
+            gateway_key=gateway_key,
+            trust_tier=trust_tier,
+            profile_bank_id=profile_bank_id,
+            locked=locked,
+        )
+    )
 
 
 def test_hindsight_client_is_managed_in_the_hermes_uv_venv() -> None:
@@ -256,6 +287,41 @@ def test_gateway_config_never_uses_the_hindsight_tenant_key() -> None:
 def test_a_profile_bank_overrides_the_agent_bank_only_when_set() -> None:
     assert _render_hindsight_config("hermes")["bank_id"] == "hermes"
     assert _render_hindsight_config("hermes", profile_bank_id="hermes-splunk")["bank_id"] == "hermes-splunk"
+
+
+def test_locked_profile_uses_its_own_bank_with_context_auto_retain() -> None:
+    common = _render_hindsight_config("hermes")
+    config = _render_hindsight_config(
+        "hermes", profile_bank_id="hermes-vikunja-clerk", locked=True
+    )
+    locked_values = {
+        "auto_retain": True,
+        "auto_recall": True,
+        "memory_mode": "context",
+        "recall_max_tokens": 1024,
+        "recall_indicator": False,
+        "retain_indicator": False,
+    }
+
+    assert config["bank_id"] == "hermes-vikunja-clerk"
+    assert {key: config[key] for key in locked_values} == locked_values
+    assert set(config) - set(common) == set(locked_values)
+
+    deployment = _task("Deploy the hindsight provider config for profile {{ item.name }}")
+    expected_when = "not (item.locked | default(false) | bool) or item.memory_bank_id is defined"
+    assert deployment["vars"]["hermes_agent_profile_locked"] == (
+        "{{ item.locked | default(false) | bool }}"
+    )
+    assert expected_when in deployment["when"]
+    assert "hermes_agent_memory_provider == 'hindsight'" in deployment["when"]
+    assert "item.memory_enabled | default(true) | bool" in deployment["when"]
+
+
+def test_nonlocked_local_external_config_matches_develop_render_byte_for_byte() -> None:
+    expected = (
+        Path(__file__).parent / "fixtures" / "hindsight-config-nonlocked-develop.json"
+    ).read_text()
+    assert _render_hindsight_config_text("hermes") == expected
 
 
 def test_a_gateway_key_refuses_a_profile_bank_instead_of_sharing_the_gateway_bank() -> None:
