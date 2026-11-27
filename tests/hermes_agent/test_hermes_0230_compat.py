@@ -4,21 +4,11 @@ from _role_files import role_defaults
 from test_context_limits import ROLE_ROOT, _render
 
 
-def test_hermes_0230_release_pins_match_the_tagged_runtime() -> None:
+# Literal version pins are not asserted here: Renovate owns them, and the
+# installer-checksum workflow checks the installer hash against the pinned tag.
+def test_hermes_release_tag_derives_from_the_pinned_version() -> None:
     defaults = role_defaults(ROLE_ROOT)
-    assert defaults["hermes_agent_version"] == "0.23.0"
     assert defaults["hermes_agent_version_tag"] == "v{{ hermes_agent_version }}"
-    assert defaults["hermes_agent_installer_sha256"] == (
-        "abf338605dae6dd28d101673ac6aed7995c955745db46d47676bc591a7957209"
-    )
-    assert defaults["hermes_agent_slack_bolt_version"] == "1.30.0"
-    assert defaults["hermes_agent_slack_sdk_version"] == "3.47.0"
-    assert defaults["hermes_agent_slack_aiohttp_version"] == "3.14.5"
-    assert defaults["hermes_agent_mcp_version"] == "2.3.0"
-    assert defaults["hermes_agent_mcp_httpx2_version"] == "2.16.0"
-    assert defaults["hermes_agent_mcp_starlette_version"] == "1.10.0"
-    assert defaults["hermes_agent_otlp_sdk_version"] == "1.45.1"
-    assert defaults["hermes_agent_firecrawl_py_version"] == "4.57.0"
 
 
 def test_gateway_and_profiles_render_hermes_023_browser_config() -> None:
