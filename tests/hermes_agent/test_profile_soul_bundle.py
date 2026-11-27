@@ -68,8 +68,15 @@ def test_orchestrator_soul_includes_local_addendum_and_bundle_lifecycle(tmp_path
 
 def test_only_orchestrator_soul_contains_bundle_lifecycle(tmp_path: Path) -> None:
     bundle_path = _fake_soul_bundle(tmp_path)
+    pack_souls = {
+        profile["soul_standalone_file"]: "Verified pack soul."
+        for profile in _profiles()
+        if profile.get("soul_standalone_file", "").endswith(".soul.md")
+    }
     rendered = {
-        profile["name"]: _render_profile_soul(profile, bundle_path)
+        profile["name"]: _render_profile_soul(
+            profile, bundle_path, hermes_agent_profile_soul_content=pack_souls
+        )
         for profile in _profiles()
     }
 
