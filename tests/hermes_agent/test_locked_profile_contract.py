@@ -222,7 +222,7 @@ def test_vikunja_clerk_reaches_only_its_own_router_tier() -> None:
     assert "vikunja_write" not in rendered
 
 
-def _render_locked_config(profile: dict) -> str:
+def _render_locked_config(profile: dict, context_limits: dict | None = None) -> str:
     defaults = _defaults()
     context = {
         **defaults,
@@ -232,7 +232,7 @@ def _render_locked_config(profile: dict) -> str:
         "hermes_agent_locked_profile_model": "local-review-fixture",
         "hermes_agent_disabled_toolsets": defaults["hermes_agent_disabled_toolsets"],
         "hermes_agent_cron_toolsets": defaults["hermes_agent_api_server_toolsets"],
-        "hermes_agent_context_limits": {},
+        "hermes_agent_context_limits": context_limits or {},
         "hermes_agent_auxiliary_tasks": defaults["hermes_agent_auxiliary_tasks"],
         "hermes_agent_kanban_goal_mode": False,
         "hermes_agent_crawl4ai_mcp_enabled": False,
@@ -240,3 +240,18 @@ def _render_locked_config(profile: dict) -> str:
         "hermes_agent_langfuse_enabled": False,
     }
     return _jinja_env().get_template("config-profile.yaml.j2").render(**context)
+
+
+@pytest.mark.parametrize("profile", _locked(), ids=lambda p: p["name"])
+def test_locked_profile_config_keeps_one_tools_block_under_live_limits(profile):
+    # Hermes rejects a config that repeats a key, and the profile then has no model provider.
+    limits = {
+        "tool_output": {"max_bytes": 20000},
+        "tools": {"tool_search": {"listing_max_tokens": 1500, "defer": True}},
+        "delegation": {"max_summary_chars": 4000},
+    }
+    rendered = _render_locked_config(profile, limits)
+
+    top_level = re.findall(r"^([A-Za-z_][\w-]*):", rendered, re.M)
+    assert sorted(top_level) == sorted(set(top_level))
+    assert yaml.safe_load(rendered)["tools"] == {"tool_search": {"enabled": "off"}}

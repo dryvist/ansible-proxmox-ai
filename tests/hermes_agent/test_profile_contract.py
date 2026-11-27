@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from ansible.plugins.filter.core import combine
 from jinja2 import Environment, FileSystemLoader
 
 from _group_vars import load_group_vars_all
@@ -76,7 +77,8 @@ def _jinja_env() -> Environment:
     env = Environment(autoescape=False, loader=FileSystemLoader(ROLE_ROOT / "templates"))
     env.filters["to_json"] = json.dumps
     env.filters["bool"] = bool
-    env.filters["combine"] = lambda left, right, recursive=False: {**left, **right}
+    # Ansible's own filter: a stand-in that ignored `recursive` hid a repeated key in locked profiles.
+    env.filters["combine"] = combine
     env.filters["comment"] = lambda v: f"# {v}"
     # Passthrough: this module isn't testing router-key selection (that's
     # test_profile_router_key_selection.py), just credential blanking, so a
