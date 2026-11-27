@@ -34,7 +34,10 @@ def test_proxy_precedes_runtime_and_uses_the_shared_guest_role():
     assert imports.index('agent-egress.yml') < imports.index('agents.yml') < imports.index('agent-runners.yml')
     plays = yaml.safe_load((ROOT / 'playbooks/agent-egress.yml').read_text())
     assert [p['hosts'] for p in plays] == ['hermes_agent_group', 'squid_group']
-    assert plays[0]['tasks'][0]['when'] == 'inventory_hostname in hermes_agent_isolated_hosts'
+    assert plays[0]['tasks'][0]['when'] == (
+        'inventory_hostname in hermes_agent_isolated_hosts and not '
+        '(hermes_agent_delivery_probe_only | default(false) | bool)'
+    )
     egress = yaml.safe_load((ROOT / 'roles/hermes_agent/tasks/egress.yml').read_text())
     wiring = egress[-1]
     assert wiring['vars']['agent_guest_no_proxy'] == '{{ agent_guest_loopback_no_proxy }}'

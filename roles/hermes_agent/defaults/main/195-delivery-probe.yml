@@ -1,7 +1,7 @@
 ---
 # Read-only cron delivery probe (tasks/delivery_probe.yml). Run it with
 # `-e hermes_agent_delivery_probe_only=true --check`: the play reads the
-# primary gateway routes, each named profile's cron jobs and the home paths
+# primary gateway routes, root and named-profile cron jobs, and the home paths
 # that profile_matches_home compares, prints only the projected fields below,
 # and ends the host before any converge task.
 hermes_agent_delivery_probe_only: false
@@ -10,6 +10,10 @@ hermes_agent_delivery_probe_only: false
 # jobs, and each profile's expected and resolved home path.
 hermes_agent_delivery_probe_report: >-
   {%- set ns = namespace(routes=[], profiles=[]) -%}
+  {%- set root_read = hermes_agent_delivery_probe_root_jobs | default({}) -%}
+  {%- set root_doc = (root_read.content | default('') | b64decode | from_json)
+                     if root_read.content is defined else {} -%}
+  {%- set root_jobs = root_doc.get('jobs', []) if root_doc is mapping else [] -%}
   {%- for label, layer in [('config', hermes_agent_delivery_probe_primary_config | default({})),
                            ('managed', hermes_agent_delivery_probe_managed_config | default({}))] -%}
   {%-   set cfg = (layer.content | default('') | b64decode | from_yaml) if layer.content is defined else {} -%}
@@ -49,4 +53,8 @@ hermes_agent_delivery_probe_report: >-
   {{ {'root_resolved': (hermes_agent_delivery_probe_root.stdout | default('')) | trim,
       'root_active_profile': (hermes_agent_delivery_probe_active_profile.content | default('')
                               | b64decode | trim),
+      'root_jobs_readable': root_read.content is defined,
+      'root_jobs': root_jobs | map('dict2items')
+                    | map('selectattr', 'key', 'in', ['id', 'name', 'deliver'])
+                    | map('items2dict') | list,
       'routes': ns.routes, 'profiles': ns.profiles} }}
