@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.88.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.87.0...v2.88.0) (2026-11-27)
+
+
+### Features
+
+* **agent:** zcode run j-2ca9b349b6db5fc5 ([b88b9d0](https://github.com/dryvist/ansible-proxmox-ai/commit/b88b9d0c1e880e6fc384f642f564a4c58b2edc4d))
+
+## [2.87.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.86.0...v2.87.0) (2026-11-27)
+
+
+### Features
+
+* **hermes_agent:** give locked tracker clerks their own memory banks ([#2930](https://github.com/dryvist/ansible-proxmox-ai/issues/2930)) ([6a9ff4e](https://github.com/dryvist/ansible-proxmox-ai/commit/6a9ff4e6d67957ea691ea3995d7aa2067b2f3fae))
+
 ## [2.86.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.85.0...v2.86.0) (2026-11-27)
 
 

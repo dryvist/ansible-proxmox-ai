@@ -94,13 +94,13 @@
 # (hermes_agent_memory_api_url), local_external mode. bank_id_template is
 # deliberately UNSET (matches the default profile), so a profile uses the static
 # bank_id written to its own hindsight/config.json: this agent's identity-derived
-# bank_id unless the profile entry sets `memory_bank_id`. Memory is explicitly NOT part of the
-# profile isolation boundary (verified against the pinned hindsight plugin
-# source: a blank bank_id_template falls back to static bank_id). Different
-# agents receive different static bank IDs through hermes_agent_id; profiles
-# without `memory_bank_id` share their agent's bank so daily-summary can read a
-# moved card's findings without losing continuity. A profile with
-# memory_enabled: false and locked profiles get no hindsight config.
+# bank_id unless the profile entry sets `memory_bank_id`. A blank
+# bank_id_template falls back to the static bank_id (verified against the pinned
+# Hindsight plugin source). Ordinary profiles without `memory_bank_id` share
+# their agent's bank so daily-summary can read a moved card's findings without
+# losing continuity. A locked profile gets memory only through its own declared
+# bank; its config uses context mode and adds no tools. A profile with
+# memory_enabled: false gets no Hindsight config.
 - name: "Ensure the hindsight config dir exists for profile {{ item.name }}"
   ansible.builtin.file:
     path: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/hindsight"
@@ -109,7 +109,7 @@
     group: "{{ hermes_agent_user }}"
     mode: "0750"
   when:
-    - not (item.locked | default(false) | bool)
+    - not (item.locked | default(false) | bool) or item.memory_bank_id is defined
     - hermes_agent_memory_provider == 'hindsight'
     - item.memory_enabled | default(true) | bool
 
@@ -122,7 +122,7 @@
       serves one bank per agent to every profile. Remove the profile's memory_bank_id or the gateway key.
     quiet: true
   when:
-    - not (item.locked | default(false) | bool)
+    - not (item.locked | default(false) | bool) or item.memory_bank_id is defined
     - hermes_agent_memory_provider == 'hindsight'
     - item.memory_enabled | default(true) | bool
 
@@ -135,8 +135,9 @@
     mode: "0640"
   vars:
     hermes_agent_profile_memory_bank_id: "{{ item.memory_bank_id | default(hermes_agent_memory_bank_id) }}"
+    hermes_agent_profile_locked: "{{ item.locked | default(false) | bool }}"
   when:
-    - not (item.locked | default(false) | bool)
+    - not (item.locked | default(false) | bool) or item.memory_bank_id is defined
     - hermes_agent_memory_provider == 'hindsight'
     - item.memory_enabled | default(true) | bool
 

@@ -23,6 +23,7 @@ HERMES = "hermes_agent_group"
 NOT_READ_BY_CRONS = [
     "apps", "ai-public", "ai-runner", "clickhouse", "clickhouse-wall", "llm-router-agent-keys",
     "agentgateway-agent-keys", "app-agent-vikunja-read", "app-agent-vikunja-write",
+    "app-agent-vikunja-clerk",
     "app-agent-zammad-write", "mcp-owner",
 ]
 
