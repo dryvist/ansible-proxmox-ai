@@ -156,3 +156,34 @@
                 ansible_failed_task.name
                 == 'Require a seeded locked profile key for each profile-held app-agent tier'
             fail_msg: The app-agent gate failed for a reason other than the missing profile key.
+
+    # A roster entry may share a tier's name while a locked profile holds the tier.
+    - name: Add an untrusted roster entry named after the profile-held write tier
+      ansible.builtin.set_fact:
+        ai_agents:
+          vikunja-write: {router_key_class: standard, trust_tier: untrusted}
+        openbao_secrets_by_domain: >-
+          {{ openbao_secrets_by_domain | combine({'llm-router-agent-keys':
+               {'vikunja_write_llm_router_key': 'fixture-vikunja-write-key'}}) }}
+      no_log: true
+
+    - name: Keep the tier with the locked profile and its server off the roster key
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _row.holder == 'profile'
+          - _row.enabled
+          - _roster_key.object_permission.mcp_servers == llm_router_mcp_default_object_permission.mcp_servers
+          - "'vikunja_write' not in _roster_key.object_permission.mcp_servers"
+        fail_msg: A roster entry named after a profile-held tier must not receive the tier's server.
+      vars:
+        llm_router_serve_roster_keys: true
+        _row: "{{ _llm_router_app_agent_matrix | selectattr('id', 'equalto', 'vikunja-write') | first }}"
+        _roster_key: "{{ _llm_router_agent_keys | selectattr('alias', 'equalto', 'vikunja-write') | first }}"
+      no_log: true
+
+    - name: Admit the profile-held write tier beside the untrusted same-named roster entry
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-app-agents.yml"
+      vars:
+        ai_callers: {hermes: {trust_tier: trusted}}
+        llm_router_app_agent_probe_vikunja_forbidden_project_id: ""
