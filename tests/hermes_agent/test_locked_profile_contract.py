@@ -42,6 +42,10 @@ def test_every_clerk_is_minimal_off_by_default_and_prompted(profile: dict) -> No
     assert profile["feature_gate"] == gate
     assert _group_vars_all()[gate] is False
 
+    if profile["name"].endswith("-clerk"):
+        # The prompt pack owns a tracker clerk's soul text and its tests.
+        assert profile["soul_standalone_file"] == f"{profile['name']}.soul.md"
+        return
     # Ansible's template lookup trims the newline after a block tag.
     env = Environment(loader=FileSystemLoader(ROLE_ROOT / "templates"), trim_blocks=True)
     prompt = env.get_template(profile["soul_standalone_file"]).render()
@@ -58,13 +62,22 @@ def test_the_clerk_set_is_the_declared_four() -> None:
     }
 
 
-def test_tracker_clerks_find_before_they_write() -> None:
-    env = Environment(loader=FileSystemLoader(ROLE_ROOT / "templates"), trim_blocks=True)
-    for profile in _locked():
-        if profile["name"].endswith("-clerk"):
-            prompt = env.get_template(profile["soul_standalone_file"]).render()
-            assert prompt.startswith(f"You are {profile['name']}, a narrow tracker agent.")
-            assert "\nRules:\n- Find before you write" in prompt
+def test_tracker_clerk_souls_are_verified_before_a_profile_uses_them() -> None:
+    defaults = _defaults()
+    assert re.fullmatch(r"[0-9a-f]{40}", defaults["hermes_agent_profile_soul_commit"])
+    assert re.fullmatch(r"[0-9a-f]{64}", defaults["hermes_agent_profile_soul_manifest_sha256"])
+    assert "{{ hermes_agent_profile_soul_commit }}" in defaults["hermes_agent_profile_soul_base"]
+
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/fetch_profile_souls.yml").read_text())
+    kinds = [next(key for key in task if key.startswith("ansible.builtin.")) for task in tasks]
+    assert kinds == ["ansible.builtin.set_fact", "ansible.builtin.uri", "ansible.builtin.assert", "ansible.builtin.set_fact"]
+    manifest_check, soul_check = tasks[2]["ansible.builtin.assert"]["that"]
+    assert "hash('sha256')" in manifest_check and "hermes_agent_profile_soul_manifest_sha256" in manifest_check
+    assert "map('hash', 'sha256')" in soul_check and "hermes_agent_profile_soul_pinned" in soul_check
+    assert "hermes_agent_profile_soul_content" in tasks[3]["ansible.builtin.set_fact"]
+
+    reconcile = (ROLE_ROOT / "tasks/skills_and_profiles.yml").read_text()
+    assert reconcile.index("file: fetch_profile_souls.yml") < reconcile.index("file: profiles.yml")
 
 
 def test_converge_agent_previews_and_never_checks_or_retries() -> None:
