@@ -86,7 +86,10 @@ def _base(job, identity, home, failure, owners, profiles, listing="", check_mode
         "hermes_agent_user": "hermes",
         "ansible_check_mode": check_mode,
         "ai_agent_owner": owners,
+        "hermes_agent_slack_status_channel": "",
+        "hermes_agent_cron_dm_pattern": DEFAULTS["hermes_agent_cron_dm_pattern"],
     }
+    context["hermes_agent_cron_dm_replacement"] = _value(DEFAULTS["hermes_agent_cron_dm_replacement"], context)
     context["hermes_agent_env_prefix"] = _value(DEFAULTS["hermes_agent_env_prefix"], context)
     for name in ("hermes_agent_digest_slack_channel", "hermes_agent_job_identities",
                  "hermes_agent_direct_job_wanted", "hermes_agent_slack_hermes_all_channel",

@@ -92,7 +92,10 @@ def _resolve_deliver(item: dict, channels: dict | None = None, digest_channel: s
     )
     env = Environment()
     env.tests["match"] = lambda v, p: re.match(p, str(v)) is not None
+    env.filters["regex_replace"] = lambda value, pattern, replacement="": re.sub(pattern, replacement, value)
     ctx = {
+        "hermes_agent_cron_dm_pattern": role_defaults(ROLE_ROOT)["hermes_agent_cron_dm_pattern"],
+        "hermes_agent_cron_dm_replacement": r"\1local",
         "item": item,
         "hermes_agent_digest_slack_channel": digest_channel,
         "hermes_agent_slack_profile_channels": channels or CHANNELS,
