@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.89.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.89.0...v2.89.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **llm_router:** a locked profile holds its tier over a same-named roster entry ([#2960](https://github.com/dryvist/ansible-proxmox-ai/issues/2960)) ([ce41201](https://github.com/dryvist/ansible-proxmox-ai/commit/ce41201bc60ab0b3e0b040b17f4ec1fb940e3834))
+
 ## [2.89.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.88.0...v2.89.0) (2026-11-27)
 
 
