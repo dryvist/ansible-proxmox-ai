@@ -63,9 +63,9 @@ profile.
 | `orchestrator` | Kanban decomposition and assignment | Vikunja + Docs MCP; follow-up card creation | Operational MCP servers and credentials |
 | `tracker-reporter` | Change-only task and incident summaries | Vikunja + router incident MCP; own bank | Kanban, env, skills, other MCP |
 | `vikunja-pm` | Task filing, updates, labels, relations and comments | Router Vikunja write tier (no delete); own bank | Kanban, env, skills, other MCP |
-| `youtrack-clerk` | Narrow YouTrack requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
-| `vikunja-clerk` | Narrow Vikunja task requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
-| `zammad-clerk` | Narrow Zammad ticket requests | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
+| `youtrack-clerk` | Narrow YouTrack requests | Router write tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
+| `vikunja-clerk` | Narrow Vikunja task requests | Router write tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
+| `zammad-clerk` | Narrow Zammad ticket requests | Router write tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
 | `semaphore-converge` | Previews and confirmed runs | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
 | `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |
 
@@ -76,7 +76,10 @@ Each clerk profile (`youtrack-clerk`, `vikunja-clerk`, `zammad-clerk`,
 `semaphore-converge`) and its router model exist only while its
 `llm_router_hermes_<name>_key_enabled` switch is on. Its own `.env` carries its API-server key, and the router serves it
 under the profile prefix with a separate bearer. A clerk uses the local review
-model, exposes one app-agent MCP server, and has built-in memory disabled.
+model, exposes one app-agent MCP server, and has built-in memory disabled. Each
+tracker clerk declares its own Hindsight bank with auto-retain and context mode;
+context mode adds no memory tools. The tracker clerks have no other memory, and
+`semaphore-converge` remains memory-free.
 The clerk's router key is the key that holds its tier: the router turns an
 app-agent tier on only when the tier's token is seeded and a roster entry or a
 locked profile holds a key for it. A seeded token that nothing holds stays off.
