@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.90.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.89.1...v2.90.0) (2026-11-27)
+
+
+### Features
+
+* **inventory:** enable the youtrack-clerk and zammad-clerk profiles and their router publications ([#2946](https://github.com/dryvist/ansible-proxmox-ai/issues/2946)) ([df68ed5](https://github.com/dryvist/ansible-proxmox-ai/commit/df68ed5be4fa75c9cafc13dcc3377d98bb05b89d))
+
 ## [2.89.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.89.0...v2.89.1) (2026-11-27)
 
 
