@@ -64,7 +64,7 @@ profile.
 | `tracker-reporter` | Change-only task and incident summaries | Vikunja + router incident MCP; own bank | Kanban, env, skills, other MCP |
 | `vikunja-pm` | Task filing, updates, labels, relations and comments | Router Vikunja write tier (no delete); own bank | Kanban, env, skills, other MCP |
 | `youtrack-clerk` | Narrow YouTrack requests | Router write tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
-| `vikunja-clerk` | Narrow Vikunja task requests | Router write tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
+| `vikunja-clerk` | Narrow Vikunja task requests | Router clerk tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
 | `zammad-clerk` | Narrow Zammad ticket requests | Router write tier; local model; own bank | Native toolsets, memory tools, skills, plugins, A2A, other MCP |
 | `semaphore-converge` | Previews and confirmed runs | One router write tier; local-only model | Native toolsets, memory, skills, plugins, A2A, other MCP |
 | `eval` | Synthetic-task evaluation | web, skills, todo, context_engine, session_search; local-only key | Memory, cron, Kanban, Slack, GitHub, MCP |

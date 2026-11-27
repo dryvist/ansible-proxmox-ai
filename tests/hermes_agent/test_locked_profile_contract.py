@@ -214,6 +214,14 @@ def test_app_agent_profile_branch_preserves_vikunja_output() -> None:
     assert expected in rendered
 
 
+def test_vikunja_clerk_reaches_only_its_own_router_tier() -> None:
+    profile = next(p for p in _locked() if p["name"] == "vikunja-clerk")
+    assert profile["mcp"] == ["vikunja_clerk"]
+    rendered = _render_locked_config(profile)
+    assert '      x-mcp-servers: "vikunja_clerk"\n' in rendered
+    assert "vikunja_write" not in rendered
+
+
 def _render_locked_config(profile: dict) -> str:
     defaults = _defaults()
     context = {
