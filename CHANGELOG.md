@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.98.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.97.0...v2.98.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_agent:** stop a converge when a managed profile file changed outside git ([#3006](https://github.com/dryvist/ansible-proxmox-ai/issues/3006)) ([eff75e7](https://github.com/dryvist/ansible-proxmox-ai/commit/eff75e75bcb17e99b5e06a147632b297a8cb6586))
+
 ## [2.97.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.96.0...v2.97.0) (2026-11-28)
 
 
