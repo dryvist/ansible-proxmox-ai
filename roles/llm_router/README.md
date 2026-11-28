@@ -78,11 +78,6 @@ for the backend map, routing behavior, and Pro6000 profile contract.
 Local Qwen3.8 and Flash-Next deployments send `enable_thinking: true` without
 an effort override, preserving each model's default depth (maximum for Qwen3.8).
 
-Vikunja's native MCP endpoint can be exposed through per-bot clerk tiers by
-setting `llm_router_hermes_vikunja_clerk_variants_enabled`; it defaults off.
-Each bot uses its own bearer, and the `untrusted` and `inbox` tiers can only
-create tasks.
-
 ## OpenRouter egress tier (optional, one provider key)
 
 Registry entries with `tier: openrouter` register OpenRouter-hosted models under
@@ -170,11 +165,6 @@ registry.
 Only an alias on a **servable** entry renders this way. An alias declared
 elsewhere — on an egress model, on a light-tier one — is a *role*, and roles
 live in the database instead. See below.
-
-The optional `llm_router_hermes_vikunja_clerk_variants_enabled` switch defaults
-to `false`. When enabled, caller keys receive role-specific Vikunja clerk
-models and per-key aliases; the shared workstation proxy stays inbox-scoped,
-and untrusted callers receive only the untrusted clerk variant.
 
 ## Roles: what lives in git, what lives in the database
 

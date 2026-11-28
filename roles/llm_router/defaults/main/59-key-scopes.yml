@@ -17,13 +17,6 @@ _llm_router_declared_virtual_keys: >-
   {%- set _caller_aliases = llm_router_hermes_clerk_caller_key_aliases -%}
   {%- set _policy = llm_router_vikunja_clerk_key_policy | default({}) -%}
   {%- set _policy_enabled = _policy.get('enabled', false) | bool -%}
-  {%- set _managed = namespace(models=(_policy.get('outside_trusted', {}).get('models', [])
-       + _policy.get('acceptance', {}).get('models', [])
-       + (_policy.get('acceptance', {}).get('aliases', {}).keys() | list)
-       + (_policy.get('default_aliases', {}).keys() | list))) -%}
-  {%- for _role in _policy.get('roles', {}).values() -%}
-  {%- set _managed.models = _managed.models + (_role.get('models', []) | list) -%}
-  {%- endfor -%}
   {%- set _declared = _llm_router_hermes_profile_keys + _llm_router_static_virtual_keys
        + _llm_router_target_virtual_keys
        + (_llm_router_workstation_virtual_keys
@@ -39,15 +32,13 @@ _llm_router_declared_virtual_keys: >-
   {%- if _policy_enabled and _policy_key -%}
   {%- set _models = key.models | default([]) | list -%}
   {%- if key.alias in _caller_aliases -%}
-  {%- set _models = _models + (_agent_models | reject('in', _managed.models) | list) -%}
+  {%- set _models = _models + (_agent_models | reject('in', _llm_router_vikunja_clerk_managed_models) | list) -%}
   {%- endif -%}
   {%- if _is_acceptance -%}
   {%- set _grant = _policy.acceptance -%}
   {%- set _aliases = _grant.aliases | default({}) -%}
   {%- else -%}
-  {# Match 56c/60 trust resolution: trust_caller (or alias), caller tier,
-     and the single-sourced trusted-tier set decide before the explicit map.
-     Public is a declared tier, but only the exact trusted tier receives a role. #}
+  {# Trust is resolved first, as in 56c and 60; only the trusted tier receives a role. #}
   {%- set _caller = key.trust_caller | default(key.alias) -%}
   {%- set _tier = (ai_callers | default({})).get(_caller, {}).get('trust_tier', '')
        | default(agent_callers_default_tier | default(''), true) -%}

@@ -111,6 +111,10 @@ def test_enabled_scope_projection_applies_trust_before_key_roles() -> None:
         "_llm_router_hermes_locked_profile_models": locked_models,
         "llm_router_hermes_clerk_caller_key_aliases": ["claude-code", "codex", "agy"],
         "llm_router_vikunja_clerk_key_policy": policy,
+        # The real role resolves this lazily; this one-pass render needs its value.
+        "_llm_router_vikunja_clerk_managed_models": yaml.safe_load(
+            render(ROUTER["_llm_router_vikunja_clerk_managed_models"], dict(ROUTER), lenient=True)
+        ),
         "_llm_router_trusted_caller_tiers": ["trusted"],
         "agent_callers_default_tier": "untrusted",
         "ai_callers": {
