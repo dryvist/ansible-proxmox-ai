@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.103.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.102.0...v2.103.0) (2026-11-28)
+
+
+### Features
+
+* **hermes:** enable the YouTrack and Zammad clerk profiles ([#3023](https://github.com/dryvist/ansible-proxmox-ai/issues/3023)) ([9d826f4](https://github.com/dryvist/ansible-proxmox-ai/commit/9d826f460f1ae7be3cea7ebc430a485dee769d7a))
+
 ## [2.102.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.101.0...v2.102.0) (2026-11-28)
 
 
