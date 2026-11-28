@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.103.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.3...v2.103.4) (2026-11-28)
+
+
+### Bug Fixes
+
+* **llm_router:** read the tool-server value of each tracker role tier ([#3043](https://github.com/dryvist/ansible-proxmox-ai/issues/3043)) ([5d3de79](https://github.com/dryvist/ansible-proxmox-ai/commit/5d3de797f454d0d97d370bda66aeb0b2aa958a03))
+
 ## [2.103.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.2...v2.103.3) (2026-11-28)
 
 
