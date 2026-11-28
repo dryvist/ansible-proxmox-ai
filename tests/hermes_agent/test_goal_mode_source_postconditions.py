@@ -55,7 +55,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
     # the behavior these retired patches used to add", not here.
     assert "WHERE id = ? AND status IN" in conditions
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
-    assert "status in (408, 429)" in conditions
+    assert "failure.verdict.status_code == 429 and failure.verdict.retryable" in conditions
     assert "for idx in range(end - 1, start - 1, -1):" in conditions
     assert "_cron_markup_guard(job, output_file," in conditions
     # A script-declared failure must reach the failure lane, not the runner's

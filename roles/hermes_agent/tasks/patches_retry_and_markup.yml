@@ -173,10 +173,15 @@
   notify: Restart hermes-gateway
 
 - name: Retry auxiliary rate limits through the bounded transient path
+  # Re-anchored for v0.23.4: the status rule moved into the error policy
+  # module, so the patch widens the retry gate's two call sites instead.
+  # The lookbehind keeps a patched call from matching again.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
-    regexp: 'return isinstance\(status, int\) and \(status == 408 or 500 <= status < 600\)'
-    replace: 'return isinstance(status, int) and (status in (408, 429) or 500 <= status < 600)'
+    regexp: '(?<!\()aux_errors\.same_provider_retry\(failure\.verdict\)'
+    replace: >-
+      (aux_errors.same_provider_retry(failure.verdict)
+      or (failure.verdict.status_code == 429 and failure.verdict.retryable))
   notify: Restart hermes-gateway
 
 # Re-anchored for v0.22.5: upstream's gate now also admits an explicit
