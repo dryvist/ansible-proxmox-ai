@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.95.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.95.0...v2.95.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **hermes_agent:** anchor the auxiliary rate-limit retry patch on the 0.23.4 retry gate ([#3000](https://github.com/dryvist/ansible-proxmox-ai/issues/3000)) ([eadd130](https://github.com/dryvist/ansible-proxmox-ai/commit/eadd1300c722b3c8a772873460f036e60bc95a99))
+
 ## [2.95.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.94.0...v2.95.0) (2026-11-28)
 
 
