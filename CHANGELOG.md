@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.92.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.91.0...v2.92.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_agent:** set a conventions-only retain rule and a two-tool list on each tracker bank ([#2980](https://github.com/dryvist/ansible-proxmox-ai/issues/2980)) ([53225b2](https://github.com/dryvist/ansible-proxmox-ai/commit/53225b223d573e88fcc0af48681b4c089653c8f8))
+
 ## [2.91.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.90.3...v2.91.0) (2026-11-28)
 
 
