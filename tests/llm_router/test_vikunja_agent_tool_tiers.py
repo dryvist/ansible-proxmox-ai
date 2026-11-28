@@ -132,7 +132,7 @@ def test_templates_render_one_gated_native_server() -> None:
     servers = yaml.safe_load(env.from_string(server_template).render(**context))["mcp_servers"]
     server = servers["vikunja_workstation"]
     assert server["url"] == f"os.environ/{row['url_env_key']}"
-    assert server["auth_type"] == "bearer"
+    assert server["auth_type"] == "bearer_token"
     assert server["auth_value"] == f"os.environ/{row['token_env_key']}"
 
     env_context = {
