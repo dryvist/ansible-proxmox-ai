@@ -82,9 +82,10 @@ def test_tracker_clerk_souls_are_verified_before_a_profile_uses_them() -> None:
     kept = tasks[-1]["ansible.builtin.set_fact"]
     assert "hermes_agent_profile_soul_content" in kept and "hermes_agent_soul_base" in kept
 
+    config = yaml.safe_load((ROLE_ROOT / "tasks/config_and_content.yml").read_text())
+    assert config[0]["ansible.builtin.import_tasks"] == "fetch_profile_souls.yml"
     main = (ROLE_ROOT / "tasks/main.yml").read_text()
-    assert main.index("import_tasks: fetch_profile_souls.yml") < main.index("import_tasks: config_and_content.yml")
-    assert main.index("import_tasks: fetch_profile_souls.yml") < main.index("import_tasks: skills_and_profiles.yml")
+    assert main.index("import_tasks: config_and_content.yml") < main.index("import_tasks: skills_and_profiles.yml")
 
 def test_converge_agent_previews_and_never_checks_or_retries() -> None:
     env = Environment(loader=FileSystemLoader(ROLE_ROOT / "templates"), trim_blocks=True)
