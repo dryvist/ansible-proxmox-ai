@@ -13,6 +13,21 @@
   register: hermes_agent_profile_script_homes
   check_mode: false
 
+- name: Read the installed cron jobs and desired-state markers once
+  ansible.builtin.include_tasks:
+    file: cron_reconcile_direct_batch.yml
+    apply:
+      tags: hermes_crons
+  tags: hermes_crons
+
+- name: Direct cron | Check scheduled jobs against source record
+  ansible.builtin.include_tasks:
+    file: cron_source_guard.yml
+    apply:
+      tags: hermes_crons
+  tags: hermes_crons
+  when: hermes_agent_source_guard_enabled | bool
+
 # Only an existing profile home gets a scripts directory: creating the home here
 # would mask a missing profile from the direct-batch preflight.
 - name: Create the scripts directory of each profile home that runs a script job
@@ -67,76 +82,12 @@
       its scheduled jobs may deliver to its main channel.
   when: not (hermes_agent_refuse_main_channel_targets | bool)
 
-- name: Read the installed cron jobs and desired-state markers once
+- name: Check Pepper's declared job ownership (inventory, stores, system crontab)
   ansible.builtin.include_tasks:
-    file: cron_reconcile_direct_batch.yml
+    file: cron_reconcile_pepper_ownership.yml
     apply:
       tags: hermes_crons
   tags: hermes_crons
-
-- name: Read Pepper complete native cron inventory
-  ansible.builtin.command:
-    argv:
-      - "{{ hermes_agent_venv_python }}"
-      - -c
-      - "import json; from cron.jobs import list_jobs; print(json.dumps(list_jobs(include_disabled=True)))"
-  args:
-    chdir: "{{ hermes_agent_install_dir }}"
-  environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_pepper_native_cron
-  changed_when: false
-  when: (hermes_agent_is_isolated | bool)
-
-- name: Find inherited Pepper profile cron stores
-  ansible.builtin.find:
-    paths: "{{ hermes_agent_hermes_home }}"
-    patterns: jobs.json
-    recurse: true
-  register: hermes_agent_pepper_cron_stores
-  when: (hermes_agent_is_isolated | bool)
-
-- name: Assert Pepper owns only its declared jobs
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - >-
-        hermes_agent_direct_cron_jobs_owned | map(attribute='name') | sort | list
-        == ['pepper-nightly-intake', 'pepper-weekly-digest']
-      - >-
-        (hermes_agent_pepper_native_cron.stdout | from_json)
-        | map(attribute='name') | difference(['pepper-nightly-intake', 'pepper-weekly-digest']) | length == 0
-      - >-
-        hermes_agent_pepper_cron_stores.files | map(attribute='path')
-        | difference([hermes_agent_hermes_home ~ '/cron/jobs.json']) | length == 0
-      - >-
-        hermes_agent_pepper_digest_deliver | length == 0
-        or (hermes_agent_pepper_digest_deliver in hermes_agent_pepper_digest_allowed_destinations
-            and (hermes_agent_pepper_digest_deliver == 'local'
-                 or (hermes_agent_slack_bot_token | length > 0
-                     and hermes_agent_slack_app_token | length > 0)))
-    fail_msg: Pepper has unmanaged jobs or an unavailable delivery target.
-  when: (hermes_agent_is_isolated | bool)
-
-- name: Read Pepper system crontab
-  ansible.builtin.command:
-    argv: [crontab, -l, -u, "{{ hermes_agent_user }}"]
-  register: hermes_agent_pepper_system_cron
-  changed_when: false
-  failed_when: hermes_agent_pepper_system_cron.rc not in [0, 1]
-  when: (hermes_agent_is_isolated | bool)
-
-- name: Reject inherited Pepper system crontab entries
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - >-
-        hermes_agent_pepper_system_cron.stdout_lines | default([])
-        | reject('match', '^\s*(#|$)') | list | length == 0
-    fail_msg: Pepper requires a fresh cron inventory.
-  when: (hermes_agent_is_isolated | bool)
 
 - name: Reconcile the agentic direct-deliver digest crons
   ansible.builtin.include_tasks:
@@ -212,9 +163,17 @@
       tags: hermes_crons
   tags: hermes_crons
 
-# Retire the hand-created LLM digest direct cron the script-fed digest replaces:
-# pause it (disable-don't-delete) so the two never double-post. `cron list` shows
-# only ENABLED jobs, so this is a clean no-op once the job is paused.
+# Source guard record: after the last direct-cron reconcile, re-read the
+# installed rows and record one entry per managed job actually installed
+# (store + name + sha256 of its stable row). The next converge's check phase
+# compares the live rows against this before writing anything.
+- name: Record the direct-cron source guard state
+  ansible.builtin.include_tasks:
+    file: cron_reconcile_source_guard_record.yml
+    apply:
+      tags: hermes_crons
+  tags: hermes_crons
+
 - name: List active Hermes crons (to retire the superseded LLM digests)
   ansible.builtin.command: "{{ hermes_agent_bin }} {{ hermes_agent_cli_profile_args | join(' ') }} cron list"
   environment:
@@ -281,6 +240,13 @@
         {{ hermes_agent_wired_trajectory_enabled | bool }}
 
 # Hourly failing-jobs rollup, delivered straight to the issues channel.
+- name: Check the failure_deliver coverage gate
+  ansible.builtin.include_tasks:
+    file: cron_reconcile_failure_deliver_coverage.yml
+    apply:
+      tags: hermes_crons
+  tags: hermes_crons
+
 - name: Reconcile the cron failure rollup cron
   ansible.builtin.include_tasks:
     file: reconcile_enqueuer_cron.yml
