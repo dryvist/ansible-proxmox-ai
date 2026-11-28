@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.95.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.94.0...v2.95.0) (2026-11-28)
+
+
+### Features
+
+* **llm_router:** give each caller key its own tracker clerk variant and tool tier ([#2991](https://github.com/dryvist/ansible-proxmox-ai/issues/2991)) ([c3d7a1f](https://github.com/dryvist/ansible-proxmox-ai/commit/c3d7a1fdf65ecb76c0241dd6e5a018206c1eacb0))
+
 ## [2.94.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.93.0...v2.94.0) (2026-11-28)
 
 
