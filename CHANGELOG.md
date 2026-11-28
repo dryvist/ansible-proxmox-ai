@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.99.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.98.0...v2.99.0) (2026-11-28)
+
+
+### Features
+
+* **inventory:** enable the tracker agent profiles and per-caller clerk aliases ([#3013](https://github.com/dryvist/ansible-proxmox-ai/issues/3013)) ([91ca4dd](https://github.com/dryvist/ansible-proxmox-ai/commit/91ca4dd61b7acc6097a073066d76dc2f3df5a592))
+
 ## [2.98.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.97.0...v2.98.0) (2026-11-28)
 
 
