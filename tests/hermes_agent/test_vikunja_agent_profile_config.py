@@ -73,10 +73,14 @@ def test_profile_tool_list_uses_manifest_and_preserves_no_field_behavior() -> No
     }
     with_tools = _mcp_fragment(
         profile,
-        {"tools": ["read_task"], "write_tools": ["create_task"]},
+        {"tools": ["read_task", "create_task"], "write_tools": ["create_task"]},
     )
     server = with_tools["mcp_servers"]["vikunja_workstation"]
-    assert server["tools"]["include"] == ["read_task", "create_task"]
+    # The router's /mcp endpoint exposes each tool as `<server id>-<tool>`.
+    assert server["tools"]["include"] == [
+        "vikunja_workstation-read_task",
+        "vikunja_workstation-create_task",
+    ]
 
     without_tools = _mcp_fragment(profile, {"sha256": "fixture-digest"})
     server = without_tools["mcp_servers"]["vikunja_workstation"]
