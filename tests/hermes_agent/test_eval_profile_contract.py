@@ -108,10 +108,10 @@ def test_eval_memory_stays_off_whatever_the_fleet_provider_is() -> None:
         assert parsed["memory"]["user_profile_enabled"] is False
 
 
-def test_other_profiles_keep_fleet_memory_on() -> None:
+def test_a_profile_with_a_bank_keeps_the_fleet_provider_and_no_builtin_switches() -> None:
     splunk = next(profile for profile in _profiles() if profile["name"] == "splunk-admin")
     parsed = _render_config(splunk, "hindsight")
 
     assert parsed["memory"]["provider"] == "hindsight"
-    assert parsed["memory"]["memory_enabled"] is True
-    assert parsed["memory"]["user_profile_enabled"] is True
+    assert parsed["memory"]["memory_enabled"] is False
+    assert parsed["memory"]["user_profile_enabled"] is False

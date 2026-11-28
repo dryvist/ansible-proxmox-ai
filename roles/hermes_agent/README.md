@@ -58,6 +58,20 @@ See also [docs/HERMES_OPS.md](../../docs/HERMES_OPS.md) for the operations
 runbook (cron fleet, memory, credentials, serving self-heal) — this README
 covers the role's configuration surface; that doc covers running it.
 
+## Built-in memory is off
+
+Every config this role renders turns Hermes's built-in file memory off —
+`memory_enabled: false` and `user_profile_enabled: false` in all branches of
+`config.yaml.j2` and `config-profile.yaml.j2` — so memory comes only from the
+external memory service, and only for a profile that declares a
+`memory_bank_id` (a profile without one renders `provider: builtin`, inert
+with both switches off; a `memory_enabled` field on a profile entry no longer
+changes this). A local `MEMORY.md`/`USER.md` that an older deploy left in a
+memory folder (`HERMES_HOME` for the default profile, `HERMES_HOME/profiles/<name>/`
+for a named one) moves to `HERMES_HOME/retired-memory/<profile>/<file>.<UTC date>`
+on converge: the move is idempotent, never deletes, appends `-1`, `-2`, ... on a
+name collision, and check mode moves nothing.
+
 ## Slack delivery
 
 | Destination | Messages |

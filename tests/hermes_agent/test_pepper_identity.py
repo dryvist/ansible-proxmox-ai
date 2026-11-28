@@ -184,8 +184,8 @@ def test_rendered_pepper_capabilities_and_existing_identity_behavior(identity):
     else:
         assert provider == 'hindsight'
         assert config['memory']['provider'] == 'hindsight'
-        assert config['memory']['memory_enabled'] is True
-        assert config['memory']['user_profile_enabled'] is True
+        assert config['memory']['memory_enabled'] is False
+        assert config['memory']['user_profile_enabled'] is False
         assert config['plugins']['enabled'] == [p['name'] for p in defaults['hermes_agent_plugins_core']]
         assert config['agent']['disabled_toolsets'] == defaults['hermes_agent_disabled_toolsets']
         assert config['platform_toolsets'] == {

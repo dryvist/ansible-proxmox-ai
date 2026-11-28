@@ -1,0 +1,81 @@
+---
+# Built-in memory is off in every config this role renders (config.yaml.j2 /
+# config-profile.yaml.j2 both render memory_enabled: false and
+# user_profile_enabled: false), so Hermes no longer reads or writes its local
+# MEMORY.md/USER.md. Whatever an older deploy let the agent accumulate there is
+# still the agent's own writing: this file moves it into
+# retired-memory/<profile>/ and never deletes it. Included once for the default
+# profile (config_and_content.yml, HERMES_HOME itself) and once per named
+# profile (profiles.yml, HERMES_HOME/profiles/<name>/) with the two vars below.
+#
+# A profile's memory folder is where upstream keeps those files for it: the
+# default profile's USER.md is seeded at HERMES_HOME/USER.md and "the whole
+# HERMES_HOME is the durable surface" (defaults/main/70-memory.yml); a named
+# profile is a fully independent HERMES_HOME directory under profiles/<name>/
+# (hermes_agent_profiles in defaults/main/150-fleet-health-profiles.yml).
+#
+# Idempotent: on the second run stat finds nothing, so every later task skips.
+# Check mode moves nothing (the move task refuses check mode) while the
+# directory task still reports the folder a run would create.
+
+- name: Find the local memory files for {{ hermes_agent_retire_memory_label }}
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_retire_memory_dir }}/{{ hermes_agent_retire_memory_file }}"
+  loop:
+    - MEMORY.md
+    - USER.md
+  register: hermes_agent_retire_memory_stat
+  loop_control:
+    loop_var: hermes_agent_retire_memory_file
+    label: "{{ hermes_agent_retire_memory_file }}"
+
+- name: Set the memory files this converge would retire
+  ansible.builtin.set_fact:
+    hermes_agent_retire_memory_found: >-
+      {{ hermes_agent_retire_memory_stat.results
+         | selectattr('stat.exists', 'equalto', true)
+         | map(attribute='hermes_agent_retire_memory_file') | list }}
+
+- name: Ensure the retired-memory folder exists for {{ hermes_agent_retire_memory_label }}
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/retired-memory/{{ hermes_agent_retire_memory_label }}"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  when: hermes_agent_retire_memory_found | length > 0
+
+- name: List the memory copies already retired for {{ hermes_agent_retire_memory_label }}
+  ansible.builtin.find:
+    paths: "{{ hermes_agent_hermes_home }}/retired-memory/{{ hermes_agent_retire_memory_label }}"
+    patterns: "{{ hermes_agent_retire_memory_found | map('regex_replace', '^(.+)$', '\\1.*') | list }}"
+  register: hermes_agent_retired_memory_copies
+  when: hermes_agent_retire_memory_found | length > 0
+
+- name: Move each local memory file aside under a dated name nothing retired today collides with
+  ansible.builtin.command:
+    argv:
+      - mv
+      - --no-target-directory
+      - "{{ hermes_agent_retire_memory_dir }}/{{ hermes_agent_retire_memory_file }}"
+      - >-
+        {{ hermes_agent_hermes_home }}/retired-memory/{{ hermes_agent_retire_memory_label }}/{{
+        hermes_agent_retire_memory_target_name }}
+    removes: "{{ hermes_agent_retire_memory_dir }}/{{ hermes_agent_retire_memory_file }}"
+  vars:
+    hermes_agent_retired_memory_namesakes: >-
+      {{ hermes_agent_retired_memory_copies.files | default([])
+         | map(attribute='path') | map('basename')
+         | select('match', (hermes_agent_retire_memory_file | regex_escape) ~ '\\.') | list }}
+    # The names already retired today for this file are exactly
+    # <file>.<date>, <file>.<date>-1, ..., <file>.<date>-(n-1), so the next
+    # free name appends -n (nothing, when today's first copy retires).
+    hermes_agent_retire_memory_target_name: >-
+      {{ hermes_agent_retire_memory_file }}.{{ now(utc=true, fmt='%Y%m%d') }}{{
+      ('-' ~ hermes_agent_retired_memory_namesakes | length)
+      if hermes_agent_retired_memory_namesakes | length > 0 else '' }}
+  loop: "{{ hermes_agent_retire_memory_found }}"
+  loop_control:
+    loop_var: hermes_agent_retire_memory_file
+    label: "{{ hermes_agent_retire_memory_file }}"
+  when: not ansible_check_mode
