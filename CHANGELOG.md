@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.97.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.96.0...v2.97.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_agent:** declare the three tracker agent schedules with catalog prompts at an hourly watch cadence ([#3005](https://github.com/dryvist/ansible-proxmox-ai/issues/3005)) ([3ba9b0f](https://github.com/dryvist/ansible-proxmox-ai/commit/3ba9b0f08b6fbbcb905dfa4b6625f74225ce4906))
+
 ## [2.96.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.95.1...v2.96.0) (2026-11-28)
 
 
