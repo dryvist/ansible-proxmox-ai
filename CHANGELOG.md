@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.103.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.2...v2.103.3) (2026-11-28)
+
+
+### Bug Fixes
+
+* **llm_router:** render the bearer auth type the router accepts for HTTP tool servers ([#3040](https://github.com/dryvist/ansible-proxmox-ai/issues/3040)) ([0cc2724](https://github.com/dryvist/ansible-proxmox-ai/commit/0cc27246d56e47516ab70c7a64dc9471517b6209))
+
 ## [2.103.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.1...v2.103.2) (2026-11-28)
 
 
