@@ -62,7 +62,7 @@ def test_clickhouse_inventory_contract_uses_published_ports_and_guest_tag():
     assert group_vars["clickhouse_docker_timezone"] == "UTC"
     assert group_vars["clickhouse_docker_database"] == "default"
     assert group_vars["clickhouse_docker_app_user"] == "langfuse"
-    assert defaults["clickhouse_docker_version"] == "25.12"
+    assert defaults["clickhouse_docker_version"] == "26.7"
     assert defaults["clickhouse_docker_prometheus_port"].endswith("default(9363) }}")
     assert "clickhouse_docker_app_grants" not in defaults
 

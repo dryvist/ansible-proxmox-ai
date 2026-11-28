@@ -37,7 +37,7 @@ def test_disabling_collector_keeps_database_service_identical():
     assert enabled["services"]["clickhouse"] == disabled["services"]["clickhouse"]
     database = disabled["services"]["clickhouse"]
     assert database["environment"]["CLICKHOUSE_PASSWORD"] == "fixture-not-a-secret"
-    assert database["image"] == "clickhouse/clickhouse-server:25.12"
+    assert database["image"] == "clickhouse/clickhouse-server:26.7"
     assert database["ports"] == ["18123:8123", "19000:9000", "19363:19363"]
 
 
