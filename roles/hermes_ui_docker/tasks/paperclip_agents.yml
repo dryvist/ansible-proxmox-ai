@@ -1,0 +1,135 @@
+---
+- name: Read fleet board companies
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}/api/companies"
+    method: GET
+    headers:
+      Cookie: "{{ hermes_ui_docker_paperclip_cookie }}"
+    status_code: 200
+  register: hermes_ui_docker_paperclip_company_response
+  changed_when: false
+  no_log: true
+
+- name: Select the declared fleet board company
+  ansible.builtin.set_fact:
+    hermes_ui_docker_paperclip_company_rows: >-
+      {{ hermes_ui_docker_paperclip_company_response.json
+         | selectattr('name', 'equalto', hermes_ui_docker_paperclip_company_name)
+         | list }}
+
+- name: Refuse duplicate fleet board companies
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_ui_docker_paperclip_company_rows | length <= 1
+    fail_msg: The declared fleet board company has duplicate rows; resolve them outside this converge.
+
+- name: Create the declared fleet board company
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}/api/companies"
+    method: POST
+    body_format: json
+    body:
+      name: "{{ hermes_ui_docker_paperclip_company_name }}"
+    headers:
+      Origin: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}"
+      Cookie: "{{ hermes_ui_docker_paperclip_cookie }}"
+    status_code: [200, 201]
+  register: hermes_ui_docker_paperclip_company_create
+  when: hermes_ui_docker_paperclip_company_rows | length == 0
+  no_log: true
+
+- name: Keep the declared fleet board company id
+  ansible.builtin.set_fact:
+    hermes_ui_docker_paperclip_company_id: >-
+      {{ hermes_ui_docker_paperclip_company_create.json.id
+         if hermes_ui_docker_paperclip_company_rows | length == 0
+         else hermes_ui_docker_paperclip_company_rows[0].id }}
+
+- name: Read agents for the declared fleet board company
+  ansible.builtin.uri:
+    url: >-
+      {{ 'http://127.0.0.1:' ~ hermes_ui_docker_paperclip_port ~ '/api/companies/'
+         ~ hermes_ui_docker_paperclip_company_id ~ '/agents' }}
+    method: GET
+    headers:
+      Cookie: "{{ hermes_ui_docker_paperclip_cookie }}"
+    status_code: 200
+  register: hermes_ui_docker_paperclip_agents_response
+  changed_when: false
+  no_log: true
+
+- name: Require unique existing fleet board agent names
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (hermes_ui_docker_paperclip_agents_response.json
+        | selectattr('name', 'equalto', item.name) | list | length) <= 1
+    fail_msg: >-
+      Fleet board agent {{ item.name }} has duplicate rows; resolve them outside this converge.
+  loop: "{{ hermes_ui_docker_paperclip_agents }}"
+
+- name: Compare existing fleet board agents with git
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_ui_docker_existing_agent.title | default('') == item.title
+      - hermes_ui_docker_existing_agent.adapterType | default('') == 'hermes_gateway'
+      - >-
+        (hermes_ui_docker_existing_agent.adapterConfig | default({})).apiBaseUrl | default('')
+        == hermes_ui_docker_paperclip_hermes_api_base_url ~ item.profile_path
+    fail_msg: >-
+      Fleet board agent {{ item.name }} fields title, adapterType, and
+      adapterConfig.apiBaseUrl were changed outside git.
+  vars:
+    hermes_ui_docker_existing_agent: >-
+      {{ hermes_ui_docker_paperclip_agents_response.json
+         | selectattr('name', 'equalto', item.name) | list | first }}
+  loop: "{{ hermes_ui_docker_paperclip_agents }}"
+  when: >-
+    hermes_ui_docker_paperclip_agents_response.json
+    | selectattr('name', 'equalto', item.name) | list | length == 1
+
+- name: Require each fleet board agent profile API key
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (bao_apps_secrets | default({})).get(
+        'hermes_' ~ (item.name | replace('-', '_')) ~ '_api_server_key', '')
+        | string | length > 0
+    fail_msg: >-
+      Fleet board agent {{ item.name }} requires its own profile API server key.
+  loop: "{{ hermes_ui_docker_paperclip_agents }}"
+  when: >-
+    hermes_ui_docker_paperclip_agents_response.json
+    | selectattr('name', 'equalto', item.name) | list | length == 0
+  no_log: true
+
+- name: Register missing fleet board agent {{ item.name }}
+  ansible.builtin.uri:
+    url: >-
+      {{ 'http://127.0.0.1:' ~ hermes_ui_docker_paperclip_port ~ '/api/companies/'
+         ~ hermes_ui_docker_paperclip_company_id ~ '/agents' }}
+    method: POST
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      title: "{{ item.title }}"
+      role: general
+      adapterType: hermes_gateway
+      adapterConfig:
+        apiBaseUrl: "{{ hermes_ui_docker_paperclip_hermes_api_base_url }}{{ item.profile_path }}"
+        apiKey: >-
+          {{ (bao_apps_secrets | default({})).get(
+               'hermes_' ~ (item.name | replace('-', '_')) ~ '_api_server_key', '') }}
+    headers:
+      Origin: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}"
+      Cookie: "{{ hermes_ui_docker_paperclip_cookie }}"
+    status_code: [200, 201]
+  loop: "{{ hermes_ui_docker_paperclip_agents }}"
+  when: >-
+    hermes_ui_docker_paperclip_agents_response.json
+    | selectattr('name', 'equalto', item.name) | list | length == 0
+  no_log: true
