@@ -42,7 +42,7 @@ def _mcp_fragment(profile: dict, manifest_entry: dict) -> dict:
     return yaml.safe_load(rendered) or {}
 
 
-def _render_profile(profile: dict, manifest_by_soul: dict | None = None) -> str:
+def _render_profile(profile: dict, manifest_by_soul: dict | None = None, **extra: object) -> str:
     defaults = _defaults()
     context = {
         **defaults,
@@ -58,6 +58,7 @@ def _render_profile(profile: dict, manifest_by_soul: dict | None = None) -> str:
         "hermes_agent_crawl4ai_mcp_enabled": False,
         "hermes_agent_router_zammad_mcp_enabled": True,
         "hermes_agent_langfuse_enabled": False,
+        **extra,
     }
     return _jinja_env().get_template("config-profile.yaml.j2").render(**context)
 
@@ -96,6 +97,25 @@ def test_locked_profile_role_facts_render_as_one_system_prompt_string() -> None:
     without_facts = dict(profile)
     without_facts.pop("role_facts")
     rendered = yaml.safe_load(_render_profile(without_facts))
+    assert "system_prompt" not in rendered["agent"]
+
+
+def test_role_facts_come_from_the_run_time_map_by_profile_name() -> None:
+    profile = {
+        "name": "vikunja-triage",
+        "description": "fixture",
+        "locked": True,
+        "mcp": ["vikunja_triage"],
+    }
+    facts = {"vikunja-triage": "Your inbox project is Fixture inbox.", "other": "Not yours."}
+    rendered = yaml.safe_load(_render_profile(profile, hermes_agent_profile_role_facts=facts))
+    assert rendered["agent"]["system_prompt"] == facts["vikunja-triage"]
+
+    own = dict(profile, role_facts="The row's own facts.")
+    rendered = yaml.safe_load(_render_profile(own, hermes_agent_profile_role_facts=facts))
+    assert rendered["agent"]["system_prompt"] == "The row's own facts."
+
+    rendered = yaml.safe_load(_render_profile(dict(profile, locked=False), hermes_agent_profile_role_facts=facts))
     assert "system_prompt" not in rendered["agent"]
 
 
