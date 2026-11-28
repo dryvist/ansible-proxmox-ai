@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
+import jinja2
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -132,3 +134,19 @@ def test_enabled_scope_projection_applies_trust_before_key_roles() -> None:
     assert by_alias["codex"]["aliases"] == policy["outside_trusted"]["aliases"]
     assert by_alias["agy"]["models"] == policy["roles"]["inbox"]["models"]
     assert by_alias["agy"]["aliases"] == {}
+
+
+def test_default_alias_renders_outside_the_registry_alias_map() -> None:
+    """Registry asserts accept only served models, and the public clerk name targets an agent profile model."""
+    role = REPO_ROOT / "roles" / "llm_router"
+    assert "vikunja_clerk_key_policy" not in (role / "defaults/main/50-direct-routes.yml").read_text()
+    template = (role / "templates/config.yaml.j2").read_text()
+    block = template[template.index("  model_group_alias:") : template.index("{% if _hermes_default_fallback_chain")]
+    env = jinja2.Environment(trim_blocks=True, autoescape=False)
+    env.filters.update(to_json=json.dumps, bool=bool)
+    for enabled, extra in ((True, _policy()["default_aliases"]), (False, {})):
+        rendered = env.from_string(block).render(
+            llm_router_model_group_aliases={"default": "medium"},
+            llm_router_vikunja_clerk_key_policy=dict(_policy(), enabled=enabled),
+        )
+        assert yaml.safe_load(rendered)["model_group_alias"] == {"default": "medium", **extra}
