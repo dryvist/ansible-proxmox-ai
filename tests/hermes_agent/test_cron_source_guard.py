@@ -97,7 +97,8 @@ def test_checksum_contains_only_the_twelve_stable_installed_row_keys() -> None:
     pairs = re.findall(r"'([a-z_]+)': row\.get\('([a-z_]+)'\)", payload)
     assert [key for key, _ in pairs] == list(CHECKSUM_KEYS)
     assert all(key == value for key, value in pairs)
-    assert all(key not in payload for key in RUNTIME_REWRITTEN_KEYS)
+    # Quoted, so `enabled` does not match inside `enabled_toolsets`.
+    assert all(f"'{key}'" not in payload for key in RUNTIME_REWRITTEN_KEYS)
 
 
 def test_drift_failure_precedes_the_first_reconcile_write() -> None:
