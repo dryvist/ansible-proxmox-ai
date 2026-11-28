@@ -6,6 +6,8 @@ from typing import Any
 import yaml
 from test_profile_contract import ROLE_ROOT, _defaults, _jinja_env, _profiles
 
+SOUL_BASE = "Verified shared base."
+
 
 def test_profile_soul_addendum_sources_are_declared_in_profile_data() -> None:
     profiles = {profile["name"]: profile for profile in _profiles()}
@@ -32,7 +34,7 @@ def test_tracker_clerk_soul_is_the_verified_prompt_pack_text(tmp_path: Path) -> 
         hermes_agent_profile_soul_content={"vikunja-clerk.soul.md": "Verified pack soul."},
     )
 
-    assert rendered == "Verified pack soul."
+    assert rendered == f"{SOUL_BASE}\n\nVerified pack soul."
 
 
 def test_bundle_profile_soul_is_bundle_base_plus_bundle_addendum(tmp_path: Path) -> None:
@@ -41,7 +43,9 @@ def test_bundle_profile_soul_is_bundle_base_plus_bundle_addendum(tmp_path: Path)
 
     rendered = _render_profile_soul(profile, bundle_path)
 
-    assert rendered == "Shared bundle SOUL.\n\nGitHub maintenance bundle addendum."
+    assert rendered == (
+        f"{SOUL_BASE}\n\nShared bundle SOUL.\n\nGitHub maintenance bundle addendum."
+    )
 
 
 def test_orchestrator_soul_includes_local_addendum_and_bundle_lifecycle(tmp_path: Path) -> None:
@@ -58,7 +62,7 @@ def test_orchestrator_soul_includes_local_addendum_and_bundle_lifecycle(tmp_path
     )
 
     assert rendered == (
-        "Shared bundle SOUL.\n\n"
+        f"{SOUL_BASE}\n\nShared bundle SOUL.\n\n"
         f"{orchestrator_addendum}\n\n"
         "Kanban lifecycle bundle addendum."
     )
@@ -91,7 +95,7 @@ def test_only_orchestrator_soul_contains_bundle_lifecycle(tmp_path: Path) -> Non
 def _fake_soul_bundle(bundle_path: Path) -> Path:
     profiles_path = bundle_path / "soul" / "profiles"
     profiles_path.mkdir(parents=True)
-    (bundle_path / "SOUL.md").write_text("Shared bundle SOUL.")
+    (bundle_path / "SOUL.md").write_text(f"{SOUL_BASE}\n\nShared bundle SOUL.")
     (profiles_path / "github-maint.md").write_text("GitHub maintenance bundle addendum.")
     (profiles_path / "homelab-admin.md").write_text("Homelab admin bundle addendum.")
     (profiles_path / "splunk-admin.md").write_text("Splunk admin bundle addendum.")
@@ -107,6 +111,7 @@ def _render_profile_soul(profile: dict[str, Any], bundle_path: Path, **extra: An
         "item": profile,
         "role_path": str(ROLE_ROOT),
         "hermes_agent_bundle_path": str(bundle_path),
+        "hermes_agent_soul_base": SOUL_BASE,
         "hermes_agent_kanban_eligible_label": _defaults()[
             "hermes_agent_kanban_eligible_label"
         ],
@@ -124,5 +129,10 @@ def _render_profile_soul(profile: dict[str, Any], bundle_path: Path, **extra: An
     env.globals["lookup"] = lookup
     tasks = yaml.safe_load((ROLE_ROOT / "tasks" / "profiles.yml").read_text())
     task = next(task for task in tasks if task["name"].startswith("Deploy composed SOUL.md"))
+    for name, value in task.get("vars", {}).items():
+        context[name] = env.from_string(value).render(**context)
+    context["hermes_agent_soul_composition"] = env.from_string(
+        context["hermes_agent_soul_composition"]
+    ).render(**context)
     content = task["ansible.builtin.copy"]["content"]
     return env.from_string(content).render(**context)

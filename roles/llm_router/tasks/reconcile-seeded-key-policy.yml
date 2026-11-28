@@ -18,7 +18,10 @@
 #
 # In rebuild mode routes are replaced outright with the seed value, and only
 # for a key that declares allowed_routes at all. Object permissions are always
-# replaced with the seeded value.
+# replaced with the seeded value. A seed entry that declares an `aliases` map
+# (requested model name -> model name) has that map replaced in every mode;
+# an empty map clears it, and entries without the field leave the live map
+# untouched.
 #
 # Computed as one list of {alias, body} entries so a key needing a change gets
 # exactly one /key/update call carrying its changed policy fields — the diff
@@ -139,14 +142,25 @@
             != (_passthrough_target.allowed_passthrough_routes | sort)) -%}
       {%- set _sensitivity_changed = (_live_tags | sort) != (_desired_tags | sort) -%}
       {%- set _permission_changed = _live_permission != _permission_target -%}
+      {%- set _aliases_changed = false -%}
+      {%- if _k.aliases is defined -%}
+      {%- set _live_aliases = (llm_router_existing_keys.json['keys'] | default([])
+              | selectattr('key_alias', 'equalto', _k.alias)
+              | map(attribute='aliases', default={}) | first | default({}, true)) -%}
+      {%- set _aliases_changed = _live_aliases != _k.aliases -%}
+      {%- endif -%}
       {%- set _rebuild_fields_changed = (_models_changed or _routes_changed or _metadata_changed) -%}
       {%- if _permission_changed or _trace_changed or _sensitivity_changed or _passthrough_changed or _team_changed
+            or _aliases_changed
             or (_authoritative and _models_changed)
             or _router_settings_changed
             or (llm_router_seed_mode == 'rebuild' and _rebuild_fields_changed) -%}
       {%- set _body = {'key': _k.value, 'object_permission': _permission_target} -%}
       {%- if _team_changed -%}
       {%- set _body = _body | combine({'team_id': _k.team_id}) -%}
+      {%- endif -%}
+      {%- if _aliases_changed -%}
+      {%- set _body = _body | combine({'aliases': _k.aliases}) -%}
       {%- endif -%}
       {%- if _router_settings_changed -%}
       {%- set _body = _body | combine({'router_settings': _router_settings_target}) -%}
