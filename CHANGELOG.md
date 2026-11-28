@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.103.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.4...v2.103.5) (2026-11-28)
+
+
+### Bug Fixes
+
+* **llm_router:** native tracker tool address and per-bot tool rows ([#3046](https://github.com/dryvist/ansible-proxmox-ai/issues/3046)) ([e16552b](https://github.com/dryvist/ansible-proxmox-ai/commit/e16552b93c7a0c77b122ccb4871d69f5b2cffadb))
+
 ## [2.103.4](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.3...v2.103.4) (2026-11-28)
 
 
