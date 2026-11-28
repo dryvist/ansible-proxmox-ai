@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.96.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.95.1...v2.96.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_agent:** declare one tracker clerk profile per calling role and the triage, nightly and windows profiles ([#3004](https://github.com/dryvist/ansible-proxmox-ai/issues/3004)) ([a3a5c38](https://github.com/dryvist/ansible-proxmox-ai/commit/a3a5c38dcc4785ed3fefdcf47f62788f8aa0c8fe))
+
 ## [2.95.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.95.0...v2.95.1) (2026-11-28)
 
 
