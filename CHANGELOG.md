@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.103.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.0...v2.103.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **llm_router:** render the clerk default alias outside the registry alias map ([#3034](https://github.com/dryvist/ansible-proxmox-ai/issues/3034)) ([5f19fa3](https://github.com/dryvist/ansible-proxmox-ai/commit/5f19fa348ad2eb32da3b0ddf5402b4051564fea5))
+
+## [2.103.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.102.0...v2.103.0) (2026-11-28)
+
+
+### Features
+
+* **hermes:** enable the YouTrack and Zammad clerk profiles ([#3023](https://github.com/dryvist/ansible-proxmox-ai/issues/3023)) ([9d826f4](https://github.com/dryvist/ansible-proxmox-ai/commit/9d826f460f1ae7be3cea7ebc430a485dee769d7a))
+
+## [2.102.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.101.0...v2.102.0) (2026-11-28)
+
+
+### Features
+
+* **llm_router:** check tracker agent caller boundaries live ([#3018](https://github.com/dryvist/ansible-proxmox-ai/issues/3018)) ([d2d654e](https://github.com/dryvist/ansible-proxmox-ai/commit/d2d654e11ac5d8d8f9c81bc5dec9990d87c598af))
+
+## [2.101.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.100.0...v2.101.0) (2026-11-28)
+
+
+### Features
+
+* **hermes:** supply locked-profile role facts from the run environment ([#3025](https://github.com/dryvist/ansible-proxmox-ai/issues/3025)) ([1b6a2c9](https://github.com/dryvist/ansible-proxmox-ai/commit/1b6a2c99286289b6fc5ba25c33c58aa1c70b027c))
+
+## [2.100.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.99.0...v2.100.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_agent:** give the trusted tracker profiles their memory banks ([#3009](https://github.com/dryvist/ansible-proxmox-ai/issues/3009)) ([b55cd37](https://github.com/dryvist/ansible-proxmox-ai/commit/b55cd3787aa9471f1215baf467815abff25851f9))
+
+## [2.99.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.98.0...v2.99.0) (2026-11-28)
+
+
+### Features
+
+* **inventory:** enable the tracker agent profiles and per-caller clerk aliases ([#3013](https://github.com/dryvist/ansible-proxmox-ai/issues/3013)) ([91ca4dd](https://github.com/dryvist/ansible-proxmox-ai/commit/91ca4dd61b7acc6097a073066d76dc2f3df5a592))
+
 ## [2.98.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.97.0...v2.98.0) (2026-11-28)
 
 
