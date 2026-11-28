@@ -1,0 +1,128 @@
+---
+- name: Read the prior source guard record
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_managed_cron_state_dir }}/source-guard.json"
+  register: _hermes_agent_source_guard_record_stat
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Slurp the prior source guard record
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_managed_cron_state_dir }}/source-guard.json"
+  register: _hermes_agent_source_guard_record_body
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - _hermes_agent_source_guard_record_stat.stat.exists
+
+- name: Load recorded file checksums without retaining file content
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_record: >-
+      {{ (_hermes_agent_source_guard_record_body.content | b64decode | from_json)
+         if _hermes_agent_source_guard_record_body.content is defined else {'files': []} }}
+    _hermes_agent_source_guard_drift: "{{ _hermes_agent_source_guard_drift | default([]) }}"
+  no_log: true
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Load current Hermes-owned config values for a source preview
+  ansible.builtin.include_tasks: config_app_state.yml
+  vars:
+    hermes_agent_config_file: "{{ hermes_agent_source_guard_file.path }}"
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - hermes_agent_source_guard_file.kind in ['default_config', 'profile_config']
+
+- name: Stat the current managed file checksum
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_source_guard_file.path }}"
+    checksum_algorithm: sha256
+  register: _hermes_agent_source_guard_current
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Render the default template checksum from the role template
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_expected_sha256: >-
+      {{ lookup('ansible.builtin.template', role_path ~ '/templates/' ~ _template) | hash('sha256') }}
+  vars:
+    _template: >-
+      {{ 'config.yaml.j2' if hermes_agent_source_guard_file.kind == 'default_config'
+         else 'hindsight-config.json.j2' }}
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - hermes_agent_source_guard_file.kind in ['default_config', 'default_hindsight']
+
+- name: Render the named profile config checksum from the role template
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_expected_sha256: >-
+      {{ lookup('ansible.builtin.template', role_path ~ '/templates/config-profile.yaml.j2') | hash('sha256') }}
+  vars:
+    hermes_agent_profile: "{{ hermes_agent_source_guard_file.profile }}"
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - hermes_agent_source_guard_file.kind == 'profile_config'
+
+- name: Render the named profile memory config checksum from the role template
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_expected_sha256: >-
+      {{ lookup('ansible.builtin.template', role_path ~ '/templates/hindsight-config.json.j2') | hash('sha256') }}
+  vars:
+    hermes_agent_profile_memory_bank_id: >-
+      {{ hermes_agent_source_guard_file.profile.memory_bank_id | default(hermes_agent_memory_bank_id) }}
+    hermes_agent_profile_locked: "{{ hermes_agent_source_guard_file.profile.locked | default(false) | bool }}"
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - hermes_agent_source_guard_file.kind == 'profile_hindsight'
+
+- name: Render the SOUL checksum from the same content inputs as its writer
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_expected_sha256: "{{ hermes_agent_soul_composition | hash('sha256') }}"
+  vars:
+    hermes_agent_soul_text: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/SOUL.md', rstrip=false)
+         if hermes_agent_source_guard_file.profile is not defined else
+         (hermes_agent_profile_soul_content[hermes_agent_source_guard_file.profile.soul_standalone_file]
+          if (hermes_agent_source_guard_file.profile.soul_standalone_file | default('')).endswith('.soul.md') else
+          lookup('ansible.builtin.template', role_path ~ '/templates/'
+            ~ hermes_agent_source_guard_file.profile.soul_standalone_file)
+          if hermes_agent_source_guard_file.profile.soul_standalone_file is defined else
+          (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/SOUL.md') ~ "\n\n" ~
+           (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/soul/profiles/'
+             ~ hermes_agent_source_guard_file.profile.name ~ '.md')
+            if hermes_agent_source_guard_file.profile.soul_addendum_bundle | default(false) else
+            lookup('ansible.builtin.template', role_path ~ '/templates/'
+              ~ hermes_agent_source_guard_file.profile.soul_addendum_file))
+           ~ ("\n\n" ~ lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/soul/profiles/'
+               ~ hermes_agent_source_guard_file.profile.soul_addendum_bundle_extra_file)
+              if hermes_agent_source_guard_file.profile.soul_addendum_bundle_extra_file is defined else ""))) }}
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - hermes_agent_source_guard_file.kind == 'soul'
+
+- name: Evaluate the two-sided managed file drift rule
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_drifted: >-
+      {{ _hermes_agent_source_guard_previous.sha256 is defined and
+         (( _hermes_agent_source_guard_current.stat.exists and
+            _hermes_agent_source_guard_current.stat.checksum != _hermes_agent_source_guard_previous.sha256 and
+            _hermes_agent_source_guard_current.stat.checksum != _hermes_agent_source_guard_expected_sha256 ) or
+          ( not _hermes_agent_source_guard_current.stat.exists and
+            _hermes_agent_source_guard_previous.sha256 != _hermes_agent_source_guard_expected_sha256 )) }}
+  vars:
+    _hermes_agent_source_guard_previous: >-
+      {{ (_hermes_agent_source_guard_record.files
+          | selectattr('path', 'equalto', hermes_agent_source_guard_file.path) | list | first)
+         | default({}) }}
+  no_log: true
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Add a drifted managed path to the failure list
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_drift: >-
+      {{ _hermes_agent_source_guard_drift
+         + [{'path': hermes_agent_source_guard_file.path}] }}
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - _hermes_agent_source_guard_drifted | bool
