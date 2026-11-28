@@ -59,6 +59,15 @@ page continues with the variable surface.
 | `hermes_agent_slack_reaction_triggers` | `true` | route emoji reactions on bot posts to the agent as `reaction:added:<emoji>` |
 | `hermes_agent_splunk_memory_bank_id` | agent bank on the splunk owner, else `<id>-splunk` | Hindsight bank for the `splunk-admin` profile |
 
+The six narrow tracker agents' memory banks sit behind
+`hermes_agent_tracker_memory_banks_enabled`, which is off by default. When enabled
+with the hindsight provider, the role reads each tracker bank
+(`<id>-<agent>`), creates it when it is missing, sets its values from `hermes_agent_tracker_memory_banks` —
+the conventions-only `retain_mission` from
+`hermes_agent_tracker_memory_retain_mission` and `mcp_enabled_tools` of `recall`
+and `retain` — only where a value drifts from the current override, then reads
+the bank back and asserts the settings.
+
 ## Group / invocation
 
 Targets `hermes_agent_group`, derived from the `hermes-agent` tag in `load_tofu.yml`.
