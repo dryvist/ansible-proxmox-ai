@@ -44,7 +44,7 @@ def test_research_off_keeps_the_client_lockdown():
 def test_research_on_opens_research_tools_and_keeps_the_rest_denied():
     defaults, config = _config('pepper', True)
     research = defaults['hermes_agent_pepper_research_toolsets']
-    assert config['memory'] == {'memory_enabled': True, 'user_profile_enabled': True}
+    assert config['memory'] == {'memory_enabled': False, 'user_profile_enabled': False}
     assert 'provider' not in config['memory']
     assert config['platform_toolsets'] == {
         'cli': ['kanban'], 'cron': research, 'api_server': ['kanban'], 'slack': research}
