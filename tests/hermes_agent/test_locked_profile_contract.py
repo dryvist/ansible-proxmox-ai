@@ -40,13 +40,19 @@ def test_every_clerk_is_minimal_off_by_default_and_prompted(profile: dict) -> No
     )
     assert set(profile) == expected_keys
     assert len(profile["mcp"]) == 1
-    gate = f"llm_router_hermes_{profile['name'].replace('-', '_')}_key_enabled"
+    # The tracker agent variants share one switch; every other locked profile has its own.
+    variant = profile["name"].startswith("vikunja-") and profile["name"] != "vikunja-clerk"
+    gate = (
+        "llm_router_hermes_vikunja_clerk_variants_enabled" if variant
+        else f"llm_router_hermes_{profile['name'].replace('-', '_')}_key_enabled"
+    )
     assert profile["feature_gate"] == gate
     assert _group_vars_all()[gate] is (profile["name"] in ENABLED_CLERKS)
 
-    if profile["name"].endswith("-clerk"):
-        # The prompt pack owns a tracker clerk's soul text and its tests.
-        assert profile["soul_standalone_file"] == f"{profile['name']}.soul.md"
+    if profile["soul_standalone_file"].endswith(".soul.md"):
+        # The prompt pack owns these souls and their tests; a variant uses its agent's soul.
+        agent = re.sub(r"^(vikunja-(?:clerk|triage|nightly|windows))-.*", r"\1", profile["name"])
+        assert profile["soul_standalone_file"] == f"{agent}.soul.md"
         return
     # Ansible's template lookup trims the newline after a block tag.
     env = Environment(loader=FileSystemLoader(ROLE_ROOT / "templates"), trim_blocks=True)
@@ -60,7 +66,12 @@ def test_every_clerk_is_minimal_off_by_default_and_prompted(profile: dict) -> No
 
 def test_the_clerk_set_is_the_declared_four() -> None:
     assert {p["name"] for p in _locked()} == {
-        "youtrack-clerk", "vikunja-clerk", "zammad-clerk", "semaphore-converge"
+        "youtrack-clerk", "vikunja-clerk", "zammad-clerk", "semaphore-converge",
+        "vikunja-clerk-workstation", "vikunja-clerk-hermes", "vikunja-clerk-pepper",
+        "vikunja-clerk-untrusted", "vikunja-clerk-jobs", "vikunja-clerk-inbox",
+        "vikunja-triage", "vikunja-nightly", "vikunja-windows",
+        "vikunja-clerk-acceptance", "vikunja-triage-acceptance",
+        "vikunja-nightly-acceptance", "vikunja-windows-acceptance",
     }
 
 
