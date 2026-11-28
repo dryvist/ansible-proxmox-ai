@@ -146,10 +146,27 @@ def test_the_retire_step_is_included_once_for_the_default_and_once_per_profile()
 
 def test_the_retire_destination_is_the_profile_memory_folder() -> None:
     source = (ROLE_ROOT / "tasks" / "retire_memory_files.yml").read_text()
-    assert "{{ hermes_agent_retire_memory_dir }}/{{ item }}" in source
+    assert "{{ hermes_agent_retire_memory_dir }}/{{ hermes_agent_retire_memory_file }}" in source
     assert "{{ hermes_agent_hermes_home }}/retired-memory/{{ hermes_agent_retire_memory_label }}" in source
     # The service user owns the retired copies.
     assert 'owner: "{{ hermes_agent_user }}"' in source
+
+
+def test_the_retire_loops_never_reuse_the_callers_loop_variable() -> None:
+    """profiles.yml includes the retire step from a loop over profile rows named
+    ``item``, and the include's vars render late: an inner ``item`` would replace
+    the profile row in ``profiles/{{ item.name }}``."""
+    source = (ROLE_ROOT / "tasks" / "retire_memory_files.yml").read_text()
+    looped = [t for t in yaml.safe_load(source) if "loop" in t]
+    assert len(looped) == 2
+    assert all(t["loop_control"]["loop_var"] == "hermes_agent_retire_memory_file" for t in looped)
+    assert not re.search(r"\bitem\b", source)
+
+
+def test_the_operator_profile_seed_is_off_with_built_in_memory() -> None:
+    """A seeded USER.md has no reader with the switches off, and a seed that
+    stayed on would be written and moved aside again on every converge."""
+    assert _defaults()["hermes_agent_seed_user_profile"] is False
 
 
 if __name__ == "__main__":

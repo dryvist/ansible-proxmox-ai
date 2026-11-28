@@ -20,20 +20,21 @@
 
 - name: Find the local memory files for {{ hermes_agent_retire_memory_label }}
   ansible.builtin.stat:
-    path: "{{ hermes_agent_retire_memory_dir }}/{{ item }}"
+    path: "{{ hermes_agent_retire_memory_dir }}/{{ hermes_agent_retire_memory_file }}"
   loop:
     - MEMORY.md
     - USER.md
   register: hermes_agent_retire_memory_stat
   loop_control:
-    label: "{{ item }}"
+    loop_var: hermes_agent_retire_memory_file
+    label: "{{ hermes_agent_retire_memory_file }}"
 
 - name: Set the memory files this converge would retire
   ansible.builtin.set_fact:
     hermes_agent_retire_memory_found: >-
       {{ hermes_agent_retire_memory_stat.results
          | selectattr('stat.exists', 'equalto', true)
-         | map(attribute='item') | list }}
+         | map(attribute='hermes_agent_retire_memory_file') | list }}
 
 - name: Ensure the retired-memory folder exists for {{ hermes_agent_retire_memory_label }}
   ansible.builtin.file:
@@ -56,23 +57,25 @@
     argv:
       - mv
       - --no-target-directory
-      - "{{ hermes_agent_retire_memory_dir }}/{{ item }}"
+      - "{{ hermes_agent_retire_memory_dir }}/{{ hermes_agent_retire_memory_file }}"
       - >-
         {{ hermes_agent_hermes_home }}/retired-memory/{{ hermes_agent_retire_memory_label }}/{{
         hermes_agent_retire_memory_target_name }}
-    removes: "{{ hermes_agent_retire_memory_dir }}/{{ item }}"
+    removes: "{{ hermes_agent_retire_memory_dir }}/{{ hermes_agent_retire_memory_file }}"
   vars:
     hermes_agent_retired_memory_namesakes: >-
       {{ hermes_agent_retired_memory_copies.files | default([])
          | map(attribute='path') | map('basename')
-         | select('search', item ~ '.') | list }}
+         | select('match', (hermes_agent_retire_memory_file | regex_escape) ~ '\\.') | list }}
     # The names already retired today for this file are exactly
     # <file>.<date>, <file>.<date>-1, ..., <file>.<date>-(n-1), so the next
     # free name appends -n (nothing, when today's first copy retires).
     hermes_agent_retire_memory_target_name: >-
-      {{ item }}.{{ now(utc=true, fmt='%Y%m%d') }}{{ '-' ~ hermes_agent_retired_memory_namesakes | length
+      {{ hermes_agent_retire_memory_file }}.{{ now(utc=true, fmt='%Y%m%d') }}{{
+      ('-' ~ hermes_agent_retired_memory_namesakes | length)
       if hermes_agent_retired_memory_namesakes | length > 0 else '' }}
   loop: "{{ hermes_agent_retire_memory_found }}"
   loop_control:
-    label: "{{ item }}"
+    loop_var: hermes_agent_retire_memory_file
+    label: "{{ hermes_agent_retire_memory_file }}"
   when: not ansible_check_mode

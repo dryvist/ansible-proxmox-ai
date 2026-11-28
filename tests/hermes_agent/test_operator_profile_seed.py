@@ -80,7 +80,8 @@ def test_the_seed_never_overwrites_the_agents_own_profile() -> None:
 def test_the_seed_is_gated_by_its_own_switch() -> None:
     """Separate from hermes_agent_soul_managed: SOUL.md is role-owned and
     USER.md is agent-owned, so one flag cannot mean both."""
-    assert DEFAULTS["hermes_agent_seed_user_profile"] is True
+    # Off by default: built-in memory is off, so a seeded file has no reader.
+    assert DEFAULTS["hermes_agent_seed_user_profile"] is False
     assert "hermes_agent_seed_user_profile" in _seed_task()
 
 
