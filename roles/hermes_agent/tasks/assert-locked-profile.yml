@@ -43,15 +43,18 @@
     that:
       - item.memory_bank_id is string and item.memory_bank_id | trim | length > 0
       - item.memory_bank_id != hermes_agent_memory_bank_id
+      # Role variants of one agent render the same soul file and share that agent's bank.
       - >-
-        hermes_agent_profiles
-        | selectattr('memory_bank_id', 'defined')
-        | map(attribute='memory_bank_id')
-        | select('equalto', item.memory_bank_id)
-        | list | length == 1
+        (_bank_profiles | length == 1)
+        or (_bank_profiles | map(attribute='soul_standalone_file', default='') | unique | list
+            == [item.soul_standalone_file | default(none)])
     fail_msg: >-
       Locked profile {{ item.name }} memory_bank_id must be a non-empty string that differs from
-      hermes_agent_memory_bank_id and is unique across hermes_agent_profiles.
+      hermes_agent_memory_bank_id and is shared only with profiles that render the same soul file.
+  vars:
+    _bank_profiles: >-
+      {{ hermes_agent_profiles | selectattr('memory_bank_id', 'defined')
+         | selectattr('memory_bank_id', 'equalto', item.memory_bank_id) | list }}
   when:
     - item.locked | default(false) | bool
     - item.memory_bank_id is defined

@@ -1,0 +1,64 @@
+---
+- name: Start the source guard with the default profile files
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_files: >-
+      {{ [{'path': hermes_agent_hermes_home ~ '/config.yaml', 'kind': 'default_config'}]
+         + ([{'path': hermes_agent_hermes_home ~ '/SOUL.md', 'kind': 'soul'}]
+            if hermes_agent_soul_managed | bool else []) }}
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Add the default memory provider config to the source guard
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_files: >-
+      {{ _hermes_agent_source_guard_files
+         + [{'path': hermes_agent_hermes_home ~ '/hindsight/config.json', 'kind': 'default_hindsight'}] }}
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - hermes_agent_memory_provider == 'hindsight'
+
+- name: Add every named profile writer to the source guard
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_files: >-
+      {{ _hermes_agent_source_guard_files
+         + [{'path': hermes_agent_hermes_home ~ '/profiles/' ~ item.name ~ '/config.yaml',
+             'kind': 'profile_config', 'profile': item}]
+         + ([{'path': hermes_agent_hermes_home ~ '/profiles/' ~ item.name ~ '/SOUL.md',
+             'kind': 'soul', 'profile': item}] if hermes_agent_soul_managed | bool else [])
+         + ([{'path': hermes_agent_hermes_home ~ '/profiles/' ~ item.name ~ '/hindsight/config.json',
+             'kind': 'profile_hindsight', 'profile': item}]
+            if hermes_agent_memory_provider == 'hindsight'
+            and (not (item.locked | default(false) | bool) or item.memory_bank_id is defined)
+            and item.memory_enabled | default(true) | bool else []) }}
+  loop: "{{ hermes_agent_profiles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Apply the managed file suffix exclusions
+  ansible.builtin.set_fact:
+    hermes_agent_source_guard_files: >-
+      {{ _hermes_agent_source_guard_files
+         if hermes_agent_source_guard_exclude | length == 0 else
+         _hermes_agent_source_guard_files
+         | rejectattr('path', 'search', '(' ~
+           (hermes_agent_source_guard_exclude | map('regex_escape') | join('|')) ~ ')$') | list }}
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Check each managed file against the prior checksum
+  ansible.builtin.include_tasks: source_guard_check_file.yml
+  loop: "{{ hermes_agent_source_guard_files }}"
+  loop_control:
+    loop_var: hermes_agent_source_guard_file
+    label: "{{ hermes_agent_source_guard_file.path }}"
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Stop before profile or cron writes for source drift
+  ansible.builtin.fail:
+    msg: >-
+      Managed files changed outside git:
+      {{ _hermes_agent_source_guard_drift | map(attribute='path') | join('\n') }}
+      Restore the item or put the change in git, then run again.
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - _hermes_agent_source_guard_drift | default([]) | length > 0
