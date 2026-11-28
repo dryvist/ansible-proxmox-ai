@@ -1,0 +1,83 @@
+---
+- name: Direct cron | Re-read installed job rows for the source guard record
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - "import json; from cron.jobs import list_jobs; print(json.dumps(list_jobs(include_disabled=True)))"
+  args:
+    chdir: "{{ hermes_agent_install_dir }}"
+  environment:
+    HERMES_HOME: "{{ item }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  loop: "{{ hermes_agent_direct_existing_homes }}"
+  loop_control:
+    label: Hermes store
+  register: hermes_agent_source_guard_record_read
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - not ansible_check_mode
+  tags: hermes_crons
+
+- name: Direct cron | Fail when the source guard record read fails
+  ansible.builtin.assert:
+    that: item.rc == 0
+    fail_msg: Direct cron source guard record could not read an existing store.
+  loop: "{{ hermes_agent_source_guard_record_read.results | default([]) }}"
+  loop_control:
+    label: Existing Hermes store
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - not ansible_check_mode
+  tags: hermes_crons
+
+- name: Direct cron | Build checksummed installed rows for the source guard record
+  ansible.builtin.include_tasks:
+    file: cron_source_guard_rows.yml
+  vars:
+    hermes_agent_source_guard_read: "{{ hermes_agent_source_guard_record_read }}"
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - not ansible_check_mode
+  tags: hermes_crons
+
+- name: Direct cron | Record source guard state
+  ansible.builtin.copy:
+    dest: "{{ hermes_agent_managed_cron_state_dir }}/cron-source-guard.json"
+    content: >-
+      {% set ns = namespace(jobs=[]) %}
+      {% for row in (hermes_agent_source_guard_rows | default([])) %}
+      {% set store_names = namespace(names=[]) %}
+      {% for job in hermes_agent_direct_cron_jobs %}
+      {% if (job.hermes_home | default(hermes_agent_hermes_home)) == row.store %}
+      {% set _ = store_names.names.append(job.name) %}
+      {% endif %}
+      {% endfor %}
+      {% if row.store == hermes_agent_hermes_home %}
+      {% set _ = store_names.names.append(hermes_agent_repo_crawl_cron_name) %}
+      {% endif %}
+      {% if row.name in store_names.names %}
+      {% set _ = ns.jobs.append({'store': row.store, 'name': row.name, 'sha256': row.sha256}) %}
+      {% endif %}
+      {% endfor %}
+      {{ {'jobs': ns.jobs | sort(attribute='name') | sort(attribute='store')} | to_nice_json }}
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - not ansible_check_mode
+  tags: hermes_crons
+
+# Retire the hand-created LLM digest direct cron the script-fed digest replaces:
+# pause it (disable-don't-delete) so the two never double-post. `cron list` shows
+# only ENABLED jobs, so this is a clean no-op once the job is paused.
