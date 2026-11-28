@@ -1,0 +1,146 @@
+---
+- name: Require the fleet board administrator password
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_ui_docker_paperclip_admin_password | length > 0
+    fail_msg: >-
+      hermes_ui_paperclip_admin_password was not supplied to this role.
+  no_log: true
+
+- name: Sign in to the fleet board
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}/api/auth/sign-in/email"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ hermes_ui_docker_paperclip_admin_email }}"
+      password: "{{ hermes_ui_docker_paperclip_admin_password }}"
+    headers:
+      Origin: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}"
+  register: hermes_ui_docker_paperclip_admin_signin
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Keep the existing fleet board session
+  ansible.builtin.set_fact:
+    hermes_ui_docker_paperclip_cookie: >-
+      {{ hermes_ui_docker_paperclip_admin_signin.cookies_string }}
+  when: hermes_ui_docker_paperclip_admin_signin.status | default(0) | int == 200
+  no_log: true
+
+- name: Require the one-time open sign-up for the first administrator
+  ansible.builtin.fail:
+    msg: >-
+      The first administrator does not exist; run this converge once with
+      -e hermes_ui_docker_paperclip_sign_up_open=true.
+  when:
+    - hermes_ui_docker_paperclip_admin_signin.status | default(0) | int != 200
+    - not hermes_ui_docker_paperclip_sign_up_open
+
+- name: Sign up the first fleet board administrator
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}/api/auth/sign-up/email"
+    method: POST
+    body_format: json
+    body:
+      name: "{{ hermes_ui_docker_paperclip_admin_name }}"
+      email: "{{ hermes_ui_docker_paperclip_admin_email }}"
+      password: "{{ hermes_ui_docker_paperclip_admin_password }}"
+    headers:
+      Origin: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}"
+    status_code: [200, 201]
+  when:
+    - hermes_ui_docker_paperclip_admin_signin.status | default(0) | int != 200
+    - hermes_ui_docker_paperclip_sign_up_open
+  no_log: true
+
+- name: Sign in after first administrator sign-up
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}/api/auth/sign-in/email"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ hermes_ui_docker_paperclip_admin_email }}"
+      password: "{{ hermes_ui_docker_paperclip_admin_password }}"
+    headers:
+      Origin: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}"
+    status_code: 200
+  register: hermes_ui_docker_paperclip_first_admin_signin
+  when:
+    - hermes_ui_docker_paperclip_admin_signin.status | default(0) | int != 200
+    - hermes_ui_docker_paperclip_sign_up_open
+  changed_when: false
+  no_log: true
+
+- name: Keep the first fleet board session
+  ansible.builtin.set_fact:
+    hermes_ui_docker_paperclip_cookie: >-
+      {{ hermes_ui_docker_paperclip_first_admin_signin.cookies_string }}
+  when:
+    - hermes_ui_docker_paperclip_admin_signin.status | default(0) | int != 200
+    - hermes_ui_docker_paperclip_sign_up_open
+  no_log: true
+
+- name: Print the first administrator invite
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'exec', hermes_ui_docker_paperclip_container_name]
+         + hermes_ui_docker_paperclip_bootstrap_argv }}
+  register: hermes_ui_docker_paperclip_bootstrap
+  when:
+    - hermes_ui_docker_paperclip_admin_signin.status | default(0) | int != 200
+    - hermes_ui_docker_paperclip_sign_up_open
+  changed_when: true
+  no_log: true
+
+- name: Extract the first administrator invite token
+  ansible.builtin.set_fact:
+    hermes_ui_docker_paperclip_invite_token: >-
+      {{ hermes_ui_docker_paperclip_bootstrap.stdout
+         | regex_search('pcp_bootstrap_[0-9a-f]+') | default('', true) }}
+  when:
+    - hermes_ui_docker_paperclip_admin_signin.status | default(0) | int != 200
+    - hermes_ui_docker_paperclip_sign_up_open
+  no_log: true
+
+- name: Require the first administrator invite token
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_ui_docker_paperclip_invite_token | length > 0
+    fail_msg: The Paperclip bootstrap command did not return an invite token.
+  when:
+    - hermes_ui_docker_paperclip_admin_signin.status | default(0) | int != 200
+    - hermes_ui_docker_paperclip_sign_up_open
+  no_log: true
+
+- name: Accept the first administrator invite
+  ansible.builtin.uri:
+    url: >-
+      {{ 'http://127.0.0.1:' ~ hermes_ui_docker_paperclip_port
+         ~ '/api/invites/' ~ hermes_ui_docker_paperclip_invite_token ~ '/accept' }}
+    method: POST
+    body_format: json
+    body:
+      requestType: human
+    headers:
+      Origin: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}"
+      Cookie: "{{ hermes_ui_docker_paperclip_cookie }}"
+    status_code: [200, 201]
+  when:
+    - hermes_ui_docker_paperclip_admin_signin.status | default(0) | int != 200
+    - hermes_ui_docker_paperclip_sign_up_open
+  no_log: true
+
+- name: Verify fleet board administrator access
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}/api/companies"
+    method: GET
+    headers:
+      Cookie: "{{ hermes_ui_docker_paperclip_cookie }}"
+    status_code: 200
+  register: hermes_ui_docker_paperclip_companies
+  changed_when: false
+  no_log: true
