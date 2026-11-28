@@ -1,0 +1,98 @@
+---
+- name: Direct cron | Stat the prior source guard record
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_managed_cron_state_dir }}/cron-source-guard.json"
+  register: _hermes_agent_direct_source_guard_stat
+  changed_when: false
+  check_mode: false
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Direct cron | Slurp the prior source guard record
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_managed_cron_state_dir }}/cron-source-guard.json"
+  register: _hermes_agent_direct_source_guard_body
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - _hermes_agent_direct_source_guard_stat.stat.exists
+
+- name: Direct cron | Load prior source guard state
+  ansible.builtin.set_fact:
+    _hermes_agent_direct_source_guard_record: >-
+      {{ {'jobs': (_hermes_agent_direct_source_guard_body.content | b64decode | from_json).get('jobs', [])}
+         if _hermes_agent_direct_source_guard_body is defined
+         else {'jobs': []} }}
+    _hermes_agent_direct_source_guard_drift: []
+  changed_when: false
+  no_log: true
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Direct cron | Read structured installed job rows
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - "import json; from cron.jobs import list_jobs; print(json.dumps(list_jobs(include_disabled=True)))"
+  args:
+    chdir: "{{ hermes_agent_install_dir }}"
+  environment:
+    HERMES_HOME: "{{ item }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  loop: "{{ hermes_agent_direct_existing_homes }}"
+  loop_control:
+    label: Hermes store
+  register: hermes_agent_source_guard_read
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Direct cron | Fail when an installed job store cannot be read
+  ansible.builtin.assert:
+    that: item.rc == 0
+    fail_msg: Direct cron source guard could not read an existing store.
+  loop: "{{ hermes_agent_source_guard_read.results | default([]) }}"
+  loop_control:
+    label: Existing Hermes store
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Direct cron | Build checksummed installed rows
+  ansible.builtin.include_tasks: cron_source_guard_rows.yml
+  no_log: true
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Direct cron | Collect drifted scheduled job identities
+  ansible.builtin.set_fact:
+    _hermes_agent_direct_source_guard_drift: >-
+      {% set ns = namespace(drift=[]) %}
+      {% for rec in (_hermes_agent_direct_source_guard_record.jobs | default([])) %}
+      {% set row = (hermes_agent_source_guard_rows | default([])
+                   | selectattr('store', 'equalto', rec.store)
+                   | selectattr('name', 'equalto', rec.name) | list | first)
+         | default(none) %}
+      {% if row is none %}
+      {% set _ = ns.drift.append({'store': rec.store, 'name': rec.name}) %}
+      {% elif row.enabled and row.sha256 != rec.sha256 %}
+      {% set _ = ns.drift.append({'store': rec.store, 'name': rec.name}) %}
+      {% endif %}
+      {% endfor %}
+      {{ ns.drift }}
+  changed_when: false
+  no_log: true
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Direct cron | Stop for scheduled jobs changed outside the declared source
+  ansible.builtin.fail:
+    msg: >-
+      Managed scheduled job(s) changed outside the declared source:
+      {{ _hermes_agent_direct_source_guard_drift | to_json }}
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - _hermes_agent_direct_source_guard_drift | length > 0

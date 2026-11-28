@@ -1,0 +1,42 @@
+---
+# One place the installed-row checksum lives. Both the guard check
+# (cron_source_guard.yml) and the guard record (cron_reconcile.yml) include this
+# after their own per-store `list_jobs` read, pointing at that read with
+# `vars: hermes_agent_source_guard_read: <registered>`, so the expression is
+# written once and used by both phases. Only the twelve stable keys enter the
+# checksum: the runtime rewrites every other key (last_run_at, next_run_at,
+# state, enabled, paused_*, failure_streak, ...) after every fire, so those
+# must never be hashed. A missing key hashes as null.
+- name: Direct cron | Build checksummed installed rows
+  ansible.builtin.set_fact:
+    hermes_agent_source_guard_rows: >-
+      {% set ns = namespace(rows=[]) %}
+      {% for result in (hermes_agent_source_guard_read.results | default([])) %}
+      {% if result.stdout is defined %}
+      {% for row in (result.stdout | from_json) %}
+      {% set _ = ns.rows.append({
+        'store': result.item,
+        'name': row.get('name'),
+        'sha256': ({
+          'schedule': row.get('schedule'),
+          'prompt': row.get('prompt'),
+          'skills': row.get('skills'),
+          'script': row.get('script'),
+          'deliver': row.get('deliver'),
+          'failure_deliver': row.get('failure_deliver'),
+          'workdir': row.get('workdir'),
+          'model': row.get('model'),
+          'provider': row.get('provider'),
+          'base_url': row.get('base_url'),
+          'enabled_toolsets': row.get('enabled_toolsets'),
+          'no_agent': row.get('no_agent')
+        } | to_json(sort_keys=true)) | hash('sha256'),
+        'enabled': row.get('enabled', true) | bool
+      }) %}
+      {% endfor %}
+      {% endif %}
+      {% endfor %}
+      {{ ns.rows }}
+  changed_when: false
+  no_log: true
+  when: hermes_agent_source_guard_enabled | bool

@@ -13,6 +13,21 @@
   register: hermes_agent_profile_script_homes
   check_mode: false
 
+- name: Read the installed cron jobs and desired-state markers once
+  ansible.builtin.include_tasks:
+    file: cron_reconcile_direct_batch.yml
+    apply:
+      tags: hermes_crons
+  tags: hermes_crons
+
+- name: Direct cron | Check scheduled jobs against source record
+  ansible.builtin.include_tasks:
+    file: cron_source_guard.yml
+    apply:
+      tags: hermes_crons
+  tags: hermes_crons
+  when: hermes_agent_source_guard_enabled | bool
+
 # Only an existing profile home gets a scripts directory: creating the home here
 # would mask a missing profile from the direct-batch preflight.
 - name: Create the scripts directory of each profile home that runs a script job
@@ -66,13 +81,6 @@
       Main-channel cron targets are not checked for identity {{ hermes_agent_id }}:
       its scheduled jobs may deliver to its main channel.
   when: not (hermes_agent_refuse_main_channel_targets | bool)
-
-- name: Read the installed cron jobs and desired-state markers once
-  ansible.builtin.include_tasks:
-    file: cron_reconcile_direct_batch.yml
-    apply:
-      tags: hermes_crons
-  tags: hermes_crons
 
 - name: Read Pepper complete native cron inventory
   ansible.builtin.command:
@@ -210,6 +218,89 @@
     file: cron_reconcile_pr_repo_crawl.yml
     apply:
       tags: hermes_crons
+  tags: hermes_crons
+
+# Source guard record: after the last direct-cron reconcile, re-read the
+# installed rows and record one entry per managed job actually installed
+# (store + name + sha256 of its stable row). The next converge's check phase
+# compares the live rows against this before writing anything.
+- name: Direct cron | Re-read installed job rows for the source guard record
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - "import json; from cron.jobs import list_jobs; print(json.dumps(list_jobs(include_disabled=True)))"
+  args:
+    chdir: "{{ hermes_agent_install_dir }}"
+  environment:
+    HERMES_HOME: "{{ item }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  loop: "{{ hermes_agent_direct_existing_homes }}"
+  loop_control:
+    label: Hermes store
+  register: hermes_agent_source_guard_record_read
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - not ansible_check_mode
+  tags: hermes_crons
+
+- name: Direct cron | Fail when the source guard record read fails
+  ansible.builtin.assert:
+    that: item.rc == 0
+    fail_msg: Direct cron source guard record could not read an existing store.
+  loop: "{{ hermes_agent_source_guard_record_read.results | default([]) }}"
+  loop_control:
+    label: Existing Hermes store
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - not ansible_check_mode
+  tags: hermes_crons
+
+- name: Direct cron | Build checksummed installed rows for the source guard record
+  ansible.builtin.include_tasks:
+    file: cron_source_guard_rows.yml
+  vars:
+    hermes_agent_source_guard_read: "{{ hermes_agent_source_guard_record_read }}"
+  no_log: true
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - not ansible_check_mode
+  tags: hermes_crons
+
+- name: Direct cron | Record source guard state
+  ansible.builtin.copy:
+    dest: "{{ hermes_agent_managed_cron_state_dir }}/cron-source-guard.json"
+    content: >-
+      {% set ns = namespace(jobs=[]) %}
+      {% for row in (hermes_agent_source_guard_rows | default([])) %}
+      {% set store_names = namespace(names=[]) %}
+      {% for job in hermes_agent_direct_cron_jobs %}
+      {% if (job.hermes_home | default(hermes_agent_hermes_home)) == row.store %}
+      {% set _ = store_names.names.append(job.name) %}
+      {% endif %}
+      {% endfor %}
+      {% if row.store == hermes_agent_hermes_home %}
+      {% set _ = store_names.names.append(hermes_agent_repo_crawl_cron_name) %}
+      {% endif %}
+      {% if row.name in store_names.names %}
+      {% set _ = ns.jobs.append({'store': row.store, 'name': row.name, 'sha256': row.sha256}) %}
+      {% endif %}
+      {% endfor %}
+      {{ {'jobs': ns.jobs | sort(attribute='name') | sort(attribute='store')} | to_nice_json }}
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - not ansible_check_mode
   tags: hermes_crons
 
 # Retire the hand-created LLM digest direct cron the script-fed digest replaces:
