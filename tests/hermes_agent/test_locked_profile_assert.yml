@@ -124,6 +124,35 @@
             that:
               - ansible_failed_task.name == 'Assert locked profile memory bank is private and unique'
 
+    - name: Accept role variants of one agent that share its memory bank
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
+      vars:
+        hermes_agent_profiles:
+          - "{{ _locked_profile }}"
+          - "{{ _locked_profile | combine({'name': 'youtrack-clerk-variant'}) }}"
+        item: "{{ _locked_profile }}"
+
+    - name: Refuse a shared memory bank across different soul files
+      vars:
+        hermes_agent_profiles:
+          - "{{ _locked_profile }}"
+          - "{{ _locked_profile | combine({'name': 'other-agent', 'soul_standalone_file': 'other.soul.md'}) }}"
+      block:
+        - name: Run the locked-profile guard with one bank under two soul files
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-locked-profile.yml"
+          vars:
+            item: "{{ _locked_profile }}"
+
+        - name: Fail if the guard admitted one bank under two soul files
+          ansible.builtin.fail:
+            msg: The locked-profile guard admitted one memory bank under two soul files.
+      rescue:
+        - name: Require the memory-bank assertion to refuse the shared bank
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - ansible_failed_task.name == 'Assert locked profile memory bank is private and unique'
+
     - name: Refuse two profiles that share a memory bank
       vars:
         hermes_agent_profiles:
