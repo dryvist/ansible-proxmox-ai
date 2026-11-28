@@ -43,8 +43,12 @@ agent:
   run_budget_seconds: {{ hermes_agent_run_budget_seconds }}
   api_max_retries: 2
   tool_use_enforcement: auto
-{% if _profile_locked and hermes_agent_profile.role_facts is defined %}
-  system_prompt: {{ hermes_agent_profile.role_facts | to_json }}
+{# A row's own role_facts wins; otherwise the run-time map supplies them by profile name. #}
+{% set _facts_map = hermes_agent_profile_role_facts | default({}) %}
+{% set _role_facts = hermes_agent_profile.role_facts
+   | default(_facts_map.get(hermes_agent_profile.name, '') if _facts_map is mapping else '', true) %}
+{% if _profile_locked and _role_facts | trim | length > 0 %}
+  system_prompt: {{ _role_facts | to_json }}
 {% endif %}
   # H-17 global deny floor — same list every profile inherits, less the toolsets this profile lifts
   # (enable_toolsets, open per hermes_agent_profile_toolsets_open); see
