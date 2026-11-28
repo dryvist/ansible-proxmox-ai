@@ -89,7 +89,7 @@ def test_auxiliary_retry_budgets_are_bounded() -> None:
 
     tasks = role_tasks_text(ROLE_ROOT)
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in tasks
-    assert "status in (408, 429)" in tasks
+    assert "failure.verdict.status_code == 429 and failure.verdict.retryable" in tasks
     assert 'resolved_provider != "custom"' in tasks
 
 

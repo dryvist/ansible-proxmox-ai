@@ -109,7 +109,8 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
     auxiliary_source = "\n".join(
         (
             "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0",
-            "return isinstance(status, int) and (status in (408, 429) or 500 <= status < 600)",
+            "if not (aux_errors.same_provider_retry(failure.verdict) "
+            "or (failure.verdict.status_code == 429 and failure.verdict.retryable)):",
             'if should_fallback and (is_auto or (is_capacity_error and resolved_provider != "custom")):',
         )
     )
