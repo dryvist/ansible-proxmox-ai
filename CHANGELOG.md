@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.103.6](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.5...v2.103.6) (2026-11-28)
+
+
+### Bug Fixes
+
+* **hermes_agent:** prefix profile tool include names with the server id ([#3049](https://github.com/dryvist/ansible-proxmox-ai/issues/3049)) ([91a3344](https://github.com/dryvist/ansible-proxmox-ai/commit/91a33446ffa25508911ebed11be705da40d7373a))
+
 ## [2.103.5](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.4...v2.103.5) (2026-11-28)
 
 
