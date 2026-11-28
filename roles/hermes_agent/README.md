@@ -85,3 +85,16 @@ on a name collision, and check mode moves nothing.
 Each agent resolves its own home channel. Splunk and alert destinations are
 independently configurable, and the alert destination must include each app
 that uses native failure delivery.
+
+## Source guard
+
+`hermes_agent_source_guard_enabled` defaults to `false`; while it is off, the
+role creates no source record. When enabled, the role checks every managed
+`SOUL.md`, `config.yaml`, and memory-provider config for the default and named
+profiles before any managed file or scheduled-job write. Suffixes in
+`hermes_agent_source_guard_exclude` opt paths out. The role records only each
+managed path and its SHA-256 checksum in its existing managed-cron state
+directory, in a root-owned mode `0600` file. A change that the role would
+write exactly as it already exists is not drift, so changes made in git pass;
+first runs record their files, and check mode reports without writing. Two
+unchanged runs leave the record unchanged.
