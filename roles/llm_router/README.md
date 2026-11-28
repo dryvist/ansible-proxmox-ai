@@ -166,6 +166,11 @@ Only an alias on a **servable** entry renders this way. An alias declared
 elsewhere — on an egress model, on a light-tier one — is a *role*, and roles
 live in the database instead. See below.
 
+The optional `llm_router_hermes_vikunja_clerk_variants_enabled` switch defaults
+to `false`. When enabled, caller keys receive role-specific Vikunja clerk
+models and per-key aliases; the shared workstation proxy stays inbox-scoped,
+and untrusted callers receive only the untrusted clerk variant.
+
 ## Roles: what lives in git, what lives in the database
 
 Authority is split: the catalog (`llm-models.d/` → `config.yaml`) lives in
