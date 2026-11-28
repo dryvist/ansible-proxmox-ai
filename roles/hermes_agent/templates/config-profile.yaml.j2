@@ -43,6 +43,9 @@ agent:
   run_budget_seconds: {{ hermes_agent_run_budget_seconds }}
   api_max_retries: 2
   tool_use_enforcement: auto
+{% if _profile_locked and hermes_agent_profile.role_facts is defined %}
+  system_prompt: {{ hermes_agent_profile.role_facts | to_json }}
+{% endif %}
   # H-17 global deny floor — same list every profile inherits, less the toolsets this profile lifts
   # (enable_toolsets, open per hermes_agent_profile_toolsets_open); see
   # hermes_agent_disabled_toolsets in defaults/main.yml for the rationale.
@@ -172,11 +175,12 @@ kanban:
 {% set _mcp_zammad = ('zammad' in hermes_agent_profile.mcp) and (hermes_agent_router_zammad_mcp_enabled | default(true) | bool) %}
 {% set _mcp_app_agent_servers = [] %}
 {% for _mcp_name in hermes_agent_profile.mcp | default([]) %}
-{% if _mcp_name.endswith(('_read', '_write', '_admin', '_clerk'))
+{% if (_profile_locked or _mcp_name.endswith(('_read', '_write', '_admin', '_clerk')))
     and (_mcp_name != 'vikunja_write' or hermes_agent_router_vikunja_write_mcp_enabled | default(true) | bool) %}
 {% set _ = _mcp_app_agent_servers.append(_mcp_name) %}
 {% endif %}
 {% endfor %}
+{% set _profile_prompt_manifest_entry = (hermes_agent_profile_prompt_manifest_by_soul | default({})).get(hermes_agent_profile.soul_standalone_file | default(''), {}) %}
 {% set _mcp_nautobot = ('nautobot' in hermes_agent_profile.mcp) and (hermes_agent_nautobot_mcp_enabled | bool) %}
 {% if _mcp_splunk or _mcp_docs or _mcp_grep or _mcp_vikunja or _mcp_crawl4ai or _mcp_nautobot or _mcp_zammad or _mcp_app_agent_servers %}
 # MCP servers this profile is scoped to reach. ${VARS} resolve from THIS
@@ -231,6 +235,10 @@ mcp_servers:
     headers:
       Authorization: "Bearer ${HERMES_AGENT_MODEL_API_KEY}"
       x-mcp-servers: "{{ _mcp_server_id }}"
+{% if _profile_prompt_manifest_entry.tools is defined %}
+    tools:
+      include: {{ (_profile_prompt_manifest_entry.tools + (_profile_prompt_manifest_entry.write_tools | default([]))) | to_json }}
+{% endif %}
 {% endfor %}
 {% if _mcp_nautobot %}
   nautobot:

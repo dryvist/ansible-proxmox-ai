@@ -1,63 +1,4 @@
 ---
-# --- Fleet health: Hermes watching its OWN reliability trend (2026-08-01) -----
-# The one gap the 2026-08-01 kanban audit found with no card covering it:
-# every existing card watches a DOWNSTREAM system (Splunk, Zammad, GitHub,
-# the fabric); nothing watches whether HERMES ITSELF is getting more or less
-# reliable at running them. Weekly (not hourly/daily like the monitor fleet —
-# a reliability TREND needs a window longer than one throttle-limited board's
-# worth of runs to mean anything) and read-only over `kanban runs`; it never
-# proposes touching serving infrastructure, only files a follow-up card for a
-# human or a separate change to act on. Distinct from the `review` card
-# above: `review` catches an operational gap in the last 8h (stuck, blocked,
-# silently-not-run); this catches a reliability trend across weeks. Different
-# time horizons, not a duplicate.
-hermes_agent_fleet_health_cron_name: fleet-health
-hermes_agent_fleet_health_cron_schedule: "3 10 * * 1"
-# --- Named operating profiles (Hermes agent identities) -----------------------
-# A profile is a fully independent HERMES_HOME directory (own config.yaml,
-# .env, SOUL.md, memory, skills) that a Kanban card selects via its `assignee`
-# field below — the dispatcher spawns `hermes -p <assignee> chat ...` with
-# HERMES_HOME pointed at that profile's directory, so the assignee is the
-# ENTIRE tool/credential envelope the worker runs under (see
-# roles/hermes_agent/README.md "Operating profiles"). One shared
-# gateway/dispatcher/board serves every profile; there is no per-profile
-# gateway, cron store, or Slack bot (tasks/profiles.yml sets
-# kanban.dispatch_in_gateway: false in every profile's own config.yaml as a
-# belt-and-braces guard against that).
-#
-# DECISION RULE (the default action for new recurring work): choose a profile
-# FIRST. `default` is not the absence of a choice — it is correct only for
-# cross-domain, board-meta, or WRITE-bearing GitHub work (the jobs that label,
-# comment, or file issues), and the card/PR should say why.
-# SIEM-shaped work is splunk-admin; incident/infra-shaped work is
-# homelab-admin; read-only repository review and maintenance analysis is
-# github-maint; work that fits none and is not cross-domain is the signal
-# to propose a NEW profile, not to widen an existing one — a profile is scoped
-# by what it must NOT reach, not by what it might someday need.
-#
-# `env` names the .env sections templates/hermes-env-profile.j2 renders with a
-# real value; every OTHER credential the template knows about is rendered
-# BLANK for this profile (dotenv override=True on load) — that blanking IS the
-# isolation mechanism: a spawned worker inherits the gateway process's full
-# environment, so simply omitting a line would leave the default profile's
-# credential silently readable. `mcp` names the mcp_servers entries
-# templates/config-profile.yaml.j2 renders. `skills` are copied from the
-# nix-hermes bundle into the profile's own skills/dryvist/ dir. The
-# hermes_agent/github-issues-api skill is role-local and copied separately.
-# A card's --skill only resolves what its assignee actually has.
-#
-# NOTE: profile isolation is a CONFIG/tool-availability boundary, not an OS
-# sandbox — every profile runs as the same `hermes` OS user in the same LXC,
-# so a worker with the terminal/file toolset can still read another profile's
-# files on disk by hand. The blast-radius boundary is the LXC (see the role
-# header comment); a profile boundary keeps a job's ordinary tool calls,
-# skills, and prompts scoped to what it is meant to reach — it does not stop a
-# deliberately adversarial instruction from reading a sibling profile's .env.
-#
-# No named profile takes `slack`: the default store owns the one Slack bot/app
-# token. Hermes parks any profile holding the same platform token as another
-# and keeps the gateway standalone, so a shared token stops that profile's cron
-# jobs and Kanban workers. The default gateway delivers every profile's output.
 hermes_agent_profiles:
   - name: splunk-admin
     description: Read-only SIEM analyst (bounded SPL, alert + report, no remediation)
@@ -183,6 +124,84 @@ hermes_agent_profiles:
       cli: [web, skills, todo, context_engine, session_search]
       cron: []
     soul_addendum_file: soul-eval.md.j2
+  - name: vikunja-clerk-workstation
+    description: Handles Vikunja task requests.
+    mcp: [vikunja_workstation]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-clerk.soul.md
+  - name: vikunja-clerk-hermes
+    description: Handles Vikunja task requests.
+    mcp: [vikunja_hermes]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-clerk.soul.md
+  - name: vikunja-clerk-pepper
+    description: Handles Vikunja task requests.
+    mcp: [vikunja_pepper]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-clerk.soul.md
+  - name: vikunja-clerk-untrusted
+    description: Handles Vikunja task requests.
+    mcp: [vikunja_untrusted]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-clerk.soul.md
+  - name: vikunja-clerk-jobs
+    description: Handles Vikunja task requests.
+    mcp: [vikunja_jobs]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-clerk.soul.md
+  - name: vikunja-clerk-inbox
+    description: Handles Vikunja task requests.
+    mcp: [vikunja_inbox]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-clerk.soul.md
+  - name: vikunja-triage
+    description: Triages Vikunja tasks.
+    mcp: [vikunja_triage]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-triage.soul.md
+  - name: vikunja-nightly
+    description: Handles Vikunja tasks during nightly checks.
+    mcp: [vikunja_nightly]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-nightly.soul.md
+  - name: vikunja-windows
+    description: Handles Vikunja tasks during Windows checks.
+    mcp: [vikunja_windows]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-windows.soul.md
+  - name: vikunja-clerk-acceptance
+    description: Handles Vikunja task requests during acceptance checks.
+    mcp: [vikunja_acceptance]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-clerk.soul.md
+  - name: vikunja-triage-acceptance
+    description: Triages Vikunja tasks during acceptance checks.
+    mcp: [vikunja_acceptance]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-triage.soul.md
+  - name: vikunja-nightly-acceptance
+    description: Handles Vikunja tasks during nightly acceptance checks.
+    mcp: [vikunja_acceptance]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-nightly.soul.md
+  - name: vikunja-windows-acceptance
+    description: Handles Vikunja tasks during Windows acceptance checks.
+    mcp: [vikunja_acceptance]
+    locked: true
+    feature_gate: llm_router_hermes_vikunja_clerk_variants_enabled
+    soul_standalone_file: vikunja-windows.soul.md
 
 # Card-filing Cron jobs declare Kanban in their per-job tool allowlist. Most
 # run from the orchestrator profile; credential-bound jobs keep their own
