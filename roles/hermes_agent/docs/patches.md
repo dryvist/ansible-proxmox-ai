@@ -42,10 +42,9 @@ release at the time of the audit (v0.23.4, 2026-11):
 
 - Upstream file: `agent/auxiliary_client.py`
 - Decision: KEEP
-- Reason: upstream keeps the bounded same-provider retry to transient transport errors (`same_provider_retry` in the error policy module) and routes rate
-  limits to credential rotation, which an explicit local provider does not have. The patch widens the retry gate's two call sites to a retryable 429
-- Evidence: [auxiliary_client.py](https://github.com/NousResearch/hermes-agent/blob/v0.23.4/agent/auxiliary_client.py),
-  [auxiliary_error_policy.py](https://github.com/NousResearch/hermes-agent/blob/v0.23.4/agent/auxiliary_error_policy.py)
+- Reason: upstream limits the bounded same-provider retry to transient transport errors and routes rate limits to credential rotation, which an
+  explicit local provider lacks
+- Evidence: [auxiliary_client.py](https://github.com/NousResearch/hermes-agent/blob/v0.23.4/agent/auxiliary_client.py)
 
 ## `patches_retry_and_markup.yml` — no capacity-error fallback for the explicit local provider
 
