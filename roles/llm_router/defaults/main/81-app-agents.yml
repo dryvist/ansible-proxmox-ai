@@ -18,10 +18,13 @@ llm_router_vikunja_agent_tool_names:
   - projects_read
   - labels_list
   - labels_read
-  - users_search
   - find_action
   - do_action
   - filter_syntax
+# The tracker offers a bot only the tools its token covers, and a row must name exactly those.
+llm_router_vikunja_agent_narrow_roles: [jobs, windows]
+llm_router_vikunja_agent_narrow_dropped_tools:
+  [labels_read, task_comments_read, task_assignees_list, task_assignees_create]
 
 llm_router_app_agent_apps:
   vikunja:
@@ -35,6 +38,9 @@ llm_router_app_agent_apps:
   vikunja-native:
     transport: http
     url_field: VIKUNJA_MCP_URL
+    # shortcut: the stored address still carries the API version, so it is dropped here;
+    # remove this key once the stored field is a bare base address.
+    url_base_suffix: /api/v1
     url_path: /api/v2/mcp
   zammad:
     command: "{{ llm_router_mcp_zammad_command }}"
@@ -150,7 +156,11 @@ llm_router_app_agent_tiers:
 llm_router_vikunja_clerk_app_tiers: >-
   {%- set ns = namespace(rows=[]) -%}
   {%- for role in llm_router_vikunja_clerk_bot_roles -%}
-  {%- set tools = ['tasks_create'] if role in ['untrusted', 'inbox'] else llm_router_vikunja_agent_tool_names -%}
+  {%- set tools = ['tasks_create'] if role in ['untrusted', 'inbox']
+        else (llm_router_vikunja_agent_tool_names
+              | reject('in', llm_router_vikunja_agent_narrow_dropped_tools) | list
+              if role in llm_router_vikunja_agent_narrow_roles
+              else llm_router_vikunja_agent_tool_names) -%}
   {%- set ns.rows = ns.rows + [{
         'id': 'vikunja-' ~ role,
         'app': 'vikunja-native',
@@ -205,7 +215,8 @@ _llm_router_app_agent_matrix: >-
                        else (bao_local_llm_secrets | default({}, true)).get(app.url_field, ''))
         | default('', true) | string | trim -%}
   {%- if app.url_path is defined -%}
-  {%- set url_value = (url_value | regex_replace('/+$', '')) ~ app.url_path -%}
+  {%- set url_value = (url_value | regex_replace('/+$', '')
+                       | regex_replace(app.url_base_suffix | default('') ~ '$', '')) ~ app.url_path -%}
   {%- endif -%}
   {%- set token_env_key = 'LLM_ROUTER_APP_' ~ (tier.id | upper | regex_replace('[^A-Z0-9]', '_')) ~ '_TOKEN' -%}
   {%- set url_env_key = 'LLM_ROUTER_APP_' ~ (tier.id | upper | regex_replace('[^A-Z0-9]', '_')) ~ '_URL' -%}
