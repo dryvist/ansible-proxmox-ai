@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.91.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.90.3...v2.91.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_agent:** turn built-in memory off and move old memory files aside ([#2977](https://github.com/dryvist/ansible-proxmox-ai/issues/2977)) ([08a625f](https://github.com/dryvist/ansible-proxmox-ai/commit/08a625f3e0589454b99e05e1636e6faa7ae10fb3))
+
 ## [2.90.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.90.2...v2.90.3) (2026-11-28)
 
 

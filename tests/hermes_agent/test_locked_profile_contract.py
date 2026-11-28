@@ -141,8 +141,10 @@ def test_locked_profile_renders_local_single_server_lockdown() -> None:
 
     assert config["model"]["default"] == "local-review-fixture"
     assert config["compression"]["summary_model"] == "local-review-fixture"
+    # The clerk declares its own memory bank, so the external memory config
+    # profiles.yml deploys for it is in use; the built-in switches stay off.
     assert config["memory"] == {
-        "provider": "builtin", "memory_enabled": False, "user_profile_enabled": False
+        "provider": "hindsight", "memory_enabled": False, "user_profile_enabled": False
     }
     assert config["platform_toolsets"] == {"api_server": ["todo"], "cli": ["todo"]}
     assert LOCKED_TOOLSETS <= set(config["agent"]["disabled_toolsets"])
