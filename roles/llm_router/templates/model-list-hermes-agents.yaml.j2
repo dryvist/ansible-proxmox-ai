@@ -75,5 +75,36 @@
       mode: chat
       max_input_tokens: {{ llm_router_hermes_agent_context_window }}
       max_tokens: {{ llm_router_hermes_agent_context_window }}
+{% if llm_router_acceptance_candidates_enabled | default(false, true) | bool %}
+{# Candidate routes use the same profile, addressable per model alias so
+   `make acceptance-sets CANDIDATE_MODEL=<alias>` can run without a file edit.
+   Only the evals caller key is granted these route names. #}
+{% set _cand_agents = (llm_router_acceptance_candidate_agents | default({}, true) | dict2items
+      | selectattr('value', 'equalto', _profile.name) | map(attribute='key') | list) %}
+{% for _cand_agent in _cand_agents %}
+{% for _cand_alias in llm_router_acceptance_candidate_aliases | default([], true) %}
+  - model_name: agent-{{ _cand_agent }}-candidate-{{ _cand_alias }}
+    litellm_params:
+      model: hosted_vllm/{{ _cand_alias }}
+      tags: {{ (['local', 'zdr', 'sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii']
+                + (llm_router_priority_tiers | map(attribute='team_id') | list)
+                + (['default'] if 'tier-1' in (llm_router_priority_tiers | map(attribute='team_id') | list) else [])) | unique | to_json }}
+      api_base: {{ _guest.api_url | regex_replace('/v1$', '/p/' ~ _profile.name ~ '/v1') }}
+      api_key: os.environ/HERMES_AGENT_BEARER_TOKEN_{{ _profile.name | upper | regex_replace('[^A-Z0-9]', '_') }}
+      timeout: {{ llm_router_hermes_agent_timeout }}
+      stream_timeout: {{ llm_router_hermes_agent_timeout }}
+      num_retries: 0
+      extra_body:
+        provider: {{ hermes_agent_model_shared_provider | default('custom:hermes-shared') }}
+    model_info:
+      accelerator: agent
+      allow_fail_open: false
+      disable_background_health_check: true
+      mode: chat
+      max_input_tokens: {{ llm_router_hermes_agent_context_window }}
+      max_tokens: {{ llm_router_hermes_agent_context_window }}
+{% endfor %}
+{% endfor %}
+{% endif %}
 {% endif %}
 {% endfor %}

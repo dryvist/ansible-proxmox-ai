@@ -1,0 +1,57 @@
+---
+# Candidate routes for acceptance runs. When the switch is on, each
+# acceptance agent profile also publishes agent-<agent>-candidate-<alias>
+# routes. The weak alias targets the first non-embedding light-tier route.
+# Run the prompt-pack acceptance set with `make acceptance-sets
+# CANDIDATE_MODEL=<alias>`. Only evals gets candidate route names; profile
+# keys named below get candidate aliases. Off by default.
+llm_router_acceptance_candidates_enabled: false
+_llm_router_acceptance_weak_target: >-
+  {%- set ns = namespace(target='') -%}
+  {%- for m in llm_router_light_models | default([]) -%}
+  {%- if not (m.embedding | default(false) | bool) and not ns.target -%}
+  {%- set ns.target = m.route_group | default(m.client_model_id) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.target }}
+llm_router_acceptance_candidate_aliases: >-
+  {%- set ns = namespace(aliases=[hermes_brain_model]) -%}
+  {%- if _llm_router_acceptance_weak_target | default('', true) | length > 0 -%}
+  {%- set ns.aliases = ns.aliases + ['c12-weak'] -%}
+  {%- endif -%}
+  {{ ns.aliases | unique | list }}
+llm_router_acceptance_candidate_agents:
+  vikunja-clerk: vikunja-clerk-acceptance
+  vikunja-clerk-untrusted: vikunja-clerk-untrusted
+  vikunja-triage: vikunja-triage-acceptance
+  vikunja-nightly: vikunja-nightly-acceptance
+  vikunja-windows: vikunja-windows-acceptance
+  youtrack-clerk: youtrack-clerk
+  zammad-clerk: zammad-clerk
+_llm_router_acceptance_candidate_route_names: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for agent in llm_router_acceptance_candidate_agents -%}
+  {%- for alias in llm_router_acceptance_candidate_aliases -%}
+  {%- set ns.names = ns.names + ['agent-' ~ agent ~ '-candidate-' ~ alias] -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.names | unique | list }}
+_llm_router_acceptance_profile_key_aliases: >-
+  {%- set ns = namespace(aliases=[]) -%}
+  {%- for profile in llm_router_acceptance_candidate_agents.values() -%}
+  {%- set ns.aliases = ns.aliases + ['hermes-' ~ profile] -%}
+  {%- endfor -%}
+  {{ ns.aliases | unique | list }}
+_llm_router_acceptance_candidate_models_by_key: >-
+  {%- set ns = namespace(models={}) -%}
+  {%- set _acceptance_key = (llm_router_vikunja_clerk_key_policy | default({}))
+       .get('acceptance', {}).get('key_alias', '') -%}
+  {%- if _acceptance_key -%}
+  {%- set ns.models = ns.models | combine(
+       {_acceptance_key: _llm_router_acceptance_candidate_route_names}) -%}
+  {%- endif -%}
+  {%- for profile in _llm_router_acceptance_profile_key_aliases -%}
+  {%- set ns.models = ns.models | combine(
+       {profile: llm_router_acceptance_candidate_aliases}) -%}
+  {%- endfor -%}
+  {{ ns.models }}

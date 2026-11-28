@@ -104,17 +104,18 @@ Local model groups render per-tier deployment entries as described in
 [priority tiers](../../docs/LLM_ROUTER_PRIORITY_TIERS.md).
 The same loop carries `hermes-local`
 entries: distinct Hermes-fallback-chain rungs over that same backend/URL/key,
-not a second physical tier. A `context_window` here is
-mandatory rather than optional (unlike other tiers) because these backend ids
-are absent from LiteLLM's catalog — an omitted value silently resolves
-`max_input_tokens` to null, disables `enable_pre_call_checks` for the
-deployment, and lets an over-long request through to a model that cannot hold
-it (the compress-death outage class, 2026-07-08). `allowed_fails`/
+not a second physical tier. A `context_window` is required because these ids
+are absent from LiteLLM's catalog; without it, `max_input_tokens` is null,
+pre-call checks are disabled, and oversized requests reach an undersized model
+(the 2026-07-08 compress-death class). `allowed_fails`/
 `cooldown_time` overrides on a `hermes-local` entry exist because busy is not
 unhealthy: a merely-busy single GPU must not be cooled out of rotation the way
 a real failure would be. Its `num_retries: 0` is the same idea — a
 single-instance local leg is only ever accepting or rejecting, never worth
 retrying, since a retry just re-queues behind the same busy box.
+
+When enabled, acceptance runs can call `agent-<agent>-candidate-<alias>`; only
+the `evals` key gets these routes.
 
 ## Retry and cooldown policy
 
