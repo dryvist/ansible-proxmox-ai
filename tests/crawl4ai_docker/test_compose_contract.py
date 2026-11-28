@@ -33,7 +33,7 @@ def test_api_token_prefers_bao_and_falls_back_to_the_environment() -> None:
     tasks_text = (ROLE_ROOT / "tasks" / "main.yml").read_text(encoding="utf-8")
     handlers = (ROLE_ROOT / "handlers" / "main.yml").read_text()
 
-    assert defaults["crawl4ai_docker_image"] == "unclecode/crawl4ai:0.9.5"
+    assert defaults["crawl4ai_docker_image"] == "unclecode/crawl4ai:0.9.6"
     assert defaults["crawl4ai_docker_port"] == 11235
     assert " ".join(defaults["crawl4ai_docker_api_token"].split()) == (
         "{{ (bao_apps_secrets | default({})).crawl4ai_api_token "
