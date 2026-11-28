@@ -1,0 +1,101 @@
+---
+# One tracker agent's memory bank. Included once per row of
+# hermes_agent_tracker_memory_banks (config_and_content.yml); the row is
+# hermes_agent_tracker_bank. Create the bank when it is missing, set only the
+# values that differ, then read back and assert, so a second run reports no change.
+- name: Read the tracker memory bank
+  ansible.builtin.uri:
+    url: "{{ hermes_agent_tracker_bank_url }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ hermes_agent_memory_api_key }}"
+    status_code: [200, 404]
+    timeout: 30
+  register: hermes_agent_tracker_memory_bank_read
+  until: hermes_agent_tracker_memory_bank_read is succeeded
+  retries: 2
+  delay: 5
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+# Upstream PUT on the bank path creates a missing bank; every body field is optional.
+- name: Create the tracker memory bank
+  ansible.builtin.uri:
+    url: "{{ hermes_agent_tracker_bank_url }}"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ hermes_agent_memory_api_key }}"
+    body_format: json
+    body: {}
+    status_code: 200
+    timeout: 30
+  when:
+    - not ansible_check_mode
+    - hermes_agent_tracker_memory_bank_read.status == 404
+  changed_when: true
+  no_log: true
+
+- name: Manage the tracker memory bank settings
+  when: not ansible_check_mode or hermes_agent_tracker_memory_bank_read.status == 200
+  block:
+    - name: Read the tracker memory bank configuration
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_tracker_bank_url }}/config"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ hermes_agent_memory_api_key }}"
+        status_code: 200
+        timeout: 30
+      register: hermes_agent_tracker_memory_bank_config
+      until: hermes_agent_tracker_memory_bank_config is succeeded
+      retries: 2
+      delay: 5
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: Set the tracker memory bank retain mission and MCP tools
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_tracker_bank_url }}/config"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ hermes_agent_memory_api_key }}"
+        body_format: json
+        body: "{{ {'updates': hermes_agent_tracker_bank.updates} | to_json }}"
+        status_code: 200
+        timeout: 30
+      when:
+        - not ansible_check_mode
+        - >-
+          (hermes_agent_tracker_memory_bank_config.json.overrides | default({}) | dict2items
+           | selectattr('key', 'in', hermes_agent_tracker_bank.updates) | items2dict)
+          != hermes_agent_tracker_bank.updates
+      changed_when: true
+      no_log: true
+
+    - name: Read back the tracker memory bank settings
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_tracker_bank_url }}/config"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ hermes_agent_memory_api_key }}"
+        status_code: 200
+        timeout: 30
+      register: hermes_agent_tracker_memory_bank_readback
+      until: hermes_agent_tracker_memory_bank_readback is succeeded
+      retries: 2
+      delay: 5
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: Assert the tracker memory bank settings
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            (hermes_agent_tracker_memory_bank_readback.json.overrides | default({}) | dict2items
+             | selectattr('key', 'in', hermes_agent_tracker_bank.updates) | items2dict)
+            == hermes_agent_tracker_bank.updates
+      when: not ansible_check_mode
