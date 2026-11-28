@@ -89,6 +89,7 @@ def _render_model_list(entries: list[dict], rates: dict) -> list[dict]:
     )
     env.filters["to_json"] = json.dumps
     env.filters["bool"] = bool
+    env.filters["regex_replace"] = lambda value, pattern, replacement: re.sub(pattern, replacement, value)
     env.globals.update(
         llm_router_deployment_tags_by_entry={},
         llm_router_deployment_tags_by_model={},
