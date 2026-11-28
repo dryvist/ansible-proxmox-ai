@@ -1,7 +1,8 @@
 ---
-# hermes-ui deployment (Docker in LXC): two independent Compose services,
-# hermes-workspace (pulled, pre-built image) and mission-control (built
-# locally from a pinned source tag — see defaults/main.yml for why).
+# hermes-ui deployment (Docker in LXC): hermes-workspace (pulled, pre-built
+# image) and mission-control (built locally from a pinned source tag — see
+# defaults/main.yml for why), plus an optional paperclip fleet board, also
+# built from a pinned source tag (off by default).
 
 # =============================================================================
 # Validation
@@ -50,6 +51,15 @@
     group: "{{ hermes_ui_docker_mission_control_gid }}"
     mode: "0750"
 
+- name: Create paperclip persistent state directory
+  ansible.builtin.file:
+    path: "{{ hermes_ui_docker_paperclip_data_dir }}"
+    state: directory
+    owner: "{{ hermes_ui_docker_paperclip_uid }}"
+    group: "{{ hermes_ui_docker_paperclip_gid }}"
+    mode: "0750"
+  when: hermes_ui_docker_paperclip_enabled
+
 # =============================================================================
 # mission-control build context — clone at the pinned tag; upstream's own
 # Dockerfile already exposes the NEXT_PUBLIC_GATEWAY_* build ARGs this
@@ -63,6 +73,15 @@
     repo: "{{ hermes_ui_docker_mission_control_repo }}"
     dest: "{{ hermes_ui_docker_data_dir }}/mission-control"
     version: "{{ hermes_ui_docker_mission_control_ref }}"
+  notify: Restart hermes-ui
+
+# The shallow-fetch note above applies to this pinned tag clone as well.
+- name: Clone Paperclip at the pinned tag
+  ansible.builtin.git:
+    repo: "{{ hermes_ui_docker_paperclip_repo }}"
+    dest: "{{ hermes_ui_docker_data_dir }}/paperclip"
+    version: "{{ hermes_ui_docker_paperclip_ref }}"
+  when: hermes_ui_docker_paperclip_enabled
   notify: Restart hermes-ui
 
 # =============================================================================
@@ -135,3 +154,15 @@
   until: hermes_ui_docker_mission_control_health.status == 200
   changed_when: false
   when: not ansible_check_mode
+
+- name: Verify paperclip health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_ui_docker_paperclip_port }}/api/health"
+    method: GET
+    status_code: 200
+  register: hermes_ui_docker_paperclip_health
+  retries: "{{ hermes_ui_docker_health_retries }}"
+  delay: "{{ hermes_ui_docker_health_delay }}"
+  until: hermes_ui_docker_paperclip_health.status == 200
+  changed_when: false
+  when: hermes_ui_docker_paperclip_enabled and not ansible_check_mode
