@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.100.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.99.0...v2.100.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_agent:** give the trusted tracker profiles their memory banks ([#3009](https://github.com/dryvist/ansible-proxmox-ai/issues/3009)) ([b55cd37](https://github.com/dryvist/ansible-proxmox-ai/commit/b55cd3787aa9471f1215baf467815abff25851f9))
+
 ## [2.99.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.98.0...v2.99.0) (2026-11-28)
 
 

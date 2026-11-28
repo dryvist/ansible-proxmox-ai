@@ -35,13 +35,12 @@ def _locked() -> list[dict]:
 
 @pytest.mark.parametrize("profile", _locked(), ids=lambda p: p["name"])
 def test_every_clerk_is_minimal_off_by_default_and_prompted(profile: dict) -> None:
-    expected_keys = LOCKED_PROFILE_KEYS | (
-        {"memory_bank_id"} if profile["name"].endswith("-clerk") else set()
-    )
-    assert set(profile) == expected_keys
-    assert len(profile["mcp"]) == 1
     # The tracker agent variants share one switch; every other locked profile has its own.
     variant = profile["name"].startswith("vikunja-") and profile["name"] != "vikunja-clerk"
+    # test_vikunja_agent_profiles.py pins which variants hold a bank.
+    banked = profile["name"].endswith("-clerk") or (variant and "memory_bank_id" in profile)
+    assert set(profile) == LOCKED_PROFILE_KEYS | ({"memory_bank_id"} if banked else set())
+    assert len(profile["mcp"]) == 1
     gate = (
         "llm_router_hermes_vikunja_clerk_variants_enabled" if variant
         else f"llm_router_hermes_{profile['name'].replace('-', '_')}_key_enabled"

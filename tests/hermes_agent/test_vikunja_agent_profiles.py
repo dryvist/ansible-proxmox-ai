@@ -21,6 +21,17 @@ NEW_PROFILES = {
     "vikunja-nightly-acceptance": ("vikunja_acceptance", "vikunja-nightly.soul.md"),
     "vikunja-windows-acceptance": ("vikunja_acceptance", "vikunja-windows.soul.md"),
 }
+# Trusted tracker profiles keep conventions in a bank: the clerk variants share one, the others own
+# one. The untrusted, inbox and acceptance profiles have none.
+BANKS = {
+    "vikunja-clerk-workstation": "vikunja-clerk",
+    "vikunja-clerk-hermes": "vikunja-clerk",
+    "vikunja-clerk-pepper": "vikunja-clerk",
+    "vikunja-clerk-jobs": "vikunja-clerk",
+    "vikunja-triage": "vikunja-triage",
+    "vikunja-nightly": "vikunja-nightly",
+    "vikunja-windows": "vikunja-windows",
+}
 LOCKED_KEYS = {
     "name",
     "description",
@@ -56,7 +67,10 @@ def test_new_profiles_are_locked_minimal_single_server_rows() -> None:
     profiles = _profiles_by_name()
     for name, (mcp_name, soul) in NEW_PROFILES.items():
         profile = profiles[name]
-        assert set(profile) == LOCKED_KEYS
+        bank = BANKS.get(name)
+        assert set(profile) == LOCKED_KEYS | ({"memory_bank_id"} if bank else set())
+        if bank:
+            assert profile["memory_bank_id"] == "{{ hermes_agent_memory_bank_id ~ '-%s' }}" % bank
         assert profile["locked"] is True
         assert profile["feature_gate"] == GATE
         assert profile["mcp"] == [mcp_name]
