@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.90.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.90.2...v2.90.3) (2026-11-28)
+
+
+### Bug Fixes
+
+* **hermes_agent:** pin clerk souls to the current prompt pack commit ([#2973](https://github.com/dryvist/ansible-proxmox-ai/issues/2973)) ([6c7544b](https://github.com/dryvist/ansible-proxmox-ai/commit/6c7544bcacbe7e0b0a66f034e383b73d6fac7599))
+
 ## [2.90.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.90.1...v2.90.2) (2026-11-28)
 
 
