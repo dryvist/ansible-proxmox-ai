@@ -1,0 +1,55 @@
+---
+# --- Tracker agent schedules: one fixed-prompt cron per tracker agent --------
+# One row each for the inbox sweep, the nightly maintenance run with its
+# digest, and the maintenance-window sweep. Every row sends its fixed prompt
+# to that agent's public model name at the router (`agent-<profile name>`,
+# published by the router's hermes-agents model list) and delivers the final
+# reply through the same target expression the daily status row uses.
+#
+# The schedules are a deliberate TEST cadence — three starts an hour per row —
+# so an operator can watch several runs in one hour. A later change sets the
+# normal times. The minutes are chosen against the whole enabled fleet:
+# test_cron_stagger.py rejects any start minute an enabled job already uses,
+# and every odd minute on the clock is taken somewhere, so the rows sit on the
+# nearest free even minutes instead (two rows keep an exact 20-minute cycle;
+# the third keeps three starts an hour at 20/18/22 spacing, the closest the
+# free minutes allow).
+hermes_agent_tracker_cron_enabled: false
+hermes_agent_tracker_triage_cron_schedule: "12,32,50 * * * *"
+hermes_agent_tracker_nightly_cron_schedule: "18,38,58 * * * *"
+hermes_agent_tracker_windows_cron_schedule: "2,22,42 * * * *"
+hermes_agent_tracker_triage_cron_prompt: >-
+  Sweep the inbox project now. Follow your instructions for every item. Return
+  your reply envelope.
+hermes_agent_tracker_nightly_cron_prompt: >-
+  Run nightly maintenance now for tasks changed in the last 14 days, within
+  your caps. Return the digest in your reply envelope.
+hermes_agent_tracker_windows_cron_prompt: >-
+  Sweep the maintenance windows now. Close each lapsed window. Return what you
+  closed in your reply envelope.
+hermes_agent_tracker_cron_deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+hermes_agent_tracker_cron_jobs:
+  - name: vikunja-triage-sweep
+    schedule: "{{ hermes_agent_tracker_triage_cron_schedule }}"
+    prompt_var: hermes_agent_tracker_triage_cron_prompt
+    model: agent-vikunja-triage
+    skill: ""
+    enabled_toolsets: []
+    deliver: "{{ hermes_agent_tracker_cron_deliver }}"
+    enabled: "{{ hermes_agent_tracker_cron_enabled | bool }}"
+  - name: vikunja-nightly-maintenance
+    schedule: "{{ hermes_agent_tracker_nightly_cron_schedule }}"
+    prompt_var: hermes_agent_tracker_nightly_cron_prompt
+    model: agent-vikunja-nightly
+    skill: ""
+    enabled_toolsets: []
+    deliver: "{{ hermes_agent_tracker_cron_deliver }}"
+    enabled: "{{ hermes_agent_tracker_cron_enabled | bool }}"
+  - name: vikunja-windows-sweep
+    schedule: "{{ hermes_agent_tracker_windows_cron_schedule }}"
+    prompt_var: hermes_agent_tracker_windows_cron_prompt
+    model: agent-vikunja-windows
+    skill: ""
+    enabled_toolsets: []
+    deliver: "{{ hermes_agent_tracker_cron_deliver }}"
+    enabled: "{{ hermes_agent_tracker_cron_enabled | bool }}"
