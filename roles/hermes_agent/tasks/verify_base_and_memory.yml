@@ -1,0 +1,91 @@
+---
+# Read back what this converge wrote: the shared base text opens every SOUL.md,
+# both built-in memory switches are off in every config, and no built-in memory
+# file sits outside the retired folder.
+- name: Read every deployed SOUL.md and config.yaml
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  # Declared profiles only: a folder this role does not manage is not this gate's business.
+  loop: >-
+    {{ [hermes_agent_hermes_home ~ '/SOUL.md', hermes_agent_hermes_home ~ '/config.yaml']
+       + (hermes_agent_profiles | map(attribute='name')
+          | map('regex_replace', '^(.*)$', hermes_agent_hermes_home ~ '/profiles/\\1/SOUL.md') | list)
+       + (hermes_agent_profiles | map(attribute='name')
+          | map('regex_replace', '^(.*)$', hermes_agent_hermes_home ~ '/profiles/\\1/config.yaml') | list) }}
+  register: hermes_agent_verify_reads
+  check_mode: false
+  no_log: true
+
+- name: Reduce the reads to what the gates compare
+  ansible.builtin.set_fact:
+    hermes_agent_verify_soul_rows: >-
+      {%- set rows = [] -%}
+      {%- for read in hermes_agent_verify_reads.results if read.item.endswith('/SOUL.md') -%}
+      {%- set _ = rows.append({'path': read.item, 'opens_with_base':
+            (read.content | b64decode).startswith(hermes_agent_soul_base.rstrip('\n'))}) -%}
+      {%- endfor -%}
+      {{ rows }}
+    hermes_agent_verify_config_rows: >-
+      {%- set rows = [] -%}
+      {%- for read in hermes_agent_verify_reads.results if read.item.endswith('/config.yaml') -%}
+      {%- set memory = (read.content | b64decode | from_yaml).memory | default({}) -%}
+      {%- set _ = rows.append({'path': read.item,
+            'memory_enabled': memory.memory_enabled | default('unset'),
+            'user_profile_enabled': memory.user_profile_enabled | default('unset')}) -%}
+      {%- endfor -%}
+      {{ rows }}
+  no_log: true
+
+- name: Gate — the shared base text opens every SOUL.md
+  ansible.builtin.assert:
+    that:
+      - item.opens_with_base | bool
+    fail_msg: "{{ item.path }} does not open with the shared base text."
+    quiet: true
+  loop: "{{ hermes_agent_verify_soul_rows }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Gate — both built-in memory switches are off in every rendered config
+  ansible.builtin.assert:
+    that:
+      - item.memory_enabled is sameas false
+      - item.user_profile_enabled is sameas false
+    fail_msg: "{{ item.path }} does not turn both built-in memory switches off."
+    quiet: true
+  loop: "{{ hermes_agent_verify_config_rows }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Find built-in memory files outside the retired folder
+  ansible.builtin.find:
+    paths: >-
+      {{ [hermes_agent_hermes_home]
+         + (hermes_agent_profiles | map(attribute='name')
+            | map('regex_replace', '^', hermes_agent_hermes_home ~ '/profiles/') | list) }}
+    patterns:
+      - MEMORY.md
+      - USER.md
+    recurse: false
+  register: hermes_agent_verify_memory_files
+  check_mode: false
+
+- name: Gate — no built-in memory file sits outside the retired folder
+  ansible.builtin.assert:
+    that:
+      - _outside | length == 0
+    fail_msg: "Built-in memory files outside retired-memory: {{ _outside | join(', ') }}"
+    quiet: true
+  vars:
+    _outside: >-
+      {{ hermes_agent_verify_memory_files.files | map(attribute='path')
+         | reject('search', '/retired-memory/') | sort | list }}
+
+- name: Report the base and memory read-back
+  ansible.builtin.debug:
+    msg: >-
+      {{ hermes_agent_verify_soul_rows | length }} SOUL.md files open with the base text
+      (sha256 {{ hermes_agent_soul_base | hash('sha256') }},
+      {{ hermes_agent_soul_base | length }} characters);
+      {{ hermes_agent_verify_config_rows | length }} configs have both built-in memory switches off;
+      0 built-in memory files outside retired-memory.
