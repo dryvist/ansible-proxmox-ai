@@ -39,7 +39,9 @@ def test_every_bank_keeps_conventions_only_and_two_tools() -> None:
     for row in DEFAULTS["hermes_agent_tracker_memory_banks"]:
         updates = row["updates"]
         assert set(updates) == {"retain_mission", "mcp_enabled_tools"}
-        assert updates["mcp_enabled_tools"] == ["recall", "retain"]
+        # The list widens only with the bank tools switch, which is off by default.
+        assert "['recall', 'retain']" in updates["mcp_enabled_tools"]
+        assert "if hermes_agent_tracker_bank_tools_enabled" in updates["mcp_enabled_tools"]
         assert "hermes_agent_tracker_memory_retain_mission" in updates["retain_mission"]
 
 
