@@ -47,7 +47,7 @@ def test_every_clerk_is_minimal_off_by_default_and_prompted(profile: dict) -> No
         else f"llm_router_hermes_{profile['name'].replace('-', '_')}_key_enabled"
     )
     assert profile["feature_gate"] == gate
-    assert _group_vars_all()[gate] is (profile["name"] in ENABLED_CLERKS)
+    assert _group_vars_all()[gate] is (variant or profile["name"] in ENABLED_CLERKS)
 
     if profile["soul_standalone_file"].endswith(".soul.md"):
         # The prompt pack owns these souls and their tests; a variant uses its agent's soul.
