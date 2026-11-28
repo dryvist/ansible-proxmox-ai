@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.90.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.90.1...v2.90.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **inventory:** keep the youtrack-clerk and zammad-clerk profiles off until their tool tiers register ([#2968](https://github.com/dryvist/ansible-proxmox-ai/issues/2968)) ([c247b16](https://github.com/dryvist/ansible-proxmox-ai/commit/c247b16db3e3eb26caa317bb55fe2355014fb8b0))
+
+## [2.90.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.90.0...v2.90.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **hermes_agent:** render one tools block in locked profile config ([#2965](https://github.com/dryvist/ansible-proxmox-ai/issues/2965)) ([73ce16c](https://github.com/dryvist/ansible-proxmox-ai/commit/73ce16c50fe48eca910a3696803885e44efd548f))
+
+## [2.90.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.89.1...v2.90.0) (2026-11-27)
+
+
+### Features
+
+* **inventory:** enable the youtrack-clerk and zammad-clerk profiles and their router publications ([#2946](https://github.com/dryvist/ansible-proxmox-ai/issues/2946)) ([df68ed5](https://github.com/dryvist/ansible-proxmox-ai/commit/df68ed5be4fa75c9cafc13dcc3377d98bb05b89d))
+
+## [2.89.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.89.0...v2.89.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **llm_router:** a locked profile holds its tier over a same-named roster entry ([#2960](https://github.com/dryvist/ansible-proxmox-ai/issues/2960)) ([ce41201](https://github.com/dryvist/ansible-proxmox-ai/commit/ce41201bc60ab0b3e0b040b17f4ec1fb940e3834))
+
 ## [2.89.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.88.0...v2.89.0) (2026-11-27)
 
 
