@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.102.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.101.0...v2.102.0) (2026-11-28)
+
+
+### Features
+
+* **llm_router:** check tracker agent caller boundaries live ([#3018](https://github.com/dryvist/ansible-proxmox-ai/issues/3018)) ([d2d654e](https://github.com/dryvist/ansible-proxmox-ai/commit/d2d654e11ac5d8d8f9c81bc5dec9990d87c598af))
+
 ## [2.101.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.100.0...v2.101.0) (2026-11-28)
 
 
