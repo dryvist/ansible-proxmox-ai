@@ -69,8 +69,9 @@ with both switches off; a `memory_enabled` field on a profile entry no longer
 changes this). A local `MEMORY.md`/`USER.md` that an older deploy left in a
 memory folder (`HERMES_HOME` for the default profile, `HERMES_HOME/profiles/<name>/`
 for a named one) moves to `HERMES_HOME/retired-memory/<profile>/<file>.<UTC date>`
-on converge: the move is idempotent, never deletes, appends `-1`, `-2`, ... on a
-name collision, and check mode moves nothing.
+on converge; when the profile has a bank, its text is sent once to that bank
+before the move. The move is idempotent, never deletes, appends `-1`, `-2`, ...
+on a name collision, and check mode moves nothing.
 
 ## Slack delivery
 
