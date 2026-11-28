@@ -21,6 +21,8 @@ BOT_ROLES = [
     "triage", "nightly", "windows", "acceptance",
 ]
 CREATE_ONLY = {"untrusted", "inbox"}
+NARROW = {"jobs", "windows"}
+NARROW_DROPPED = {"labels_read", "task_comments_read", "task_assignees_list", "task_assignees_create"}
 
 
 def _tiers() -> list[dict]:
@@ -49,13 +51,15 @@ def test_tool_lists_hold_no_delete_and_create_only_roles_only_create() -> None:
     names = ROUTER["llm_router_vikunja_agent_tool_names"]
     assert "tasks_create" in names and "do_action" in names
     assert not [n for n in names if n.endswith("_delete")]
+    assert "users_search" not in names  # the tracker offers it to no bot
     assert not {"projects_create", "projects_update", "labels_create", "labels_update"} & set(names)
     for row in _tiers():
         role = row["id"].removeprefix("vikunja-")
         tools = row["allowed_tools"]
         if isinstance(tools, str):
             tools = yaml.safe_load(render(tools, dict(ROUTER)))
-        assert tools == (["tasks_create"] if role in CREATE_ONLY else names)
+        expected = [n for n in names if role not in NARROW or n not in NARROW_DROPPED]
+        assert tools == (["tasks_create"] if role in CREATE_ONLY else expected)
 
 
 def test_native_app_uses_http_and_the_builtin_path() -> None:
@@ -86,7 +90,7 @@ def _rendered_matrix(enabled: bool) -> tuple[list[dict], dict]:
                     "VIKUNJA_AGENT_WORKSTATION_TOKEN": "bot-token-placeholder",
                 },
             },
-            "bao_local_llm_secrets": {"VIKUNJA_MCP_URL": "https://tracker.invalid/"},
+            "bao_local_llm_secrets": {"VIKUNJA_MCP_URL": "https://tracker.invalid/api/v1"},
         }
     )
     matrix_text = render(context["_llm_router_app_agent_matrix"], context)
