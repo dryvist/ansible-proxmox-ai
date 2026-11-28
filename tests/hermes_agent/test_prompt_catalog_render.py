@@ -18,6 +18,9 @@ PRIVATE = {
     "hermes_agent_app_seeding_endpoints",
     "hermes_agent_daily_status_endpoints",
     "hermes_agent_service_pulse_endpoints",
+    "hermes_agent_tracker_triage_cron_prompt",
+    "hermes_agent_tracker_nightly_cron_prompt",
+    "hermes_agent_tracker_windows_cron_prompt",
 }
 
 
