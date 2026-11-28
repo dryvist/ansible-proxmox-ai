@@ -72,15 +72,20 @@ def test_tracker_clerk_souls_are_verified_before_a_profile_uses_them() -> None:
 
     tasks = yaml.safe_load((ROLE_ROOT / "tasks/fetch_profile_souls.yml").read_text())
     kinds = [next(key for key in task if key.startswith("ansible.builtin.")) for task in tasks]
-    assert kinds == ["ansible.builtin.set_fact", "ansible.builtin.uri", "ansible.builtin.assert", "ansible.builtin.set_fact"]
-    manifest_check, soul_check = tasks[2]["ansible.builtin.assert"]["that"]
-    assert "hash('sha256')" in manifest_check and "hermes_agent_profile_soul_manifest_sha256" in manifest_check
-    assert "map('hash', 'sha256')" in soul_check and "hermes_agent_profile_soul_pinned" in soul_check
-    assert "hermes_agent_profile_soul_content" in tasks[3]["ansible.builtin.set_fact"]
+    # The manifest is read and checked first; every checksum assert sits before the one task that keeps the text.
+    assert kinds[:3] == ["ansible.builtin.set_fact", "ansible.builtin.uri", "ansible.builtin.assert"]
+    assert kinds[-1] == "ansible.builtin.set_fact" and "ansible.builtin.assert" not in kinds[-1:]
+    checks = [" ".join(task["ansible.builtin.assert"]["that"]) for task in tasks if "ansible.builtin.assert" in task]
+    assert "hash('sha256')" in checks[0] and "hermes_agent_profile_soul_manifest_sha256" in checks[0]
+    assert any("map('hash', 'sha256')" in check and "hermes_agent_profile_soul_pinned" in check for check in checks)
+    assert any("hash('sha256')" in check and "hermes_agent_profile_soul_base_entry.path" in check for check in checks)
+    kept = tasks[-1]["ansible.builtin.set_fact"]
+    assert "hermes_agent_profile_soul_content" in kept and "hermes_agent_soul_base" in kept
 
-    reconcile = (ROLE_ROOT / "tasks/skills_and_profiles.yml").read_text()
-    assert reconcile.index("file: fetch_profile_souls.yml") < reconcile.index("file: profiles.yml")
-
+    config = yaml.safe_load((ROLE_ROOT / "tasks/config_and_content.yml").read_text())
+    assert config[0]["ansible.builtin.import_tasks"] == "fetch_profile_souls.yml"
+    main = (ROLE_ROOT / "tasks/main.yml").read_text()
+    assert main.index("import_tasks: config_and_content.yml") < main.index("import_tasks: skills_and_profiles.yml")
 
 def test_converge_agent_previews_and_never_checks_or_retries() -> None:
     env = Environment(loader=FileSystemLoader(ROLE_ROOT / "templates"), trim_blocks=True)
