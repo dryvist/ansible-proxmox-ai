@@ -1,0 +1,220 @@
+---
+- name: Materialize the requested caller keys from the virtual-key projection
+  ansible.builtin.set_fact:
+    _llm_router_tracker_agent_caller_keys: >-
+      {{ dict(
+        llm_router_virtual_keys
+        | selectattr('alias', 'in', llm_router_tracker_agent_caller_rows
+          | map(attribute='caller') | unique | list)
+        | map(attribute='alias')
+        | zip(llm_router_virtual_keys
+          | selectattr('alias', 'in', llm_router_tracker_agent_caller_rows
+            | map(attribute='caller') | unique | list)
+          | map(attribute='value', default=''))
+      ) }}
+    _llm_router_tracker_agent_requested_aliases: >-
+      {{ llm_router_tracker_agent_caller_rows
+         | map(attribute='caller') | unique | list }}
+    _llm_router_tracker_agent_available_aliases: >-
+      {%- set available = [] -%}
+      {%- for key in llm_router_virtual_keys | default([], true) -%}
+      {%- if key.alias in (llm_router_tracker_agent_caller_rows
+            | map(attribute='caller') | unique | list)
+            and key.value | default('', true) | string | trim | length > 0 -%}
+      {%- set _ = available.append(key.alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ available | unique | list }}
+  no_log: true
+
+- name: Materialize missing caller aliases without key values
+  ansible.builtin.set_fact:
+    _llm_router_tracker_agent_missing_aliases: >-
+      {{ _llm_router_tracker_agent_requested_aliases
+         | reject('in', _llm_router_tracker_agent_available_aliases) | list }}
+  no_log: true
+
+- name: Stop when requested caller aliases are missing or empty
+  ansible.builtin.fail:
+    msg: >-
+      Missing caller aliases: {{ _llm_router_tracker_agent_missing_aliases | join(', ') }}.
+      Available requested caller aliases:
+      {{ _llm_router_tracker_agent_available_aliases | join(', ') }}.
+  when: _llm_router_tracker_agent_missing_aliases | length > 0
+
+- name: Materialize the existing workstation tracker tier for readback
+  ansible.builtin.set_fact:
+    _llm_router_tracker_agent_workstation_tier: >-
+      {{ _llm_router_app_agent_matrix
+         | selectattr('id', 'equalto', 'vikunja-workstation')
+         | list | first | default({}) }}
+    _llm_router_tracker_agent_base_url: >-
+      {{ (bao_local_llm_secrets | default({}, true)).get('VIKUNJA_MCP_URL', '')
+         | default('', true) | string | trim | regex_replace('/+$', '') }}
+  no_log: true
+
+- name: Require the existing tracker base and a readable workstation token
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_tracker_agent_base_url | length > 0
+      - _llm_router_tracker_agent_workstation_tier.get('enabled', false) | bool
+      - _llm_router_tracker_agent_workstation_tier.get('token_value', '') | string | length > 0
+      - llm_router_local_api_url | length > 0
+    fail_msg: The existing tracker readback or router credential is unavailable.
+  no_log: true
+
+- name: Call chat completions once for each caller row
+  ansible.builtin.uri:
+    url: "{{ llm_router_local_api_url }}/v1/chat/completions"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _llm_router_tracker_agent_caller_keys[item.caller] }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      model: "{{ item.model }}"
+      messages:
+        - role: user
+          content: >-
+            Create exactly one task titled "Caller isolation probe
+            {{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }} {{ item.caller }}
+            {{ tracker_agent_row_index }}" in the project your role files new
+            work into. Reply with your normal reply.
+    return_content: true
+    status_code: "{{ range(100, 600) | list }}"
+    timeout: 600
+  loop: "{{ llm_router_tracker_agent_caller_rows }}"
+  loop_control:
+    index_var: tracker_agent_row_index
+    label: "{{ item.caller }} {{ item.model }}"
+  register: _llm_router_tracker_agent_chat_responses
+  failed_when: false
+  no_log: true
+
+- name: Extract task ids from JSON completion replies
+  ansible.builtin.set_fact:
+    _llm_router_tracker_agent_response_rows: >-
+      {%- set rows = [] -%}
+      {%- for response in _llm_router_tracker_agent_chat_responses.results -%}
+      {%- set choices = (response.json | default({}, true)).get('choices', []) -%}
+      {%- set choice = choices | first | default({}) -%}
+      {%- set message = choice.get('message', {}) -%}
+      {%- set content = message.get('content', '') | string | trim -%}
+      {%- set is_json_object = content is match('(?s)^[{].*[}]$') -%}
+      {%- set has_contract = is_json_object
+            and '"status"' in content and '"outcome"' in content
+            and '"items"' in content and '"readback"' in content
+            and '"error"' in content -%}
+      {%- set ids = content | regex_findall(
+            '"ids"\\s*:\\s*\\[\\s*"([^"]+)"') if has_contract else [] -%}
+      {%- set candidate = ids | first | default('NOT_FOUND') -%}
+      {%- set task_id = candidate if candidate is string and candidate | trim else 'NOT_FOUND' -%}
+      {%- set _ = rows.append({
+            'caller': response.item.caller,
+            'model': response.item.model,
+            'expect_status': response.item.expect_status | int,
+            'expect_role': response.item.expect_role | default(''),
+            'status': response.status | default(0) | int,
+            'task_id': task_id | string,
+          }) -%}
+      {%- endfor -%}
+      {{ rows }}
+  no_log: true
+
+- name: Read each created tracker task with the workstation tier token
+  ansible.builtin.uri:
+    url: >-
+      {{ _llm_router_tracker_agent_base_url }}/api/v1/tasks/{{ item.task_id }}
+    method: GET
+    headers:
+      Authorization: >-
+        Bearer {{ _llm_router_tracker_agent_workstation_tier.token_value }}
+    return_content: true
+    status_code: "{{ range(100, 600) | list }}"
+    timeout: 600
+  loop: "{{ _llm_router_tracker_agent_response_rows
+    | rejectattr('task_id', 'equalto', 'NOT_FOUND') | list }}"
+  loop_control:
+    label: "{{ item.caller }} {{ item.model }}"
+  register: _llm_router_tracker_agent_readback_responses
+  failed_when: false
+  no_log: true
+
+- name: Materialize safe tracker creator and project readbacks
+  ansible.builtin.set_fact:
+    _llm_router_tracker_agent_readbacks: >-
+      {%- set readbacks = {} -%}
+      {%- for response in _llm_router_tracker_agent_readback_responses.results
+            | default([]) -%}
+      {%- set body = response.json | default({}, true) -%}
+      {%- set creator = (body.get('created_by', {}) | default({}, true))
+            .get('username', 'NOT_FOUND') -%}
+      {%- set project_id = body.get('project_id', 'NOT_FOUND') -%}
+      {%- set _ = readbacks.update({response.item.task_id: {
+            'creator': creator, 'project_id': project_id}}) -%}
+      {%- endfor -%}
+      {{ readbacks }}
+  no_log: true
+
+- name: Materialize caller result rows
+  ansible.builtin.set_fact:
+    _llm_router_tracker_agent_result_rows: >-
+      {%- set rows = [] -%}
+      {%- for response in _llm_router_tracker_agent_response_rows -%}
+      {%- set readback = _llm_router_tracker_agent_readbacks.get(response.task_id, {}) -%}
+      {%- set _ = rows.append(response | combine({
+            'creator': readback.get('creator', 'NOT_FOUND'),
+            'project_id': readback.get('project_id', 'NOT_FOUND')})) -%}
+      {%- endfor -%}
+      {{ rows }}
+  no_log: true
+
+- name: Materialize the six public-safe caller result fields
+  ansible.builtin.set_fact:
+    _llm_router_tracker_agent_public_rows: >-
+      {%- set rows = [] -%}
+      {%- for result in _llm_router_tracker_agent_result_rows -%}
+      {%- set _ = rows.append({
+            'caller': result.caller,
+            'model': result.model,
+            'status': result.status,
+            'task_id': result.task_id,
+            'creator': result.creator,
+            'project_id': result.project_id}) -%}
+      {%- endfor -%}
+      {{ rows }}
+  no_log: true
+
+- name: Print only the caller identity and tracker task result
+  ansible.builtin.debug:
+    msg:
+      caller: "{{ item.caller }}"
+      model: "{{ item.model }}"
+      status: "{{ item.status }}"
+      task_id: "{{ item.task_id }}"
+      creator: "{{ item.creator }}"
+      project_id: "{{ item.project_id }}"
+  loop: "{{ _llm_router_tracker_agent_public_rows }}"
+  loop_control:
+    label: "{{ item.caller }} {{ item.model }}"
+
+- name: Assert caller status, creator, and inbox project
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        (item.expect_status == 200 and item.status == 200)
+        or (item.expect_status == 403 and item.status in [401, 403])
+      - >-
+        item.expect_status != 200
+        or item.creator == ('svc-agent-' ~ item.expect_role)
+      - >-
+        item.expect_role not in ['inbox', 'untrusted']
+        or llm_router_tracker_agent_inbox_project_id | string | length == 0
+        or item.project_id | string == llm_router_tracker_agent_inbox_project_id | string
+    fail_msg: A caller did not satisfy the expected tracker identity contract.
+  loop: "{{ _llm_router_tracker_agent_result_rows }}"
+  loop_control:
+    label: "{{ item.caller }} {{ item.model }}"
+  no_log: true
