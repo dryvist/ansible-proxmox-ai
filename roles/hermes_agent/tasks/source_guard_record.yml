@@ -1,0 +1,33 @@
+---
+- name: Stat managed files after all profile writers
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    checksum_algorithm: sha256
+  register: _hermes_agent_source_guard_record_stats
+  loop: "{{ hermes_agent_source_guard_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Build a path and checksum only source guard record
+  ansible.builtin.set_fact:
+    _hermes_agent_source_guard_record_content: >-
+      {% set ns = namespace(files=[]) %}
+      {% for result in _hermes_agent_source_guard_record_stats.results %}
+      {% if result.stat.exists %}
+      {% set ns.files = ns.files + [{'path': result.item.path, 'sha256': result.stat.checksum}] %}
+      {% endif %}
+      {% endfor %}
+      {{ {'files': ns.files} | to_nice_json }}
+  when: hermes_agent_source_guard_enabled | bool
+
+- name: Write the source guard record after profile file writers
+  ansible.builtin.copy:
+    content: "{{ _hermes_agent_source_guard_record_content }}"
+    dest: "{{ hermes_agent_managed_cron_state_dir }}/source-guard.json"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - hermes_agent_source_guard_enabled | bool
+    - not ansible_check_mode
