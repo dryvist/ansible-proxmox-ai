@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.93.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.92.0...v2.93.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_ui_docker:** add an optional fleet board service ([#2988](https://github.com/dryvist/ansible-proxmox-ai/issues/2988)) ([6775747](https://github.com/dryvist/ansible-proxmox-ai/commit/67757470d13c797582d178e2b59235054e1196b7))
+
 ## [2.92.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.91.0...v2.92.0) (2026-11-28)
 
 
