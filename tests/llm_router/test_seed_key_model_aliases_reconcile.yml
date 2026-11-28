@@ -1,0 +1,144 @@
+---
+# A seed entry that declares a per-key model alias map (requested model
+# name -> model name) reconciles it in every mode, like object_permission:
+# a differing live map is replaced, an empty declared map clears the live
+# one, and an entry without the field leaves the live map untouched.
+
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_seed_key_model_aliases_reconcile.yml -i localhost, -c local
+
+- name: Render alias-map updates from the real policy reconciler
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _policy_file: "{{ playbook_dir }}/../../roles/llm_router/tasks/reconcile-seeded-key-policy.yml"
+    llm_router_seed_mode: initial
+    llm_router_mcp_default_object_permission:
+      mcp_servers: [no-mcp-servers]
+    llm_router_existing_keys:
+      json:
+        keys:
+          # Live record has no `aliases` field at all.
+          - key_alias: aliases-add
+            models: [fixture-small]
+            metadata: {app: aliases-add, tier: local, tags: ['&zdr', '&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+          # Live map already equals the declared map.
+          - key_alias: aliases-steady
+            models: [fixture-small]
+            aliases: {agent-x: agent-x-one}
+            metadata: {app: aliases-steady, tier: local, tags: ['&zdr', '&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+          # Live map must be cleared by the declared empty map.
+          - key_alias: aliases-clear
+            models: [fixture-small]
+            aliases: {agent-x: agent-x-one}
+            metadata: {app: aliases-clear, tier: local, tags: ['&zdr', '&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+          # Live map exists, but the seed entry never declares the field.
+          - key_alias: aliases-undeclared
+            models: [fixture-small]
+            aliases: {agent-x: agent-x-one}
+            metadata: {app: aliases-undeclared, tier: local, tags: ['&zdr', '&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+    llm_router_virtual_keys:
+      - alias: aliases-add
+        value: "sk-{{ 'a' * 20 }}"
+        models: [fixture-small]
+        aliases: {agent-x: agent-x-one}
+      - alias: aliases-steady
+        value: "sk-{{ 'b' * 20 }}"
+        models: [fixture-small]
+        aliases: {agent-x: agent-x-one}
+      - alias: aliases-clear
+        value: "sk-{{ 'c' * 20 }}"
+        models: [fixture-small]
+        aliases: {}
+      - alias: aliases-undeclared
+        value: "sk-{{ 'd' * 20 }}"
+        models: [fixture-small]
+    _llm_router_live_key_aliases: [aliases-add, aliases-steady, aliases-clear, aliases-undeclared]
+  tasks:
+    - name: Extract the committed alias policy expression
+      ansible.builtin.set_fact:
+        _policy_expr: >-
+          {{ (lookup('ansible.builtin.file', _policy_file) | from_yaml
+              | selectattr('name', 'equalto', 'Compute the key policy update each live key still needs, if any')
+              | first)['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
+
+    - name: Persist the expression for normal Jinja evaluation
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _policy_template
+
+    - name: Write the extracted expression
+      ansible.builtin.copy:
+        dest: "{{ _policy_template.path }}"
+        content: "{{ _policy_expr }}"
+        mode: "0600"
+
+    - name: Render initial-mode alias updates
+      ansible.builtin.set_fact:
+        _alias_updates: "{{ lookup('ansible.builtin.template', _policy_template.path) }}"
+
+    - name: An alias change alone updates exactly the keys whose declared map differs
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _alias_updates | map(attribute='alias') | sort == ['aliases-add', 'aliases-clear']
+        fail_msg: >-
+          Expected exactly aliases-add (live record has no map) and
+          aliases-clear (the declared {} must clear the live map);
+          aliases-steady (live equals declared) and aliases-undeclared
+          (no field on the entry) must be absent. Got
+          {{ _alias_updates | map(attribute='alias') | list }}.
+
+    - name: The add body carries exactly the declared map
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "_add.body.aliases == {'agent-x': 'agent-x-one'}"
+        fail_msg: "aliases-add body: {{ _add.body }}"
+      vars:
+        _add: "{{ _alias_updates | selectattr('alias', 'equalto', 'aliases-add') | first }}"
+
+    - name: The clear body carries the empty map
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'aliases' in _clear.body"
+          - _clear.body.aliases == {}
+        fail_msg: "aliases-clear body: {{ _clear.body }}"
+      vars:
+        _clear: "{{ _alias_updates | selectattr('alias', 'equalto', 'aliases-clear') | first }}"
+
+    - name: The entries without a changed alias map produce no alias update
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _alias_updates | selectattr('alias', 'equalto', 'aliases-undeclared') | list == []
+          - _alias_updates | selectattr('alias', 'equalto', 'aliases-steady') | list == []
+          - >-
+            _alias_updates | selectattr('alias', 'equalto', 'aliases-undeclared')
+            | map(attribute='body') | selectattr('aliases', 'defined') | list == []
+        fail_msg: >-
+          The undeclared or already-equal entry must not produce an update or
+          an aliases body field. Got {{ _alias_updates }}.
+
+    # set_fact, not task vars: the earlier set_fact outranks a task-level
+    # override, so rebuild mode re-renders the same committed expression.
+    - name: Render the expression in rebuild mode
+      ansible.builtin.set_fact:
+        llm_router_seed_mode: rebuild
+
+    - name: Rebuild mode reconciles the same alias maps
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (_rebuild_updates | map(attribute='alias') | sort) == ['aliases-add', 'aliases-clear']
+        fail_msg: >-
+          Expected the same two updates in rebuild mode, got
+          {{ _rebuild_updates | map(attribute='alias') | list }}.
+      vars:
+        _rebuild_updates: "{{ lookup('ansible.builtin.template', _policy_template.path) }}"

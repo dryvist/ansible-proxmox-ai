@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.95.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.95.0...v2.95.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **hermes_agent:** anchor the auxiliary rate-limit retry patch on the 0.23.4 retry gate ([#3000](https://github.com/dryvist/ansible-proxmox-ai/issues/3000)) ([eadd130](https://github.com/dryvist/ansible-proxmox-ai/commit/eadd1300c722b3c8a772873460f036e60bc95a99))
+
+## [2.95.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.94.0...v2.95.0) (2026-11-28)
+
+
+### Features
+
+* **llm_router:** give each caller key its own tracker clerk variant and tool tier ([#2991](https://github.com/dryvist/ansible-proxmox-ai/issues/2991)) ([c3d7a1f](https://github.com/dryvist/ansible-proxmox-ai/commit/c3d7a1fdf65ecb76c0241dd6e5a018206c1eacb0))
+
+## [2.94.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.93.0...v2.94.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_agent:** start every soul with the shared base and retain a memory file before it moves ([#2994](https://github.com/dryvist/ansible-proxmox-ai/issues/2994)) ([315148e](https://github.com/dryvist/ansible-proxmox-ai/commit/315148eede83b27622d8929e0aa4e4c32176326d))
+
+## [2.93.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.92.0...v2.93.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_ui_docker:** add an optional fleet board service ([#2988](https://github.com/dryvist/ansible-proxmox-ai/issues/2988)) ([6775747](https://github.com/dryvist/ansible-proxmox-ai/commit/67757470d13c797582d178e2b59235054e1196b7))
+
 ## [2.92.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.91.0...v2.92.0) (2026-11-28)
 
 

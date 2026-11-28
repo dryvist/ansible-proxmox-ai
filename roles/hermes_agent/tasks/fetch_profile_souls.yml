@@ -1,8 +1,8 @@
 ---
-# Tracker clerk souls come from the prompt pack at one pinned commit. The
-# manifest's sha256 is pinned beside that commit, and every soul is checked
-# against the manifest before a profile may use it. The reads run on the
-# controller, in check mode too, so a check run previews the real soul.
+# The shared base and any tracker-clerk souls come from the prompt pack at one
+# pinned commit. The manifest's sha256 is pinned beside that commit, and every
+# file is checked against it before either SOUL.md writer may run. The reads run
+# on the controller, in check mode too, so a check run previews the real text.
 - name: Select the prompt-pack souls the configured profiles use
   ansible.builtin.set_fact:
     hermes_agent_profile_soul_files: >-
@@ -10,41 +10,97 @@
          | map(attribute='soul_standalone_file') | select('search', '\.soul\.md$')
          | unique | list }}
 
-- name: Read the pinned soul manifest and souls on the controller
+- name: Read the pinned soul manifest on the controller
   ansible.builtin.uri:
-    url: "{{ hermes_agent_profile_soul_base }}/agents/hermes/{{ item }}"
+    url: "{{ hermes_agent_profile_soul_base }}/agents/hermes/manifest.json"
     return_content: true
   delegate_to: localhost
   become: false
   vars:
     ansible_become: false
   check_mode: false
-  loop: "{{ ['manifest.json'] + hermes_agent_profile_soul_files }}"
-  register: hermes_agent_profile_soul_reads
-  when: hermes_agent_profile_soul_files | length > 0
+  register: hermes_agent_profile_soul_manifest_read
 
-- name: Verify the manifest and every soul against the pinned sha256
+- name: Verify the pinned soul manifest sha256
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_profile_soul_manifest_read.content | hash('sha256')
+        == hermes_agent_profile_soul_manifest_sha256
+    fail_msg: The pinned prompt-pack manifest checksum does not match.
+
+- name: Parse the pinned soul manifest entries and checksums
+  ansible.builtin.set_fact:
+    hermes_agent_profile_soul_manifest_entries: "{{ hermes_agent_profile_soul_manifest_read.content | from_json }}"
+    hermes_agent_profile_soul_pinned: >-
+      {{ hermes_agent_profile_soul_manifest_read.content | from_json
+         | items2dict(key_name='path', value_name='sha256') }}
+
+- name: Require exactly one base entry in the prompt-pack manifest
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_profile_soul_manifest_entries
+        | selectattr('name', 'equalto', 'base') | list | length == 1
+    fail_msg: The pinned prompt-pack manifest is missing its base entry or has duplicate base entries.
+
+- name: Keep the base manifest entry
+  ansible.builtin.set_fact:
+    hermes_agent_profile_soul_base_entry: >-
+      {{ hermes_agent_profile_soul_manifest_entries
+         | selectattr('name', 'equalto', 'base') | first }}
+
+- name: Keep all verified file paths to read
+  ansible.builtin.set_fact:
+    hermes_agent_profile_soul_read_paths: >-
+      {{ [hermes_agent_profile_soul_base_entry.path]
+         + (hermes_agent_profile_soul_files
+            | map('regex_replace', '^', 'agents/hermes/') | list) }}
+
+- name: Read the verified base and selected souls on the controller
+  ansible.builtin.uri:
+    url: "{{ hermes_agent_profile_soul_base }}/{{ item }}"
+    return_content: true
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  check_mode: false
+  loop: "{{ hermes_agent_profile_soul_read_paths }}"
+  register: hermes_agent_profile_soul_reads
+
+- name: Verify the prompt-pack base checksum
   ansible.builtin.assert:
     quiet: true
     that:
       - >-
         hermes_agent_profile_soul_reads.results[0].content | hash('sha256')
-        == hermes_agent_profile_soul_manifest_sha256
+        == hermes_agent_profile_soul_pinned[hermes_agent_profile_soul_base_entry.path]
+    fail_msg: The prompt-pack base does not match its manifest sha256.
+
+- name: Reject a prompt-pack base longer than 1,200 characters
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_profile_soul_reads.results[0].content | length <= 1200
+    fail_msg: The prompt-pack base is longer than 1,200 characters.
+
+- name: Verify every selected profile soul checksum
+  ansible.builtin.assert:
+    quiet: true
+    that:
       - >-
         hermes_agent_profile_soul_reads.results[1:] | map(attribute='content')
         | map('hash', 'sha256') | list
-        == hermes_agent_profile_soul_files | map('regex_replace', '^', 'agents/hermes/')
+        == hermes_agent_profile_soul_read_paths[1:]
            | map('extract', hermes_agent_profile_soul_pinned) | list
-    fail_msg: A prompt-pack soul or its manifest does not match the pinned sha256.
-  vars:
-    hermes_agent_profile_soul_pinned: >-
-      {{ hermes_agent_profile_soul_reads.results[0].content | from_json
-         | items2dict(key_name='path', value_name='sha256') }}
-  when: hermes_agent_profile_soul_files | length > 0
+    fail_msg: A prompt-pack soul does not match its manifest sha256.
 
-- name: Keep the verified souls for the profile reconcile
+- name: Keep the verified base and souls for the profile reconcile
   ansible.builtin.set_fact:
+    hermes_agent_soul_base: "{{ hermes_agent_profile_soul_reads.results[0].content }}"
     hermes_agent_profile_soul_content: >-
       {{ dict(hermes_agent_profile_soul_files
               | zip(hermes_agent_profile_soul_reads.results[1:] | map(attribute='content'))) }}
-  when: hermes_agent_profile_soul_files | length > 0

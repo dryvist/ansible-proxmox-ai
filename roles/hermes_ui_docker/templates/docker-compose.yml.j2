@@ -52,3 +52,35 @@ services:
       # click through manually).
       AUTH_USER: "{{ hermes_ui_docker_mission_control_auth_user }}"
       AUTH_PASS: "{{ hermes_ui_docker_mission_control_auth_pass }}"
+{% if hermes_ui_docker_paperclip_enabled %}
+
+  # paperclip (fleet board): built locally from the pinned source tag, like
+  # mission-control. State (embedded database, storage, secrets key) lives
+  # under PAPERCLIP_HOME on the bind mount, so it survives a compose
+  # recreate/image rebuild.
+  {{ hermes_ui_docker_paperclip_service }}:
+    build:
+      context: ./paperclip
+    image: homelab/paperclip:local
+    container_name: {{ hermes_ui_docker_paperclip_container_name }}
+    restart: {{ hermes_ui_docker_restart_policy }}
+    ports:
+      - "{{ hermes_ui_docker_paperclip_port }}:{{ hermes_ui_docker_paperclip_internal_port }}"
+    volumes:
+      - {{ hermes_ui_docker_paperclip_data_dir }}:{{ hermes_ui_docker_paperclip_home }}
+    environment:
+      PORT: "{{ hermes_ui_docker_paperclip_internal_port }}"
+      PAPERCLIP_HOME: "{{ hermes_ui_docker_paperclip_home }}"
+      # Keep the board private: sign-in required, not publicly exposed.
+      PAPERCLIP_DEPLOYMENT_MODE: "{{ hermes_ui_docker_paperclip_deployment_mode }}"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "{{ hermes_ui_docker_paperclip_deployment_exposure }}"
+      # Telemetry off: no tracing endpoint or error-reporting address is
+      # rendered.
+      PAPERCLIP_TELEMETRY_DISABLED: "{{ hermes_ui_docker_paperclip_telemetry_disabled }}"
+      DO_NOT_TRACK: "{{ hermes_ui_docker_paperclip_do_not_track }}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:{{ hermes_ui_docker_paperclip_internal_port }}/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+{% endif %}

@@ -1,10 +1,11 @@
 ---
-# hermes-ui: one LXC running two independent Docker Compose services behind
-# Traefik/Authelia — hermes-workspace (outsourc-e/hermes-workspace, chat UI
-# for the hermes_agent gateway) and mission-control (builderz-labs/
-# mission-control, an OpenClaw operations dashboard; NOT wired to Hermes).
-# Neither app talks to the other; they only share this guest and its
-# reverse-proxy front door.
+# hermes-ui: one LXC running Docker Compose services behind Traefik/Authelia —
+# hermes-workspace (outsourc-e/hermes-workspace, chat UI for the hermes_agent
+# gateway) and mission-control (builderz-labs/mission-control, an OpenClaw
+# operations dashboard; NOT wired to Hermes), plus an optional paperclip fleet
+# board (paperclipai/paperclip, also built locally from a pinned source tag —
+# off by default). Neither app talks to the other; they only share this guest
+# and its reverse-proxy front door.
 
 # --- hermes-workspace --------------------------------------------------------
 # Published image (ghcr.io/outsourc-e/hermes-workspace) — pinned tag,
@@ -74,6 +75,30 @@ hermes_ui_docker_mission_control_allowed_hosts: >-
   mission-control.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
   or undef('PROXMOX_SUBDOMAIN required (Doppler)') }},localhost,127.0.0.1
 
+# --- paperclip (fleet board) ---------------------------------------------------
+# paperclipai/paperclip — fleet board. Like mission-control it is built
+# locally from a pinned source tag (no suitable registry image is documented
+# for this deployment). Off by default; when the switch is on the service
+# renders beside hermes-workspace and mission-control.
+hermes_ui_docker_paperclip_enabled: false
+hermes_ui_docker_paperclip_repo: "https://github.com/paperclipai/paperclip.git"
+# renovate: datasource=git-tags depName=paperclipai/paperclip currentValue=v2026.1117.0
+hermes_ui_docker_paperclip_ref: "v2026.1117.0"
+hermes_ui_docker_paperclip_service: paperclip
+hermes_ui_docker_paperclip_container_name: paperclip
+# Internal port is fixed by the upstream app (PORT=3100).
+hermes_ui_docker_paperclip_internal_port: 3100
+# Paperclip keeps its state (embedded database, storage, secrets key) under
+# PAPERCLIP_HOME; no DATABASE_URL is rendered, so the embedded database is
+# used.
+hermes_ui_docker_paperclip_home: "/paperclip"
+# Keep the board private: sign-in required, not publicly exposed.
+hermes_ui_docker_paperclip_deployment_mode: "authenticated"
+hermes_ui_docker_paperclip_deployment_exposure: "private"
+# Telemetry off: no tracing endpoint or error-reporting address is rendered.
+hermes_ui_docker_paperclip_telemetry_disabled: "1"
+hermes_ui_docker_paperclip_do_not_track: "1"
+
 # --- Shared guest layout -------------------------------------------------------
 hermes_ui_docker_data_dir: /opt/hermes-ui
 # Mission-control's SQLite state (its only stateful service — hermes-workspace
@@ -81,6 +106,14 @@ hermes_ui_docker_data_dir: /opt/hermes-ui
 # to) — bind-mounted so it survives a compose recreate/image rebuild.
 hermes_ui_docker_state_dir: /var/lib/hermes-ui
 hermes_ui_docker_mission_control_data_dir: "{{ hermes_ui_docker_state_dir }}/mission-control"
+# paperclip's state (embedded database, storage, secrets key — see
+# hermes_ui_docker_paperclip_home) — bind-mounted so it survives a compose
+# recreate/image rebuild.
+hermes_ui_docker_paperclip_data_dir: "{{ hermes_ui_docker_state_dir }}/paperclip"
+# paperclip's image runs as its `node` user, uid/gid 1000 (the default of
+# its Dockerfile's USER_UID and USER_GID build arguments).
+hermes_ui_docker_paperclip_uid: 1000
+hermes_ui_docker_paperclip_gid: 1000
 # mission-control's runtime image runs as uid/gid 1001 (nextjs:nodejs, see its
 # Dockerfile) and chown's this path itself on first boot only if it owns the
 # mount; pre-creating it root-owned would break that.
@@ -102,6 +135,12 @@ hermes_ui_docker_workspace_port: >-
 hermes_ui_docker_mission_control_port: >-
   {{ hostvars['localhost']['tofu_data']
      ['constants']['service_ports']['hermes_ui_mission_control']
+     | mandatory(_hermes_ui_docker_port_err) }}
+# Only evaluated when hermes_ui_docker_paperclip_enabled (Ansible variables
+# resolve lazily), so a missing map entry is harmless while the switch is off.
+hermes_ui_docker_paperclip_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['hermes_ui_paperclip']
      | mandatory(_hermes_ui_docker_port_err) }}
 
 hermes_ui_docker_health_retries: 30
