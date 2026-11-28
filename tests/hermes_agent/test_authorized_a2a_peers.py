@@ -81,6 +81,7 @@ def test_profile_toolset_includes_native_a2a_only_when_authorized():
     for profile, expected in (("orchestrator", True), ("eval", False), ("github-maint", False)):
         rendered = yaml.safe_load(ENV.from_string(fragment).render(
             **context(profile=profile), hermes_agent_cron_toolsets=["web"],
+            _tracker_bank_tools_on=False, _tracker_bank_toolset_allowlist=[],
         ))
         assert ("a2a" in rendered["platform_toolsets"]["cli"]) == expected
         assert ("a2a" in rendered["platform_toolsets"]["cron"]) == expected

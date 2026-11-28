@@ -21,7 +21,7 @@ model:
 
 {{ context_limits.top_level(hermes_agent_context_limits) }}
 
-{% set _profile_memory_bank_id = hermes_agent_profile.memory_bank_id | default('') | trim %}
+{% set _profile_memory_bank_id = hermes_agent_profile.memory_bank_id | default('') | trim %}{% set _tracker_bank_tools_on = _profile_locked and (_profile_memory_bank_id | length > 0) and (hermes_agent_tracker_bank_tools_enabled | default(false) | bool) %}{% set _tracker_bank_toolset_names = [] %}{% for _tracker_mcp_name in hermes_agent_profile.mcp | default([]) %}{% if _tracker_mcp_name not in ['memory_bank', 'mcp-memory_bank'] and (_tracker_mcp_name != 'vikunja_write' or hermes_agent_router_vikunja_write_mcp_enabled | default(true) | bool) %}{% set _ = _tracker_bank_toolset_names.append('mcp-' ~ _tracker_mcp_name) %}{% endif %}{% endfor %}{% set _tracker_bank_toolset_allowlist = _tracker_bank_toolset_names if _tracker_bank_toolset_names | length > 0 else ['no_mcp'] %}
 {% set _external_memory_on = _profile_memory_bank_id | length > 0 and hermes_agent_memory_provider == 'hindsight' %}
 memory:
   # Built-in file memory (MEMORY.md/USER.md) is off for every profile, whatever a
@@ -71,12 +71,16 @@ tools:
 # Per-profile additions; the Cron platform inherits the shared role allowlist.
 platform_toolsets:
 {% for platform, additions in hermes_agent_profile.toolsets | dictsort %}
-  {{ platform }}: {{ ((hermes_agent_cron_toolsets + additions if platform == 'cron' else additions) + _a2a_tools) | unique | list | to_json }}
-{% endfor %}
+  {{ platform }}: {{ (
+    ((hermes_agent_cron_toolsets + additions if platform == 'cron' else additions) + _a2a_tools) | unique | list
+    if not (_tracker_bank_tools_on and platform in ['api_server', 'cron'])
+    else (((hermes_agent_cron_toolsets + additions if platform == 'cron' else additions) + _a2a_tools + _tracker_bank_toolset_allowlist) | reject('in', ['memory_bank', 'mcp-memory_bank']) | unique | list)
+  ) | to_json }}
+{% endfor %}{{ ('  api_server: ' ~ (_tracker_bank_toolset_allowlist | to_json) ~ '\n') if _tracker_bank_tools_on and 'api_server' not in hermes_agent_profile.toolsets else '' }}{{ ('  cron: ' ~ (_tracker_bank_toolset_allowlist | to_json) ~ '\n') if _tracker_bank_tools_on and 'cron' not in hermes_agent_profile.toolsets else '' }}
 {% elif hermes_agent_profile.locked | default(false) %}
 platform_toolsets:
-  api_server: [todo]
-  cli: [todo]
+  api_server: {{ (['todo'] + _tracker_bank_toolset_allowlist) | unique | list | to_json if _tracker_bank_tools_on else '[todo]' }}
+{{ ('  cron: ' ~ (_tracker_bank_toolset_allowlist | to_json) ~ '\n') if _tracker_bank_tools_on else '' }}  cli: [todo]
 {% endif %}
 
 terminal:
@@ -186,7 +190,7 @@ kanban:
 {% endfor %}
 {% set _profile_prompt_manifest_entry = (hermes_agent_profile_prompt_manifest_by_soul | default({})).get(hermes_agent_profile.soul_standalone_file | default(''), {}) %}
 {% set _mcp_nautobot = ('nautobot' in hermes_agent_profile.mcp) and (hermes_agent_nautobot_mcp_enabled | bool) %}
-{% if _mcp_splunk or _mcp_docs or _mcp_grep or _mcp_vikunja or _mcp_crawl4ai or _mcp_nautobot or _mcp_zammad or _mcp_app_agent_servers %}
+{% if _mcp_splunk or _mcp_docs or _mcp_grep or _mcp_vikunja or _mcp_crawl4ai or _mcp_nautobot or _mcp_zammad or _mcp_app_agent_servers or _tracker_bank_tools_on %}
 # MCP servers this profile is scoped to reach. ${VARS} resolve from THIS
 # profile's own .env at connect time — never the default profile's.
 mcp_servers:
@@ -243,7 +247,15 @@ mcp_servers:
     tools:
       include: {{ (_profile_prompt_manifest_entry.tools + (_profile_prompt_manifest_entry.write_tools | default([]))) | to_json }}
 {% endif %}
-{% endfor %}
+{% endfor %}{{ (
+  '  memory_bank:\n'
+  ~ '    timeout: ' ~ hermes_agent_mcp_tool_timeout_seconds ~ '\n'
+  ~ '    url: "' ~ hermes_agent_hindsight_config_api_url.rstrip('/') ~ '/mcp/' ~ _profile_memory_bank_id ~ '/"\n'
+  ~ '    headers:\n'
+  ~ '      Authorization: "Bearer ${MEMORY_BANK_API_KEY}"\n'
+  ~ '    tools:\n'
+  ~ '      include: ' ~ (hermes_agent_tracker_bank_tool_names | to_json)
+) if _tracker_bank_tools_on else '' }}
 {% if _mcp_nautobot %}
   nautobot:
     timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}

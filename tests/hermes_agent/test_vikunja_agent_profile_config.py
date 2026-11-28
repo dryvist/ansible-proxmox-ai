@@ -23,6 +23,8 @@ def _mcp_fragment(profile: dict, manifest_entry: dict) -> dict:
         "hermes_agent_profile": profile,
         # The fragment starts below the template line that sets this flag.
         "_profile_locked": bool(profile.get("locked", False)),
+        "_tracker_bank_tools_on": False,
+        "_tracker_bank_toolset_allowlist": [],
         "hermes_agent_profile_prompt_manifest_by_soul": {
             profile["soul_standalone_file"]: manifest_entry,
         },
