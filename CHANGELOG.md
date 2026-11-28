@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.103.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.1...v2.103.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **hermes:** use prompt pack v1.153.0 and let one agent's role variants share its memory bank ([#3031](https://github.com/dryvist/ansible-proxmox-ai/issues/3031)) ([5509b35](https://github.com/dryvist/ansible-proxmox-ai/commit/5509b3565cc4fd0642458c9e769adfe80fa0bba6))
+
+## [2.103.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.103.0...v2.103.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **llm_router:** render the clerk default alias outside the registry alias map ([#3034](https://github.com/dryvist/ansible-proxmox-ai/issues/3034)) ([5f19fa3](https://github.com/dryvist/ansible-proxmox-ai/commit/5f19fa348ad2eb32da3b0ddf5402b4051564fea5))
+
 ## [2.103.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.102.0...v2.103.0) (2026-11-28)
 
 
