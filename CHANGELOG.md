@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.94.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.93.0...v2.94.0) (2026-11-28)
+
+
+### Features
+
+* **hermes_agent:** start every soul with the shared base and retain a memory file before it moves ([#2994](https://github.com/dryvist/ansible-proxmox-ai/issues/2994)) ([315148e](https://github.com/dryvist/ansible-proxmox-ai/commit/315148eede83b27622d8929e0aa4e4c32176326d))
+
 ## [2.93.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.92.0...v2.93.0) (2026-11-28)
 
 

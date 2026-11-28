@@ -3,10 +3,12 @@
 # config-profile.yaml.j2 both render memory_enabled: false and
 # user_profile_enabled: false), so Hermes no longer reads or writes its local
 # MEMORY.md/USER.md. Whatever an older deploy let the agent accumulate there is
-# still the agent's own writing: this file moves it into
-# retired-memory/<profile>/ and never deletes it. Included once for the default
+# still the agent's own writing: when configured, its text goes to that
+# profile's memory bank before this file moves it into retired-memory/<profile>/
+# and never deletes it. Included once for the default
 # profile (config_and_content.yml, HERMES_HOME itself) and once per named
-# profile (profiles.yml, HERMES_HOME/profiles/<name>/) with the two vars below.
+# profile (profiles.yml, HERMES_HOME/profiles/<name>/) with the vars below,
+# including hermes_agent_retire_memory_bank_id.
 #
 # A profile's memory folder is where upstream keeps those files for it: the
 # default profile's USER.md is seeded at HERMES_HOME/USER.md and "the whole
@@ -35,6 +37,64 @@
       {{ hermes_agent_retire_memory_stat.results
          | selectattr('stat.exists', 'equalto', true)
          | map(attribute='hermes_agent_retire_memory_file') | list }}
+
+- name: Retain local memory files for {{ hermes_agent_retire_memory_label }}
+  block:
+    - name: Read each local memory file before retaining it
+      ansible.builtin.slurp:
+        src: "{{ hermes_agent_retire_memory_dir }}/{{ hermes_agent_retire_memory_file }}"
+      register: hermes_agent_retire_memory_text
+      no_log: true
+      loop: "{{ hermes_agent_retire_memory_found }}"
+      loop_control:
+        loop_var: hermes_agent_retire_memory_file
+        label: "{{ hermes_agent_retire_memory_file }}"
+      when:
+        - hermes_agent_retire_memory_bank_id | default('') | length > 0
+        - hermes_agent_memory_provider == 'hindsight'
+        - not ansible_check_mode
+
+    - name: Retain each local memory file in the profile bank
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_memory_api_url }}/v1/default/banks/{{ hermes_agent_retire_memory_bank_id }}/memories"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ hermes_agent_memory_api_key }}"
+        body_format: json
+        body:
+          items:
+            - content: >-
+                {{ hermes_agent_retire_memory_text.results
+                   | selectattr('hermes_agent_retire_memory_file', 'equalto', hermes_agent_retire_memory_file)
+                   | map(attribute='content') | first | b64decode }}
+              document_id: >-
+                retired-{{ hermes_agent_retire_memory_label }}-{{ hermes_agent_retire_memory_file }}
+              tags:
+                - retired-local-memory
+              metadata:
+                source_file: "{{ hermes_agent_retire_memory_file }}"
+                profile: "{{ hermes_agent_retire_memory_label }}"
+          async: true
+        status_code: 200
+        timeout: 60
+      register: hermes_agent_retire_memory_post
+      until: hermes_agent_retire_memory_post is succeeded
+      retries: 2
+      delay: 5
+      changed_when: true
+      no_log: true
+      loop: "{{ hermes_agent_retire_memory_found }}"
+      loop_control:
+        loop_var: hermes_agent_retire_memory_file
+        label: "{{ hermes_agent_retire_memory_file }}"
+      when:
+        - hermes_agent_retire_memory_bank_id | default('') | length > 0
+        - hermes_agent_memory_provider == 'hindsight'
+        - not ansible_check_mode
+        - >-
+          (hermes_agent_retire_memory_text.results
+           | selectattr('hermes_agent_retire_memory_file', 'equalto', hermes_agent_retire_memory_file)
+           | map(attribute='content') | first | b64decode | trim | length) > 0
 
 - name: Ensure the retired-memory folder exists for {{ hermes_agent_retire_memory_label }}
   ansible.builtin.file:
