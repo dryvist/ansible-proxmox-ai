@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.90.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.90.1...v2.90.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **inventory:** keep the youtrack-clerk and zammad-clerk profiles off until their tool tiers register ([#2968](https://github.com/dryvist/ansible-proxmox-ai/issues/2968)) ([c247b16](https://github.com/dryvist/ansible-proxmox-ai/commit/c247b16db3e3eb26caa317bb55fe2355014fb8b0))
+
 ## [2.90.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v2.90.0...v2.90.1) (2026-11-27)
 
 
