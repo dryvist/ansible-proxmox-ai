@@ -2,6 +2,27 @@
 # Each app owns its process shape once; tier rows select the token field and
 # tools. The Vikunja entity tools multiplex read and write subcommands, so the
 # read tier relies on its app-scoped token to deny writes.
+llm_router_vikunja_clerk_bot_roles:
+  [workstation, hermes, pepper, untrusted, jobs, inbox, triage, nightly, windows, acceptance]
+llm_router_vikunja_agent_tool_names:
+  - tasks_list
+  - tasks_read
+  - tasks_create
+  - tasks_update
+  - task_comments_list
+  - task_comments_read
+  - task_comments_create
+  - task_assignees_list
+  - task_assignees_create
+  - projects_list
+  - projects_read
+  - labels_list
+  - labels_read
+  - users_search
+  - find_action
+  - do_action
+  - filter_syntax
+
 llm_router_app_agent_apps:
   vikunja:
     command: /usr/bin/npx
@@ -11,6 +32,10 @@ llm_router_app_agent_apps:
     url_env: VIKUNJA_URL
     url_field: VIKUNJA_MCP_URL
     token_env: VIKUNJA_API_TOKEN
+  vikunja-native:
+    transport: http
+    url_field: VIKUNJA_MCP_URL
+    url_path: /api/v2/mcp
   zammad:
     command: "{{ llm_router_mcp_zammad_command }}"
     args: "{{ llm_router_mcp_zammad_args }}"
@@ -121,6 +146,21 @@ llm_router_app_agent_tiers:
       - run_task
       - stop_task
 
+# Each tracker bot has its own native-MCP bearer and least-privilege tool set.
+llm_router_vikunja_clerk_app_tiers: >-
+  {%- set ns = namespace(rows=[]) -%}
+  {%- for role in llm_router_vikunja_clerk_bot_roles -%}
+  {%- set tools = ['tasks_create'] if role in ['untrusted', 'inbox'] else llm_router_vikunja_agent_tool_names -%}
+  {%- set ns.rows = ns.rows + [{
+        'id': 'vikunja-' ~ role,
+        'app': 'vikunja-native',
+        'tier': 'write',
+        'token_field': 'VIKUNJA_AGENT_' ~ (role | upper) ~ '_TOKEN',
+        'allowed_tools': tools,
+      }] -%}
+  {%- endfor -%}
+  {{ ns.rows }}
+
 # Tiers whose keys may only go to roster entries with trust_tier trusted.
 llm_router_app_agent_trusted_tiers: [write, admin]
 
@@ -145,7 +185,10 @@ _llm_router_app_agent_matrix: >-
   {%- set _profile_servers = hermes_agent_profiles | default([])
         | selectattr('locked', 'defined') | selectattr('locked')
         | map(attribute='mcp') | flatten | list -%}
-  {%- for tier in llm_router_app_agent_tiers -%}
+  {%- set _tiers = llm_router_app_agent_tiers
+        + (llm_router_vikunja_clerk_app_tiers
+           if llm_router_hermes_vikunja_clerk_variants_enabled | bool else []) -%}
+  {%- for tier in _tiers -%}
   {%- set app = llm_router_app_agent_apps[tier.app] -%}
   {%- set _entry = (ai_agents | default({})).get(tier.id) -%}
   {%- set _entry_may_hold = _entry is not none
@@ -158,6 +201,12 @@ _llm_router_app_agent_matrix: >-
   {%- set reader_secrets = (openbao_secrets_by_domain | default({}, true)).get(reader_domain, {}) -%}
   {%- set token = reader_secrets.get(tier.token_field, '')
        | default('', true) | string | trim -%}
+  {%- set url_value = (app.url if app.url is defined
+                       else (bao_local_llm_secrets | default({}, true)).get(app.url_field, ''))
+        | default('', true) | string | trim -%}
+  {%- if app.url_path is defined -%}
+  {%- set url_value = (url_value | regex_replace('/+$', '')) ~ app.url_path -%}
+  {%- endif -%}
   {%- set token_env_key = 'LLM_ROUTER_APP_' ~ (tier.id | upper | regex_replace('[^A-Z0-9]', '_')) ~ '_TOKEN' -%}
   {%- set url_env_key = 'LLM_ROUTER_APP_' ~ (tier.id | upper | regex_replace('[^A-Z0-9]', '_')) ~ '_URL' -%}
   {%- set row = tier | combine(app, recursive=true) | combine({
@@ -166,9 +215,7 @@ _llm_router_app_agent_matrix: >-
         'token_value': token,
         'token_env_key': token_env_key,
         'url_env_key': url_env_key,
-        'url_value': (app.url if app.url is defined
-                      else (bao_local_llm_secrets | default({}, true)).get(app.url_field, ''))
-          | default('', true) | string | trim,
+        'url_value': url_value,
         'holder': holder,
         'enabled': token | length > 0 and holder | length > 0,
       }, recursive=true) -%}
