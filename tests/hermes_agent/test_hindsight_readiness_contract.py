@@ -157,15 +157,18 @@ def test_service_containment_selects_builtin_memory_without_disabling_core_files
         memory = source.split("memory:\n", 1)[1].split("\nlogging:", 1)[0]
         if template_name == "config.yaml.j2":
             assert "provider: {{ hermes_agent_memory_provider }}" in memory
-            assert "memory_enabled: true" in memory
-            assert "user_profile_enabled: true" in memory
+            assert "memory_enabled: false" in memory
+            assert "user_profile_enabled: false" in memory
         else:
-            # Profiles default to the fleet provider with memory on; memory_enabled: false
-            # (the eval profile) switches the built-in provider and its flags off.
-            assert "{% set _memory_on = hermes_agent_profile.memory_enabled | default(true) | bool %}" in source
-            assert "provider: {{ hermes_agent_memory_provider if _memory_on else 'builtin' }}" in memory
-            assert "memory_enabled: {{ _memory_on | to_json }}" in memory
-            assert "user_profile_enabled: {{ _memory_on | to_json }}" in memory
+            # Built-in memory is off for every profile; only a profile that
+            # declares its own memory_bank_id (with the Hindsight service on)
+            # renders the external provider, so the hindsight config
+            # profiles.yml deploys for it is in use.
+            assert "{% set _external_memory_on = _profile_memory_bank_id | length > 0 and hermes_agent_memory_provider == 'hindsight' %}" in source
+            assert "{% set _profile_memory_bank_id = hermes_agent_profile.memory_bank_id | default('') | trim %}" in source
+            assert "provider: {{ hermes_agent_memory_provider if _external_memory_on else 'builtin' }}" in memory
+            assert "memory_enabled: false" in memory
+            assert "user_profile_enabled: false" in memory
 
 
 def test_builtin_provider_skips_every_hindsight_http_and_readiness_task() -> None:

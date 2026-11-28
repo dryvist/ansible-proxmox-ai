@@ -55,9 +55,12 @@ def test_the_seed_template_exists() -> None:
     assert TEMPLATE.is_file(), f"missing {TEMPLATE}"
 
 
-def test_the_profile_is_enabled_upstream() -> None:
-    """Seeding a file upstream never reads would be dead weight."""
-    assert "user_profile_enabled: true" in CONFIG_TEMPLATE
+def test_the_builtin_user_profile_switch_is_off_upstream() -> None:
+    """Built-in memory is off in every config this role renders, including the
+    seed's own template: the switches render false even though the opt-in seed
+    stays available for a deploy that turns user_profile_enabled back on."""
+    assert "user_profile_enabled: false" in CONFIG_TEMPLATE
+    assert "user_profile_enabled: true" not in CONFIG_TEMPLATE
 
 
 def test_the_seed_never_overwrites_the_agents_own_profile() -> None:
